@@ -1,1 +1,1 @@
-ERPNext Extensions
+erpnext_extensions
