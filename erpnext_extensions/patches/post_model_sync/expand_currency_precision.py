@@ -38,12 +38,16 @@ def execute():
 
     def ensure_decimal(table, col, p, s):
         cur_p, cur_s = current_numeric_pd(table, col)
+
+        frappe.logger().info(
+        f"Checking {table}.{col}: current=({cur_p},{cur_s}), target=({TARGET_PRECISION},{TARGET_SCALE})"
+         )
         # If the column does not exist or is not of type DECIMAL, try to directly MODIFY it
         # If it exists but is smaller than the target, enlarge it
-        if (cur_p is None) or (cur_p < p) or (cur_s is None) or (cur_s < s):
+        if (cur_p is None) or (cur_p < TARGET_PRECISION) or (cur_s is None) or (cur_s < TARGET_SCALE):
             db.sql(f"""
                 ALTER TABLE `{table}`
-                MODIFY `{col}` DECIMAL({p},{s}) NOT NULL DEFAULT 0
+                MODIFY `{col}` DECIMAL({TARGET_PRECISION},{TARGET_SCALE}) NOT NULL DEFAULT 0
             """)
 
     # Execute changes
