@@ -1,0 +1,4 @@
+# This directory contains fixture files exported from Frappe
+# Run: bench --site [site] export-fixtures
+# Files will be automatically generated here
+
