@@ -242,3 +242,25 @@ app_license = "mit"
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
 
+# Fixtures
+# --------
+# Fixtures are used to export/import customizations (Custom Fields, Scripts, Workflows, etc.)
+# between different sites. When you run `bench --site [site] export-fixtures`, these doctypes
+# will be exported to the fixtures directory and can be imported to other sites.
+# 
+# Usage:
+# 1. Export fixtures: bench --site [site] export-fixtures
+# 2. Import fixtures: bench --site [new-site] migrate (fixtures are imported automatically)
+#
+# The fixtures will be saved in: erpnext_extensions/fixtures/
+
+fixtures = [
+	{"dt": "Custom Field"},
+	{"dt": "Client Script"},
+	{"dt": "Server Script"},
+	{"dt": "Property Setter"},
+	{"dt": "Workflow"},
+	{"dt": "Workflow State"},
+	{"dt": "Workflow Action Master"},
+]
+
