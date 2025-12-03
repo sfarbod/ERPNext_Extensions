@@ -1,0 +1,515 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.101941",
+  "name": "Pending Stock Approval",
+  "style": "",
+  "workflow_state_name": "Pending Stock Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.147466",
+  "name": "Pending Item Approval",
+  "style": "",
+  "workflow_state_name": "Pending Item Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-18 15:00:00.354216",
+  "name": "Waiting For QC Approval",
+  "style": "Info",
+  "workflow_state_name": "Waiting For QC Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-18 10:41:49.792688",
+  "name": "Sent for Financial",
+  "style": "",
+  "workflow_state_name": "Sent for Financial"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-26 14:15:45.641076",
+  "name": "Celected",
+  "style": "Success",
+  "workflow_state_name": "Celected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 21:02:42.070619",
+  "name": "Waiting for approval",
+  "style": "",
+  "workflow_state_name": "Waiting for approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-19 14:23:26.006210",
+  "name": "Issued",
+  "style": "Success",
+  "workflow_state_name": "Issued"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-22 11:40:21.028179",
+  "name": "Pending Commercial",
+  "style": "Info",
+  "workflow_state_name": "Pending Commercial"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-22 11:47:26.108915",
+  "name": "Done",
+  "style": "Success",
+  "workflow_state_name": "Done"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-26 14:16:20.562244",
+  "name": "not Selected",
+  "style": "Danger",
+  "workflow_state_name": "not Selected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-12-01 14:19:13.067602",
+  "name": "Assigning Bank for Currency Allocation",
+  "style": "Info",
+  "workflow_state_name": "Assigning Bank for Currency Allocation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-12-02 10:15:12.514519",
+  "name": "Received",
+  "style": "",
+  "workflow_state_name": "Received"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-12-02 16:25:26.608520",
+  "name": "In Process of Currency Purchase",
+  "style": "Info",
+  "workflow_state_name": "In Process of Currency Purchase"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 16:23:36.233059",
+  "name": "Save",
+  "style": "",
+  "workflow_state_name": "Save"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-12 11:29:57.662508",
+  "name": "Manager Rejection",
+  "style": "Danger",
+  "workflow_state_name": "Manager Rejection"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 12:51:58.246815",
+  "name": "Verified",
+  "style": "Success",
+  "workflow_state_name": "Verified"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-29 18:47:10.103264",
+  "name": "selected",
+  "style": "Success",
+  "workflow_state_name": "selected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-12-02 10:02:32.394308",
+  "name": "Accepted",
+  "style": "",
+  "workflow_state_name": "Accepted"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-12-02 10:02:59.654768",
+  "name": "Damaged",
+  "style": "",
+  "workflow_state_name": "Damaged"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 16:01:08.192641",
+  "name": "Waiting for Manager",
+  "style": "Info",
+  "workflow_state_name": "Waiting for Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 16:36:14.417311",
+  "name": "Technical Decision",
+  "style": "Warning",
+  "workflow_state_name": "Technical Decision"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-18 14:53:59.729395",
+  "name": "Quality Approved",
+  "style": "Success",
+  "workflow_state_name": "Quality Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-22 11:41:11.648391",
+  "name": "Pending Warehouse",
+  "style": "Info",
+  "workflow_state_name": "Pending Warehouse"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-22 11:41:33.059762",
+  "name": "Closed",
+  "style": "Success",
+  "workflow_state_name": "Closed"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:41:54.080766",
+  "name": "Approved By Supervisor",
+  "style": "Success",
+  "workflow_state_name": "Approved By Supervisor"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-30 15:20:13.565566",
+  "name": "Foreign Procurement Process",
+  "style": "Info",
+  "workflow_state_name": "Foreign Procurement Process"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-12-01 11:52:51.632002",
+  "name": "Pending Registration in Iran Trade System",
+  "style": "Info",
+  "workflow_state_name": "Pending Registration in Iran Trade System"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-18 14:54:29.192199",
+  "name": "Quality Rejected",
+  "style": "Danger",
+  "workflow_state_name": "Quality Rejected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-19 12:12:45.230176",
+  "name": "Need to Edit",
+  "style": "Danger",
+  "workflow_state_name": "Need to Edit"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.164349",
+  "name": "Approved by Purchasing",
+  "style": "Success",
+  "workflow_state_name": "Approved by Purchasing"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-12 12:01:39.157771",
+  "name": "Rejected by Planning",
+  "style": "Danger",
+  "workflow_state_name": "Rejected by Planning"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:40:59.851154",
+  "name": "Pending for CEO Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for CEO Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:43:53.203756",
+  "name": "Reject By Supervisor",
+  "style": "Warning",
+  "workflow_state_name": "Reject By Supervisor"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.169635",
+  "name": "Pending Purchasing Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending Purchasing Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.152872",
+  "name": "Pending Manager Approval",
+  "style": "",
+  "workflow_state_name": "Pending Manager Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:42:24.147750",
+  "name": "Approved By CEO",
+  "style": "Success",
+  "workflow_state_name": "Approved By CEO"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:44:23.664707",
+  "name": "Reject By CEO",
+  "style": "Danger",
+  "workflow_state_name": "Reject By CEO"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.158664",
+  "name": "Submitted",
+  "style": "Success",
+  "workflow_state_name": "Submitted"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-10 17:40:13.771581",
+  "name": "Sending For Manager",
+  "style": "Info",
+  "workflow_state_name": "Sending For Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-18 16:02:40.748214",
+  "name": "Purchase Approved by Planning",
+  "style": "Success",
+  "workflow_state_name": "Purchase Approved by Planning"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-12 12:00:49.470930",
+  "name": "Approved by Planning",
+  "style": "Success",
+  "workflow_state_name": "Approved by Planning"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:43:13.688030",
+  "name": "Reject By Manager",
+  "style": "Warning",
+  "workflow_state_name": "Reject By Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-12 11:33:38.132735",
+  "name": "Not Approved",
+  "style": "Info",
+  "workflow_state_name": "Not Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-18 16:04:16.876602",
+  "name": "Pending CEO Review",
+  "style": "Info",
+  "workflow_state_name": "Pending CEO Review"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 13:39:30.870258",
+  "name": "Pending for Supervisor Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for Supervisor Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "question-sign",
+  "modified": "2025-11-11 12:21:31.857631",
+  "name": "Pending",
+  "style": "Warning",
+  "workflow_state_name": "Pending"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 16:57:28.809107",
+  "name": "Sent to Manager",
+  "style": "Success",
+  "workflow_state_name": "Sent to Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 11:54:03.322053",
+  "name": "Approved By Manager",
+  "style": "Success",
+  "workflow_state_name": "Approved By Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 18:56:05.787417",
+  "name": "Pending for Procurement Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for Procurement Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-16 14:00:38.184158",
+  "name": "Pending for Manager Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for Manager Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 11:53:09.555286",
+  "name": "Pending for Warehouse Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for Warehouse Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 18:57:37.039019",
+  "name": "Pending for Technical Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for Technical Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 11:53:15.318275",
+  "name": "Pending for IT Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for IT Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-11 18:21:38.394574",
+  "name": "Pending for Planning Approval",
+  "style": "Info",
+  "workflow_state_name": "Pending for Planning Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "remove",
+  "modified": "2025-11-08 17:07:32.624531",
+  "name": "Rejected",
+  "style": "Danger",
+  "workflow_state_name": "Rejected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "ok-sign",
+  "modified": "2025-11-08 17:07:32.622477",
+  "name": "Approved",
+  "style": "Success",
+  "workflow_state_name": "Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-11-08 18:06:09.175078",
+  "name": "Draft",
+  "style": "Primary",
+  "workflow_state_name": "Draft"
+ }
+]
