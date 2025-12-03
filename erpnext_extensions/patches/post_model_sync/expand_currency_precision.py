@@ -21,10 +21,6 @@ TABLES_AND_COLUMNS = {
         "debit_in_account_currency", "credit_in_account_currency",
         "debit_in_transaction_currency", "credit_in_transaction_currency"
     ],
-    # Account
-    "tabAccount": [
-        "account_balance", "credit_limit"
-    ],
     # Payment Entry
     "tabPayment Entry": [
         "paid_from_account_balance",
