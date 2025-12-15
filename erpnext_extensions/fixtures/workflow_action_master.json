@@ -285,5 +285,131 @@
   "modified": "2025-11-08 17:07:32.645036",
   "name": "Reject",
   "workflow_action_name": "Reject"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark Waiting For Sayad",
+  "workflow_action_name": "Mark Waiting For Sayad"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark Registered In Sayad",
+  "workflow_action_name": "Mark Registered In Sayad"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Move To Box",
+  "workflow_action_name": "Move To Box"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Assign To Bank",
+  "workflow_action_name": "Assign To Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark As Collected",
+  "workflow_action_name": "Mark As Collected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark As Returned From Bank",
+  "workflow_action_name": "Mark As Returned From Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Return To Customer",
+  "workflow_action_name": "Return To Customer"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Reassign To Bank",
+  "workflow_action_name": "Reassign To Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Retrieve From Bank",
+  "workflow_action_name": "Retrieve From Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Select Bank",
+  "workflow_action_name": "Select Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Issue Cheque",
+  "workflow_action_name": "Issue Cheque"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark As Printed",
+  "workflow_action_name": "Mark As Printed"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "First Signature Done",
+  "workflow_action_name": "First Signature Done"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Second Signature Done",
+  "workflow_action_name": "Second Signature Done"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Notify Supplier",
+  "workflow_action_name": "Notify Supplier"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Deliver To Supplier",
+  "workflow_action_name": "Deliver To Supplier"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark Sayad Success",
+  "workflow_action_name": "Mark Sayad Success"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark As Void",
+  "workflow_action_name": "Mark As Void"
  }
 ]

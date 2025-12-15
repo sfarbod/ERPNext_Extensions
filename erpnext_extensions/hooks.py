@@ -137,11 +137,14 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
+# Document Events
+# ---------------
+# Temporarily disabled - Cheque Management module
 # doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
+# 	"Cheque": {
+# 		"on_update": "erpnext_extensions.cheque_management.doctype.cheque.cheque.on_cheque_update",
+# 		"before_delete": "erpnext_extensions.cheque_management.doctype.cheque.cheque.before_cheque_delete",
+# 		"on_update_after_submit": "erpnext_extensions.cheque_management.doctype.cheque.cheque.on_cheque_update_after_submit"
 # 	}
 # }
 
@@ -262,5 +265,6 @@ fixtures = [
 	{"dt": "Workflow"},
 	{"dt": "Workflow State"},
 	{"dt": "Workflow Action Master"},
+	{"dt": "Role"},
 ]
 

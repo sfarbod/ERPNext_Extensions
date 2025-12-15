@@ -27,6 +27,11 @@ TABLES_AND_COLUMNS = {
         "paid_to_account_balance",
         "party_balance"
     ],
+    # Account Closing Balance
+    "tabAccount Closing Balance": [
+        "debit", "credit",
+        "debit_in_account_currency", "credit_in_account_currency"
+    ],
 }
 
 def execute():

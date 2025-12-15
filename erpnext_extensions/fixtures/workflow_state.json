@@ -511,5 +511,203 @@
   "name": "Draft",
   "style": "Primary",
   "workflow_state_name": "Draft"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Received From Customer",
+  "style": "Info",
+  "workflow_state_name": "Received From Customer"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Waiting For Sayad",
+  "style": "Warning",
+  "workflow_state_name": "Waiting For Sayad"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Registered In Sayad",
+  "style": "Success",
+  "workflow_state_name": "Registered In Sayad"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Move To Box",
+  "style": "",
+  "workflow_state_name": "Move To Box"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Under Collection",
+  "style": "Info",
+  "workflow_state_name": "Under Collection"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Collected",
+  "style": "Success",
+  "workflow_state_name": "Collected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Returned From Bank",
+  "style": "Danger",
+  "workflow_state_name": "Returned From Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Returned",
+  "style": "Danger",
+  "workflow_state_name": "Returned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Return To Customer",
+  "style": "Danger",
+  "workflow_state_name": "Return To Customer"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Retrieved From Bank",
+  "style": "Warning",
+  "workflow_state_name": "Retrieved From Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Payment Request Created",
+  "style": "Info",
+  "workflow_state_name": "Payment Request Created"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Select Bank",
+  "style": "Warning",
+  "workflow_state_name": "Select Bank"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Issued",
+  "style": "Success",
+  "workflow_state_name": "Issued"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark As Printed",
+  "style": "",
+  "workflow_state_name": "Mark As Printed"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "First Signature Done",
+  "style": "Info",
+  "workflow_state_name": "First Signature Done"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Second Signature Done",
+  "style": "Success",
+  "workflow_state_name": "Second Signature Done"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Notify Supplier",
+  "style": "Warning",
+  "workflow_state_name": "Notify Supplier"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Deliver To Supplier",
+  "style": "Success",
+  "workflow_state_name": "Deliver To Supplier"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark Registered In Sayad",
+  "style": "Info",
+  "workflow_state_name": "Mark Registered In Sayad"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark Sayad Success",
+  "style": "Success",
+  "workflow_state_name": "Mark Sayad Success"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Cleared",
+  "style": "Success",
+  "workflow_state_name": "Cleared"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-27 10:00:00.000000",
+  "name": "Mark As Void",
+  "style": "Danger",
+  "workflow_state_name": "Mark As Void"
  }
 ]
