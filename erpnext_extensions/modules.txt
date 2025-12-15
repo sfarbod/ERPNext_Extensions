@@ -1,1 +1,2 @@
 erpnext_extensions
+# Cheque Management  # Temporarily disabled - uncomment to enable
