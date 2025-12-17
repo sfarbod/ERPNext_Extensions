@@ -257,14 +257,15 @@ app_license = "mit"
 #
 # The fixtures will be saved in: erpnext_extensions/fixtures/
 
-fixtures = [
-	{"dt": "Custom Field"},
-	{"dt": "Client Script"},
-	{"dt": "Server Script"},
-	{"dt": "Property Setter"},
-	{"dt": "Workflow"},
-	{"dt": "Workflow State"},
-	{"dt": "Workflow Action Master"},
-	{"dt": "Role"},
-]
+# Temporarily disabled - uncomment to enable fixtures import
+# fixtures = [
+# 	{"dt": "Custom Field"},
+# 	{"dt": "Client Script"},
+# 	{"dt": "Server Script"},
+# 	{"dt": "Property Setter"},
+# 	{"dt": "Workflow"},
+# 	{"dt": "Workflow State"},
+# 	{"dt": "Workflow Action Master"},
+# 	{"dt": "Role"},
+# ]
 
