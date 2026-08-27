@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import datetime
 import json
 import os
 import sys
@@ -32,7 +33,9 @@ FG_WH = "FG - Test - E"
 WIP_WH = "WIP Filling - Test - E"
 EMP1 = os.environ.get("DPL_EMP1", "HR-EMP-0537")
 EMP2 = os.environ.get("DPL_EMP2", "HR-EMP-0538")
-DAYS = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"]
+MAX_SECONDS = float(os.environ.get("DPL_MAX_SECONDS", "10"))  # per-cycle runner time budget
+BASE_DAY = "2026-09-01"
+DAYS: list[str] = []  # five consecutive days, chosen in main() (see pick_days)
 
 failures: list[str] = []
 
@@ -180,10 +183,50 @@ def run_log(name):
 	return doc
 
 
+def pick_days(start=None):
+	"""Five consecutive days on which the test operators have no time logs yet. Core refuses
+	overlapping time logs of one employee across Job Cards, so a site that still holds earlier
+	runs needs fresh days: the day after the operators' last log, never before BASE_DAY."""
+	if not start:
+		start = BASE_DAY
+		last = get_list(
+			"Job Card Time Log",
+			["to_time"],
+			[["employee", "in", [EMP1, EMP2]], ["to_time", "is", "set"]],
+			limit=1,
+			order_by="to_time desc",
+			parent="Job Card",
+		)
+		if last and last[0].get("to_time"):
+			after = datetime.date.fromisoformat(str(last[0]["to_time"])[:10]) + datetime.timedelta(days=1)
+			start = max(start, after.isoformat())
+	first = datetime.date.fromisoformat(start)
+	return [(first + datetime.timedelta(days=i)).isoformat() for i in range(5)]
+
+
+def transfer_for_card(card, qty, emp):
+	"""Material Transfer for Manufacture of a manually driven Job Card — the desk *Material
+	Transfer* button (same mapper the runner uses). Department / cost center come from the
+	operator, as on a Daily Production Log; the entry uses Stock Entry's own series."""
+	doc = call("erpnext.manufacturing.doctype.job_card.job_card.make_stock_entry", source_name=card)
+	for key in ("name", "naming_series"):
+		doc.pop(key, None)
+	doc["fg_completed_qty"] = qty
+	e = get_doc("Employee", emp)
+	for it in doc["items"]:
+		it.pop("name", None)
+		it["department"] = it.get("department") or e["department"]
+		it["cost_center"] = it.get("cost_center") or e["payroll_cost_center"]
+	return submit(insert(doc))["name"]
+
+
 def expect_done(name):
 	doc = run_log(name)
 	check(doc["status"] == "Done", f"{name} Done")
-	check(doc.get("duration_seconds", 999) < 10, f"{name} under 10 s ({doc.get('duration_seconds')})")
+	check(
+		doc.get("duration_seconds", 999) < MAX_SECONDS,
+		f"{name} under {MAX_SECONDS:g} s ({doc.get('duration_seconds')})",
+	)
 	return doc
 
 
@@ -199,9 +242,13 @@ def main():
 	ap = argparse.ArgumentParser()
 	ap.add_argument("--bom", default="BOM-20100067-017")
 	ap.add_argument("--work-order", help="reuse an existing submitted WO instead of creating one")
+	ap.add_argument("--start-day", help="first of the five test days (default: first free days)")
 	args = ap.parse_args()
 	if not BASE:
 		sys.exit("set ERP_URL / ERP_API_KEY / ERP_API_SECRET")
+	global DAYS
+	DAYS = pick_days(args.start_day)
+	print("test days", DAYS[0], "…", DAYS[-1])
 
 	wo = args.work_order or make_work_order(args.bom)["name"]
 	fg_item = get_doc("Work Order", wo)["production_item"]
@@ -278,8 +325,9 @@ def main():
 	check(still_open["docstatus"] == 0, "op-3 lot-2 card still open while ops 4/5 of lot 1 ran")
 
 	print("\n== concurrency: two logs for the same WO+op run at once ==")
-	# finish the open card through the log (the runner reuses an untouched card only; this one has a
-	# timer, so we close the manual timer first to keep the scenario clean)
+	# finish the open card by hand (the runner reuses an untouched card only; this one has a
+	# timer): transfer its materials, close the timer, submit, post the Manufacture entry.
+	xfer = transfer_for_card(open_card, 1500, EMP1)
 	run_doc_method(
 		"Job Card",
 		open_card,
@@ -315,7 +363,7 @@ def main():
 	fgrow["use_serial_batch_fields"] = 1
 	fgrow["batch_no"] = lot
 	submit(save(se))
-	print("  manual op-3 lot 2 closed:", open_card, se["name"])
+	print("  manual op-3 lot 2 closed:", open_card, xfer, se["name"])
 	a = new_log(wo, 4, 1500, EMP2, DAYS[3], "11:00", "13:00")
 	b = new_log(wo, 4, 1500, EMP1, DAYS[3], "11:00", "13:00")
 	with concurrent.futures.ThreadPoolExecutor(2) as ex:

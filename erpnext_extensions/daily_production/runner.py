@@ -158,10 +158,13 @@ def _execute(log) -> dict:
 			)
 
 	# 5. Operator must not be on another running timer ---------------------------------------
+	#    Job Card's *Employee* multi-select stores its rows in the same child table
+	#    (parentfield ``employee``, from/to always empty) — only ``time_logs`` rows are timers.
 	open_log = frappe.db.sql(
 		"""select jc.name from `tabJob Card Time Log` tl
 		   join `tabJob Card` jc on jc.name = tl.parent
-		   where tl.employee = %s and ifnull(tl.to_time, '') = '' and jc.docstatus = 0 limit 1""",
+		   where tl.parentfield = 'time_logs' and tl.employee = %s
+		     and ifnull(tl.to_time, '') = '' and jc.docstatus = 0 limit 1""",
 		(log.employee,),
 	)
 	if open_log:
@@ -290,8 +293,11 @@ def _previous_output(wo, op_row):
 
 
 def _available_previous_output(wo, item_code, warehouse):
-	pool = get_previous_operation_output_sn_batch(wo.name, item_code, warehouse)
-	if pool.batches or pool.serial_nos:
+	has_batch, has_serial = frappe.get_cached_value("Item", item_code, ["has_batch_no", "has_serial_no"])
+	if cint(has_batch) or cint(has_serial):
+		# Only lots this Work Order produced count — another Work Order's lot of the same
+		# semi-finished good in the warehouse must not make this cycle look feasible.
+		pool = get_previous_operation_output_sn_batch(wo.name, item_code, warehouse)
 		return sum(flt(q) for q in pool.batches.values()) or len(pool.serial_nos)
 	# Item not batch/serial tracked: plain bin quantity.
 	return flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"))
@@ -530,13 +536,14 @@ def _placeholder_lot(card, wo, item_code, posting_date, log):
 	if existing:
 		return existing
 
-	last = frappe.db.sql(
-		"select batch_id from `tabBatch` where ifnull(batch_id, '') != '' order by creation desc limit 1",
+	# Next value of the site-wide numeric prefix: the highest one in use, not the most recent
+	# batch's — a manually named batch in between must not restart the sequence at 1.
+	highest = frappe.db.sql(
+		"""select max(cast(substring_index(batch_id, '-', 1) as unsigned))
+		   from `tabBatch` where batch_id regexp '^[0-9]+-'""",
 		pluck=True,
 	)
-	counter = 1
-	if last and last[0].split("-")[0].isdigit():
-		counter = int(last[0].split("-")[0]) + 1
+	counter = cint(highest[0] if highest else 0) + 1
 	while frappe.db.exists("Batch", f"{counter}-{item_code}-{lot_no}"):
 		counter += 1
 
