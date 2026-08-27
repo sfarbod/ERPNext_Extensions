@@ -75,13 +75,29 @@ def _is_incoming(row) -> bool:
 	return bool(row.get("t_warehouse")) and not row.get("s_warehouse")
 
 
+def secondary_item_type_of(row) -> str | None:
+	"""ERPNext 16.33+ ``secondary_item_type``, with legacy ``type`` fallback.
+
+	Prefer the renamed field when set; otherwise use legacy ``type`` so pre-16.33
+	rows and unit stubs keep working. A non-empty non-scrap secondary type wins
+	over a stale legacy ``type`` value.
+	"""
+	if row is None:
+		return None
+	secondary = row.get("secondary_item_type")
+	if secondary:
+		return secondary
+	legacy = row.get("type")
+	return legacy or None
+
+
 def is_scrap_row(row) -> bool:
 	"""A rejected-output row, by explicit type or by the site's Z-code convention."""
 	if row.get("is_finished_item"):
 		return False
 	if not _is_incoming(row):
 		return False
-	if row.get("type") == SCRAP_ROW_TYPE:
+	if secondary_item_type_of(row) == SCRAP_ROW_TYPE:
 		return True
 	if row.get("is_legacy_scrap_item"):
 		return True

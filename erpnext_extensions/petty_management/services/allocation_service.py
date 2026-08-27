@@ -284,7 +284,16 @@ def stamp_opening_allocation_snapshot(row: Document, doc: Document, clr_petty: s
 
 
 def validate_pm_request_matches_clearance(row: Document, doc: Document, clr_petty: str) -> None:
-	req = get_pm_request_doc_for_read(row.pm_request)
+	# During workflow apply (esp. Finance Approve submit at docstatus 0→1), finance
+	# reviewers may lack PM Request read; allocation checks are system integrity.
+	if getattr(frappe.flags, "in_pm_workflow_apply", False):
+		from erpnext_extensions.petty_management.services.request_api_guard import (
+			get_pm_request_doc_internal,
+		)
+
+		req = get_pm_request_doc_internal(row.pm_request)
+	else:
+		req = get_pm_request_doc_for_read(row.pm_request)
 	req_petty = request_petty_cash_account(req)
 	if req.employee != doc.employee:
 		frappe.throw(

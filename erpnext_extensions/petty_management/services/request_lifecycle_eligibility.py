@@ -206,6 +206,21 @@ def get_pm_request_delete_blockers(doc: Document | str) -> list[str]:
 
 	blockers: list[str] = []
 
+	# v4.7.2: Pending* at docstatus 0 cannot be deleted
+	from erpnext_extensions.petty_management.services.draft_approval_guards import (
+		is_pending_approval_workflow,
+	)
+
+	if isinstance(doc, str):
+		_doc_for_pending = frappe.get_doc("PM Request", name)
+	else:
+		_doc_for_pending = doc
+	if is_pending_approval_workflow(_doc_for_pending):
+		blockers.append(
+			_("Cannot delete while pending approval. Use Return for Correction first.")
+		)
+		return blockers
+
 	if docstatus == 1:
 		blockers.append(
 			_("Submitted PM Request cannot be deleted. Cancel it first (when eligible), then delete.")

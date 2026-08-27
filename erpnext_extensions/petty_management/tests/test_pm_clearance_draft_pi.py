@@ -547,17 +547,20 @@ class TestPMClearanceDraftPI(unittest.TestCase):
 		reserved_after = flt(sum_prior_pm_request_allocations(req, exclude_clearance_name=None))
 		self.assertEqual(reserved_after, reserved_before)
 
-		# After PI submit, the same helper may approve (still uses finance readiness).
+		# After PI submit, Finance Approve via legitimate workflow (role queue user).
 		frappe.get_doc("Purchase Invoice", pi).submit()
 		pi_doc = frappe.get_doc("Purchase Invoice", pi)
 		cl = frappe.get_doc("PM Clearance", cl_name)
 		for row in cl.details:
 			row.outstanding_amount = flt(pi_doc.outstanding_amount)
 		cl.save(ignore_permissions=True)
+		frappe.set_user(self.finance)
 		approve_pm_clearance_for_reservation(cl_name)
+		frappe.set_user("Administrator")
 		cl = frappe.get_doc("PM Clearance", cl_name)
 		self.assertEqual(_wf_title(cl.workflow_state), "Approved")
 		self.assertEqual((cl.status or "").strip(), "Approved")
+		self.assertEqual(cint(cl.docstatus), 1)
 		self.assertGreater(
 			flt(sum_prior_pm_request_allocations(req, exclude_clearance_name=None)),
 			reserved_before,

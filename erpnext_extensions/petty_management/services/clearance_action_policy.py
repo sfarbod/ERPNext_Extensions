@@ -179,8 +179,9 @@ def get_pm_clearance_action_flags(pm_clearance: str | Document) -> dict:
 		and lifecycle not in (LIFECYCLE_SETTLED, LIFECYCLE_PENDING_JE)
 	)
 	can_open_je = bool(je and frappe.db.exists("Journal Entry", je))
+	# v4.7.2: Return/Reject available while Pending* at docstatus 0
 	can_reject = (
-		submitted_doc
+		cint(doc.docstatus) in (0, 1)
 		and not locked
 		and not has_active_settlement_je(doc)
 		and lifecycle
@@ -192,6 +193,7 @@ def get_pm_clearance_action_flags(pm_clearance: str | Document) -> dict:
 	has_reject_transition = (
 		lifecycle == LIFECYCLE_APPROVED
 		or "PM Reject" in wf_actions
+		or "PM Return for Correction" in wf_actions
 		or _pm_clearance_workflow_defines_reject(doc)
 	)
 	if can_reject and not has_reject_transition:

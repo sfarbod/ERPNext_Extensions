@@ -93,9 +93,16 @@ def get_pm_request_doc_internal_lock(pm_request: str | Document | None) -> Docum
 
 
 def get_pm_request_doc_for_read(pm_request: str | None) -> Document:
-	"""User/API: read permission + company user-permission rules."""
+	"""User/API: read permission + company user-permission rules.
+
+	v4.7.2: during PM workflow apply / patch, skip Desk permission so finance
+	reviewers without PM Request read can still complete Clearance Approve submit
+	(allocation integrity checks remain).
+	"""
 	name = _resolve_pm_request_name(pm_request)
 	doc = _load_pm_request_doc(name)
+	if getattr(frappe.flags, "in_pm_workflow_apply", False) or getattr(frappe.flags, "in_patch", False):
+		return doc
 	assert_pm_request_company_user_permission(doc)
 	doc.check_permission("read")
 	return doc

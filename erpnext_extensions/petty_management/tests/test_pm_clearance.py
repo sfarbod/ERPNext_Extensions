@@ -288,11 +288,35 @@ def _stamp_and_apply_clearance_approvals(cl_name: str, user: str | None = None) 
 
 
 def _approve_pm_clearance_for_reservation(cl_name: str) -> None:
-	from erpnext_extensions.petty_management.services.clearance_service import (
-		approve_pm_clearance_for_reservation,
-	)
+	"""Test/smoke fixture: reach Approved via legitimate workflow only (no raw docstatus).
 
-	approve_pm_clearance_for_reservation(cl_name)
+	Walks Draft → Pending Manager → Pending Finance Review → Finance Approve submit.
+	"""
+	from erpnext_extensions.petty_management.services.workflow_utils import apply_pm_workflow
+
+	doc = frappe.get_doc("PM Clearance", cl_name)
+	title = (
+		frappe.db.get_value("Workflow State", doc.workflow_state, "workflow_state_name")
+		or doc.workflow_state
+		or ""
+	)
+	if title == "Approved" and cint(doc.docstatus) == 1:
+		return
+
+	user = frappe.session.user
+	if title in ("", "Draft"):
+		# Ensure manager stamp exists for Submit → Pending Manager
+		if not (doc.manager_approver or "").strip():
+			frappe.db.set_value(
+				"PM Clearance", cl_name, "manager_approver", user, update_modified=False
+			)
+		apply_pm_workflow(frappe.get_doc("PM Clearance", cl_name), "PM Submit Finance Review")
+		doc.reload()
+
+	_stamp_and_apply_clearance_approvals(cl_name)
+	doc = frappe.get_doc("PM Clearance", cl_name)
+	if cint(doc.docstatus) != 1:
+		frappe.throw(f"Test fixture failed to submit clearance {cl_name} via Finance Approve")
 
 
 def _default_cost_center() -> str | None:

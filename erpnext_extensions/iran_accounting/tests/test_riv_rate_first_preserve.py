@@ -94,8 +94,8 @@ class TestRivRateGuardUnit(unittest.TestCase):
 	def test_fingerprints_match_allow_list(self):
 		assert_erpnext_riv_rate_patch_supported()
 		report = collect_fingerprint_report()
-		self.assertIn(report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32"})
-		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31"})
+		self.assertIn(report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33"})
+		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31", "16.32"})
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
 			self.assertEqual(got["signature"], expected["signature"], name)

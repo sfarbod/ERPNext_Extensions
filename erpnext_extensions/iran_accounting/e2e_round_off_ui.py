@@ -208,10 +208,22 @@ def ensure_round_off_ui_prerequisites(company: str | None = None) -> dict:
 		snapshot["mandatory_for_pl"] = cint(detail.mandatory_for_pl)
 		snapshot["mandatory_for_bs"] = cint(detail.mandatory_for_bs)
 		snapshot["default_dimension"] = detail.default_dimension
-		detail.mandatory_for_pl = 1
-		detail.mandatory_for_bs = 0
-		detail.default_dimension = None
+		# Prefer row-level update: full Accounting Dimension.save() re-validates
+		# every child link and can fail closed on stale/duplicate company rows in
+		# long-lived Desk sessions (Playwright). Do not change accounting policy.
+		frappe.db.set_value(
+			"Accounting Dimension Detail",
+			detail.name,
+			{
+				"mandatory_for_pl": 1,
+				"mandatory_for_bs": 0,
+				"default_dimension": None,
+			},
+			update_modified=False,
+		)
 	else:
+		if not frappe.db.exists("Company", company):
+			frappe.throw(_("Company {0} not found").format(frappe.bold(company)))
 		ad.append(
 			"dimension_defaults",
 			{
@@ -221,8 +233,8 @@ def ensure_round_off_ui_prerequisites(company: str | None = None) -> dict:
 				"default_dimension": None,
 			},
 		)
-	ad.flags.ignore_permissions = True
-	ad.save()
+		ad.flags.ignore_permissions = True
+		ad.save()
 	frappe.clear_cache()
 	frappe.db.commit()
 
@@ -277,18 +289,27 @@ def restore_round_off_ui_prerequisites(payload: str | dict) -> dict:
 	if ad_name and frappe.db.exists("Accounting Dimension", ad_name):
 		ad = frappe.get_doc("Accounting Dimension", ad_name)
 		for row in ad.dimension_defaults or []:
-			if row.company == company:
-				# Prefer snapshot; if AD was created for E2E, force non-mandatory.
-				if snap.get("created_ad"):
-					row.mandatory_for_pl = 0
-					row.mandatory_for_bs = 0
-					row.default_dimension = None
-				else:
-					row.mandatory_for_pl = cint(snap.get("mandatory_for_pl"))
-					row.mandatory_for_bs = cint(snap.get("mandatory_for_bs"))
-					row.default_dimension = snap.get("default_dimension")
-		ad.flags.ignore_permissions = True
-		ad.save()
+			if row.company != company:
+				continue
+			# Prefer snapshot; if AD was created for E2E, force non-mandatory.
+			if snap.get("created_ad"):
+				vals = {
+					"mandatory_for_pl": 0,
+					"mandatory_for_bs": 0,
+					"default_dimension": None,
+				}
+			else:
+				vals = {
+					"mandatory_for_pl": cint(snap.get("mandatory_for_pl")),
+					"mandatory_for_bs": cint(snap.get("mandatory_for_bs")),
+					"default_dimension": snap.get("default_dimension"),
+				}
+			frappe.db.set_value(
+				"Accounting Dimension Detail",
+				row.name,
+				vals,
+				update_modified=False,
+			)
 
 	frappe.db.sql(
 		"delete from `tabRound Off Dimension Default` where parent=%s and parenttype='Company'",

@@ -73,6 +73,11 @@ def derive_payment_status(doc: Document) -> None:
 
 
 def validate_request(doc: Document) -> None:
+	from erpnext_extensions.petty_management.services.draft_approval_guards import (
+		assert_pending_not_editable,
+	)
+
+	assert_pending_not_editable(doc)
 	reconcile_payment_entry_link(doc)
 	meta = frappe.get_meta("PM Request")
 	if meta.has_field("total_paid_amount"):
@@ -223,7 +228,14 @@ def validate_request_cancel(doc: Document) -> None:
 
 def request_ready_for_payment_entry(doc: Document) -> tuple[bool, str]:
 	"""Single source of truth for funding eligibility."""
-	if doc.docstatus != 1:
+	from erpnext_extensions.petty_management.services.business_status_service import (
+		REQUEST_PENDING_WORKFLOW_TITLES,
+	)
+
+	ws_early = workflow_state_title(doc)
+	if ws_early in REQUEST_PENDING_WORKFLOW_TITLES:
+		return False, _("Payment Entry is only available after finance approval.")
+	if cint(doc.docstatus) != 1:
 		return False, _("Submit the PM Request first.")
 	reconcile_payment_entry_link(doc)
 

@@ -40,11 +40,13 @@ class PMRequest(Document):
 		validate_request(self)
 
 	def before_submit(self):
+		# v4.7.2: Finance Approve submits (docstatus 0→1). Stamps were set on
+		# Draft → Pending Manager; re-validate / fill gaps without clearing.
 		from erpnext_extensions.petty_management.services.approver_stamp_service import (
-			stamp_pm_request_approvers,
+			ensure_pm_request_approver_stamps,
 		)
 
-		stamp_pm_request_approvers(self)
+		ensure_pm_request_approver_stamps(self)
 
 	def before_cancel(self):
 		validate_request_cancel(self)
@@ -62,6 +64,11 @@ class PMRequest(Document):
 
 	def on_trash(self):
 		"""v4.6.8 delete eligibility — independent from cancel rules."""
+		from erpnext_extensions.petty_management.services.draft_approval_guards import (
+			assert_pending_not_deletable,
+		)
+
+		assert_pending_not_deletable(self)
 		assert_pm_request_delete_allowed(self)
 
 

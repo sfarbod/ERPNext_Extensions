@@ -66,7 +66,8 @@ class TestPMRequestWorkflow(unittest.TestCase):
 		actions = [t.get("action") for t in get_transitions(req)]
 		self.assertIn("PM Submit for Approval", actions)
 		out = apply_pm_workflow(req, "PM Submit for Approval")
-		self.assertEqual(out.docstatus, 1)
+		# v4.7.2: Pending* remains draft until Finance Approve submits
+		self.assertEqual(out.docstatus, 0)
 		title = frappe.db.get_value("Workflow State", out.workflow_state, "workflow_state_name")
 		self.assertEqual(title, "Pending Manager Approval")
 

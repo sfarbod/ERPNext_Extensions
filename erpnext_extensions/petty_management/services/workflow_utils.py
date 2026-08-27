@@ -5,7 +5,6 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.model.workflow import apply_workflow as frappe_apply_workflow
 from frappe.model.workflow import get_transitions
 
 
@@ -81,7 +80,11 @@ def get_allowed_workflow_actions(doc: Document) -> list[dict]:
 
 
 def apply_pm_workflow(doc: Document | str, action: str) -> Document:
-	"""Apply workflow by **action label** (never by target state name)."""
+	"""Apply workflow by **action label** (never by target state name).
+
+	Routes through ``workflow_hooks.apply_workflow`` so Desk and tests share
+	v4.7.2 stamp / Return-for-Correction / auto-skip behaviour.
+	"""
 	if isinstance(doc, str):
 		doctype, name = doc.split(",", 1) if "," in doc else (None, doc)
 		if not doctype:
@@ -98,58 +101,12 @@ def apply_pm_workflow(doc: Document | str, action: str) -> Document:
 			),
 			title=_("Workflow"),
 		)
-	if doc.doctype == "PM Request":
-		from erpnext_extensions.petty_management.services.request_action_policy import (
-			validate_pm_request_workflow_action,
-		)
+	from erpnext_extensions.petty_management.workflow_hooks import apply_workflow as hooked_apply
 
-		validate_pm_request_workflow_action(doc, action)
-	elif doc.doctype == "PM Clearance":
-		from erpnext_extensions.petty_management.services.clearance_action_policy import (
-			validate_apply_workflow_action,
-		)
-
-		validate_apply_workflow_action(doc, action)
-	result = frappe_apply_workflow(doc, action)
-
-	if (
-		result.doctype == "PM Clearance"
-		and action in ("PM Finance Approve", "PM Approve", "PM Reject")
-	):
-		from erpnext_extensions.petty_management.services.clearance_finance_review import (
-			stamp_clearance_finance_approver_after_act,
-		)
-
-		stamp_clearance_finance_approver_after_act(result, action)
-
-	# After an Approve, loop consecutive same-user Approve hops (never Reject / PE / Close).
-	from erpnext_extensions.petty_management.services.auto_skip_approvals import (
-		PM_AUTO_SKIP_APPROVE_ACTIONS,
-		apply_consecutive_auto_approvals,
-		refresh_pm_assignment_rules,
-	)
-
-	if action in PM_AUTO_SKIP_APPROVE_ACTIONS and result.doctype in ("PM Request", "PM Clearance"):
-		refresh_pm_assignment_rules(result)
-		result = apply_consecutive_auto_approvals(result)
-
-	# Keep business status aligned (submitted saves may skip full validate).
-	if result.doctype == "PM Request":
-		from erpnext_extensions.petty_management.services.business_status_service import (
-			sync_pm_request_business_status,
-		)
-
-		result.reload()
-		status = sync_pm_request_business_status(result)
-		frappe.db.set_value(result.doctype, result.name, "status", status, update_modified=False)
-		result.status = status
-	elif result.doctype == "PM Clearance":
-		from erpnext_extensions.petty_management.services.business_status_service import (
-			sync_pm_clearance_business_status,
-		)
-
-		result.reload()
-		sync_pm_clearance_business_status(result, persist=True)
+	result = hooked_apply(doc.as_dict(), action)
+	if isinstance(result, dict):
+		return frappe.get_doc(result)
+	if hasattr(result, "reload"):
 		result.reload()
 	return result
 

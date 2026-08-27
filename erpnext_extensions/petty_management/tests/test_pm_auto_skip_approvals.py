@@ -191,6 +191,7 @@ class TestPMAutoSkipApprovals(unittest.TestCase):
 		apply_pm_workflow(frappe.get_doc("PM Request", name), "PM Manager Approve")
 		req = frappe.get_doc("PM Request", name)
 		self.assertEqual(_wf_title(req.workflow_state), "Finance Approved")
+		self.assertEqual(req.docstatus, 1)
 		self.assertEqual(req.status, "Waiting for Payment")
 		comments = _workflow_comment_states("PM Request", name)
 		for state in (
@@ -229,7 +230,7 @@ class TestPMAutoSkipApprovals(unittest.TestCase):
 		frappe.set_user(self.mgr)
 		actions = _workflow_actions_for("PM Request", name)
 		self.assertIn("PM Manager Approve", actions)
-		self.assertIn("PM Reject", actions)
+		self.assertIn("PM Return for Correction", actions)
 		frappe.set_user(self.ceo)
 		self.assertNotIn("PM Manager Approve", _workflow_actions_for("PM Request", name))
 
@@ -245,12 +246,16 @@ class TestPMAutoSkipApprovals(unittest.TestCase):
 		frappe.set_user(self.fin)
 		self.assertIn("PM Finance Approve", _workflow_actions_for("PM Request", name))
 
-	def test_reject_never_auto_skipped(self):
+	def test_return_for_correction_never_auto_skipped(self):
+		"""v4.7.2: Return must never auto-skip; lands on Draft same name."""
 		name = self._new_pending_manager(self.mgr_ceo, self.mgr_ceo, self.fin)
 		frappe.set_user(self.mgr_ceo)
-		apply_pm_workflow(frappe.get_doc("PM Request", name), "PM Reject")
+		apply_pm_workflow(frappe.get_doc("PM Request", name), "PM Return for Correction")
 		req = frappe.get_doc("PM Request", name)
-		self.assertEqual(_wf_title(req.workflow_state), "Rejected")
+		self.assertEqual(req.name, name)
+		self.assertEqual(_wf_title(req.workflow_state), "Draft")
+		self.assertEqual(req.docstatus, 0)
+		self.assertFalse((req.manager_approver or "").strip())
 
 	def test_clearance_manager_equals_finance_does_not_auto_skip_finance_queue(self):
 		"""v4.5.3: Clearance finance review uses role queue — no auto-skip to Approved."""

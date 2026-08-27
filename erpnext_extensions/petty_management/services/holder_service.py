@@ -354,20 +354,43 @@ def get_holder_opening_balance_stats(
 def get_holder_pending_clearance_amount(holder: str) -> float:
 	if not frappe.db.has_table("PM Clearance"):
 		return 0.0
+	# v4.7.2: include docstatus 0 Pending* clearances (approval not yet submitted)
 	return flt(
 		frappe.db.sql(
 			"""
 			select coalesce(sum(cl.total_expense_amount), 0)
 			from `tabPM Clearance` cl
 			where cl.holder = %s
-				and cl.docstatus = 1
-				and ifnull(cl.status, '') not in ('Cancelled', 'Rejected')
+				and ifnull(cl.status, '') not in ('Cancelled', 'Rejected', 'Draft')
 				and (
-					ifnull(cl.journal_entry, '') = ''
-					or ifnull((
-						select je.docstatus from `tabJournal Entry` je
-						where je.name = cl.journal_entry limit 1
-					), 0) != 1
+					(
+						cl.docstatus = 1
+						and (
+							ifnull(cl.journal_entry, '') = ''
+							or ifnull((
+								select je.docstatus from `tabJournal Entry` je
+								where je.name = cl.journal_entry limit 1
+							), 0) != 1
+						)
+					)
+					or (
+						cl.docstatus = 0
+						and (
+							ifnull(cl.status, '') in (
+								'Pending Approval',
+								'Pending Manager Approval',
+								'Pending Finance Review'
+							)
+							or cl.workflow_state in (
+								select name from `tabWorkflow State`
+								where workflow_state_name in (
+									'Pending Manager Approval',
+									'Pending Finance Review',
+									'Pending Approval'
+								)
+							)
+						)
+					)
 				)
 			""",
 			holder,

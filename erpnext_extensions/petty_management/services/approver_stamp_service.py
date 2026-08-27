@@ -120,3 +120,53 @@ def stamp_pm_clearance_approvers(doc: Document) -> None:
 	doc.manager_approver = manager
 	doc.finance_approver = None
 	ensure_clearance_finance_review_role_configured()
+
+
+
+def ensure_pm_request_approver_stamps(doc: Document) -> None:
+	"""On Finance Approve submit: keep existing stamps; fill only if missing."""
+	has_all = bool(
+		(getattr(doc, "manager_approver", None) or "").strip()
+		and (getattr(doc, "ceo_approver", None) or "").strip()
+		and (getattr(doc, "finance_approver", None) or "").strip()
+	)
+	if has_all:
+		return
+	# Preserve any already-stamped fields while filling gaps
+	prev_manager = (getattr(doc, "manager_approver", None) or "").strip() or None
+	prev_ceo = (getattr(doc, "ceo_approver", None) or "").strip() or None
+	prev_finance = (getattr(doc, "finance_approver", None) or "").strip() or None
+	stamp_pm_request_approvers(doc)
+	if prev_manager:
+		doc.manager_approver = prev_manager
+	if prev_ceo:
+		doc.ceo_approver = prev_ceo
+	if prev_finance:
+		doc.finance_approver = prev_finance
+
+
+def ensure_pm_clearance_manager_stamp(doc: Document) -> None:
+	"""On Clearance Approve submit: require manager stamp; never clear finance_approver."""
+	if (getattr(doc, "manager_approver", None) or "").strip():
+		from erpnext_extensions.petty_management.services.clearance_finance_review import (
+			ensure_clearance_finance_review_role_configured,
+		)
+
+		ensure_clearance_finance_review_role_configured()
+		return
+	# Manager missing — resolve without wiping finance_approver
+	manager = resolve_manager_approver(getattr(doc, "employee", None))
+	if not manager and _require_named_manager():
+		frappe.throw(
+			_(
+				"Cannot submit: Expense Approver is not set for Employee {0}. "
+				"Set Employee Expense Approver or Department Expense Approvers."
+			).format(doc.employee),
+			title=_("Approver required"),
+		)
+	doc.manager_approver = manager
+	from erpnext_extensions.petty_management.services.clearance_finance_review import (
+		ensure_clearance_finance_review_role_configured,
+	)
+
+	ensure_clearance_finance_review_role_configured()

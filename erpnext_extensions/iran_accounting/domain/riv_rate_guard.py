@@ -28,12 +28,13 @@ from frappe.utils import flt
 # Re-validate and extend this table before enabling on a new ERPNext build.
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32"})
-_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31"})
+_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33"})
+_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32"})
 
 # Fingerprints measured on ERPNext 16.30.0 / Frappe 16.29.0 (also valid for
-# 16.29.x / 16.31.x / 16.32.x when the method bodies are identical —
-# revalidated on ERPNext 16.32.0 / Frappe 16.31.0).
+# 16.29.x / 16.31.x / 16.32.x / 16.33.x when the method bodies are identical —
+# revalidated on ERPNext 16.32.0 / Frappe 16.31.0 and ERPNext 16.33.0 /
+# Frappe 16.32.0).
 _FN_FINGERPRINTS = {
 	"update_rate_on_stock_entry": {
 		"signature": "(self, sle, outgoing_rate)",

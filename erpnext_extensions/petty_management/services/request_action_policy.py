@@ -74,7 +74,18 @@ def build_pm_request_business_status_presentation(doc: Document) -> dict:
 			"ui_messages": [str(MSG_CLOSED_FROZEN)],
 		}
 
+	from erpnext_extensions.petty_management.services.business_status_service import (
+		REQUEST_PENDING_WORKFLOW_TITLES,
+	)
+
 	if cint(getattr(doc, "docstatus", 0)) != 1:
+		# v4.7.2: Pending* stays draft — do not nag "Submit first"
+		if workflow_state_title(doc) in REQUEST_PENDING_WORKFLOW_TITLES:
+			return {
+				"business_status_headline": "",
+				"business_status_indicator": "orange",
+				"ui_messages": [],
+			}
 		return {
 			"business_status_headline": "",
 			"business_status_indicator": "orange",

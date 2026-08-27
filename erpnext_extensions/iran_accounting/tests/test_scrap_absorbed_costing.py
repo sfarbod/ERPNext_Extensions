@@ -61,8 +61,8 @@ def _consumed(item_code, qty, rate):
 	)
 
 
-def _output(item_code, qty, is_fg=0, row_type=None, rate=0.0):
-	return _Row(
+def _output(item_code, qty, is_fg=0, row_type=None, rate=0.0, secondary_item_type=None):
+	fields = dict(
 		item_code=item_code,
 		qty=qty,
 		transfer_qty=qty,
@@ -72,8 +72,14 @@ def _output(item_code, qty, is_fg=0, row_type=None, rate=0.0):
 		s_warehouse=None,
 		t_warehouse="Quarantine",
 		is_finished_item=is_fg,
-		type=row_type,
 	)
+	# Legacy pre-16.33 field (tests that only pass row_type keep old shape).
+	if row_type is not None:
+		fields["type"] = row_type
+	# ERPNext 16.33 renamed field.
+	if secondary_item_type is not None:
+		fields["secondary_item_type"] = secondary_item_type
+	return _Row(**fields)
 
 
 @contextmanager
@@ -532,6 +538,67 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 			allocate_scrap_absorbed_cost(doc)
 		after = [(r.item_code, flt(r.qty), flt(r.transfer_qty)) for r in doc.items]
 		self.assertEqual(before, after)
+
+
+class TestScrapSecondaryItemTypeCompat(unittest.TestCase):
+	"""ERPNext 16.33 renamed Stock Entry Detail.type → secondary_item_type."""
+
+	def test_secondary_item_type_scrap_detected(self):
+		row = _output("30100291", 3, secondary_item_type="Scrap")
+		with _irr():
+			self.assertTrue(is_scrap_row(row))
+
+	def test_legacy_type_scrap_still_detected(self):
+		row = _output("30100291", 3, row_type="Scrap")
+		with _irr():
+			self.assertTrue(is_scrap_row(row))
+
+	def test_both_fields_scrap_detected(self):
+		row = _output("30100291", 3, row_type="Scrap", secondary_item_type="Scrap")
+		with _irr():
+			self.assertTrue(is_scrap_row(row))
+
+	def test_secondary_non_scrap_wins_over_stale_legacy_type(self):
+		row = _output("BY-1", 5, row_type="Scrap", secondary_item_type="By-Product", rate=1000)
+		with _irr():
+			self.assertFalse(is_scrap_row(row))
+
+	def test_empty_secondary_falls_back_to_legacy_type(self):
+		row = _output("30100291", 3, row_type="Scrap", secondary_item_type="")
+		with _irr():
+			self.assertTrue(is_scrap_row(row))
+
+	def test_z_convention_without_either_type_field(self):
+		row = _output("Z13100023", 3)
+		with _irr(main_item_codes={"Z13100023": "13100023"}):
+			self.assertTrue(is_scrap_row(row))
+
+	def test_normal_secondary_item_not_scrap(self):
+		row = _output("BY-1", 5, secondary_item_type="By-Product", rate=1000)
+		with _irr():
+			self.assertFalse(is_scrap_row(row))
+
+	def test_manufacture_absorbed_cost_with_secondary_item_type_scrap(self):
+		"""Same approved zero/absorbed treatment under ERPNext 16.33 field name."""
+		doc = _Doc(
+			items=[
+				_consumed("13100023", 100, 346357),
+				_output("30100033", 95, is_fg=1),
+				_output("30100033", 3, secondary_item_type="Scrap"),
+			]
+		)
+		with _irr():
+			permit_scrap_zero_valuation(doc)
+			self.assertEqual(doc.items[2].allow_zero_valuation_rate, 1)
+			self.assertTrue(allocate_scrap_absorbed_cost(doc))
+
+		scrap = doc.items[2]
+		fg = doc.items[1]
+		self.assertEqual(scrap.allow_zero_valuation_rate, 0)
+		self.assertGreater(flt(scrap.basic_rate), 0)
+		self.assertGreater(flt(fg.basic_rate), 0)
+		pool = 34635700
+		self.assertEqual(flt(fg.amount) + flt(scrap.amount), pool)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ def _rebuild_pm_request_workflow() -> None:
 	_ensure_action("PM Submit for Approval")
 	_ensure_action("PM Approve")
 	_ensure_action("PM Reject")
+	_ensure_action("PM Return for Correction")
 	_ensure_action("PM Manager Approve")
 	_ensure_action("PM CEO Approve")
 	_ensure_action("PM Finance Approve")
@@ -61,9 +62,9 @@ def _rebuild_pm_request_workflow() -> None:
 
 	for state, doc_status in (
 		("Draft", "0"),
-		("Pending Manager Approval", "1"),
-		("Pending CEO Approval", "1"),
-		("Pending Finance Approval", "1"),
+		("Pending Manager Approval", "0"),
+		("Pending CEO Approval", "0"),
+		("Pending Finance Approval", "0"),
 		("Finance Approved", "1"),
 		("Rejected", "1"),
 	):
@@ -108,10 +109,11 @@ def _rebuild_pm_request_workflow() -> None:
 		"doc.manager_approver == frappe.session.user",
 		True,
 	)
+	# v4.7.2: Pending* → Draft via Return (no Cancel/Amend); Reject only post-submit
 	_add(
 		"Pending Manager Approval",
-		"PM Reject",
-		"Rejected",
+		"PM Return for Correction",
+		"Draft",
 		"Petty Management User",
 		"doc.manager_approver == frappe.session.user",
 		True,
@@ -126,8 +128,8 @@ def _rebuild_pm_request_workflow() -> None:
 	)
 	_add(
 		"Pending CEO Approval",
-		"PM Reject",
-		"Rejected",
+		"PM Return for Correction",
+		"Draft",
 		"Petty Management User",
 		"doc.ceo_approver == frappe.session.user",
 		True,
@@ -142,8 +144,8 @@ def _rebuild_pm_request_workflow() -> None:
 	)
 	_add(
 		"Pending Finance Approval",
-		"PM Reject",
-		"Rejected",
+		"PM Return for Correction",
+		"Draft",
 		"Petty Management Accountant",
 		"doc.finance_approver == frappe.session.user",
 		True,
@@ -181,6 +183,7 @@ def _rebuild_pm_clearance_workflow() -> None:
 	_ensure_action("PM Finance Approve")
 	_ensure_action("PM Approve")
 	_ensure_action("PM Reject")
+	_ensure_action("PM Return for Correction")
 
 	from erpnext_extensions.petty_management.services.clearance_finance_review import (
 		DEFAULT_CLEARANCE_FINANCE_REVIEW_ROLE,
@@ -204,8 +207,8 @@ def _rebuild_pm_clearance_workflow() -> None:
 
 	for state, doc_status, send_email in (
 		("Draft", "0", 1),
-		("Pending Manager Approval", "1", 1),
-		("Pending Finance Review", "1", 0),
+		("Pending Manager Approval", "0", 1),
+		("Pending Finance Review", "0", 0),
 		("Approved", "1", 1),
 		("Rejected", "1", 1),
 	):
@@ -241,12 +244,13 @@ def _rebuild_pm_clearance_workflow() -> None:
 			"condition": "doc.manager_approver == frappe.session.user",
 		},
 	)
+	# v4.7.2: Pending* → Draft via Return (replace pre-submit Reject)
 	w.append(
 		"transitions",
 		{
 			"state": _wf("Pending Manager Approval"),
-			"action": "PM Reject",
-			"next_state": _wf("Rejected"),
+			"action": "PM Return for Correction",
+			"next_state": _wf("Draft"),
 			"allowed": "Petty Management User",
 			"allow_self_approval": 1,
 			"condition": "doc.manager_approver == frappe.session.user",
@@ -277,8 +281,8 @@ def _rebuild_pm_clearance_workflow() -> None:
 		"transitions",
 		{
 			"state": _wf("Pending Finance Review"),
-			"action": "PM Reject",
-			"next_state": _wf("Rejected"),
+			"action": "PM Return for Correction",
+			"next_state": _wf("Draft"),
 			"allowed": review_role,
 			"allow_self_approval": 1,
 		},
@@ -468,7 +472,7 @@ def _seed_assignment_rules() -> list[str]:
 			"manager_approver",
 			30,
 			"PM Request {{ name }} awaiting manager approval",
-			f'workflow_state in ("{req_finance_approved}", "{_wf("Rejected")}")',
+			f'workflow_state in ("{req_finance_approved}", "{_wf("Rejected")}", "{_wf("Draft")}")',
 		),
 		(
 			"PM Request CEO Approval",
@@ -478,7 +482,7 @@ def _seed_assignment_rules() -> list[str]:
 			"ceo_approver",
 			20,
 			"PM Request {{ name }} awaiting CEO approval",
-			f'workflow_state in ("{req_finance_approved}", "{_wf("Rejected")}")',
+			f'workflow_state in ("{req_finance_approved}", "{_wf("Rejected")}", "{_wf("Draft")}")',
 		),
 		(
 			"PM Request Finance Approval",
@@ -488,7 +492,7 @@ def _seed_assignment_rules() -> list[str]:
 			"finance_approver",
 			10,
 			"PM Request {{ name }} awaiting finance approval",
-			f'workflow_state in ("{req_finance_approved}", "{_wf("Rejected")}")',
+			f'workflow_state in ("{req_finance_approved}", "{_wf("Rejected")}", "{_wf("Draft")}")',
 		),
 		(
 			"PM Clearance Manager Approval",
@@ -498,7 +502,7 @@ def _seed_assignment_rules() -> list[str]:
 			"manager_approver",
 			20,
 			"PM Clearance {{ name }} awaiting manager approval",
-			f'workflow_state in ("{clr_appr}", "{_wf("Rejected")}")',
+			f'workflow_state in ("{clr_appr}", "{_wf("Rejected")}", "{_wf("Draft")}")',
 		),
 		(
 			"PM Clearance Finance Review",
@@ -508,7 +512,7 @@ def _seed_assignment_rules() -> list[str]:
 			"finance_approver",
 			10,
 			"PM Clearance {{ name }} awaiting finance review",
-			f'workflow_state in ("{clr_appr}", "{_wf("Rejected")}")',
+			f'workflow_state in ("{clr_appr}", "{_wf("Rejected")}", "{_wf("Draft")}")',
 		),
 	]
 	for args in rules:
@@ -540,7 +544,7 @@ def _bulk_apply_pending_assignments() -> dict:
 	]
 	names = frappe.get_all(
 		"PM Request",
-		filters={"workflow_state": ("in", req_pending), "docstatus": 1},
+		filters={"workflow_state": ("in", req_pending), "docstatus": ("in", (0, 1))},
 		pluck="name",
 	)
 	for name in names:
@@ -553,7 +557,7 @@ def _bulk_apply_pending_assignments() -> dict:
 	clr_pending = [_wf("Pending Manager Approval"), _wf("Pending Finance Review")]
 	names = frappe.get_all(
 		"PM Clearance",
-		filters={"workflow_state": ("in", clr_pending), "docstatus": 1},
+		filters={"workflow_state": ("in", clr_pending), "docstatus": ("in", (0, 1))},
 		pluck="name",
 	)
 	for name in names:

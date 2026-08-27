@@ -25,13 +25,23 @@ def get_pm_holder_name(employee: str, company: str) -> str | None:
 
 
 def employee_has_draft_pm_clearance(employee: str, company: str) -> bool:
+	"""True only for true Draft clearances (not Pending* approval at docstatus 0)."""
 	if not frappe.db.has_table("PM Clearance"):
 		return False
 	r = frappe.db.sql(
 		"""
 		select name from `tabPM Clearance`
 		where employee=%s and company=%s and docstatus=0
+			and ifnull(status, '') in ('', 'Draft')
 			and ifnull(status, '') != 'Cancelled'
+			and (
+				ifnull(workflow_state, '') = ''
+				or workflow_state = 'Draft'
+				or workflow_state in (
+					select name from `tabWorkflow State`
+					where workflow_state_name = 'Draft'
+				)
+			)
 		limit 1
 		""",
 		(employee, company),
