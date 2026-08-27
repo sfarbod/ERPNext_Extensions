@@ -49,10 +49,18 @@ def req(method, path, params=None, body=None):
 		)
 	data = json.dumps(body).encode() if body is not None else None
 	try:
-		with urllib.request.urlopen(
-			urllib.request.Request(url, data=data, headers=HDR, method=method), timeout=300
-		) as r:
-			return json.loads(r.read())
+		for attempt in range(3):
+			try:
+				with urllib.request.urlopen(
+					urllib.request.Request(url, data=data, headers=HDR, method=method), timeout=300
+				) as r:
+					return json.loads(r.read())
+			except urllib.error.HTTPError:
+				raise
+			except (urllib.error.URLError, OSError):  # transient TLS/network hiccup
+				if attempt == 2:
+					raise
+				time.sleep(2)
 	except urllib.error.HTTPError as e:
 		txt = e.read().decode(errors="replace")
 		try:
@@ -197,18 +205,20 @@ def main():
 
 	wo = args.work_order or make_work_order(args.bom)["name"]
 	fg_item = get_doc("Work Order", wo)["production_item"]
-	fg_batch = insert(
-		{
-			"doctype": "Batch",
-			"item": fg_item,
-			"custom_batch_no": f"DPLTEST-{wo[-5:]}",
-			"batch_id": f"DPL-{fg_item}-{wo[-5:]}",
-			"manufacturing_date": DAYS[0],
-			"expiry_date": "2028-09-01",
-			"reference_doctype": "Work Order",
-			"reference_name": wo,
-		}
-	)["name"]
+	fg_batch = f"DPL-{fg_item}-{wo[-5:]}"
+	if not get_list("Batch", ["name"], [["name", "=", fg_batch]]):
+		insert(
+			{
+				"doctype": "Batch",
+				"item": fg_item,
+				"custom_batch_no": f"DPLTEST-{wo[-5:]}",
+				"batch_id": fg_batch,
+				"manufacturing_date": DAYS[0],
+				"expiry_date": "2028-09-01",
+				"reference_doctype": "Work Order",
+				"reference_name": wo,
+			}
+		)
 	print("FG batch", fg_batch)
 
 	print("\n== Failure cases first (nothing may be created) ==")

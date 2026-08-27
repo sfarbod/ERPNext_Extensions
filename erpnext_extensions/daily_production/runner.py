@@ -332,17 +332,23 @@ def _create_card(wo, op_row, qty, pending):
 
 def _transfer_materials(card, wo, qty, log):
 	"""Material Transfer for Manufacture from the Job Card (same mapper as the desk button),
-	for exactly this cycle, with batches picked automatically."""
+	for exactly this cycle, with batches picked automatically.
+
+	Source warehouse: the card's item source first (core ``get_required_items`` stamps the
+	operation's source warehouse on every row), then the Work Order item's (BOM) source —
+	packaging materials live in another store than the formulation chemicals. Fails, naming
+	both warehouses, when neither holds enough."""
 	se = make_transfer_from_job_card(card.name)
 	se.naming_series = None  # the mapper copies the Job Card's series; let Stock Entry use its own
 	se.fg_completed_qty = qty
 	rows = list(se.items)
 	semi_finished = {r.finished_good for r in wo.operations if r.finished_good}
+	bom_source = {d.item_code: d.source_warehouse for d in wo.required_items if d.source_warehouse}
 	se.set("items", [])
 	for row in rows:
 		row.department = row.department or log.department
 		row.cost_center = row.cost_center or log.cost_center
-		if row.serial_and_batch_bundle or row.batch_no or not _item_has_batch(row.item_code):
+		if row.serial_and_batch_bundle or row.batch_no:
 			# previous-operation output already carries the lots this Work Order produced
 			se.append("items", row)
 			continue
@@ -353,6 +359,13 @@ def _transfer_materials(card, wo, qty, log):
 					row.item_code, wo.name, row.s_warehouse
 				)
 			)
+		warehouse, picked = _pick_source(
+			row.item_code, [row.s_warehouse, bom_source.get(row.item_code)], flt(row.qty)
+		)
+		row.s_warehouse = warehouse
+		if not picked:  # item is not batch tracked
+			se.append("items", row)
+			continue
 		base = row.as_dict()
 		for key in (
 			"name",
@@ -367,7 +380,7 @@ def _transfer_materials(card, wo, qty, log):
 			"modified_by",
 		):
 			base.pop(key, None)
-		for batch_no, batch_qty in _fefo_batches(row.item_code, row.s_warehouse, flt(row.qty)):
+		for batch_no, batch_qty in picked:
 			part = dict(base)
 			part.update(
 				qty=batch_qty,
@@ -382,14 +395,43 @@ def _transfer_materials(card, wo, qty, log):
 	return se.name
 
 
+def _pick_source(item_code, candidates, qty):
+	"""First candidate warehouse that can supply ``qty`` of ``item_code``; returns
+	``(warehouse, batches)`` — batches empty for items that are not batch tracked."""
+	seen, warehouses = set(), []
+	for wh in candidates:
+		if wh and wh not in seen:
+			seen.add(wh)
+			warehouses.append(wh)
+	batched = _item_has_batch(item_code)
+	shortfalls = []
+	for wh in warehouses:
+		if batched:
+			picked, remaining = _fefo_batches(item_code, wh, qty)
+			if remaining <= 1e-9:
+				return wh, picked
+			shortfalls.append((wh, qty - remaining))
+		else:
+			available = flt(
+				frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": wh}, "actual_qty")
+			)
+			if available + 1e-9 >= qty:
+				return wh, []
+			shortfalls.append((wh, available))
+	frappe.throw(
+		_("Not enough stock of {0} for this cycle: need {1}; available {2}.").format(
+			item_code, _num(qty), ", ".join(f"{wh}: {_num(found)}" for wh, found in shortfalls) or "-"
+		)
+	)
+
+
 def _item_has_batch(item_code):
 	return cint(frappe.get_cached_value("Item", item_code, "has_batch_no"))
 
 
 def _fefo_batches(item_code, warehouse, qty):
-	"""Allocate ``qty`` of a batch-tracked raw material from ``warehouse`` — earliest expiry
-	first (Stock Settings: pick batches based on expiry). Fails on shortfall instead of
-	leaving the operator with a negative-stock error at submit."""
+	"""Allocate ``qty`` of a batch-tracked material from ``warehouse`` — earliest expiry
+	first (Stock Settings: pick batches based on expiry). Returns ``(picked, remaining)``."""
 	rows = [r for r in get_batch_qty(item_code=item_code, warehouse=warehouse) or [] if flt(r.get("qty")) > 0]
 	expiry = {
 		r.name: r.expiry_date
@@ -407,13 +449,7 @@ def _fefo_batches(item_code, warehouse, qty):
 		take = min(flt(r["qty"]), remaining)
 		picked.append((r["batch_no"], take))
 		remaining -= take
-	if remaining > 1e-9:
-		frappe.throw(
-			_("Not enough batched stock of {0} in {1}: need {2}, found {3}.").format(
-				item_code, warehouse, _num(qty), _num(qty - remaining)
-			)
-		)
-	return picked
+	return picked, remaining
 
 
 def _log_time(card, employee, from_time, to_time, qty):
