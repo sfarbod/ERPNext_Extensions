@@ -6,3 +6,4 @@ Facility Management
 Extentionhrms
 Consignment Stock
 Asset Usage Depreciation
+Daily Production

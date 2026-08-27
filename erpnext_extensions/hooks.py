@@ -230,13 +230,13 @@ has_permission = {
 # ``extentionhrms/payroll_entry_override.py``.
 override_doctype_class = {
 	"Payroll Entry": (
-		"erpnext_extensions.extentionhrms.payroll_entry_override." "PayrollEntryWithAccountingDimensions"
+		"erpnext_extensions.extentionhrms.payroll_entry_override.PayrollEntryWithAccountingDimensions"
 	),
 	# Hourly leave (مرخصی ساعتی): converts a single-day time range into a
 	# fractional ``total_leave_days`` so it deducts from the same entitlement
 	# balance. See ``extentionhrms/leave_application_override.py``.
 	"Leave Application": (
-		"erpnext_extensions.extentionhrms.leave_application_override." "LeaveApplicationWithHourlyLeave"
+		"erpnext_extensions.extentionhrms.leave_application_override.LeaveApplicationWithHourlyLeave"
 	),
 }
 
@@ -249,6 +249,13 @@ override_doctype_class = {
 # Hook on document methods and events
 
 doc_events = {
+	# Track-Semi-Finished-Goods guards (daily_production/job_card_hooks.py):
+	#  * after_insert — same semi_fg_bom on every card so per-lot operating cost is not double-counted
+	#  * validate     — refuse a Pending Qty on a completed cycle (locks the operation's remainder)
+	"Job Card": {
+		"after_insert": "erpnext_extensions.daily_production.job_card_hooks.after_insert",
+		"validate": "erpnext_extensions.daily_production.job_card_hooks.validate",
+	},
 	"GL Entry": {
 		"after_insert": "erpnext_extensions.iran_accounting.account_explorer.cache_revision.bump_accounting_revision",
 		"on_update": "erpnext_extensions.iran_accounting.account_explorer.cache_revision.bump_accounting_revision",
