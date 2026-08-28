@@ -12,7 +12,6 @@ erpnext_extensions.patches.pre_model_sync.set_stock_reconciliation_amount_decima
 erpnext_extensions.patches.pre_model_sync.set_petty_management_decimal_metadata_v2
 erpnext_extensions.patches.pre_model_sync.set_payment_entry_amount_decimal_metadata
 
-erpnext_extensions.patches.pre_model_sync.add_daily_production_module_def
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
@@ -105,5 +104,5 @@ erpnext_extensions.patches.post_model_sync.provision_asset_request_accounting_di
 erpnext_extensions.patches.post_model_sync.disable_asset_request_auto_fulfillment_v455
 
 erpnext_extensions.patches.post_model_sync.release_orphaned_pdc_cheque_leaf_reservations_v471
-erpnext_extensions.patches.post_model_sync.add_daily_production_custom_fields
 erpnext_extensions.patches.post_model_sync.migrate_pm_draft_approval_v472
+erpnext_extensions.patches.post_model_sync.remove_daily_production_log

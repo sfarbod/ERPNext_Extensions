@@ -24,7 +24,6 @@ def apply_monkey_patches():
 		_patch_stock_controller()
 		_patch_stock_entry()
 		_patch_stock_entry_mr_alternative()
-		_patch_stock_entry_job_card_process_loss()
 		_patch_general_ledger()
 		_patch_accounts_controller()
 		_patch_stock_ledger_report()
@@ -73,12 +72,6 @@ def _patch_buying_regional_valuation_rate():
 
 def _patch_stock_entry_mr_alternative():
 	from erpnext_extensions.stock_extensions.mr_alternative_item import apply_patch
-
-	apply_patch()
-
-
-def _patch_stock_entry_job_card_process_loss():
-	from erpnext_extensions.stock_extensions.job_card_process_loss import apply_patch
 
 	apply_patch()
 

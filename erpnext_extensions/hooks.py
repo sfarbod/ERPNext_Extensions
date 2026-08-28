@@ -249,12 +249,12 @@ override_doctype_class = {
 # Hook on document methods and events
 
 doc_events = {
-	# Track-Semi-Finished-Goods guards (daily_production/job_card_hooks.py):
+	# Track-Semi-Finished-Goods guards (stock_extensions/job_card_semi_fg.py), still needed on 16.33:
 	#  * after_insert — same semi_fg_bom on every card so per-lot operating cost is not double-counted
 	#  * validate     — refuse a Pending Qty on a completed cycle (locks the operation's remainder)
 	"Job Card": {
-		"after_insert": "erpnext_extensions.daily_production.job_card_hooks.after_insert",
-		"validate": "erpnext_extensions.daily_production.job_card_hooks.validate",
+		"after_insert": "erpnext_extensions.stock_extensions.job_card_semi_fg.after_insert",
+		"validate": "erpnext_extensions.stock_extensions.job_card_semi_fg.validate",
 	},
 	"GL Entry": {
 		"after_insert": "erpnext_extensions.iran_accounting.account_explorer.cache_revision.bump_accounting_revision",
