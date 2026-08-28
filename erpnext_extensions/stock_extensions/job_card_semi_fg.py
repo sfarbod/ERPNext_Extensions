@@ -1,6 +1,18 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 # License: MIT
-"""Job Card guards for the Track-Semi-Finished-Goods flow (see hooks.doc_events)."""
+"""Job Card guards for the v16 Track-Semi-Finished-Goods flow (see hooks.doc_events).
+
+Both were checked against ERPNext 16.33.0 and are still needed there:
+
+* ``after_insert`` — ``create_job_card`` sets ``semi_fg_bom`` from the Work Order Operation
+  row's ``bom_no`` (empty on this site) at Work Order submit, but from the parent BOM in the
+  *Create Job Card* dialog. The Job Card Manufacture entry carries ``bom_no = semi_fg_bom`` and
+  ``get_consumed_operating_cost`` filters on ``bom_no``, so lots posted from the two kinds of
+  card do not see each other and the operating cost is allocated twice.
+* ``validate`` — ``validate_job_card_qty`` still sums the raw ``for_quantity`` of every card of
+  the operation, so a Pending Qty left on a completed card is counted as claimed quantity and
+  the remainder of the operation can no longer get a card.
+"""
 
 from __future__ import annotations
 
