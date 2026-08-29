@@ -138,6 +138,26 @@ def _has_return_for_correction(workflow_name: str) -> bool:
 	)
 
 
+def _has_return_from_pending_states(workflow_name: str, pending_titles: tuple[str, ...]) -> bool:
+	"""True when each Pending* state has a Return-for-Correction transition (v4.8.3)."""
+	if not frappe.db.exists("Workflow", workflow_name):
+		return False
+	for title in pending_titles:
+		state_link = _wf(title)
+		if not state_link:
+			return False
+		if not frappe.db.exists(
+			"Workflow Transition",
+			{
+				"parent": workflow_name,
+				"state": state_link,
+				"action": "PM Return for Correction",
+			},
+		):
+			return False
+	return True
+
+
 def is_draft_approval_workflow_applied() -> bool:
 	"""True when PM workflows already encode v4.7.2 draft-approval semantics.
 
@@ -152,9 +172,9 @@ def is_draft_approval_workflow_applied() -> bool:
 		return False
 	if any(s != 0 for s in clr_statuses):
 		return False
-	if not _has_return_for_correction("PM Request Workflow"):
+	if not _has_return_from_pending_states("PM Request Workflow", REQUEST_PENDING_TITLES):
 		return False
-	if not _has_return_for_correction("PM Clearance Workflow"):
+	if not _has_return_from_pending_states("PM Clearance Workflow", CLEARANCE_PENDING_TITLES):
 		return False
 	return True
 

@@ -13,6 +13,8 @@ from erpnext_extensions.petty_management.services.business_status_service import
 	REQUEST_PENDING_WORKFLOW_TITLES,
 )
 
+PM_CLEARANCE_PENDING_EDITABLE_FIELDS = frozenset({"remark"})
+
 
 def _workflow_title(doc: Document) -> str:
 	ws = (getattr(doc, "workflow_state", None) or "").strip()
@@ -38,6 +40,43 @@ def _in_workflow_apply() -> bool:
 	)
 
 
+def _child_tables_unchanged(doc: Document) -> bool:
+	for df in doc.meta.get_table_fields():
+		if doc.has_value_changed(df.fieldname):
+			return False
+	return True
+
+
+def _only_allowed_pending_field_changes(doc: Document) -> bool:
+	"""v4.8.3: PM Clearance ``remark`` may be edited while Pending* at docstatus 0."""
+	if doc.doctype != "PM Clearance":
+		return False
+	if not doc.get_doc_before_save():
+		return False
+	if not _child_tables_unchanged(doc):
+		return False
+	changed = {
+		fname
+		for fname in doc.meta.get_valid_columns()
+		if doc.has_value_changed(fname) and fname not in ("modified", "modified_by")
+	}
+	return bool(changed) and changed <= PM_CLEARANCE_PENDING_EDITABLE_FIELDS
+
+
+def assert_pm_clearance_remark_locked_after_submit(doc: Document) -> None:
+	"""Block remark edits after Finance Approve (docstatus 1)."""
+	if doc.doctype != "PM Clearance" or cint(getattr(doc, "docstatus", 0)) != 1:
+		return
+	before = doc.get_doc_before_save()
+	if not before:
+		return
+	if (getattr(doc, "remark", None) or "") != (before.get("remark") or ""):
+		frappe.throw(
+			_("Remarks cannot be changed after Finance Approve."),
+			title=_("Read only"),
+		)
+
+
 def assert_pending_not_editable(doc: Document) -> None:
 	"""Block edits while Pending* and docstatus=0 unless inside workflow apply.
 
@@ -48,6 +87,8 @@ def assert_pending_not_editable(doc: Document) -> None:
 	if cint(getattr(doc, "docstatus", 0)) != 0:
 		return
 	if not is_pending_approval_workflow(doc):
+		return
+	if _only_allowed_pending_field_changes(doc):
 		return
 	if _in_workflow_apply():
 		return

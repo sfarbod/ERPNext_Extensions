@@ -340,7 +340,11 @@
   {
    "fieldname": "remark",
    "fieldtype": "Small Text",
-   "label": "Remark"
+   "in_global_search": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Remarks",
+   "read_only_depends_on": "eval:doc.docstatus==1"
   },
   {
    "fieldname": "amended_from",
@@ -356,7 +360,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-08-23 22:15:55.685503",
+ "modified": "2026-08-29 12:49:36.631200",
  "modified_by": "Administrator",
  "module": "Petty Management",
  "name": "PM Clearance",
