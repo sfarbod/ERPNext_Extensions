@@ -44,6 +44,7 @@ CLEARANCE_PENDING_TITLES = (
 
 DEFERRED_FLAG_KEY = "pm_draft_approval_v472_deferred"
 APPLIED_FLAG_KEY = "pm_draft_approval_v472_applied"
+V472_PATCH_MODULE = "erpnext_extensions.patches.post_model_sync.migrate_pm_draft_approval_v472"
 
 
 def _workflow_state_names_for_titles(titles: tuple[str, ...]) -> list[str]:
@@ -197,6 +198,59 @@ def _clear_site_flag(key: str) -> None:
 	frappe.db.set_default(key, "")
 
 
+def _site_flag_equals(key: str, expected: str) -> bool:
+	raw = _get_site_flag(key)
+	if raw in (None, ""):
+		return False
+	return str(raw).strip() == expected
+
+
+def is_pm_draft_approval_v472_cutover_complete() -> bool:
+	"""Authoritative v4.7.2 cutover completion for downstream patches.
+
+	Requires the v472 patch to have finished successfully (Patch Log) and the
+	explicit applied site flag. Does not infer from workflow shape alone.
+	Deferred cutover (``pm_draft_approval_v472_deferred`` set) is not complete.
+	"""
+	if not frappe.db.exists("Patch Log", {"patch": V472_PATCH_MODULE, "skipped": 0}):
+		return False
+	if not _site_flag_equals(APPLIED_FLAG_KEY, "1"):
+		return False
+	if _get_site_flag(DEFERRED_FLAG_KEY):
+		return False
+	return True
+
+
+def assert_pm_draft_approval_v472_cutover_complete() -> None:
+	"""Block downstream PM migrations until v4.7.2 cutover is authoritatively complete."""
+	if is_pm_draft_approval_v472_cutover_complete():
+		return
+
+	deferred = _get_site_flag(DEFERRED_FLAG_KEY)
+	patch_ran = frappe.db.exists("Patch Log", {"patch": V472_PATCH_MODULE, "skipped": 0})
+	applied = _site_flag_equals(APPLIED_FLAG_KEY, "1")
+
+	if deferred:
+		reason = _(
+			"v4.7.2 Draft Approval cutover is deferred while Pending* PM documents remain in flight."
+		)
+	elif not patch_ran:
+		reason = _("v4.7.2 Draft Approval patch has not completed successfully on this site.")
+	elif not applied:
+		reason = _("v4.7.2 Draft Approval cutover applied flag is not set.")
+	else:
+		reason = _("v4.7.2 Draft Approval cutover is not complete.")
+
+	frappe.throw(
+		_(
+			"Cannot apply PM v4.8.3: {0} "
+			"Complete v4.7.2 cutover first (clear Pending* queue and re-run migrate)."
+		).format(reason),
+		frappe.ValidationError,
+		title=_("PM v4.7.2 cutover required"),
+	)
+
+
 def _apply_draft_approval_cutover(report: dict) -> dict:
 	"""Rebuild workflows + seed assignment rules. Caller ensures queue safety."""
 	_rebuild_pm_request_workflow()
@@ -230,7 +284,19 @@ def try_complete_deferred_pm_draft_approval() -> dict:
 		report["skipped_reason"] = "not_deferred"
 		return report
 
+	from erpnext_extensions.petty_management.services.legacy_pending_lifecycle_service import (
+		find_legacy_pending_submitted_docs,
+	)
+
 	stats = count_in_flight_pending_pm_docs()
+	legacy = find_legacy_pending_submitted_docs()
+	if legacy.get("request_count") or legacy.get("clearance_count"):
+		report["skipped_reason"] = "legacy_pending_submitted"
+		report["legacy_submitted"] = {
+			"request_count": legacy["request_count"],
+			"clearance_count": legacy["clearance_count"],
+		}
+		return report
 	if stats["request_count"] or stats["clearance_count"]:
 		report["skipped_reason"] = "still_in_flight"
 		report["in_flight"] = {

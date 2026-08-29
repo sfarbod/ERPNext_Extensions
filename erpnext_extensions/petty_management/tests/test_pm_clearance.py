@@ -1406,9 +1406,10 @@ class TestPMClearanceAllocation(unittest.TestCase):
 		cl = self._base_clearance(emp, pi, 3_000)
 		cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 3_000})
 		cl.insert()
-		cl.submit()
 		self._track("PM Clearance", cl.name)
 
+		# v4.7.2: draft/Pending* clearances stay docstatus=0 until Finance Approve.
+		self.assertEqual(cint(cl.docstatus), 0)
 		self.assertLess(flt(sum_prior_pm_request_allocations(req_name, None)), 1e-3)
 
 		_approve_pm_clearance_for_reservation(cl.name)

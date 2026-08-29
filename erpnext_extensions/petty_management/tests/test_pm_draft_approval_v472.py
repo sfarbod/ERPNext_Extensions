@@ -373,3 +373,74 @@ class TestPMDraftApprovalV472(unittest.TestCase):
 			if title == "Approved":
 				self.assertEqual(str(s.doc_status), "1")
 		self.assertIn("PM Return for Correction", {t.action for t in wf.transitions})
+
+	def test_cutover_complete_on_site(self):
+		from erpnext_extensions.patches.post_model_sync.migrate_pm_draft_approval_v472 import (
+			is_pm_draft_approval_v472_cutover_complete,
+		)
+
+		self.assertTrue(is_pm_draft_approval_v472_cutover_complete())
+
+	def test_cutover_not_complete_when_deferred_flag_set(self):
+		from erpnext_extensions.patches.post_model_sync import migrate_pm_draft_approval_v472 as mod
+
+		with patch.object(
+			mod,
+			"_get_site_flag",
+			side_effect=lambda k: {"pm_draft_approval_v472_deferred": {"x": 1}}.get(k),
+		):
+			self.assertFalse(mod.is_pm_draft_approval_v472_cutover_complete())
+
+	def test_v483_patch_aborts_without_v472_cutover(self):
+		from erpnext_extensions.patches.post_model_sync import (
+			migrate_pm_clearance_return_remarks_v483 as v483,
+		)
+		from erpnext_extensions.patches.post_model_sync import migrate_pm_draft_approval_v472 as v472
+
+		with patch.object(v472, "is_pm_draft_approval_v472_cutover_complete", return_value=False):
+			with self.assertRaises(frappe.ValidationError):
+				v483.execute()
+
+	def test_v483_patch_runs_when_v472_cutover_complete(self):
+		from erpnext_extensions.patches.post_model_sync import (
+			migrate_pm_clearance_return_remarks_v483 as v483,
+		)
+		from erpnext_extensions.patches.post_model_sync import migrate_pm_draft_approval_v472 as v472
+
+		with patch.object(v472, "is_pm_draft_approval_v472_cutover_complete", return_value=True):
+			v483.execute()
+
+	def test_cutover_complete_on_site(self):
+		from erpnext_extensions.patches.post_model_sync.migrate_pm_draft_approval_v472 import (
+			is_pm_draft_approval_v472_cutover_complete,
+		)
+
+		self.assertTrue(is_pm_draft_approval_v472_cutover_complete())
+
+	def test_cutover_not_complete_when_deferred_flag_set(self):
+		from erpnext_extensions.patches.post_model_sync import migrate_pm_draft_approval_v472 as mod
+
+		with (
+			patch.object(mod, "_get_site_flag", side_effect=lambda k: {"pm_draft_approval_v472_deferred": {"x": 1}}.get(k)),
+			patch.object(mod, "is_pm_draft_approval_v472_cutover_complete", wraps=mod.is_pm_draft_approval_v472_cutover_complete),
+		):
+			self.assertFalse(mod.is_pm_draft_approval_v472_cutover_complete())
+
+	def test_v483_patch_aborts_without_v472_cutover(self):
+		from erpnext_extensions.patches.post_model_sync import (
+			migrate_pm_clearance_return_remarks_v483 as v483,
+		)
+		from erpnext_extensions.patches.post_model_sync import migrate_pm_draft_approval_v472 as v472
+
+		with patch.object(v472, "is_pm_draft_approval_v472_cutover_complete", return_value=False):
+			with self.assertRaises(frappe.ValidationError):
+				v483.execute()
+
+	def test_v483_patch_runs_when_v472_cutover_complete(self):
+		from erpnext_extensions.patches.post_model_sync import (
+			migrate_pm_clearance_return_remarks_v483 as v483,
+		)
+		from erpnext_extensions.patches.post_model_sync import migrate_pm_draft_approval_v472 as v472
+
+		with patch.object(v472, "is_pm_draft_approval_v472_cutover_complete", return_value=True):
+			v483.execute()

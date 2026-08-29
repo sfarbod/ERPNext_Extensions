@@ -12,4 +12,4 @@ Pending* = docstatus 0; Finance Approve = only submit; Return atomic/idempotent;
 
 ## Patch
 
-`migrate_pm_clearance_return_remarks_v483` — idempotent PM Clearance workflow rebuild.
+`migrate_pm_clearance_return_remarks_v483` — idempotent PM Clearance workflow rebuild **only after** authoritative v4.7.2 cutover completion (Patch Log + `pm_draft_approval_v472_applied`). Aborts if v4.7.2 was deferred or not applied.

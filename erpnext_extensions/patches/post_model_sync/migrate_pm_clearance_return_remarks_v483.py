@@ -1,10 +1,8 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""v4.8.3: Sync PM Clearance workflow Return transitions + remarks list/search metadata.
+"""v4.8.3: Sync PM Clearance workflow Return transitions (post v4.7.2 cutover only).
 
-Workflow-only rebuild (no PM Clearance document mutation). Safe while Pending*
-documents are in flight — restores Return for Correction on Pending Manager
-Approval and Pending Finance Review when a site skipped v4.7.2 cutover or kept
-a partial workflow definition.
+Requires authoritative v4.7.2 cutover completion (Patch Log + applied flag).
+Aborts before any workflow change when v4.7.2 was deferred or not applied.
 """
 
 from __future__ import annotations
@@ -15,11 +13,14 @@ import frappe
 
 from erpnext_extensions.patches.post_model_sync.migrate_pm_draft_approval_v472 import (
 	CLEARANCE_PENDING_TITLES,
+	assert_pm_draft_approval_v472_cutover_complete,
 	_has_return_from_pending_states,
 )
 
 
 def execute():
+	assert_pm_draft_approval_v472_cutover_complete()
+
 	report: dict = {"workflow_rebuilt": False, "return_from_pending_ok": False}
 	frappe.flags.in_patch = True
 	try:
