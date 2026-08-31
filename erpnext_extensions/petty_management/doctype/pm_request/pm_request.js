@@ -40,9 +40,6 @@ frappe.ui.form.on("PM Request", {
 		if (!frm.is_new() && frm.doc.docstatus === 1) {
 			frm.trigger("refresh_payment_entry_list");
 		}
-		if (!frm.is_new()) {
-			frm.trigger("refresh_connections");
-		}
 		schedule_pm_request_toolbar(frm);
 	},
 	onload_post_render(frm) {
@@ -142,29 +139,6 @@ frappe.ui.form.on("PM Request", {
 			},
 		});
 	},
-	refresh_connections(frm) {
-		if (frm.is_new()) {
-			return;
-		}
-		const field = frm.fields_dict.connections_html;
-		if (!field) {
-			return;
-		}
-		frappe.call({
-			method: "erpnext_extensions.petty_management.doctype.pm_request.pm_request.get_pm_request_connections",
-			args: { pm_request: frm.doc.name },
-			callback(r) {
-				if (r.exc) {
-					render_pm_request_connections(field.$wrapper, null, frm.doc.currency, { failed: true });
-					return;
-				}
-				render_pm_request_connections(field.$wrapper, r.message || {}, frm.doc.currency);
-			},
-			error() {
-				render_pm_request_connections(field.$wrapper, null, frm.doc.currency, { failed: true });
-			},
-		});
-	},
 	setup_pm_request_toolbar(frm) {
 		if (frm.is_new() || !frm.doc.name) {
 			remove_pm_request_toolbar_buttons(frm);
@@ -229,7 +203,10 @@ function bind_pm_request_funding_realtime(frm) {
 			active._pm_pe_response_version = String(data.response_version_id);
 		}
 		active.trigger("refresh_payment_entry_list");
-		active.trigger("refresh_connections");
+		if (active.dashboard) {
+			active.dashboard._fetched_counts = false;
+			active.dashboard.set_open_count();
+		}
 		schedule_pm_request_toolbar(active);
 	});
 }
@@ -611,122 +588,6 @@ function render_pm_request_payment_entry_table($wrapper, rows, currency, opts) {
 	}
 	html += `</tbody></table></div>`;
 	$wrapper.html(html);
-}
-
-const PM_REQUEST_CONNECTION_GROUPS = [
-	{
-		group: __("Funding"),
-		items: [
-			{
-				key: "payment_entries",
-				label: __("Payment Entries"),
-				doctype: "Payment Entry",
-				nameField: "payment_entry",
-			},
-		],
-	},
-	{
-		group: __("Settlement"),
-		items: [
-			{
-				key: "clearances",
-				label: __("PM Clearances"),
-				doctype: "PM Clearance",
-				nameField: "clearance",
-			},
-		],
-	},
-	{
-		group: __("Accounting"),
-		items: [
-			{
-				key: "journal_entries",
-				label: __("Journal Entries"),
-				doctype: "Journal Entry",
-				nameField: "journal_entry",
-			},
-		],
-	},
-];
-
-function build_pm_request_connections_groups(payload) {
-	const data = payload || {};
-	return PM_REQUEST_CONNECTION_GROUPS.map((group) => ({
-		group: group.group,
-		items: group.items.map((item) => {
-			const rows = Array.isArray(data[item.key]) ? data[item.key] : [];
-			const names = rows.map((row) => row[item.nameField]).filter(Boolean);
-			return { ...item, names, count: names.length };
-		}),
-	}));
-}
-
-function pm_request_open_connection(doctype, names) {
-	if (!doctype || !names || !names.length) {
-		return;
-	}
-	if (names.length === 1) {
-		frappe.set_route("Form", doctype, names[0]);
-		return;
-	}
-	frappe.route_options = { name: ["in", names] };
-	frappe.set_route("List", doctype, "List");
-}
-
-function bind_pm_request_connection_clicks($wrapper) {
-	$wrapper.find(".document-link .badge-link").on("click", function (e) {
-		e.preventDefault();
-		const $row = $(this).closest(".document-link");
-		if ($row.hasClass("disabled") || $(this).prop("disabled")) {
-			return false;
-		}
-		const doctype = $row.attr("data-doctype");
-		const names = ($row.attr("data-names") || "")
-			.split(",")
-			.map((n) => n.trim())
-			.filter(Boolean);
-		pm_request_open_connection(doctype, names);
-		return false;
-	});
-}
-
-function render_pm_request_connections($wrapper, payload, currency, opts) {
-	opts = opts || {};
-	const esc = frappe.utils.escape_html;
-	if (opts.failed) {
-		$wrapper.html(
-			`<p class="text-muted small mb-0">${__(
-				"Connections could not be loaded. Refresh the page to try again."
-			)}</p>`
-		);
-		return;
-	}
-	const groups = build_pm_request_connections_groups(payload);
-	let html = `<div class="pm-request-connections">`;
-	html += `<div class="form-dashboard-section form-links visible-section">`;
-	html += `<div class="section-body"><div class="transactions"><div class="form-documents">`;
-	html += `<div class="row">`;
-	groups.forEach((group) => {
-		html += `<div class="col-md-4">`;
-		html += `<div class="form-link-title"><span>${esc(group.group)}</span></div>`;
-		group.items.forEach((item) => {
-			const disabled = item.count === 0;
-			const countClass = disabled ? "count text-muted" : "count";
-			html += `<div class="document-link${disabled ? " disabled" : ""}" data-doctype="${esc(
-				item.doctype
-			)}" data-names="${esc(item.names.join(","))}">`;
-			html += `<div class="document-link-badge" data-doctype="${esc(item.doctype)}">`;
-			html += `<a class="badge-link"${disabled ? ' disabled="disabled"' : ""}>${esc(
-				item.label
-			)}</a>`;
-			html += `<span class="${countClass}">${item.count}</span>`;
-			html += `</div></div>`;
-		});
-		html += `</div>`;
-	});
-	html += `</div></div></div></div></div></div>`;
-	$wrapper.html(html);
-	bind_pm_request_connection_clicks($wrapper);
 }
 
 function log_pm_pe_list_error(err) {

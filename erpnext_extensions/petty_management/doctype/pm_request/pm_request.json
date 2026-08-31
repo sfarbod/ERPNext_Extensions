@@ -51,8 +51,7 @@
   "section_remark",
   "remark",
   "amended_from",
-  "tab_connections",
-  "connections_html"
+  "tab_connections"
  ],
  "fields": [
   {
@@ -402,13 +401,8 @@
   {
    "fieldname": "tab_connections",
    "fieldtype": "Tab Break",
-   "label": "Connections"
-  },
-  {
-   "fieldname": "connections_html",
-   "fieldtype": "HTML",
-   "label": " ",
-   "read_only": 1
+   "label": "Connections",
+   "show_dashboard": 1
   }
  ],
  "index_web_pages_for_search": 1,
