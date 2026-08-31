@@ -176,6 +176,21 @@ def close_pm_request(
 
 
 @frappe.whitelist()
+def cancel_pm_request(pm_request: str):
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		get_pm_request_doc_for_write,
+		get_pm_request_response_version,
+		notify_pm_request_funding_updated,
+	)
+	from erpnext_extensions.petty_management.services.request_service import cancel_pm_request as _cancel
+
+	get_pm_request_doc_for_write(pm_request)
+	_cancel(pm_request)
+	notify_pm_request_funding_updated(pm_request, "on_pm_request_cancelled")
+	return {"ok": True, "response_version_id": get_pm_request_response_version(pm_request)}
+
+
+@frappe.whitelist()
 def get_pm_request_payment_entries(pm_request: str):
 	from erpnext_extensions.petty_management.services.request_api_guard import (
 		build_pm_request_payment_entries_payload,

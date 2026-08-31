@@ -110,31 +110,42 @@ def get_pm_request_cancel_blockers(doc: Document | str) -> list[str]:
 	"""
 	name = _pm_request_name(doc)
 	if isinstance(doc, str):
-		row = frappe.db.get_value("PM Request", name, ["docstatus", "journal_entry"], as_dict=True)
+		row = frappe.db.get_value(
+			"PM Request", name, ["docstatus", "journal_entry", "is_closed"], as_dict=True
+		)
 		if not row:
 			return [_("PM Request {0} not found").format(name)]
 		docstatus = cint(row.docstatus)
 		journal_entry = row.journal_entry
+		is_closed = cint(row.is_closed)
 	else:
 		# Frappe Document.cancel() sets in-memory docstatus=2 before before_cancel/save.
 		# Authoritative eligibility uses DB docstatus (still 1 until cancel commits).
 		db_row = (
-			frappe.db.get_value("PM Request", name, ["docstatus", "journal_entry"], as_dict=True)
+			frappe.db.get_value(
+				"PM Request", name, ["docstatus", "journal_entry", "is_closed"], as_dict=True
+			)
 			if name
 			else None
 		)
 		if db_row:
 			docstatus = cint(db_row.docstatus)
 			journal_entry = getattr(doc, "journal_entry", None) or db_row.journal_entry
+			is_closed = cint(db_row.is_closed)
 		else:
 			docstatus = cint(doc.docstatus)
 			journal_entry = getattr(doc, "journal_entry", None)
+			is_closed = cint(getattr(doc, "is_closed", 0))
 
 	blockers: list[str] = []
 	if docstatus != 1:
 		blockers.append(
 			_("Only a submitted PM Request can be cancelled (current docstatus={0}).").format(docstatus)
 		)
+		return blockers
+
+	if is_closed:
+		blockers.append(_("Cannot cancel: this PM Request is closed."))
 		return blockers
 
 	# --- Payment Entry: open process = Draft or Submitted (authoritative PE list) ---
@@ -164,18 +175,60 @@ def get_pm_request_cancel_blockers(doc: Document | str) -> list[str]:
 			_("Cannot cancel: {0} Clearance exists: {1}.").format(label, _format_names(names))
 		)
 
-	# --- Request-level submitted JE ---
+	# --- Request-level Journal Entry (draft or submitted blocks cancel) ---
 	meta = frappe.get_meta("PM Request")
 	if meta.has_field("journal_entry") and journal_entry:
-		je_ds = cint(frappe.db.get_value("Journal Entry", journal_entry, "docstatus"))
-		if je_ds == 1:
-			blockers.append(
-				_("Cannot cancel: submitted Journal Entry {0} is linked on this Request.").format(
-					frappe.bold(journal_entry)
+		if not frappe.db.exists("Journal Entry", journal_entry):
+			pass
+		else:
+			je_ds = cint(frappe.db.get_value("Journal Entry", journal_entry, "docstatus"))
+			if je_ds == 0:
+				blockers.append(
+					_("Cannot cancel: draft Journal Entry {0} is linked on this Request.").format(
+						frappe.bold(journal_entry)
+					)
 				)
-			)
+			elif je_ds == 1:
+				blockers.append(
+					_("Cannot cancel: submitted Journal Entry {0} is linked on this Request.").format(
+						frappe.bold(journal_entry)
+					)
+				)
 
 	return blockers
+
+
+def user_may_execute_pm_request_cancel(doc: Document | str) -> bool:
+	"""v4.8.5 — business cancel permission (independent of DocPerm cancel)."""
+	user = frappe.session.user
+	if user == "Administrator":
+		return True
+	roles = set(frappe.get_roles(user))
+	if "Petty Management Accountant" in roles:
+		return True
+	from erpnext_extensions.petty_management.permissions import get_operational_pm_visibility_role
+
+	if get_operational_pm_visibility_role() in roles:
+		return True
+	return False
+
+
+def cancel_pm_request_action_flags(doc: Document) -> tuple[bool, str]:
+	"""Desk visibility for Cancel PM Request (financial + role policy)."""
+	from erpnext_extensions.petty_management.services.business_status_service import (
+		request_is_finance_cleared,
+	)
+
+	if not user_may_execute_pm_request_cancel(doc):
+		return False, ""
+	if cint(getattr(doc, "docstatus", 0)) != 1:
+		return False, ""
+	if not request_is_finance_cleared(doc):
+		return False, ""
+	blockers = get_pm_request_cancel_blockers(doc)
+	if blockers:
+		return False, blockers[0]
+	return True, ""
 
 
 def assert_pm_request_cancel_allowed(doc: Document | str) -> None:

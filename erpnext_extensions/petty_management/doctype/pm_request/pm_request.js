@@ -249,6 +249,7 @@ function apply_pm_request_action_ui(frm, f) {
 	frm._pm_action_flags = f || {};
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, f);
+	suppress_generic_frappe_cancel_button(frm);
 	apply_pm_request_intro(frm, f);
 	// Rebuild workflow Actions with can_reject filter (survives clear_actions_menu races).
 	if (erpnext_extensions?.petty_management?.refresh_workflow_actions) {
@@ -420,6 +421,45 @@ function apply_pm_request_toolbar(frm, f) {
 			route_pm_request_payment_entries(frm, f)
 		);
 	}
+	if (f.can_cancel_pm_request) {
+		add_pm_request_toolbar_button(frm, __("Cancel PM Request"), () => runCancelPmRequest(frm));
+	}
+}
+
+function runCancelPmRequest(frm) {
+	frappe.confirm(__("Cancel this PM Request?"), () => {
+		frappe.call({
+			method: "erpnext_extensions.petty_management.doctype.pm_request.pm_request.cancel_pm_request",
+			args: { pm_request: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Cancelling PM Request…"),
+			callback(r) {
+				if (r.exc) {
+					return;
+				}
+				frappe.show_alert({ message: __("PM Request cancelled"), indicator: "orange" });
+				frm.reload_doc();
+			},
+			error(r) {
+				frappe.msgprint({
+					title: __("Cancel failed"),
+					message: parse_pm_request_server_error(r),
+					indicator: "red",
+				});
+			},
+		});
+	});
+}
+
+function suppress_generic_frappe_cancel_button(frm) {
+	// v4.8.5: business Cancel PM Request replaces Frappe Cancel (DocPerm-independent).
+	if (!frm.page || !frm.page.btn_secondary || !frm.page.btn_secondary.length) {
+		return;
+	}
+	const label = (frm.page.btn_secondary.text() || "").trim();
+	if (/^Cancel$/i.test(label)) {
+		frm.page.clear_secondary_action();
+	}
 }
 
 function unique_pm_ui_messages(messages) {
@@ -524,6 +564,7 @@ function remove_pm_request_toolbar_buttons(frm) {
 		"Open Payment Entry",
 		"View Payment Entries",
 		"Close PM Request",
+		"Cancel PM Request",
 	];
 	labels.forEach((raw) => {
 		const L = __(raw);
