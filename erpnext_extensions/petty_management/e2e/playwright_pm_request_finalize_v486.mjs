@@ -216,9 +216,19 @@ async function connectionsUsesNativeSections(page) {
       return false;
     }
     return (
-      root.querySelectorAll(".pm-conn-card, .card").length === 0 &&
-      root.querySelectorAll(".form-section").length >= 4
+      root.querySelectorAll(".pm-conn-card, .card, .form-stats, .like-disabled-input").length ===
+        0 && root.querySelectorAll(".form-section").length === 3
     );
+  });
+}
+
+async function connectionsHasNoUsageSummary(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".pm-request-connections");
+    if (!root) {
+      return false;
+    }
+    return !/usage summary/i.test(root.innerText || "");
   });
 }
 
@@ -229,13 +239,17 @@ async function connectionLinksValid(page) {
       return { ok: false };
     }
     const links = [...root.querySelectorAll("a[href]")];
-    const pe = links.some((a) => (a.getAttribute("href") || "").includes("/app/payment-entry/"));
-    const cl = links.some((a) => (a.getAttribute("href") || "").includes("/app/pm-clearance/"));
+    const isDocLink = (href) => /\/(app|desk)\/(payment-entry|pm-clearance|journal-entry)\//.test(href);
+    const pe = links.some((a) => isDocLink(a.getAttribute("href") || ""));
+    const cl = links.some((a) => (a.getAttribute("href") || "").includes("pm-clearance"));
     return {
       ok:
         pe &&
         cl &&
-        links.every((a) => (a.getAttribute("href") || "").startsWith("/app/")),
+        links.every((a) => {
+          const href = a.getAttribute("href") || "";
+          return href.startsWith("/app/") || href.startsWith("/desk/");
+        }),
       pe,
       cl,
       count: links.length,
@@ -278,18 +292,20 @@ async function connectionsAudit(page) {
       return { ok: false, reason: "missing_root" };
     }
     const text = (root.innerText || "").toLowerCase();
-    const sections = [
-      "usage summary",
-      "payment entries",
-      "pm clearances",
-      "journal entries",
-    ];
+    const sections = ["payment entries", "pm clearances", "journal entries"];
+    const forbidden = ["usage summary"];
     const missingSection = sections.find((s) => !text.includes(s));
     if (missingSection) {
       return { ok: false, reason: `missing_section:${missingSection}` };
     }
+    if (forbidden.some((s) => text.includes(s))) {
+      return { ok: false, reason: "forbidden_section" };
+    }
     const links = [...root.querySelectorAll("a[href]")];
-    const badLinks = links.filter((a) => !(a.getAttribute("href") || "").startsWith("/app/"));
+    const badLinks = links.filter((a) => {
+      const href = a.getAttribute("href") || "";
+      return !(href.startsWith("/app/") || href.startsWith("/desk/"));
+    });
     return {
       ok: badLinks.length === 0,
       linkCount: links.length,
@@ -417,6 +433,7 @@ async function main() {
         const audit = rendered ? await connectionsAudit(page) : { ok: false };
         const traceOnly = tabVisible ? await connectionsTabIsTraceabilityOnly(page) : false;
         const nativeStyle = rendered ? await connectionsUsesNativeSections(page) : false;
+        const noUsageSummary = rendered ? await connectionsHasNoUsageSummary(page) : false;
         const links = rendered ? await connectionLinksValid(page) : { ok: false };
         await shot(page, "02_connections_populated");
         results.push({
@@ -428,6 +445,7 @@ async function main() {
             audit.ok &&
             traceOnly &&
             nativeStyle &&
+            noUsageSummary &&
             links.ok &&
             connCtx.expected_pe_count >= 1 &&
             connCtx.expected_clearance_count >= 1,
@@ -438,6 +456,7 @@ async function main() {
           audit,
           traceOnly,
           nativeStyle,
+          noUsageSummary,
           links,
           connCtx,
         });
@@ -451,13 +470,15 @@ async function main() {
         const emptyRendered = await waitForConnectionsRender(page);
         const emptyOk = emptyRendered ? await connectionsEmptyState(page) : false;
         const emptyTraceOnly = await connectionsTabIsTraceabilityOnly(page);
+        const emptyNoSummary = emptyRendered ? await connectionsHasNoUsageSummary(page) : false;
         await shot(page, "03_connections_empty");
         results.push({
           test: "connections_empty_state",
-          pass: emptyRendered && emptyOk && emptyTraceOnly,
+          pass: emptyRendered && emptyOk && emptyTraceOnly && emptyNoSummary,
           emptyRendered,
           emptyOk,
           emptyTraceOnly,
+          emptyNoSummary,
         });
 
         results.push({
