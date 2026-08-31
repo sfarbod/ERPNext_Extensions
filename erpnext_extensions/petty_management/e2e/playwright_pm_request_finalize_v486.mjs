@@ -191,34 +191,41 @@ async function detailsIsDefaultTab(page) {
   });
 }
 
-async function connectionsHasRows(page, sectionTitle) {
-  return page.evaluate((title) => {
-    const root = document.querySelector(".pm-request-connections");
-    if (!root) {
-      return false;
-    }
-    const sections = [...root.querySelectorAll(".form-section")];
-    const section = sections.find((s) => {
-      const head = s.querySelector(".section-head");
-      return head && (head.innerText || "").toLowerCase().includes(title.toLowerCase());
-    });
-    if (!section) {
-      return false;
-    }
-    return section.querySelector("tbody tr") !== null;
-  }, sectionTitle);
-}
-
-async function connectionsUsesNativeSections(page) {
+async function connectionsUsesJobCardLayout(page) {
   return page.evaluate(() => {
     const root = document.querySelector(".pm-request-connections");
     if (!root) {
       return false;
     }
-    return (
-      root.querySelectorAll(".pm-conn-card, .card, .form-stats, .like-disabled-input").length ===
-        0 && root.querySelectorAll(".form-section").length === 3
-    );
+    const hasNav =
+      root.querySelector(".form-links") &&
+      root.querySelector(".form-documents") &&
+      root.querySelectorAll(".form-link-title").length >= 3 &&
+      root.querySelectorAll(".document-link").length >= 3;
+    const noTables = root.querySelectorAll("table.table").length === 0;
+    const noDashboard =
+      root.querySelectorAll(".like-disabled-input, .form-stats, .pm-conn-card, .card").length === 0;
+    return Boolean(hasNav && noTables && noDashboard);
+  });
+}
+
+async function connectionsCounts(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".pm-request-connections");
+    if (!root) {
+      return null;
+    }
+    const out = {};
+    root.querySelectorAll(".document-link").forEach((el) => {
+      const doctype = el.getAttribute("data-doctype") || "";
+      const countEl = el.querySelector(".count");
+      out[doctype] = {
+        count: parseInt((countEl?.innerText || "0").trim(), 10) || 0,
+        disabled: el.classList.contains("disabled"),
+        names: (el.getAttribute("data-names") || "").split(",").filter(Boolean),
+      };
+    });
+    return out;
   });
 }
 
@@ -228,32 +235,10 @@ async function connectionsHasNoUsageSummary(page) {
     if (!root) {
       return false;
     }
-    return !/usage summary/i.test(root.innerText || "");
-  });
-}
-
-async function connectionLinksValid(page) {
-  return page.evaluate(() => {
-    const root = document.querySelector(".pm-request-connections");
-    if (!root) {
-      return { ok: false };
-    }
-    const links = [...root.querySelectorAll("a[href]")];
-    const isDocLink = (href) => /\/(app|desk)\/(payment-entry|pm-clearance|journal-entry)\//.test(href);
-    const pe = links.some((a) => isDocLink(a.getAttribute("href") || ""));
-    const cl = links.some((a) => (a.getAttribute("href") || "").includes("pm-clearance"));
-    return {
-      ok:
-        pe &&
-        cl &&
-        links.every((a) => {
-          const href = a.getAttribute("href") || "";
-          return href.startsWith("/app/") || href.startsWith("/desk/");
-        }),
-      pe,
-      cl,
-      count: links.length,
-    };
+    const text = (root.innerText || "").toLowerCase();
+    return (
+      !/usage summary|remaining|requested|allocated|available|payment status/i.test(text)
+    );
   });
 }
 
@@ -292,25 +277,19 @@ async function connectionsAudit(page) {
       return { ok: false, reason: "missing_root" };
     }
     const text = (root.innerText || "").toLowerCase();
-    const sections = ["payment entries", "pm clearances", "journal entries"];
-    const forbidden = ["usage summary"];
-    const missingSection = sections.find((s) => !text.includes(s));
-    if (missingSection) {
-      return { ok: false, reason: `missing_section:${missingSection}` };
+    const required = ["funding", "settlement", "accounting", "payment entries", "pm clearances", "journal entries"];
+    const forbidden = ["usage summary", "no payment entries", "no pm clearances", "no journal entries"];
+    const missing = required.find((s) => !text.includes(s));
+    if (missing) {
+      return { ok: false, reason: `missing:${missing}` };
     }
     if (forbidden.some((s) => text.includes(s))) {
-      return { ok: false, reason: "forbidden_section" };
+      return { ok: false, reason: "forbidden_text" };
     }
-    const links = [...root.querySelectorAll("a[href]")];
-    const badLinks = links.filter((a) => {
-      const href = a.getAttribute("href") || "";
-      return !(href.startsWith("/app/") || href.startsWith("/desk/"));
-    });
-    return {
-      ok: badLinks.length === 0,
-      linkCount: links.length,
-      badLinks: badLinks.map((a) => a.getAttribute("href")),
-    };
+    if (root.querySelectorAll("table.table").length) {
+      return { ok: false, reason: "has_tables" };
+    }
+    return { ok: true };
   });
 }
 
@@ -320,13 +299,22 @@ async function connectionsEmptyState(page) {
     if (!root) {
       return false;
     }
-    const t = (root.innerText || "").toLowerCase();
-    return (
-      t.includes("no payment entries") &&
-      t.includes("no pm clearances") &&
-      t.includes("no journal entries")
-    );
+    const rows = [...root.querySelectorAll(".document-link")];
+    if (rows.length < 3) {
+      return false;
+    }
+    return rows.every((el) => {
+      const count = parseInt((el.querySelector(".count")?.innerText || "0").trim(), 10);
+      return count === 0 && el.classList.contains("disabled");
+    });
   });
+}
+
+async function clickConnectionNav(page, doctype) {
+  await page
+    .locator(`.pm-request-connections .document-link[data-doctype="${doctype}"] .badge-link`)
+    .click();
+  await page.waitForTimeout(1500);
 }
 
 async function main() {
@@ -428,37 +416,62 @@ async function main() {
 
         const tabVisible = await openConnectionsTab(page);
         const rendered = await waitForConnectionsRender(page);
-        const peRows = rendered ? await connectionsHasRows(page, "Payment Entries") : false;
-        const clRows = rendered ? await connectionsHasRows(page, "PM Clearances") : false;
+        const jobCardLayout = rendered ? await connectionsUsesJobCardLayout(page) : false;
+        const counts = rendered ? await connectionsCounts(page) : null;
         const audit = rendered ? await connectionsAudit(page) : { ok: false };
         const traceOnly = tabVisible ? await connectionsTabIsTraceabilityOnly(page) : false;
-        const nativeStyle = rendered ? await connectionsUsesNativeSections(page) : false;
         const noUsageSummary = rendered ? await connectionsHasNoUsageSummary(page) : false;
-        const links = rendered ? await connectionLinksValid(page) : { ok: false };
         await shot(page, "02_connections_populated");
+
+        await clickConnectionNav(page, "Payment Entry");
+        const singlePeNav = page.url().includes(connCtx.payment_entry) && !/\/List/i.test(page.url());
+        await openPmRequest(page, connCtx.pm_request);
+        await openConnectionsTab(page);
+        await waitForConnectionsRender(page);
+
         results.push({
           test: "connections_tab_pe_and_clearance",
           pass:
             rendered &&
-            peRows &&
-            clRows &&
+            jobCardLayout &&
             audit.ok &&
             traceOnly &&
-            nativeStyle &&
             noUsageSummary &&
-            links.ok &&
+            counts?.["Payment Entry"]?.count === connCtx.expected_pe_count &&
+            counts?.["PM Clearance"]?.count === connCtx.expected_clearance_count &&
+            counts?.["Payment Entry"]?.count === 1 &&
+            singlePeNav &&
             connCtx.expected_pe_count >= 1 &&
             connCtx.expected_clearance_count >= 1,
           tabVisible,
           rendered,
-          peRows,
-          clRows,
+          jobCardLayout,
+          counts,
           audit,
           traceOnly,
-          nativeStyle,
           noUsageSummary,
-          links,
+          singlePeNav,
           connCtx,
+        });
+
+        benchExecute(
+          "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.add_second_payment_entry_for_connections",
+          { pm_request: connCtx.pm_request }
+        );
+        await openPmRequest(page, connCtx.pm_request);
+        await openConnectionsTab(page);
+        await waitForConnectionsRender(page);
+        const multiCounts = await connectionsCounts(page);
+        await clickConnectionNav(page, "Payment Entry");
+        const listPeNav = /\/List/i.test(page.url()) || /payment-entry.*List/i.test(page.url());
+        results.push({
+          test: "connections_multi_pe_opens_list",
+          pass:
+            (multiCounts?.["Payment Entry"]?.count || 0) >= 2 &&
+            listPeNav,
+          multiCounts,
+          listPeNav,
+          url: page.url(),
         });
 
         const emptyCtx = benchExecute(

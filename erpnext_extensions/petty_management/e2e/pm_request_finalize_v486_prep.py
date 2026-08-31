@@ -133,6 +133,20 @@ def prepare_connections_fixture() -> dict:
 
 
 @frappe.whitelist()
+def add_second_payment_entry_for_connections(pm_request: str) -> dict:
+	"""Add a second PE so Playwright can verify list navigation (count > 1)."""
+	_site_ready()
+	_create_funding_pe(pm_request, 5_000)
+	_sync_funding_fields(pm_request)
+	doc = frappe.get_doc("PM Request", pm_request)
+	payload = build_pm_request_connections_payload(doc)
+	return {
+		"pm_request": pm_request,
+		"expected_pe_count": len(payload.get("payment_entries") or []),
+	}
+
+
+@frappe.whitelist()
 def check_action_flags_as_user(pm_request: str, user: str) -> dict:
 	from erpnext_extensions.petty_management.services.request_action_policy import (
 		compute_pm_request_action_flags,

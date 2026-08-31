@@ -613,140 +613,86 @@ function render_pm_request_payment_entry_table($wrapper, rows, currency, opts) {
 	$wrapper.html(html);
 }
 
-const PM_REQUEST_CONNECTION_SECTIONS = [
+const PM_REQUEST_CONNECTION_GROUPS = [
 	{
-		key: "payment_entries",
-		title: __("Payment Entries"),
-		emptyMessage: __("No Payment Entries"),
-		doctype: "Payment Entry",
-		nameField: "payment_entry",
-		columns: [
-			{ label: __("Document"), type: "link" },
-			{ field: "status", label: __("Status"), type: "indicator", kind: "docstatus" },
-			{ field: "amount", label: __("Amount"), type: "currency" },
-			{ field: "posting_date", label: __("Date"), type: "date" },
+		group: __("Funding"),
+		items: [
+			{
+				key: "payment_entries",
+				label: __("Payment Entries"),
+				doctype: "Payment Entry",
+				nameField: "payment_entry",
+			},
 		],
 	},
 	{
-		key: "clearances",
-		title: __("PM Clearances"),
-		emptyMessage: __("No PM Clearances"),
-		doctype: "PM Clearance",
-		nameField: "clearance",
-		columns: [
-			{ label: __("Document"), type: "link" },
-			{ field: "status", label: __("Status"), type: "indicator", kind: "lifecycle" },
-			{ field: "allocated_amount", label: __("Amount"), type: "currency" },
-			{ field: "workflow_state", label: __("Workflow State"), type: "text" },
+		group: __("Settlement"),
+		items: [
+			{
+				key: "clearances",
+				label: __("PM Clearances"),
+				doctype: "PM Clearance",
+				nameField: "clearance",
+			},
 		],
 	},
 	{
-		key: "journal_entries",
-		title: __("Journal Entries"),
-		emptyMessage: __("No Journal Entries"),
-		doctype: "Journal Entry",
-		nameField: "journal_entry",
-		columns: [
-			{ label: __("Document"), type: "link" },
-			{ field: "docstatus", label: __("Status"), type: "indicator", kind: "docstatus" },
-			{ field: "amount", label: __("Amount"), type: "currency" },
-			{ field: "posting_date", label: __("Date"), type: "date" },
+		group: __("Accounting"),
+		items: [
+			{
+				key: "journal_entries",
+				label: __("Journal Entries"),
+				doctype: "Journal Entry",
+				nameField: "journal_entry",
+			},
 		],
 	},
 ];
 
-function pm_request_indicator_pill(text, kind) {
-	const esc = frappe.utils.escape_html;
-	const value = (text || "").trim();
-	if (!value || value === "—") {
-		return `<span class="text-muted">—</span>`;
-	}
-	const docstatusColors = {
-		Draft: "orange",
-		Submitted: "blue",
-		Cancelled: "red",
-	};
-	let color = "gray";
-	if (kind === "docstatus") {
-		color = docstatusColors[value] || "gray";
-	} else if (value === "Closed") {
-		color = "blue";
-	} else if (value === "Cancelled" || value === "Rejected") {
-		color = "red";
-	} else if (/paid|approved|waiting for payment/i.test(value)) {
-		color = "green";
-	}
-	return `<span class="indicator-pill ${color}">${esc(value)}</span>`;
+function build_pm_request_connections_groups(payload) {
+	const data = payload || {};
+	return PM_REQUEST_CONNECTION_GROUPS.map((group) => ({
+		group: group.group,
+		items: group.items.map((item) => {
+			const rows = Array.isArray(data[item.key]) ? data[item.key] : [];
+			const names = rows.map((row) => row[item.nameField]).filter(Boolean);
+			return { ...item, names, count: names.length };
+		}),
+	}));
 }
 
-function pm_request_form_link(doctype, name) {
-	if (!doctype || !name) {
-		return "";
+function pm_request_open_connection(doctype, names) {
+	if (!doctype || !names || !names.length) {
+		return;
 	}
-	if (typeof frappe.form.formatters?.Link === "function") {
-		return frappe.form.formatters.Link(
-			name,
-			{ options: doctype, fieldtype: "Link" },
-			{},
-			{}
-		);
+	if (names.length === 1) {
+		frappe.set_route("Form", doctype, names[0]);
+		return;
 	}
-	return frappe.utils.get_form_link(doctype, name, true, name);
+	frappe.route_options = { name: ["in", names] };
+	frappe.set_route("List", doctype, "List");
 }
 
-function pm_request_connection_cell(row, col, section, currency) {
-	const esc = frappe.utils.escape_html;
-	if (col.type === "link") {
-		return pm_request_form_link(section.doctype, row[section.nameField]);
-	}
-	const raw = row[col.field];
-	if (col.type === "indicator") {
-		return pm_request_indicator_pill(raw, col.kind);
-	}
-	if (col.type === "currency") {
-		return format_currency(raw, currency);
-	}
-	if (col.type === "date" && raw && frappe.datetime?.str_to_user) {
-		return esc(frappe.datetime.str_to_user(raw, false, true) || raw);
-	}
-	return esc(raw || "");
-}
-
-function pm_request_connection_table(section, rows, currency) {
-	let html = `<table class="table table-bordered table-sm">`;
-	html += `<thead><tr>`;
-	section.columns.forEach((col) => {
-		html += `<th>${col.label}</th>`;
+function bind_pm_request_connection_clicks($wrapper) {
+	$wrapper.find(".document-link .badge-link").on("click", function (e) {
+		e.preventDefault();
+		const $row = $(this).closest(".document-link");
+		if ($row.hasClass("disabled") || $(this).prop("disabled")) {
+			return false;
+		}
+		const doctype = $row.attr("data-doctype");
+		const names = ($row.attr("data-names") || "")
+			.split(",")
+			.map((n) => n.trim())
+			.filter(Boolean);
+		pm_request_open_connection(doctype, names);
+		return false;
 	});
-	html += `</tr></thead><tbody>`;
-	rows.forEach((row) => {
-		html += `<tr>`;
-		section.columns.forEach((col) => {
-			html += `<td>${pm_request_connection_cell(row, col, section, currency)}</td>`;
-		});
-		html += `</tr>`;
-	});
-	html += `</tbody></table>`;
-	return html;
-}
-
-function pm_request_connection_section(section, rows, currency) {
-	const esc = frappe.utils.escape_html;
-	const countHtml = rows.length ? `<span class="text-muted small">(${rows.length})</span>` : "";
-	let html = `<div class="form-section hide-border">`;
-	html += `<div class="section-head">${esc(section.title)} ${countHtml}</div>`;
-	html += `<div class="section-body">`;
-	if (!rows.length) {
-		html += `<p class="text-muted small mb-0">${esc(section.emptyMessage)}</p>`;
-	} else {
-		html += pm_request_connection_table(section, rows, currency);
-	}
-	html += `</div></div>`;
-	return html;
 }
 
 function render_pm_request_connections($wrapper, payload, currency, opts) {
 	opts = opts || {};
+	const esc = frappe.utils.escape_html;
 	if (opts.failed) {
 		$wrapper.html(
 			`<p class="text-muted small mb-0">${__(
@@ -755,14 +701,32 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 		);
 		return;
 	}
-	const data = payload || {};
+	const groups = build_pm_request_connections_groups(payload);
 	let html = `<div class="pm-request-connections">`;
-	PM_REQUEST_CONNECTION_SECTIONS.forEach((section) => {
-		const rows = Array.isArray(data[section.key]) ? data[section.key] : [];
-		html += pm_request_connection_section(section, rows, currency);
+	html += `<div class="form-dashboard-section form-links visible-section">`;
+	html += `<div class="section-body"><div class="transactions"><div class="form-documents">`;
+	html += `<div class="row">`;
+	groups.forEach((group) => {
+		html += `<div class="col-md-4">`;
+		html += `<div class="form-link-title"><span>${esc(group.group)}</span></div>`;
+		group.items.forEach((item) => {
+			const disabled = item.count === 0;
+			const countClass = disabled ? "count text-muted" : "count";
+			html += `<div class="document-link${disabled ? " disabled" : ""}" data-doctype="${esc(
+				item.doctype
+			)}" data-names="${esc(item.names.join(","))}">`;
+			html += `<div class="document-link-badge" data-doctype="${esc(item.doctype)}">`;
+			html += `<a class="badge-link"${disabled ? ' disabled="disabled"' : ""}>${esc(
+				item.label
+			)}</a>`;
+			html += `<span class="${countClass}">${item.count}</span>`;
+			html += `</div></div>`;
+		});
+		html += `</div>`;
 	});
-	html += `</div>`;
+	html += `</div></div></div></div></div></div>`;
 	$wrapper.html(html);
+	bind_pm_request_connection_clicks($wrapper);
 }
 
 function log_pm_pe_list_error(err) {
