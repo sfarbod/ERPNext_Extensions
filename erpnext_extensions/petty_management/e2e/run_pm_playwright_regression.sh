@@ -56,6 +56,7 @@ SCRIPTS=(
   playwright_pm_request_cancel_delete.mjs
   playwright_pm_request_cancel_action_v485.mjs
   playwright_pm_request_delete_action_v486.mjs
+  playwright_pm_request_admin_delete_ui_v486.mjs
   playwright_pm_request_finalize_v486.mjs
   playwright_pm_request_actions_visibility.mjs
   playwright_pm_multi_pe.mjs

@@ -4,18 +4,13 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import {
-  benchExecute,
-  documentExists,
-  SITE,
-} from "../../e2e/e2e_playwright_db.mjs";
+import { benchExecute, SITE } from "../../e2e/e2e_playwright_db.mjs";
 import { runWithPlaywrightBrowser } from "./playwright_pm_harness.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREEN = path.join(__dirname, "screenshots", "pm_request_finalize_v486");
 const TRACE = path.join(__dirname, "traces", "pm_request_finalize_v486.zip");
 const BASE = process.env.FRAPPE_E2E_BASE_URL || "http://development.localhost:8000";
-const ADMIN_PASS = process.env.FRAPPE_E2E_PASSWORD || "admin";
 
 async function login(page, email, password) {
   await page.context().clearCookies();
@@ -195,13 +190,70 @@ async function connectionsHasRows(page, heading) {
   }, heading);
 }
 
+async function connectionsAudit(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".pm-request-connections");
+    if (!root) {
+      return { ok: false, reason: "missing_root" };
+    }
+    const text = (root.innerText || "").toLowerCase();
+    const sections = [
+      "usage summary",
+      "payment entries",
+      "pm clearances",
+      "journal entries",
+    ];
+    const missingSection = sections.find((s) => !text.includes(s));
+    if (missingSection) {
+      return { ok: false, reason: `missing_section:${missingSection}` };
+    }
+    const links = [...root.querySelectorAll("a[href]")];
+    const badLinks = links.filter((a) => !(a.getAttribute("href") || "").startsWith("/app/"));
+    return {
+      ok: badLinks.length === 0,
+      linkCount: links.length,
+      badLinks: badLinks.map((a) => a.getAttribute("href")),
+    };
+  });
+}
+
+async function connectionsEmptyState(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".pm-request-connections");
+    if (!root) {
+      return false;
+    }
+    const t = (root.innerText || "").toLowerCase();
+    return (
+      t.includes("no payment entries linked") &&
+      t.includes("no pm clearances linked") &&
+      t.includes("no journal entries linked")
+    );
+  });
+}
+
 async function main() {
   fs.mkdirSync(SCREEN, { recursive: true });
   const results = [];
+  const consoleErrors = [];
 
   try {
     await runWithPlaywrightBrowser(
       async ({ page }) => {
+        page.on("console", (msg) => {
+          if (msg.type() !== "error") {
+            return;
+          }
+          const text = msg.text() || "";
+          if (
+            /socket\.io|favicon|Failed to load resource|Unauthorized.*fetch failed|net::ERR/i.test(
+              text
+            )
+          ) {
+            return;
+          }
+          consoleErrors.push(text);
+        });
         const cancelCtx = benchExecute(
           "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.prepare_cancel_action_accountant_eligible"
         );
@@ -222,60 +274,6 @@ async function main() {
         await openPmRequest(page, cancelCtx.pm_request);
         const cancelled = (await page.evaluate(() => window.cur_frm?.doc?.docstatus)) === 2;
         results.push({ test: "accountant_cancel_works", pass: cancelled, cancelled });
-
-        const adminCtx = benchExecute(
-          "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.prepare_delete_action_administrator"
-        );
-        const adminFlags = benchExecute(
-          "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.check_action_flags_as_user",
-          { pm_request: adminCtx.pm_request, user: "Administrator" }
-        );
-        let adminUiOk = false;
-        try {
-          await login(page, "Administrator", ADMIN_PASS);
-          await openPmRequest(page, adminCtx.pm_request);
-          const deleteInActions = await isActionsMenuItemVisible(page, "Delete PM Request");
-          await shot(page, "02_administrator_actions_cancelled");
-          adminUiOk = deleteInActions;
-          results.push({
-            test: "administrator_delete_in_actions",
-            pass: deleteInActions && adminFlags.may_delete,
-            deleteInActions,
-            adminFlags,
-          });
-          if (deleteInActions) {
-            await clickActionsMenuItem(page, "Delete PM Request");
-            await clickConfirmModal(page);
-            await page.waitForTimeout(2500);
-            const gone = !documentExists("PM Request", adminCtx.pm_request);
-            results.push({ test: "administrator_delete_works", pass: gone, gone });
-          }
-        } catch (adminUiErr) {
-          results.push({
-            test: "administrator_delete_in_actions",
-            pass: adminFlags.may_delete && adminFlags.can_delete_pm_request,
-            adminFlags,
-            ui_fallback: true,
-            ui_error: String(adminUiErr),
-          });
-          const adminDelete = benchExecute(
-            "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.execute_delete_pm_request_as_user",
-            { pm_request: adminCtx.pm_request, user: "Administrator" }
-          );
-          results.push({
-            test: "administrator_delete_works",
-            pass: adminDelete.exists === false,
-            adminDelete,
-            ui_fallback: true,
-          });
-        }
-        if (!adminUiOk && adminFlags.can_delete_pm_request) {
-          results.push({
-            test: "administrator_login_note",
-            pass: true,
-            note: "Administrator Desk login flaky; delete verified via bench API",
-          });
-        }
 
         const requesterCtx = benchExecute(
           "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.prepare_requester_no_cancel_delete"
@@ -312,20 +310,45 @@ async function main() {
         const rendered = await waitForConnectionsRender(page);
         const peRows = rendered ? await connectionsHasRows(page, "Payment Entries") : false;
         const clRows = rendered ? await connectionsHasRows(page, "PM Clearances") : false;
-        await shot(page, "03_connections_tab");
+        const audit = rendered ? await connectionsAudit(page) : { ok: false };
+        await shot(page, "03_connections_tab_populated");
         results.push({
           test: "connections_tab_pe_and_clearance",
           pass:
             rendered &&
             peRows &&
             clRows &&
+            audit.ok &&
             connCtx.expected_pe_count >= 1 &&
             connCtx.expected_clearance_count >= 1,
           tabVisible,
           rendered,
           peRows,
           clRows,
+          audit,
           connCtx,
+        });
+
+        const emptyCtx = benchExecute(
+          "erpnext_extensions.petty_management.e2e.pm_request_admin_delete_ui_v486_prep.prepare_connections_empty_fixture"
+        );
+        await login(page, emptyCtx.administrator.email, emptyCtx.administrator.password);
+        await openPmRequest(page, emptyCtx.pm_request);
+        await openConnectionsTab(page);
+        const emptyRendered = await waitForConnectionsRender(page);
+        const emptyOk = emptyRendered ? await connectionsEmptyState(page) : false;
+        await shot(page, "04_connections_tab_empty");
+        results.push({
+          test: "connections_empty_state",
+          pass: emptyRendered && emptyOk,
+          emptyRendered,
+          emptyOk,
+        });
+
+        results.push({
+          test: "connections_no_console_errors",
+          pass: consoleErrors.length === 0,
+          consoleErrors,
         });
 
         await login(page, cancelCtx.user.email, cancelCtx.user.password);

@@ -92,6 +92,14 @@ Finalize Playwright (Actions menu + Connections tab):
 node playwright_pm_request_finalize_v486.mjs
 ```
 
+Administrator Desk UI delete (browser-only; no API fallback):
+
+```bash
+node playwright_pm_request_admin_delete_ui_v486.mjs
+```
+
+Prep ensures Administrator password `pm_admin_e2e_v486` (override with `FRAPPE_E2E_PASSWORD` in Playwright login if your site differs).
+
 Full PM module regression:
 
 ```bash

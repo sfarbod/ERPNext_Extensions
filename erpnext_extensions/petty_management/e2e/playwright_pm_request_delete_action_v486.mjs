@@ -150,19 +150,11 @@ async function main() {
           { pm_request: admin.pm_request, user: "Administrator" }
         );
         results.push({
-          test: "administrator_delete_visible",
+          test: "administrator_delete_flags_only",
           pass:
             adminFlags.may_execute === true && adminFlags.can_delete_pm_request === true,
           adminFlags,
-        });
-        const adminDelete = benchExecute(
-          "erpnext_extensions.petty_management.e2e.pm_request_delete_action_v486_prep.execute_delete_pm_request_as_user",
-          { pm_request: admin.pm_request, user: "Administrator" }
-        );
-        results.push({
-          test: "administrator_delete_removed",
-          pass: adminDelete.exists === false,
-          adminDelete,
+          note: "Desk UI delete covered by playwright_pm_request_admin_delete_ui_v486.mjs",
         });
       },
       {
