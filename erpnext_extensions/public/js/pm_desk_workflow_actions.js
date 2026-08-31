@@ -75,7 +75,7 @@ erpnext_extensions.petty_management.install_workflow_reject_filter = function ()
 
 			me.setup_btn(added);
 
-			// Custom funding/settlement buttons use add_custom_button (not Actions menu),
+			// Cancel/Delete use page.add_action_item in pm_request_reapply_custom_toolbar (standard Actions menu).
 			// but form refresh can clear them around the same time as workflow rebuild.
 			// Re-stamp from cached flags whenever workflow Actions are rendered.
 			if (

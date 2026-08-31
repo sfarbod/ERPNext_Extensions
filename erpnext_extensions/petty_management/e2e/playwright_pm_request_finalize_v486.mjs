@@ -55,34 +55,42 @@ async function openPmRequest(page, name) {
 }
 
 async function openActionsMenu(page) {
-  const selectors = [
-    ".actions-btn-group .btn",
-    ".page-actions .actions-btn-group button",
-    'button:has-text("Actions")',
-  ];
-  for (const sel of selectors) {
-    const btn = page.locator(sel).first();
-    if ((await btn.count()) && (await btn.isVisible())) {
-      await btn.click();
-      await page.waitForTimeout(400);
-      return;
-    }
+  const btn = page.locator(".actions-btn-group .dropdown-toggle, .actions-btn-group .btn").first();
+  if ((await btn.count()) && (await btn.isVisible())) {
+    await btn.click();
+    await page.waitForTimeout(400);
   }
+}
+
+async function countActionsMenus(page) {
+  return page.evaluate(() => {
+    const inner = Array.from(
+      document.querySelectorAll(".inner-group-button .dropdown-toggle")
+    ).filter((el) => (el.textContent || "").trim() === "Actions").length;
+    const std = Array.from(document.querySelectorAll(".actions-btn-group")).filter(
+      (el) => el.offsetParent !== null
+    ).length;
+    return { inner, std };
+  });
+}
+
+async function formTabLabels(page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll(".form-tabs-list .nav-link")].map((el) =>
+      (el.innerText || "").trim()
+    )
+  );
 }
 
 async function isActionsMenuItemVisible(page, label) {
   await openActionsMenu(page);
   return page.evaluate((text) => {
     const items = document.querySelectorAll(
-      ".dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item, .dropdown-menu .dropdown-item"
+      ".actions-btn-group .dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item"
     );
     for (const el of items) {
       const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
       if (new RegExp(`^${text}$`, "i").test(t)) {
-        const li = el.closest("li");
-        if (li && (li.offsetParent === null || getComputedStyle(li).display === "none")) {
-          continue;
-        }
         return true;
       }
     }
@@ -111,11 +119,26 @@ async function isPrimaryToolbarButtonVisible(page, label) {
 
 async function clickActionsMenuItem(page, label) {
   await openActionsMenu(page);
-  const item = page
-    .locator(".dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item")
-    .filter({ hasText: new RegExp(`^${label}$`, "i") })
-    .first();
-  await item.click({ timeout: 30000 });
+  const clicked = await page.evaluate((text) => {
+    const items = document.querySelectorAll(
+      ".actions-btn-group .dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item"
+    );
+    for (const el of items) {
+      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      if (new RegExp(`^${text}$`, "i").test(t)) {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  }, label);
+  if (!clicked) {
+    await page
+      .locator(".actions-btn-group .dropdown-menu .dropdown-item")
+      .filter({ hasText: new RegExp(`^${label}$`, "i") })
+      .first()
+      .click({ timeout: 30000 });
+  }
 }
 
 async function clickConfirmModal(page) {
@@ -277,6 +300,19 @@ async function main() {
         );
         await login(page, cancelCtx.user.email, cancelCtx.user.password);
         await openPmRequest(page, cancelCtx.pm_request);
+        const actionsMenus = await countActionsMenus(page);
+        const tabs = await formTabLabels(page);
+        results.push({
+          test: "single_actions_menu_and_tab_order",
+          pass:
+            actionsMenus.inner === 0 &&
+            actionsMenus.std >= 1 &&
+            tabs[0] === "Details" &&
+            tabs.includes("Connections") &&
+            tabs.filter((t) => t === "Details").length === 1,
+          actionsMenus,
+          tabs,
+        });
         const cancelInActions = await isActionsMenuItemVisible(page, "Cancel PM Request");
         const deleteHiddenAcct = !(await isActionsMenuItemVisible(page, "Delete PM Request"));
         await shot(page, "01_accountant_actions_before_cancel");

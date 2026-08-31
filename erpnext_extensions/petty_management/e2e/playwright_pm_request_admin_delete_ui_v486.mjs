@@ -54,7 +54,7 @@ async function openPmRequest(page, name) {
 }
 
 async function openActionsMenu(page) {
-  const btn = page.locator(".actions-btn-group .btn, button:has-text('Actions')").first();
+  const btn = page.locator(".actions-btn-group .dropdown-toggle, .actions-btn-group .btn").first();
   if ((await btn.count()) && (await btn.isVisible())) {
     await btn.click();
     await page.waitForTimeout(400);
@@ -65,15 +65,11 @@ async function isActionsMenuItemVisible(page, label) {
   await openActionsMenu(page);
   return page.evaluate((text) => {
     const items = document.querySelectorAll(
-      ".dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item"
+      ".actions-btn-group .dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item"
     );
     for (const el of items) {
       const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
       if (new RegExp(`^${text}$`, "i").test(t)) {
-        const li = el.closest("li");
-        if (li && (li.offsetParent === null || getComputedStyle(li).display === "none")) {
-          continue;
-        }
         return true;
       }
     }
@@ -85,7 +81,7 @@ async function clickActionsMenuItem(page, label) {
   await openActionsMenu(page);
   const clicked = await page.evaluate((text) => {
     const items = document.querySelectorAll(
-      ".dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item"
+      ".actions-btn-group .dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item"
     );
     for (const el of items) {
       const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
@@ -97,9 +93,8 @@ async function clickActionsMenuItem(page, label) {
     return false;
   }, label);
   if (!clicked) {
-    await openActionsMenu(page);
     await page
-      .locator(".dropdown-menu.show .dropdown-item, .actions-btn-group .dropdown-menu .dropdown-item")
+      .locator(".actions-btn-group .dropdown-menu .dropdown-item")
       .filter({ hasText: new RegExp(`^${label}$`, "i") })
       .first()
       .click({ timeout: 30000 });

@@ -36,7 +36,6 @@
   "workflow_state",
   "section_payment_entries",
   "payment_entries_html",
-  "tab_details",
   "section_details",
   "details",
   "paid_from_account",
@@ -335,15 +334,18 @@
    "read_only": 1
   },
   {
-   "fieldname": "tab_connections",
-   "fieldtype": "Tab Break",
-   "label": "Connections"
+   "collapsible": 1,
+   "collapsible_depends_on": "eval:1==1",
+   "fieldname": "section_details",
+   "fieldtype": "Section Break",
+   "label": "Details"
   },
   {
-   "fieldname": "connections_html",
-   "fieldtype": "HTML",
-   "label": " ",
-   "read_only": 1
+   "fieldname": "details",
+   "fieldtype": "Table",
+   "label": "Details",
+   "options": "PM Request Detail",
+   "reqd": 1
   },
   {
    "description": "Deprecated: funding account is chosen on Payment Entry. Populated only from legacy data.",
@@ -376,25 +378,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "tab_details",
-   "fieldtype": "Tab Break",
-   "label": "Details"
-  },
-  {
-   "collapsible": 1,
-   "collapsible_depends_on": "eval:1==1",
-   "fieldname": "section_details",
-   "fieldtype": "Section Break",
-   "label": "Details"
-  },
-  {
-   "fieldname": "details",
-   "fieldtype": "Table",
-   "label": "Details",
-   "options": "PM Request Detail",
-   "reqd": 1
-  },
-  {
    "collapsible": 1,
    "collapsible_depends_on": "eval:1==1",
    "fieldname": "section_remark",
@@ -415,6 +398,17 @@
    "print_hide": 1,
    "read_only": 1,
    "search_index": 1
+  },
+  {
+   "fieldname": "tab_connections",
+   "fieldtype": "Tab Break",
+   "label": "Connections"
+  },
+  {
+   "fieldname": "connections_html",
+   "fieldtype": "HTML",
+   "label": " ",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,

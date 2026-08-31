@@ -276,7 +276,6 @@ function apply_pm_request_action_ui(frm, f) {
 	frm._pm_action_flags = f || {};
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, f);
-	apply_pm_request_actions_menu(frm, f);
 	suppress_generic_frappe_cancel_button(frm);
 	suppress_generic_frappe_delete_button(frm);
 	apply_pm_request_intro(frm, f);
@@ -293,7 +292,7 @@ window.pm_request_reapply_custom_toolbar = function (frm) {
 	}
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, frm._pm_action_flags);
-	apply_pm_request_actions_menu(frm, frm._pm_action_flags);
+	apply_pm_request_page_actions(frm, frm._pm_action_flags);
 };
 
 function apply_pm_request_pe_list_payload(frm, $wrapper, payload, currency) {
@@ -432,9 +431,8 @@ function apply_pm_request_toolbar(frm, f) {
 		);
 	};
 
-	// Use add_custom_button (not page.add_action_item): Frappe workflow show_actions()
-	// calls clear_actions_menu() and would wipe custom funding actions.
 	// Gate funding actions on server business flags (finance-cleared), not workflow title literals.
+	// Cancel/Delete use frm.page.add_action_item via pm_request_reapply_custom_toolbar (standard Actions menu).
 	if (!cint(f.is_closed)) {
 		if (f.can_create_payment_entry) {
 			add_pm_request_toolbar_button(frm, __("Create Payment Entry"), promptCreatePe);
@@ -448,12 +446,15 @@ function apply_pm_request_toolbar(frm, f) {
 	}
 }
 
-function apply_pm_request_actions_menu(frm, f) {
+function apply_pm_request_page_actions(frm, f) {
+	if (!frm.page || typeof frm.page.add_action_item !== "function") {
+		return;
+	}
 	if (f.can_cancel_pm_request) {
-		add_pm_request_toolbar_button(frm, __("Cancel PM Request"), () => runCancelPmRequest(frm), __("Actions"));
+		frm.page.add_action_item(__("Cancel PM Request"), () => runCancelPmRequest(frm));
 	}
 	if (f.can_delete_pm_request) {
-		add_pm_request_toolbar_button(frm, __("Delete PM Request"), () => runDeletePmRequest(frm), __("Actions"));
+		frm.page.add_action_item(__("Delete PM Request"), () => runDeletePmRequest(frm));
 	}
 }
 
@@ -760,11 +761,7 @@ function format_currency(amount, currency) {
 	return flt(amount);
 }
 
-function add_pm_request_toolbar_button(frm, label, fn, group) {
-	if (group) {
-		frm.add_custom_button(label, fn, group);
-		return;
-	}
+function add_pm_request_toolbar_button(frm, label, fn) {
 	frm.add_custom_button(label, fn);
 }
 
@@ -780,11 +777,8 @@ function remove_pm_request_toolbar_buttons(frm) {
 	labels.forEach((raw) => {
 		const L = __(raw);
 		frm.remove_custom_button(L);
-		frm.remove_custom_button(L, __("Actions"));
 		if (frm.page) {
 			frm.page.remove_inner_button(L);
-			frm.page.remove_inner_button(L, __("Actions"));
-			// Legacy cleanup if an older build left items in the workflow Actions menu.
 			if (frm.page.actions) {
 				const enc = encodeURIComponent(L);
 				frm.page.actions.find(`a.dropdown-item[data-label="${enc}"]`).remove();
