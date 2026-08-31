@@ -120,32 +120,46 @@ function inspectRequest(name) {
 }
 
 async function clickWorkflowApprove(page) {
-  const clicked = await page.evaluate(() => {
+  return clickWorkflowAction(page, /AR Approve|^Approve$/i, "AR Approve");
+}
+
+async function clickWorkflowSubmitForApproval(page) {
+  return clickWorkflowAction(
+    page,
+    /AR Submit for Approval|Submit for Approval/i,
+    "AR Submit for Approval"
+  );
+}
+
+async function clickWorkflowAction(page, pattern, actionName) {
+  const clicked = await page.evaluate((reSource) => {
+    const re = new RegExp(reSource, "i");
     const nodes = Array.from(
       document.querySelectorAll("button, .dropdown-item, a.grey-link, .actions-btn-group .btn")
     );
-    const el = nodes.find((e) => /AR Approve|^Approve$/i.test((e.textContent || "").trim()));
+    const el = nodes.find((e) => re.test((e.textContent || "").trim()));
     if (el) {
       el.click();
       return true;
     }
     return false;
-  });
+  }, pattern.source);
   await page.waitForTimeout(400);
   const confirm = page.locator(".modal-footer .btn-primary:visible");
   if (await confirm.count()) {
     await confirm.first().click();
   }
   if (!clicked) {
-    await page.evaluate(async () => {
+    await page.evaluate(async (action) => {
       if (!window.cur_frm) return;
       await frappe.xcall("frappe.model.workflow.apply_workflow", {
         doc: cur_frm.doc,
-        action: "AR Approve",
+        action,
       });
-    });
+    }, actionName);
   }
   await page.waitForTimeout(1200);
+  return clicked;
 }
 
 
@@ -175,6 +189,70 @@ async function clickCustomButton(page, pattern) {
     return null;
   }, pattern);
   return clicked;
+}
+
+async function hasFulfillmentActions(page) {
+  const labels = await collectActionLabels(page);
+  return {
+    labels,
+    check: labels.some((t) => /Check Availability/i.test(t)),
+    issue: labels.some((t) => /Issue from Pool/i.test(t)),
+    purchase: labels.some((t) => /Request Purchase/i.test(t)),
+  };
+}
+
+async function saveNewAssetRequest(page, args) {
+  await page.evaluate(async (payload) => {
+    const frm = window.cur_frm;
+    if (!frm) throw new Error("no frm");
+    await frm.set_value("company", payload.company);
+    await frm.set_value("employee", payload.employee);
+    await frm.set_value("purpose", payload.purpose);
+    await frm.set_value("transaction_date", frappe.datetime.get_today());
+    await frm.set_value("required_date", frappe.datetime.get_today());
+    if (!(frm.doc.items || []).length) {
+      frm.add_child("items");
+    }
+    frm.refresh_field("items");
+    const row = frm.doc.items[0];
+    await frappe.model.set_value(row.doctype, row.name, "requested_item_code", payload.item);
+    await frappe.model.set_value(row.doctype, row.name, "qty", 1);
+    frm.refresh_field("items");
+  }, args);
+  const saveBtn = page.locator(".page-actions .primary-action, button.primary-action").first();
+  if (await saveBtn.count()) {
+    await saveBtn.click();
+  } else {
+    await page.evaluate(() => {
+      window.cur_frm.save();
+    });
+  }
+  const started = Date.now();
+  while (Date.now() - started < 40000) {
+    const state = await page.evaluate(() => {
+      const frm = window.cur_frm;
+      const msg = Array.from(document.querySelectorAll(".msgprint, .modal-body, .alert"))
+        .map((el) => (el.textContent || "").trim())
+        .filter(Boolean)
+        .slice(0, 5);
+      return {
+        name: frm?.doc?.name || null,
+        is_new: Boolean(frm?.is_new?.() || frm?.doc?.__islocal),
+        messages: msg,
+      };
+    });
+    if (state.name && !state.is_new && !String(state.name).startsWith("new-")) {
+      return { ok: true, name: state.name, error: null };
+    }
+    if (state.messages.some((m) => /permission|mandatory|error|خطا/i.test(m))) {
+      return { ok: false, name: null, error: state.messages.join(" | ") };
+    }
+    await page.waitForTimeout(500);
+  }
+  const leftover = await page.evaluate(() =>
+    (document.body.innerText || "").replace(/\s+/g, " ").slice(0, 500)
+  );
+  return { ok: false, name: null, error: leftover };
 }
 
 async function confirmVisibleModal(page) {
@@ -211,89 +289,96 @@ async function run() {
   page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err}`));
 
   try {
-    // Desk UI as Administrator. Role HTTP login for newly provisioned users
-    // returns AuthenticationError on this site; role matrix is covered by unit tests.
-    await login(
-      page,
-      process.env.FRAPPE_E2E_USER || "Administrator",
-      process.env.FRAPPE_E2E_PASSWORD || "admin"
-    );
-    results.login_user = await page.evaluate(
+    // Prep already set e2e user passwords. Skip Administrator desk login
+    // (this site does not use admin/admin).
+
+    // Scenario 1 — real Employee login: New → save → Submit for Approval
+    const empSession = await openAsUser(browser, prep.emp_email, prep.password);
+    const empPage = empSession.page;
+    empPage.on("pageerror", (err) => consoleErrors.push(`emp pageerror: ${err}`));
+    results.employee_session_user = await empPage.evaluate(
       () => window.frappe?.session?.user || null
     );
-    await page.waitForFunction(() => window.frappe?.call, { timeout: 30000 });
-    results.password_reset = await page.evaluate(
-      async ({ emails, password }) => {
-        const r = await frappe.call({
-          method:
-            "erpnext_extensions.asset_usage_depreciation.e2e.asset_request_prep.reset_e2e_passwords",
-          args: { emails, password },
-        });
-        return r.message || r;
-      },
-      {
-        emails: [prep.emp_email, prep.mgr_email, prep.am_email],
-        password: prep.password,
-      }
-    );
-
-    // Scenario 1 — Employee creates Asset Request
-    await openForm(page, null);
-    results.form_loaded = await page.evaluate(
+    results.employee_logged_in = results.employee_session_user === prep.emp_email;
+    await openForm(empPage, null);
+    results.form_loaded = await empPage.evaluate(
       () => window.cur_frm?.doc?.doctype === "Asset Request"
     );
-    results.item_query_fixed_asset = await page.evaluate(() => {
+    results.item_query_fixed_asset = await empPage.evaluate(() => {
       const grid = window.cur_frm?.fields_dict?.items?.grid;
       const field = grid?.get_field?.("requested_item_code");
       const q = field?.get_query ? field.get_query() : null;
       const filters = q?.filters || q || {};
       return Number(filters.is_fixed_asset) === 1;
     });
-    const created = benchExecute(
-      "erpnext_extensions.asset_usage_depreciation.e2e.asset_request_prep.insert_draft_asset_request",
-      {
-        company: prep.company,
-        employee: prep.employee,
-        item_code: prep.employee_item || prep.samsung,
-        purpose: "E2E employee create",
-      }
-    );
+    const created = await saveNewAssetRequest(empPage, {
+      company: prep.company,
+      employee: prep.employee,
+      item: prep.employee_item || prep.samsung,
+      purpose: "E2E employee create",
+    });
+    screenshots.employee_create_attempt = await shot(empPage, "01_employee_create");
     const createdName = created.name;
     results.created_name = createdName;
-    const createdWait = await waitDocumentState("Asset Request", createdName, {
-      docstatus: 0,
-    });
-    results.employee_save_ok = Boolean(createdWait.ok);
-    await openForm(page, createdName);
-    results.requested_item_visible = await page.evaluate(
+    results.employee_save_error = created.error || null;
+    results.employee_save_ok = Boolean(created.ok && createdName);
+    if (createdName) {
+      const createdWait = await waitDocumentState("Asset Request", createdName, {
+        docstatus: 0,
+      });
+      results.employee_save_ok = Boolean(created.ok && createdWait.ok);
+    }
+    await openForm(empPage, createdName);
+    results.requested_item_visible = await empPage.evaluate(
       (item) =>
         (window.cur_frm?.doc?.items || []).some(
           (r) => r.requested_item_code === item
         ),
       prep.employee_item || prep.samsung
     );
-    if (!results.requested_item_visible) {
-      const preview = inspectRequest(createdName);
-      results.requested_item_visible = (preview.item_codes || []).includes(
-        prep.employee_item || prep.samsung
-      );
-    }
-    const createLabels = await collectActionLabels(page);
+    const createLabels = await collectActionLabels(empPage);
     results.submit_action_visible = createLabels.some((t) =>
       /AR Submit for Approval|Submit for Approval/i.test(t)
     );
-    screenshots.employee_create = await shot(page, "01_employee_create");
+    const empDraftFulfillment = await hasFulfillmentActions(empPage);
+    results.employee_no_fulfillment_on_draft =
+      !empDraftFulfillment.check &&
+      !empDraftFulfillment.issue &&
+      !empDraftFulfillment.purchase;
+    screenshots.employee_create = await shot(empPage, "01_employee_create");
 
-    const submitted = applyWorkflow(createdName, "AR Submit for Approval");
-    results.employee_submit_error = submitted.error || null;
+    await clickWorkflowSubmitForApproval(empPage);
+    const submittedWait = createdName
+      ? await waitDocumentState("Asset Request", createdName, {
+          workflow_state: "Pending Manager Approval",
+        })
+      : { ok: false };
+    const submittedInspect = createdName ? inspectRequest(createdName) : {};
+    results.employee_submit_error = submittedInspect.exists
+      ? null
+      : "submit did not persist";
     results.employee_submit_workflow =
-      Boolean(submitted.ok) &&
-      submitted.workflow_state === "Pending Manager Approval" &&
-      Number(submitted.docstatus) === 0;
-    await openForm(page, createdName);
-    results.employee_submit_ui_state = await page.evaluate(
+      Boolean(submittedWait.ok) &&
+      submittedInspect.workflow_state === "Pending Manager Approval" &&
+      Number(submittedInspect.docstatus) === 0;
+    await openForm(empPage, createdName);
+    results.employee_submit_ui_state = await empPage.evaluate(
       () => window.cur_frm?.doc?.workflow_state || window.cur_frm?.doc?.status
     );
+    results.employee_permission_error = await empPage.evaluate(() => {
+      const body = document.body.innerText || "";
+      return /PermissionError|not permitted|Insufficient Permission/i.test(body)
+        ? body.slice(0, 240)
+        : null;
+    });
+
+    await openForm(empPage, prep.approved_request);
+    const empApprovedFulfillment = await hasFulfillmentActions(empPage);
+    results.employee_no_fulfillment_on_approved =
+      !empApprovedFulfillment.check &&
+      !empApprovedFulfillment.issue &&
+      !empApprovedFulfillment.purchase;
+    await empSession.ctx.close();
 
     // Scenario 2 — Manager approval as the real manager (must stay logged in, no MR)
     const mgrSession = await openAsUser(browser, prep.mgr_email, prep.password);
@@ -417,21 +502,20 @@ async function run() {
       results.purchase_mr
     );
     screenshots.purchase_path = await shot(amPage, "04_purchase_path");
-    await amSession.ctx.close();
 
-    // Scenario 5 — List + reports
-    await page.goto(`${BASE}/app/asset-request`, {
+    // Scenario 5 — List + reports as Asset Manager
+    await amPage.goto(`${BASE}/app/asset-request`, {
       waitUntil: "domcontentloaded",
       timeout: 180000,
     });
-    await page.waitForTimeout(1500);
-    results.list_loaded = await page.evaluate(
+    await amPage.waitForTimeout(1500);
+    results.list_loaded = await amPage.evaluate(
       () =>
         window.cur_list?.doctype === "Asset Request" ||
         document.querySelector(".frappe-list, .list-view, .list-row") != null ||
         /Asset Request/i.test(document.body.innerText || "")
     );
-    results.list_filters = await page.evaluate((company) => {
+    results.list_filters = await amPage.evaluate((company) => {
       try {
         if (window.cur_list?.filter_area?.add) {
           window.cur_list.filter_area.add([
@@ -447,34 +531,35 @@ async function run() {
         ) || window.cur_list
       );
     }, prep.company);
-    screenshots.list = await shot(page, "05_list");
+    screenshots.list = await shot(amPage, "05_list");
 
-    await page.goto(
+    await amPage.goto(
       `${BASE}/app/query-report/Requested%20Asset%20vs%20Fulfilled%20Asset`,
       { waitUntil: "domcontentloaded", timeout: 180000 }
     );
-    await page.waitForTimeout(2500);
-    results.requested_vs_fulfilled_report = await page.evaluate(
+    await amPage.waitForTimeout(2500);
+    results.requested_vs_fulfilled_report = await amPage.evaluate(
       () =>
         /Requested Asset vs Fulfilled Asset/i.test(document.body.innerText || "") ||
         Boolean(document.querySelector(".datatable, .report-wrapper, .query-report"))
     );
     screenshots.report_requested_vs_fulfilled = await shot(
-      page,
+      amPage,
       "05_report_requested_vs_fulfilled"
     );
 
-    await page.goto(`${BASE}/app/query-report/Pending%20Asset%20Requests`, {
+    await amPage.goto(`${BASE}/app/query-report/Pending%20Asset%20Requests`, {
       waitUntil: "domcontentloaded",
       timeout: 180000,
     });
-    await page.waitForTimeout(2500);
-    results.pending_report = await page.evaluate(
+    await amPage.waitForTimeout(2500);
+    results.pending_report = await amPage.evaluate(
       () =>
         /Pending Asset Requests/i.test(document.body.innerText || "") ||
         Boolean(document.querySelector(".datatable, .report-wrapper, .query-report"))
     );
-    screenshots.report_pending = await shot(page, "05_report_pending");
+    screenshots.report_pending = await shot(amPage, "05_report_pending");
+    await amSession.ctx.close();
   } finally {
     const leftoverErrors = consoleErrors.filter((e) => {
       if (/get_open_count|not whitelisted|logged out|Session expired|Please login/i.test(e)) {
@@ -489,9 +574,13 @@ async function run() {
     const pass = Boolean(
       results.form_loaded &&
         results.item_query_fixed_asset &&
+        results.employee_logged_in &&
         results.employee_save_ok &&
         results.requested_item_visible &&
         results.employee_submit_workflow &&
+        !results.employee_permission_error &&
+        results.employee_no_fulfillment_on_draft &&
+        results.employee_no_fulfillment_on_approved &&
         results.manager_sees_pending &&
         results.manager_approve_ok &&
         results.manager_not_guest &&

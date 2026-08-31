@@ -101,6 +101,9 @@ def prepare_asset_request_e2e() -> dict:
 	frappe.set_user("Administrator")
 	if not frappe.db.exists("DocType", "Asset Request"):
 		frappe.throw("Asset Request is not migrated")
+	from erpnext_extensions.asset_usage_depreciation.workflow import ensure_asset_request_workflow
+
+	ensure_asset_request_workflow()
 	company = h.company()
 	if not company:
 		frappe.throw("No Company")
@@ -120,6 +123,7 @@ def prepare_asset_request_e2e() -> dict:
 	am_email = "ar.e2e.am@example.com"
 	# Desk User keeps Employee on the desk without elevating to System Manager.
 	h.make_user(email=emp_email, roles=["Employee", "Desk User"], password=PASSWORD)
+	h.ensure_employee_asset_request_perms()
 	if not frappe.db.exists("User Permission", {"user": emp_email, "allow": "Company", "for_value": company}):
 		frappe.get_doc(
 			{
@@ -134,7 +138,7 @@ def prepare_asset_request_e2e() -> dict:
 	from frappe.utils.password import update_password, delete_login_failed_cache
 
 	for email in (emp_email, mgr_email, am_email):
-		frappe.db.set_value("User", email, "user_type", "System User")
+		frappe.db.set_value("User", email, {"user_type": "System User", "enabled": 1})
 		update_password(email, PASSWORD)
 		delete_login_failed_cache(email)
 

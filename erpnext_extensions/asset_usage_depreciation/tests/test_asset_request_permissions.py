@@ -20,6 +20,11 @@ from erpnext_extensions.asset_usage_depreciation.permissions import (
 	asset_request_permission_query_conditions,
 	has_asset_request_permission,
 )
+from erpnext_extensions.asset_usage_depreciation.doctype.asset_request.asset_request import (
+	check_availability,
+	issue_from_pool,
+	request_purchase,
+)
 from erpnext_extensions.asset_usage_depreciation.tests import test_helpers as h
 
 
@@ -56,6 +61,7 @@ class TestAssetRequestPermissions(unittest.TestCase):
 			email=f"ar.am.{suffix}@example.com",
 			roles=["Employee", ROLE_ASSET_MANAGER],
 		)
+		h.ensure_employee_asset_request_perms()
 		cls.other_user = h.make_user(
 			email=f"ar.oth.{suffix}@example.com",
 			roles=["Employee"],
@@ -105,11 +111,10 @@ class TestAssetRequestPermissions(unittest.TestCase):
 		item_meta = frappe.get_meta("Asset Request Item")
 		self.assertEqual(item_meta.get_field("fulfilled_item_code").permlevel, 1)
 		self.assertEqual(meta.get_field("allocations").permlevel, 1)
-		am_pl1 = [
-			p
-			for p in meta.permissions
-			if p.role == ROLE_ASSET_MANAGER and int(p.permlevel or 0) == 1 and int(p.write or 0)
-		]
+		am_pl1 = frappe.get_all(
+			"DocPerm",
+			filters={"parent": "Asset Request", "role": ROLE_ASSET_MANAGER, "permlevel": 1, "write": 1},
+		)
 		self.assertTrue(am_pl1)
 
 	def test_employee_cannot_edit_allocation_or_fulfilled_after_approval(self):
@@ -291,3 +296,237 @@ class TestAssetRequestPermissions(unittest.TestCase):
 				reevaluate_fulfillment(submitted.name)
 		finally:
 			frappe.set_user("Administrator")
+
+
+class TestAssetRequestPermsV488(unittest.TestCase):
+	"""v4.8.8: invalid cancel-without-submit must not block Employee Role Permissions."""
+
+	@classmethod
+	def setUpClass(cls):
+		frappe.set_user("Administrator")
+		cls.skip = h.skip_if_unready()
+		if cls.skip:
+			return
+		h.ensure_settings(
+			prevent_duplicate_active_requests=0,
+			require_named_manager_approver=0,
+			auto_create_asset_movement=0,
+			auto_create_material_request=0,
+		)
+		h.ensure_employee_asset_request_perms()
+		from erpnext_extensions.asset_usage_depreciation.workflow import _enable_employee_self_submit
+
+		_enable_employee_self_submit()
+		cls.company = h.company()
+		suffix = random_string(6).lower()
+		cls.emp_user = h.make_user(email=f"ar.v488.emp.{suffix}@example.com", roles=["Employee"])
+		cls.mgr_user = h.make_user(
+			email=f"ar.v488.mgr.{suffix}@example.com",
+			roles=["Employee", ROLE_AR_MANAGER],
+		)
+		cls.planner_user = h.make_user(
+			email=f"ar.v488.pln.{suffix}@example.com",
+			roles=["Employee", ROLE_AR_PLANNER],
+		)
+		cls.ceo_user = h.make_user(
+			email=f"ar.v488.ceo.{suffix}@example.com",
+			roles=["Employee", ROLE_AR_EXECUTIVE],
+		)
+		cls.am_user = h.make_user(
+			email=f"ar.v488.am.{suffix}@example.com",
+			roles=["Employee", ROLE_ASSET_MANAGER],
+		)
+		cls.employee = h.make_employee(company_name=cls.company, user_id=cls.emp_user)
+		cls.item = h.make_fixed_asset_item(title="V488 Perm Item")
+
+	def _ready(self):
+		if getattr(self, "skip", None):
+			self.skipTest(self.skip)
+
+	def test_a_no_cancel_without_submit(self):
+		self._ready()
+		meta = frappe.get_meta("Asset Request")
+		invalid = [
+			p
+			for p in meta.permissions
+			if int(p.cancel or 0) and not int(p.submit or 0)
+		]
+		self.assertFalse(invalid, [(p.role, p.permlevel) for p in invalid])
+		db_invalid = frappe.get_all(
+			"DocPerm",
+			filters={"parent": "Asset Request", "cancel": 1, "submit": 0},
+			fields=["role", "permlevel"],
+		)
+		self.assertFalse(db_invalid, db_invalid)
+
+	def test_b_asset_manager_permlevel_1_is_field_level(self):
+		self._ready()
+		pl1 = frappe.get_all(
+			"DocPerm",
+			filters={"parent": "Asset Request", "role": ROLE_ASSET_MANAGER, "permlevel": 1},
+			fields=["read", "write", "create", "submit", "cancel", "amend", "delete"],
+		)
+		self.assertTrue(pl1)
+		for p in pl1:
+			self.assertTrue(int(p.read or 0))
+			self.assertTrue(int(p.write or 0))
+			self.assertFalse(int(p.create or 0))
+			self.assertFalse(int(p.submit or 0))
+			self.assertFalse(int(p.cancel or 0))
+			self.assertFalse(int(p.amend or 0))
+			self.assertFalse(int(p.delete or 0))
+		pl0 = frappe.get_all(
+			"DocPerm",
+			filters={"parent": "Asset Request", "role": ROLE_ASSET_MANAGER, "permlevel": 0},
+			fields=["submit", "cancel", "write"],
+		)
+		self.assertTrue(pl0)
+		self.assertTrue(any(int(p.submit or 0) and int(p.cancel or 0) and int(p.write or 0) for p in pl0))
+
+	def test_c_employee_role_can_be_saved_in_permission_manager(self):
+		self._ready()
+		from frappe.core.doctype.doctype.doctype import validate_permissions_for_doctype
+		from frappe.permissions import add_permission
+
+		validate_permissions_for_doctype("Asset Request")
+		try:
+			add_permission("Asset Request", "Employee", 0)
+		except frappe.ValidationError as exc:
+			self.fail(f"Adding Employee via Role Permissions Manager failed: {exc}")
+
+	def test_d_employee_can_create_own_draft(self):
+		self._ready()
+		frappe.set_user(self.emp_user)
+		try:
+			doc = frappe.get_doc(
+				{
+					"doctype": "Asset Request",
+					"company": self.company,
+					"employee": self.employee,
+					"transaction_date": frappe.utils.nowdate(),
+					"required_date": frappe.utils.nowdate(),
+					"purpose": "V488 employee draft",
+					"items": [{"requested_item_code": self.item, "qty": 1}],
+				}
+			)
+			doc.insert()
+			self.assertEqual(int(doc.docstatus or 0), 0)
+			self.assertEqual(doc.employee, self.employee)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_e_employee_can_submit_for_approval(self):
+		self._ready()
+		from frappe.model.workflow import apply_workflow
+
+		frappe.set_user(self.emp_user)
+		try:
+			doc = frappe.get_doc(
+				{
+					"doctype": "Asset Request",
+					"company": self.company,
+					"employee": self.employee,
+					"transaction_date": frappe.utils.nowdate(),
+					"required_date": frappe.utils.nowdate(),
+					"purpose": "V488 employee submit for approval",
+					"items": [{"requested_item_code": self.item, "qty": 1}],
+				}
+			)
+			doc.insert()
+			apply_workflow(doc, "AR Submit for Approval")
+			doc.reload()
+			self.assertEqual(doc.workflow_state, "Pending Manager Approval")
+			self.assertEqual(int(doc.docstatus or 0), 0)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_f_employee_cannot_direct_submit(self):
+		self._ready()
+		frappe.set_user(self.emp_user)
+		try:
+			doc = frappe.get_doc(
+				{
+					"doctype": "Asset Request",
+					"company": self.company,
+					"employee": self.employee,
+					"transaction_date": frappe.utils.nowdate(),
+					"required_date": frappe.utils.nowdate(),
+					"purpose": "V488 employee must not submit",
+					"items": [{"requested_item_code": self.item, "qty": 1}],
+				}
+			)
+			doc.insert()
+			with self.assertRaises((frappe.PermissionError, frappe.ValidationError)):
+				doc.submit()
+			doc.reload()
+			self.assertEqual(int(doc.docstatus or 0), 0)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_g_employee_cannot_call_fulfillment_rpcs(self):
+		self._ready()
+		doc = h.make_request(company_name=self.company, employee=self.employee, item_code=self.item)
+		h.submit_and_approve(doc)
+		frappe.set_user(self.emp_user)
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				check_availability(doc.name)
+			with self.assertRaises((frappe.PermissionError, frappe.ValidationError)):
+				issue_from_pool(doc.name, selections=[{"item_row": "x", "asset": "y"}])
+			with self.assertRaises(frappe.PermissionError):
+				request_purchase(doc.name)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_h_asset_manager_can_fulfill_after_approval(self):
+		self._ready()
+		item = h.make_fixed_asset_item()
+		h.make_pool_asset(item_code=item, company_name=self.company)
+		doc = h.make_request(company_name=self.company, employee=self.employee, item_code=item)
+		h.submit_and_approve(doc)
+		frappe.set_user(self.am_user)
+		try:
+			result = check_availability(doc.name)
+			self.assertGreaterEqual(result.get("available_asset_count") or 0, 1)
+			h.issue_from_pool(doc)
+		finally:
+			frappe.set_user("Administrator")
+		doc.reload()
+		self.assertTrue(doc.allocations)
+		self.assertTrue(doc.allocations[0].asset_movement)
+
+	def test_i_manager_planning_ceo_workflow_unchanged(self):
+		self._ready()
+		from frappe.model.workflow import apply_workflow
+
+		doc = h.make_request(company_name=self.company, employee=self.employee, item_code=self.item)
+		doc.manager_approver = self.mgr_user
+		doc.planning_approver = self.planner_user
+		doc.ceo_approver = self.ceo_user
+		doc.require_planning_approval = 1
+		doc.require_ceo_approval = 1
+		doc.save(ignore_permissions=True)
+		apply_workflow(frappe.get_doc("Asset Request", doc.name), "AR Submit for Approval")
+		frappe.set_user(self.mgr_user)
+		try:
+			apply_workflow(frappe.get_doc("Asset Request", doc.name), "AR Approve")
+		finally:
+			frappe.set_user("Administrator")
+		doc.reload()
+		self.assertEqual(doc.workflow_state, "Pending Planning Approval")
+		self.assertEqual(int(doc.docstatus or 0), 0)
+		frappe.set_user(self.planner_user)
+		try:
+			apply_workflow(frappe.get_doc("Asset Request", doc.name), "AR Approve")
+		finally:
+			frappe.set_user("Administrator")
+		doc.reload()
+		self.assertEqual(doc.workflow_state, "Pending CEO Approval")
+		frappe.set_user(self.ceo_user)
+		try:
+			apply_workflow(frappe.get_doc("Asset Request", doc.name), "AR Approve")
+		finally:
+			frappe.set_user("Administrator")
+		doc.reload()
+		self.assertEqual(doc.workflow_state, "Approved")
+		self.assertEqual(int(doc.docstatus), 1)

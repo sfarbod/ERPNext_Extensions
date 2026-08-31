@@ -103,7 +103,7 @@ def ensure_asset_request_workflow() -> None:
 		)
 
 	transitions = (
-		(WF_STATE_DRAFT, ACTION_SUBMIT, WF_STATE_PENDING_MANAGER, "Employee", None, 0),
+		(WF_STATE_DRAFT, ACTION_SUBMIT, WF_STATE_PENDING_MANAGER, "Employee", None, 1),
 		(WF_STATE_DRAFT, ACTION_SUBMIT, WF_STATE_PENDING_MANAGER, ROLE_ASSET_MANAGER, None, 0),
 		(WF_STATE_DRAFT, ACTION_SUBMIT, WF_STATE_PENDING_MANAGER, "System Manager", None, 1),
 		(
@@ -196,6 +196,21 @@ def _repair_workflow() -> None:
 	if not cint_is_active(w):
 		w.is_active = 1
 		w.save(ignore_permissions=True)
+	_enable_employee_self_submit()
+
+
+def _enable_employee_self_submit() -> None:
+	"""Requesters must be able to run Submit for Approval on their own Draft."""
+	if not frappe.db.exists("Workflow", WF_ASSET_REQUEST):
+		return
+	frappe.db.sql(
+		"""
+		update `tabWorkflow Transition`
+		set allow_self_approval=1
+		where parent=%s and action=%s and allowed=%s and ifnull(allow_self_approval,0)=0
+		""",
+		(WF_ASSET_REQUEST, ACTION_SUBMIT, "Employee"),
+	)
 
 
 def cint_is_active(w) -> bool:
