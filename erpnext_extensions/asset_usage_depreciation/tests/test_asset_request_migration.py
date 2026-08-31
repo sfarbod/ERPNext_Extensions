@@ -150,6 +150,45 @@ class TestAssetRequestMigration(unittest.TestCase):
 		self.assertIn("Asset Request Item", get_doctypes_with_dimensions())
 
 
+class TestAssetRequestPermPatchV488(unittest.TestCase):
+	def test_patch_strips_invalid_cancel_and_is_idempotent(self):
+		from erpnext_extensions.patches.post_model_sync.fix_asset_request_permlevel_permissions_v488 import (
+			execute,
+		)
+
+		if not frappe.db.exists("DocType", "Asset Request"):
+			self.skipTest("Asset Request DocType not migrated")
+
+		row_name = frappe.db.get_value(
+			"DocPerm",
+			{"parent": "Asset Request", "role": "Asset Manager", "permlevel": 1},
+			"name",
+		)
+		self.assertTrue(row_name)
+		before_count = frappe.db.count("DocPerm", {"parent": "Asset Request"})
+		frappe.db.set_value("DocPerm", row_name, {"cancel": 1, "submit": 0}, update_modified=False)
+		execute()
+		after = frappe.db.get_value(
+			"DocPerm",
+			row_name,
+			["cancel", "submit", "create", "amend", "delete", "read", "write"],
+			as_dict=True,
+		)
+		self.assertEqual(int(after.cancel or 0), 0)
+		self.assertEqual(int(after.submit or 0), 0)
+		self.assertEqual(int(after.create or 0), 0)
+		self.assertEqual(int(after.amend or 0), 0)
+		self.assertEqual(int(after.delete or 0), 0)
+		self.assertEqual(int(after.read or 0), 1)
+		self.assertEqual(int(after.write or 0), 1)
+		execute()
+		self.assertEqual(frappe.db.count("DocPerm", {"parent": "Asset Request"}), before_count)
+		self.assertEqual(
+			int(frappe.db.get_value("DocPerm", row_name, "cancel") or 0),
+			0,
+		)
+
+
 def cint_active(wf) -> int:
 	from frappe.utils import cint
 

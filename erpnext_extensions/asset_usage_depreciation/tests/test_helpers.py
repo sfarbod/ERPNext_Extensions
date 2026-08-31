@@ -40,7 +40,8 @@ def ensure_location(name: str = "Test Location") -> str:
 def ensure_asset_category(name: str = "Computers") -> str | None:
 	if frappe.db.exists("Asset Category", name):
 		return name
-	return None
+	row = frappe.get_all("Asset Category", pluck="name", limit=1)
+	return row[0] if row else None
 
 
 def make_isolated_category(tag: str) -> str:
@@ -50,7 +51,7 @@ def make_isolated_category(tag: str) -> str:
 		return name
 	src_name = ensure_asset_category()
 	if not src_name:
-		frappe.throw("Asset Category Computers missing")
+		frappe.throw("No Asset Category available")
 	src = frappe.get_doc("Asset Category", src_name)
 	doc = frappe.new_doc("Asset Category")
 	doc.asset_category_name = name
@@ -138,10 +139,11 @@ def ensure_settings(**values) -> None:
 		clear_optional_approvals(company_name)
 
 
-def make_fixed_asset_item(*, code: str | None = None, category: str = "Computers", title: str | None = None) -> str:
+def make_fixed_asset_item(*, code: str | None = None, category: str | None = None, title: str | None = None) -> str:
 	code = code or f"AUD-AR-{random_string(8)}"
 	if frappe.db.exists("Item", code):
 		return code
+	category = category or ensure_asset_category()
 	item = frappe.get_doc(
 		{
 			"doctype": "Item",
@@ -169,7 +171,7 @@ def make_pool_asset(*, item_code: str, company_name: str, asset_name: str | None
 		{
 			"doctype": "Asset",
 			"asset_name": asset_name or f"Pool {item_code} {random_string(4)}",
-			"asset_category": frappe.db.get_value("Item", item_code, "asset_category") or "Computers",
+			"asset_category": frappe.db.get_value("Item", item_code, "asset_category") or ensure_asset_category(),
 			"item_code": item_code,
 			"company": company_name,
 			"purchase_date": "2026-01-01",
@@ -178,11 +180,15 @@ def make_pool_asset(*, item_code: str, company_name: str, asset_name: str | None
 			"net_purchase_amount": 1000,
 			"purchase_amount": 1000,
 			"location": location,
+			"cost_center": company_cost_center(company_name),
 			"asset_owner": "Company",
 			"asset_type": "Existing Asset",
 			"asset_quantity": 1,
 		}
 	)
+	# This site uses prompt autoname for Asset.
+	asset.name = asset.asset_name
+	asset.flags.name_set = True
 	asset.insert(ignore_permissions=True)
 	asset.submit()
 	frappe.db.set_value("Asset", asset.name, "custodian", "")
@@ -200,6 +206,10 @@ def make_employee(*, company_name: str, user_id: str | None = None, reports_to: 
 		if reports_to:
 			frappe.db.set_value("Employee", existing, "reports_to", reports_to)
 		return existing
+	department = frappe.db.get_value("Department", {"company": company_name, "is_group": 0}, "name")
+	if not department:
+		department = frappe.db.get_value("Department", {"is_group": 0}, "name")
+	cost_center = company_cost_center(company_name)
 	doc = frappe.get_doc(
 		{
 			"doctype": "Employee",
@@ -212,6 +222,8 @@ def make_employee(*, company_name: str, user_id: str | None = None, reports_to: 
 			"date_of_joining": nowdate(),
 			"user_id": user_id,
 			"reports_to": reports_to,
+			"department": department,
+			"payroll_cost_center": cost_center,
 		}
 	)
 	doc.insert(ignore_permissions=True)
@@ -374,7 +386,7 @@ def skip_if_unready():
 	if not company():
 		return "No Company"
 	if not ensure_asset_category():
-		return "Asset Category Computers missing"
+		return "No Asset Category"
 	return None
 
 
@@ -401,6 +413,98 @@ def issue_from_pool(doc, selections=None, confirm_substitution=1):
 	_issue(doc.name, selections=selections, confirm_substitution=confirm_substitution)
 	doc.reload()
 	return doc
+
+
+def ensure_employee_asset_request_perms() -> None:
+	"""If Custom DocPerm overlays Asset Request, add missing standard JSON roles.
+
+	Frappe ignores tabDocPerm entirely when any Custom DocPerm row exists for
+	the doctype. This helper is additive: it never deletes or reduces existing
+	administrator Custom DocPerm rows, never grants Employee submit/cancel,
+	and never copies the full DocPerm table.
+	"""
+	from frappe.permissions import add_permission, update_permission_property
+	from frappe.utils import cint
+
+	if not frappe.db.exists("Custom DocPerm", {"parent": "Asset Request"}):
+		return
+
+	intended = (
+		(
+			"Employee",
+			0,
+			{"read": 1, "write": 1, "create": 1, "delete": 1, "print": 1, "email": 1, "report": 1},
+			("submit", "cancel", "amend"),
+		),
+		(
+			"Asset Request Manager",
+			0,
+			{"read": 1, "write": 1, "submit": 1, "print": 1, "email": 1, "report": 1},
+			(),
+		),
+		(
+			"Asset Request Planner",
+			0,
+			{"read": 1, "write": 1, "submit": 1, "print": 1, "email": 1, "report": 1},
+			(),
+		),
+		(
+			"Asset Request Executive",
+			0,
+			{"read": 1, "write": 1, "submit": 1, "print": 1, "email": 1, "report": 1},
+			(),
+		),
+		(
+			"Asset Manager",
+			0,
+			{
+				"read": 1,
+				"write": 1,
+				"create": 1,
+				"submit": 1,
+				"cancel": 1,
+				"amend": 1,
+				"export": 1,
+				"print": 1,
+				"email": 1,
+				"report": 1,
+			},
+			(),
+		),
+		(
+			"Asset Manager",
+			1,
+			{"read": 1, "write": 1, "export": 1, "print": 1, "email": 1, "report": 1},
+			("create", "submit", "cancel", "amend", "delete"),
+		),
+	)
+	for role, permlevel, flags, denied in intended:
+		exists = frappe.db.exists(
+			"Custom DocPerm",
+			{"parent": "Asset Request", "role": role, "permlevel": permlevel},
+		)
+		if not exists:
+			add_permission("Asset Request", role, permlevel, ptype="read")
+		for ptype, value in flags.items():
+			current = cint(
+				frappe.db.get_value(
+					"Custom DocPerm",
+					{"parent": "Asset Request", "role": role, "permlevel": permlevel},
+					ptype,
+				)
+			)
+			if current != cint(value):
+				update_permission_property("Asset Request", role, permlevel, ptype, value, validate=True)
+		for ptype in denied:
+			if cint(
+				frappe.db.get_value(
+					"Custom DocPerm",
+					{"parent": "Asset Request", "role": role, "permlevel": permlevel},
+					ptype,
+				)
+			):
+				update_permission_property("Asset Request", role, permlevel, ptype, 0, validate=True)
+	frappe.clear_cache(doctype="Asset Request")
 
 
 def request_purchase(doc):

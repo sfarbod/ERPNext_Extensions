@@ -44,24 +44,37 @@ class TestAssetUsageDashboard(unittest.TestCase):
 		from frappe.utils import random_string
 
 		from erpnext_extensions.asset_usage_depreciation.custom_fields import ensure_custom_fields
+		from erpnext_extensions.asset_usage_depreciation.tests import test_helpers as h
 
 		ensure_custom_fields()
+		company_name = h.company()
+		if not company_name:
+			self.skipTest("No Company")
+		if not h.ensure_asset_category():
+			self.skipTest("No Asset Category")
 
 		def make_asset(suffix):
+			# Isolated company/item/category/location — this site has no
+			# `_Test Company` / `Macbook Pro` / `Computers` fixtures.
+			item_code = h.make_fixed_asset_item(
+				code=f"AUD-Dash-Item-{suffix}-{random_string(4)}"
+			)
+			asset_name = f"AUD-Dash-{suffix}-{random_string(4)}"
 			asset = frappe.get_doc(
 				{
 					"doctype": "Asset",
-					"asset_name": f"AUD-Dash-{suffix}-{random_string(4)}",
-					"asset_category": "Computers",
-					"item_code": "Macbook Pro",
-					"company": "_Test Company",
+					"asset_name": asset_name,
+					"asset_category": frappe.db.get_value("Item", item_code, "asset_category")
+					or h.ensure_asset_category(),
+					"item_code": item_code,
+					"company": company_name,
 					"purchase_date": "2026-01-01",
 					"available_for_use_date": "2026-01-01",
 					"calculate_depreciation": 1,
 					"net_purchase_amount": 120000,
 					"purchase_amount": 120000,
-					"warehouse": "_Test Warehouse - _TC",
-					"location": "Test Location",
+					"location": h.ensure_location(),
+					"cost_center": h.company_cost_center(company_name),
 					"asset_owner": "Company",
 					"asset_type": "Existing Asset",
 					"asset_quantity": 1,
@@ -78,7 +91,9 @@ class TestAssetUsageDashboard(unittest.TestCase):
 					],
 				}
 			)
-			asset.insert()
+			asset.name = asset_name
+			asset.flags.name_set = True
+			asset.insert(ignore_permissions=True)
 			asset.submit()
 			return asset
 
