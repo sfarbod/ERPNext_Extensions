@@ -202,6 +202,13 @@ def compute_pm_request_action_flags(doc: Document) -> dict:
 
 	can_create, create_block_reason = request_ready_for_payment_entry(doc)
 	can_close, close_block_reason = close_pm_request_action_flags(doc)
+	from erpnext_extensions.petty_management.services.request_lifecycle_eligibility import (
+		cancel_pm_request_action_flags,
+		delete_pm_request_action_flags,
+	)
+
+	can_cancel, cancel_block_reason = cancel_pm_request_action_flags(doc)
+	can_delete, delete_block_reason = delete_pm_request_action_flags(doc)
 
 	transitions = get_allowed_workflow_actions(doc)
 	actions = [t.get("action") for t in transitions if t.get("action")]
@@ -254,6 +261,10 @@ def compute_pm_request_action_flags(doc: Document) -> dict:
 		"can_open_payment_entry": False,
 		"can_close_pm_request": bool(can_close),
 		"close_block_reason": close_block_reason or "",
+		"can_cancel_pm_request": bool(can_cancel),
+		"cancel_block_reason": cancel_block_reason or "",
+		"can_delete_pm_request": bool(can_delete),
+		"delete_block_reason": delete_block_reason or "",
 		"can_reject": bool(can_reject_wf),
 		"reject_block_reason": reject_block_reason or "",
 		"submitted_payment_entry_count": submitted_pe_count,

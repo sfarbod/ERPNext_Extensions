@@ -1,5 +1,5 @@
 frappe.listview_settings["PM Clearance"] = {
-	add_fields: ["status", "journal_entry"],
+	add_fields: ["status", "journal_entry", "remark"],
 	get_indicator(doc) {
 		const lifecycle = (doc.status || "").trim();
 		const colors = {

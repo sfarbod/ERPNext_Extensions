@@ -37,6 +37,22 @@ def on_journal_entry_submit(doc, method=None):
 			)
 		except Exception:
 			pass
+	_notify_pm_requests_for_journal_entry(doc.name, "on_journal_entry_submitted")
+
+
+def _notify_pm_requests_for_journal_entry(je_name: str, event: str) -> None:
+	from erpnext_extensions.petty_management.services.funding_queries import (
+		find_pm_requests_for_journal_entry,
+	)
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		notify_pm_request_funding_updated,
+	)
+
+	for name in find_pm_requests_for_journal_entry(je_name):
+		try:
+			notify_pm_request_funding_updated(name, event)
+		except Exception:
+			pass
 
 
 def on_journal_entry_before_cancel(doc, method=None):
@@ -90,3 +106,4 @@ def on_journal_entry_before_cancel(doc, method=None):
 		frappe.db.set_value("PM Clearance", cl_name, {"journal_entry": None}, update_modified=False)
 		cl = frappe.get_doc("PM Clearance", cl_name)
 		sync_clearance_lifecycle(cl, persist=True)
+	_notify_pm_requests_for_journal_entry(doc.name, "on_journal_entry_cancelled")

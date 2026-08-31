@@ -203,6 +203,10 @@ function bind_pm_request_funding_realtime(frm) {
 			active._pm_pe_response_version = String(data.response_version_id);
 		}
 		active.trigger("refresh_payment_entry_list");
+		if (active.dashboard) {
+			active.dashboard._fetched_counts = false;
+			active.dashboard.set_open_count();
+		}
 		schedule_pm_request_toolbar(active);
 	});
 }
@@ -249,6 +253,8 @@ function apply_pm_request_action_ui(frm, f) {
 	frm._pm_action_flags = f || {};
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, f);
+	suppress_generic_frappe_cancel_button(frm);
+	suppress_generic_frappe_delete_button(frm);
 	apply_pm_request_intro(frm, f);
 	// Rebuild workflow Actions with can_reject filter (survives clear_actions_menu races).
 	if (erpnext_extensions?.petty_management?.refresh_workflow_actions) {
@@ -263,6 +269,7 @@ window.pm_request_reapply_custom_toolbar = function (frm) {
 	}
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, frm._pm_action_flags);
+	apply_pm_request_page_actions(frm, frm._pm_action_flags);
 };
 
 function apply_pm_request_pe_list_payload(frm, $wrapper, payload, currency) {
@@ -401,9 +408,8 @@ function apply_pm_request_toolbar(frm, f) {
 		);
 	};
 
-	// Use add_custom_button (not page.add_action_item): Frappe workflow show_actions()
-	// calls clear_actions_menu() and would wipe custom funding actions.
 	// Gate funding actions on server business flags (finance-cleared), not workflow title literals.
+	// Cancel/Delete use frm.page.add_action_item via pm_request_reapply_custom_toolbar (standard Actions menu).
 	if (!cint(f.is_closed)) {
 		if (f.can_create_payment_entry) {
 			add_pm_request_toolbar_button(frm, __("Create Payment Entry"), promptCreatePe);
@@ -415,10 +421,97 @@ function apply_pm_request_toolbar(frm, f) {
 			add_pm_request_toolbar_button(frm, __("Close PM Request"), runClose);
 		}
 	}
-	if (f.can_view_payment_entries) {
-		add_pm_request_toolbar_button(frm, __("View Payment Entries"), () =>
-			route_pm_request_payment_entries(frm, f)
-		);
+}
+
+function apply_pm_request_page_actions(frm, f) {
+	if (!frm.page || typeof frm.page.add_action_item !== "function") {
+		return;
+	}
+	if (f.can_cancel_pm_request) {
+		frm.page.add_action_item(__("Cancel PM Request"), () => runCancelPmRequest(frm));
+	}
+	if (f.can_delete_pm_request) {
+		frm.page.add_action_item(__("Delete PM Request"), () => runDeletePmRequest(frm));
+	}
+}
+
+function runCancelPmRequest(frm) {
+	frappe.confirm(__("Cancel this PM Request?"), () => {
+		frappe.call({
+			method: "erpnext_extensions.petty_management.doctype.pm_request.pm_request.cancel_pm_request",
+			args: { pm_request: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Cancelling PM Request…"),
+			callback(r) {
+				if (r.exc) {
+					return;
+				}
+				frappe.show_alert({ message: __("PM Request cancelled"), indicator: "orange" });
+				frm.reload_doc();
+			},
+			error(r) {
+				frappe.msgprint({
+					title: __("Cancel failed"),
+					message: parse_pm_request_server_error(r),
+					indicator: "red",
+				});
+			},
+		});
+	});
+}
+
+function runDeletePmRequest(frm) {
+	frappe.confirm(__("Delete this PM Request permanently?"), () => {
+		frappe.call({
+			method: "erpnext_extensions.petty_management.doctype.pm_request.pm_request.delete_pm_request",
+			args: { pm_request: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Deleting PM Request…"),
+			callback(r) {
+				if (r.exc) {
+					return;
+				}
+				frappe.show_alert({ message: __("PM Request deleted"), indicator: "green" });
+				frappe.set_route("List", "PM Request");
+			},
+			error(r) {
+				frappe.msgprint({
+					title: __("Delete failed"),
+					message: parse_pm_request_server_error(r),
+					indicator: "red",
+				});
+			},
+		});
+	});
+}
+
+function suppress_generic_frappe_cancel_button(frm) {
+	// v4.8.5: business Cancel PM Request replaces Frappe Cancel (DocPerm-independent).
+	if (!frm.page) {
+		return;
+	}
+	if (frm.page.btn_secondary && frm.page.btn_secondary.length) {
+		const label = (frm.page.btn_secondary.text() || "").trim();
+		if (/^Cancel$/i.test(label)) {
+			frm.page.clear_secondary_action();
+		}
+	}
+	if (frm.page.menu) {
+		frm.page.menu.find('a[data-label="Cancel"]').parent().hide();
+	}
+	if (frm.page.menu_btn_group) {
+		frm.page.menu_btn_group.find('a[data-label="Cancel"]').parent().hide();
+	}
+}
+
+function suppress_generic_frappe_delete_button(frm) {
+	// v4.8.6: business Delete PM Request replaces Frappe Delete (DocPerm-independent).
+	if (!frm.page || !frm.page.menu) {
+		return;
+	}
+	frm.page.menu.find('a[data-label="Delete"]').parent().hide();
+	if (frm.page.menu_btn_group) {
+		frm.page.menu_btn_group.find('a[data-label="Delete"]').parent().hide();
 	}
 }
 
@@ -524,15 +617,14 @@ function remove_pm_request_toolbar_buttons(frm) {
 		"Open Payment Entry",
 		"View Payment Entries",
 		"Close PM Request",
+		"Cancel PM Request",
+		"Delete PM Request",
 	];
 	labels.forEach((raw) => {
 		const L = __(raw);
 		frm.remove_custom_button(L);
-		frm.remove_custom_button(L, __("Actions"));
 		if (frm.page) {
 			frm.page.remove_inner_button(L);
-			frm.page.remove_inner_button(L, __("Actions"));
-			// Legacy cleanup if an older build left items in the workflow Actions menu.
 			if (frm.page.actions) {
 				const enc = encodeURIComponent(L);
 				frm.page.actions.find(`a.dropdown-item[data-label="${enc}"]`).remove();

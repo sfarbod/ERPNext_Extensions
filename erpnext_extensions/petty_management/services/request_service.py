@@ -531,3 +531,59 @@ def close_pm_request(
 	from erpnext_extensions.petty_management.services.funding_service import close_pm_request as _close
 
 	_close(pm_request, close_reason=close_reason, close_reason_detail=close_reason_detail)
+
+
+def cancel_pm_request(pm_request: str) -> None:
+	"""v4.8.5 — business Cancel PM Request (DocPerm-independent; reuses v4.6.8 eligibility)."""
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		get_pm_request_doc_for_write,
+	)
+	from erpnext_extensions.petty_management.services.request_lifecycle_eligibility import (
+		assert_pm_request_cancel_allowed,
+		cancel_pm_request_action_flags,
+		user_may_execute_pm_request_cancel,
+	)
+
+	doc = get_pm_request_doc_for_write(pm_request)
+	if not user_may_execute_pm_request_cancel(doc):
+		frappe.throw(_("Not permitted to cancel this PM Request."), frappe.PermissionError)
+	can_cancel, reason = cancel_pm_request_action_flags(doc)
+	if not can_cancel:
+		if reason:
+			frappe.throw(reason, title=_("Cannot cancel PM Request"))
+		frappe.throw(_("Cannot cancel PM Request."), title=_("Cannot cancel PM Request"))
+	assert_pm_request_cancel_allowed(doc)
+
+	doc.flags.ignore_permissions = True
+	try:
+		doc.cancel()
+	finally:
+		doc.flags.ignore_permissions = False
+
+
+def delete_pm_request(pm_request: str) -> None:
+	"""v4.8.6 — business Delete PM Request (DocPerm-independent; reuses v4.6.8 eligibility)."""
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		get_pm_request_doc_for_write,
+	)
+	from erpnext_extensions.petty_management.services.request_lifecycle_eligibility import (
+		assert_pm_request_delete_allowed,
+		delete_pm_request_action_flags,
+		user_may_execute_pm_request_delete,
+	)
+
+	doc = get_pm_request_doc_for_write(pm_request)
+	if not user_may_execute_pm_request_delete(doc):
+		frappe.throw(_("Not permitted to delete this PM Request."), frappe.PermissionError)
+	can_delete, reason = delete_pm_request_action_flags(doc)
+	if not can_delete:
+		if reason:
+			frappe.throw(reason, title=_("Cannot delete PM Request"))
+		frappe.throw(_("Cannot delete PM Request."), title=_("Cannot delete PM Request"))
+	assert_pm_request_delete_allowed(doc)
+
+	doc.flags.ignore_permissions = True
+	try:
+		doc.delete()
+	finally:
+		doc.flags.ignore_permissions = False
