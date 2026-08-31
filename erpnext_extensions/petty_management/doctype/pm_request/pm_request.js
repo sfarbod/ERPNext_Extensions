@@ -613,44 +613,76 @@ function render_pm_request_payment_entry_table($wrapper, rows, currency, opts) {
 	$wrapper.html(html);
 }
 
-function render_pm_request_connection_card(title, rowCount, bodyHtml, emptyMessage) {
+function pm_request_indicator_pill(text, kind) {
 	const esc = frappe.utils.escape_html;
-	let html = `<div class="card pm-conn-card mb-3">`;
-	html += `<div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">`;
-	html += `<span class="fw-semibold">${esc(title)}</span>`;
-	html += `<span class="badge badge-secondary">${rowCount}</span>`;
-	html += `</div>`;
-	if (rowCount === 0) {
-		html += `<div class="card-body py-2 px-3 text-muted small">${esc(emptyMessage)}</div>`;
-	} else {
-		html += `<div class="card-body p-0">${bodyHtml}</div>`;
+	const value = (text || "").trim();
+	if (!value || value === "—") {
+		return `<span class="text-muted">—</span>`;
 	}
-	html += `</div>`;
+	const paymentColors = {
+		"Not Paid": "orange",
+		"Partially Paid": "yellow",
+		Paid: "green",
+	};
+	const docstatusColors = {
+		Draft: "orange",
+		Submitted: "blue",
+		Cancelled: "red",
+	};
+	let color = "gray";
+	if (kind === "payment") {
+		color = paymentColors[value] || "gray";
+	} else if (kind === "docstatus") {
+		color = docstatusColors[value] || "gray";
+	} else if (value === "Closed") {
+		color = "blue";
+	} else if (value === "Cancelled" || value === "Rejected") {
+		color = "red";
+	} else if (/paid|approved|waiting for payment/i.test(value)) {
+		color = "green";
+	}
+	return `<span class="indicator-pill ${color}">${esc(value)}</span>`;
+}
+
+function pm_request_connections_section(title, rowCount, tableHtml, emptyMessage) {
+	const esc = frappe.utils.escape_html;
+	const countHtml =
+		rowCount > 0 ? `<span class="text-muted small">(${rowCount})</span>` : "";
+	let html = `<div class="form-section hide-border">`;
+	html += `<div class="section-head">${esc(title)} ${countHtml}</div>`;
+	html += `<div class="section-body">`;
+	if (rowCount === 0) {
+		html += `<p class="text-muted small mb-0">${esc(emptyMessage)}</p>`;
+	} else {
+		html += tableHtml;
+	}
+	html += `</div></div>`;
 	return html;
 }
 
-function render_pm_request_summary_cards(summary, currency) {
+function pm_request_summary_section(summary, currency) {
 	const esc = frappe.utils.escape_html;
-	const cards = [
+	const fields = [
 		[__("Requested"), format_currency(summary.total_requested, currency)],
 		[__("Paid"), format_currency(summary.total_paid, currency)],
 		[__("Remaining"), format_currency(summary.remaining_to_pay, currency)],
 		[__("Allocated"), format_currency(summary.allocated_amount, currency)],
 		[__("Available"), format_currency(summary.available_for_clearance, currency)],
-		[__("Payment Status"), esc(summary.payment_status || "—")],
-		[__("Status"), esc(summary.status || "—")],
+		[
+			__("Payment Status"),
+			pm_request_indicator_pill(summary.payment_status, "payment"),
+		],
+		[__("Status"), pm_request_indicator_pill(summary.status, "lifecycle")],
 	];
-	let html = `<div class="card pm-conn-card mb-3">`;
-	html += `<div class="card-header py-2 px-3"><span class="fw-semibold">${__(
-		"Usage Summary"
-	)}</span></div>`;
-	html += `<div class="card-body py-2 px-3"><div class="row g-2">`;
-	cards.forEach(([label, value]) => {
-		html += `<div class="col-6 col-md-4 col-xl-3">`;
-		html += `<div class="border rounded px-2 py-2 pm-conn-stat h-100">`;
-		html += `<div class="text-muted text-uppercase" style="font-size:10px;letter-spacing:.04em;line-height:1.2">${label}</div>`;
-		html += `<div class="fw-semibold mt-1" style="font-size:13px;line-height:1.3">${value}</div>`;
-		html += `</div></div>`;
+	let html = `<div class="form-section hide-border">`;
+	html += `<div class="section-head">${__("Usage Summary")}</div>`;
+	html += `<div class="section-body"><div class="row">`;
+	fields.forEach(([label, value]) => {
+		html += `<div class="col-sm-4">`;
+		html += `<div class="frappe-control"><div class="form-group">`;
+		html += `<div class="clearfix"><label class="control-label">${label}</label></div>`;
+		html += `<div class="control-value like-disabled-input for-display">${value}</div>`;
+		html += `</div></div></div>`;
 	});
 	html += `</div></div></div>`;
 	return html;
@@ -671,10 +703,10 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 	const summary = data.summary || {};
 	let html = `<div class="pm-request-connections">`;
 
-	html += render_pm_request_summary_cards(summary, currency);
+	html += pm_request_summary_section(summary, currency);
 
 	const peRows = Array.isArray(data.payment_entries) ? data.payment_entries : [];
-	let peTable = `<table class="table table-bordered table-sm mb-0">`;
+	let peTable = `<table class="table table-bordered table-sm" style="margin-top:0">`;
 	peTable += `<thead><tr><th>${__("Payment Entry")}</th><th>${__("Status")}</th><th>${__(
 		"Amount"
 	)}</th><th>${__("Posting Date")}</th></tr></thead><tbody>`;
@@ -682,12 +714,15 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 		const link = `<a href="/app/payment-entry/${encodeURIComponent(
 			row.payment_entry
 		)}">${esc(row.payment_entry)}</a>`;
-		peTable += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
+		peTable += `<tr><td>${link}</td><td>${pm_request_indicator_pill(
+			row.status,
+			"docstatus"
+		)}</td>`;
 		peTable += `<td>${format_currency(row.amount, currency)}</td>`;
 		peTable += `<td>${esc(row.posting_date || "")}</td></tr>`;
 	});
 	peTable += `</tbody></table>`;
-	html += render_pm_request_connection_card(
+	html += pm_request_connections_section(
 		__("Payment Entries"),
 		peRows.length,
 		peTable,
@@ -695,7 +730,7 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 	);
 
 	const clRows = Array.isArray(data.clearances) ? data.clearances : [];
-	let clTable = `<table class="table table-bordered table-sm mb-0">`;
+	let clTable = `<table class="table table-bordered table-sm" style="margin-top:0">`;
 	clTable += `<thead><tr><th>${__("Clearance")}</th><th>${__("Status")}</th><th>${__(
 		"Workflow State"
 	)}</th><th>${__("Docstatus")}</th><th>${__("Allocated Amount")}</th><th>${__(
@@ -706,12 +741,15 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 			row.clearance
 		)}">${esc(row.clearance)}</a>`;
 		clTable += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
-		clTable += `<td>${esc(row.workflow_state || "")}</td><td>${esc(row.docstatus || "")}</td>`;
+		clTable += `<td>${esc(row.workflow_state || "")}</td><td>${pm_request_indicator_pill(
+			row.docstatus,
+			"docstatus"
+		)}</td>`;
 		clTable += `<td>${format_currency(row.allocated_amount, currency)}</td>`;
 		clTable += `<td>${esc(row.settlement_status || "")}</td></tr>`;
 	});
 	clTable += `</tbody></table>`;
-	html += render_pm_request_connection_card(
+	html += pm_request_connections_section(
 		__("PM Clearances"),
 		clRows.length,
 		clTable,
@@ -719,7 +757,7 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 	);
 
 	const jeRows = Array.isArray(data.journal_entries) ? data.journal_entries : [];
-	let jeTable = `<table class="table table-bordered table-sm mb-0">`;
+	let jeTable = `<table class="table table-bordered table-sm" style="margin-top:0">`;
 	jeTable += `<thead><tr><th>${__("Journal Entry")}</th><th>${__("Docstatus")}</th><th>${__(
 		"Posting Date"
 	)}</th><th>${__("Amount")}</th><th>${__("Reference")}</th></tr></thead><tbody>`;
@@ -727,13 +765,16 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 		const link = `<a href="/app/journal-entry/${encodeURIComponent(
 			row.journal_entry
 		)}">${esc(row.journal_entry)}</a>`;
-		jeTable += `<tr><td>${link}</td><td>${esc(row.docstatus || "")}</td>`;
+		jeTable += `<tr><td>${link}</td><td>${pm_request_indicator_pill(
+			row.docstatus,
+			"docstatus"
+		)}</td>`;
 		jeTable += `<td>${esc(row.posting_date || "")}</td>`;
 		jeTable += `<td>${format_currency(row.amount, currency)}</td>`;
 		jeTable += `<td>${esc(row.reference || "")}</td></tr>`;
 	});
 	jeTable += `</tbody></table>`;
-	html += render_pm_request_connection_card(
+	html += pm_request_connections_section(
 		__("Journal Entries"),
 		jeRows.length,
 		jeTable,

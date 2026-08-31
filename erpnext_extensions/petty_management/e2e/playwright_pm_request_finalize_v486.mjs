@@ -184,23 +184,63 @@ async function waitForConnectionsRender(page) {
   }
 }
 
-async function connectionsHasRows(page, cardTitle) {
+async function detailsIsDefaultTab(page) {
+  return page.evaluate(() => {
+    const active = document.querySelector(".form-tabs-list .nav-link.active");
+    return active && /^Details$/i.test((active.innerText || "").trim());
+  });
+}
+
+async function connectionsHasRows(page, sectionTitle) {
   return page.evaluate((title) => {
     const root = document.querySelector(".pm-request-connections");
     if (!root) {
       return false;
     }
-    const cards = [...root.querySelectorAll(".pm-conn-card")];
-    const card = cards.find((c) =>
-      (c.innerText || "").toLowerCase().includes(title.toLowerCase())
-    );
-    if (!card) {
+    const sections = [...root.querySelectorAll(".form-section")];
+    const section = sections.find((s) => {
+      const head = s.querySelector(".section-head");
+      return head && (head.innerText || "").toLowerCase().includes(title.toLowerCase());
+    });
+    if (!section) {
       return false;
     }
-    const badge = card.querySelector(".badge");
-    const count = badge ? parseInt(badge.innerText, 10) : 0;
-    return count > 0 && card.querySelector("tbody tr") !== null;
-  }, cardTitle);
+    return section.querySelector("tbody tr") !== null;
+  }, sectionTitle);
+}
+
+async function connectionsUsesNativeSections(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".pm-request-connections");
+    if (!root) {
+      return false;
+    }
+    return (
+      root.querySelectorAll(".pm-conn-card, .card").length === 0 &&
+      root.querySelectorAll(".form-section").length >= 4
+    );
+  });
+}
+
+async function connectionLinksValid(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".pm-request-connections");
+    if (!root) {
+      return { ok: false };
+    }
+    const links = [...root.querySelectorAll("a[href]")];
+    const pe = links.some((a) => (a.getAttribute("href") || "").includes("/app/payment-entry/"));
+    const cl = links.some((a) => (a.getAttribute("href") || "").includes("/app/pm-clearance/"));
+    return {
+      ok:
+        pe &&
+        cl &&
+        links.every((a) => (a.getAttribute("href") || "").startsWith("/app/")),
+      pe,
+      cl,
+      count: links.length,
+    };
+  });
 }
 
 async function connectionsTabIsTraceabilityOnly(page) {
@@ -315,7 +355,6 @@ async function main() {
         });
         const cancelInActions = await isActionsMenuItemVisible(page, "Cancel PM Request");
         const deleteHiddenAcct = !(await isActionsMenuItemVisible(page, "Delete PM Request"));
-        await shot(page, "01_accountant_actions_before_cancel");
         results.push({
           test: "accountant_cancel_in_actions_not_delete",
           pass: cancelInActions && deleteHiddenAcct,
@@ -360,13 +399,26 @@ async function main() {
         );
         await login(page, connCtx.user.email, connCtx.user.password);
         await openPmRequest(page, connCtx.pm_request);
+        const defaultDetails = await detailsIsDefaultTab(page);
+        await shot(page, "01_details_default");
+        results.push({
+          test: "details_is_default_tab",
+          pass: defaultDetails,
+          defaultDetails,
+        });
+
+        await openActionsMenu(page);
+        await shot(page, "04_actions_menu");
+
         const tabVisible = await openConnectionsTab(page);
         const rendered = await waitForConnectionsRender(page);
         const peRows = rendered ? await connectionsHasRows(page, "Payment Entries") : false;
         const clRows = rendered ? await connectionsHasRows(page, "PM Clearances") : false;
         const audit = rendered ? await connectionsAudit(page) : { ok: false };
         const traceOnly = tabVisible ? await connectionsTabIsTraceabilityOnly(page) : false;
-        await shot(page, "03_connections_tab_populated");
+        const nativeStyle = rendered ? await connectionsUsesNativeSections(page) : false;
+        const links = rendered ? await connectionLinksValid(page) : { ok: false };
+        await shot(page, "02_connections_populated");
         results.push({
           test: "connections_tab_pe_and_clearance",
           pass:
@@ -375,6 +427,8 @@ async function main() {
             clRows &&
             audit.ok &&
             traceOnly &&
+            nativeStyle &&
+            links.ok &&
             connCtx.expected_pe_count >= 1 &&
             connCtx.expected_clearance_count >= 1,
           tabVisible,
@@ -383,6 +437,8 @@ async function main() {
           clRows,
           audit,
           traceOnly,
+          nativeStyle,
+          links,
           connCtx,
         });
 
@@ -395,7 +451,7 @@ async function main() {
         const emptyRendered = await waitForConnectionsRender(page);
         const emptyOk = emptyRendered ? await connectionsEmptyState(page) : false;
         const emptyTraceOnly = await connectionsTabIsTraceabilityOnly(page);
-        await shot(page, "04_connections_tab_empty");
+        await shot(page, "03_connections_empty");
         results.push({
           test: "connections_empty_state",
           pass: emptyRendered && emptyOk && emptyTraceOnly,
