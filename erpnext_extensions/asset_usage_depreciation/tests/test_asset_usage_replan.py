@@ -33,11 +33,16 @@ from erpnext_extensions.asset_usage_depreciation.services.accounting_amounts imp
 from erpnext_extensions.asset_usage_depreciation.services.replan_service import (
 	replan_asset_usage_depreciation,
 )
+from erpnext_extensions.asset_usage_depreciation.tests.replan_fixtures import ensure_replan_fixtures
 
 
-def _ensure_company_handling(company: str, handling: str):
+def _fx() -> dict:
+	return ensure_replan_fixtures()
+
+
+def _ensure_company_handling(handling: str):
 	ensure_custom_fields()
-	frappe.db.set_value("Company", company, COMPANY_FIELD_REDUCED_HANDLING, handling)
+	frappe.db.set_value("Company", _fx()["company"], COMPANY_FIELD_REDUCED_HANDLING, handling)
 
 
 def _unique_asset_name(prefix: str) -> str:
@@ -45,7 +50,8 @@ def _unique_asset_name(prefix: str) -> str:
 
 
 def _make_sl_asset(**kwargs):
-	company = kwargs.get("company") or "_Test Company"
+	fx = _fx()
+	company = kwargs.get("company") or fx["company"]
 	asset_name = kwargs.get("asset_name") or _unique_asset_name("AUD-Asset")
 
 	finance_books = kwargs.get("finance_books")
@@ -64,27 +70,34 @@ def _make_sl_asset(**kwargs):
 			}
 		]
 
-	asset = frappe.get_doc(
-		{
-			"doctype": "Asset",
-			"asset_name": asset_name,
-			"asset_category": "Computers",
-			"item_code": kwargs.get("item_code") or "Macbook Pro",
-			"company": company,
-			"purchase_date": kwargs.get("purchase_date") or "2026-01-01",
-			"available_for_use_date": kwargs.get("available_for_use_date") or "2026-01-01",
-			"calculate_depreciation": 1,
-			"net_purchase_amount": kwargs.get("net_purchase_amount") or 120000,
-			"purchase_amount": kwargs.get("purchase_amount") or 120000,
-			"warehouse": kwargs.get("warehouse") or "_Test Warehouse - _TC",
-			"location": kwargs.get("location") or "Test Location",
-			"asset_owner": "Company",
-			"asset_type": "Existing Asset",
-			"asset_quantity": 1,
-			"finance_books": finance_books,
-		}
-	)
-	asset.insert()
+	payload = {
+		"doctype": "Asset",
+		"asset_name": asset_name,
+		"asset_category": kwargs.get("asset_category") or fx["asset_category"],
+		"item_code": kwargs.get("item_code") or fx["item_code"],
+		"company": company,
+		"purchase_date": kwargs.get("purchase_date") or "2026-01-01",
+		"available_for_use_date": kwargs.get("available_for_use_date") or "2026-01-01",
+		"calculate_depreciation": 1,
+		"net_purchase_amount": kwargs.get("net_purchase_amount") or 120000,
+		"purchase_amount": kwargs.get("purchase_amount") or 120000,
+		"location": kwargs.get("location") or fx["location"],
+		"asset_owner": "Company",
+		"asset_type": "Existing Asset",
+		"asset_quantity": 1,
+		"finance_books": finance_books,
+	}
+	meta = frappe.get_meta("Asset")
+	if meta.has_field("cost_center"):
+		payload["cost_center"] = kwargs.get("cost_center") or fx["cost_center"]
+	if meta.has_field("warehouse"):
+		payload["warehouse"] = kwargs.get("warehouse") or fx.get("warehouse")
+	asset = frappe.get_doc(payload)
+	if (meta.autoname or "") == "prompt":
+		asset.name = asset_name
+		asset.flags.name_set = True
+	asset.flags.ignore_permissions = True
+	asset.insert(ignore_permissions=True)
 	asset.submit()
 	return asset
 
@@ -185,12 +198,14 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
 		ensure_custom_fields()
+		ensure_replan_fixtures()
+		frappe.db.commit()
 
 	def tearDown(self):
 		frappe.db.rollback()
 
 	def test_monthly_percentage_extend_does_not_inflate_next(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads = _active_schedule(asset.name)
 		standard = to_depr_amount(ads.depreciation_schedule[0].depreciation_amount)
@@ -215,7 +230,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 		self.assertEqual(sum(to_depr_amount(a) for a in _unposted_amounts(ads)), remaining)
 
 	def test_mid_month_non_daily_uses_schedule_date(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads = _active_schedule(asset.name)
 		apr_before = next(
@@ -231,7 +246,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 
 	def test_mode_b_factors_rows_and_balances_final(self):
 		"""Fixed-end: reduced month stays reduced; later months stay standard; final balances."""
-		_ensure_company_handling("_Test Company", HANDLING_ADJUST_FINAL)
+		_ensure_company_handling(HANDLING_ADJUST_FINAL)
 		asset = _make_sl_asset()
 		ads_before = _active_schedule(asset.name)
 		end_before = getdate(ads_before.depreciation_schedule[-1].schedule_date)
@@ -261,7 +276,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 
 	def test_mode_b_no_depreciation_absorbed_by_final(self):
 		"""No Depreciation zeros applicable rows; final balancing row absorbs remaining value."""
-		_ensure_company_handling("_Test Company", HANDLING_ADJUST_FINAL)
+		_ensure_company_handling(HANDLING_ADJUST_FINAL)
 		asset = _make_sl_asset()
 		count_before = len(_active_schedule(asset.name).depreciation_schedule)
 		_submit_usage(asset, "2026-01-01", "No Depreciation", to_date=None)
@@ -279,7 +294,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 		self.assertEqual(to_depr_amount(ads.depreciation_schedule[-1].depreciation_amount), remaining)
 
 	def test_posted_rows_immutable_simulated(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads = _active_schedule(asset.name)
 		_post_first_n_simulated(ads.name, 2)
@@ -303,7 +318,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 
 	def test_real_je_ads_link_and_posted_immutability(self):
 		"""Real make_depreciation_entry → JE link (via getdate repair) → replan."""
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads = _active_schedule(asset.name)
 		first = ads.depreciation_schedule[0]
@@ -371,13 +386,13 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 		self.assertEqual(dupes, 1)
 
 	def test_manual_blocked(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset(depreciation_method="Manual")
 		with self.assertRaises(frappe.ValidationError):
 			_submit_usage(asset, "2026-02-01", "Percentage", 30, to_date="2026-02-28")
 
 	def test_open_ended_zero_no_infinite_rows(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-01-01", "No Depreciation", to_date=None)
 		ads = _active_schedule(asset.name)
@@ -385,7 +400,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 		self.assertEqual(sum(1 for a in _unposted_amounts(ads) if a > 0), 0)
 
 	def test_cancel_usage_replans(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads0 = _active_schedule(asset.name)
 		standard = to_depr_amount(ads0.depreciation_schedule[1].depreciation_amount)
@@ -395,7 +410,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 		self.assertEqual(to_depr_amount(ads.depreciation_schedule[1].depreciation_amount), standard)
 
 	def test_daily_prorata_mid_period_whole_amount(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset(daily_prorata_based=1)
 		ads = _active_schedule(asset.name)
 		apr = next(r for r in ads.depreciation_schedule if getdate(r.schedule_date) == getdate("2026-04-30"))
@@ -411,7 +426,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 
 	def test_regression_no_usage_period_replan_noop(self):
 		"""Req 11: zero Usage Periods → standard ERPNext ADS, no unnecessary replace."""
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads_before = _active_schedule(asset.name)
 		before_name = ads_before.name
@@ -430,7 +445,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 
 	def test_non_daily_before_first_usage_period_unchanged(self):
 		"""Req 10: schedule_date before first Usage Period keeps standard ERPNext amount."""
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		ads = _active_schedule(asset.name)
 		jan = next(r for r in ads.depreciation_schedule if getdate(r.schedule_date) == getdate("2026-01-31"))
@@ -455,7 +470,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 
 	def test_multi_ads_unsupported_atomic_abort(self):
 		"""SL + WDV: fail before any ADS is replaced."""
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		if not frappe.db.exists("Finance Book", "AUD-WDV-FB"):
 			frappe.get_doc({"doctype": "Finance Book", "finance_book_name": "AUD-WDV-FB"}).insert()
 
@@ -505,7 +520,7 @@ class TestAssetUsageReplanIntegration(unittest.TestCase):
 		self.assertEqual([flt(r.depreciation_amount) for r in sl_ads.depreciation_schedule], sl_amounts)
 
 	def test_replan_log_whole_amounts(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		usage = _submit_usage(asset, "2026-02-01", "Percentage", 30, to_date="2026-02-28")
 		logs = frappe.get_all(
@@ -529,6 +544,8 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
 		ensure_custom_fields()
+		ensure_replan_fixtures()
+		frappe.db.commit()
 
 	def tearDown(self):
 		frappe.db.rollback()
@@ -546,7 +563,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 
 	def test_five_open_transitions_auto_close_chain(self):
 		"""30 → Normal → 30 → Normal → 30 with auto-closed history."""
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset(total_number_of_depreciations=24)
 
 		p1 = _submit_usage(asset, "2026-01-01", "Percentage", 30, to_date=None)
@@ -596,7 +613,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 		self.assertFalse(frappe.db.get_value("Asset Usage Period", p5.name, "to_date"))
 
 	def test_one_replan_per_transition(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-01-01", "Percentage", 30, to_date=None)
 
@@ -620,7 +637,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 			aup_mod.replan_asset_usage_depreciation = orig
 
 	def test_new_from_date_on_or_before_open_fails(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-04-01", "Percentage", 30, to_date=None)
 		with self.assertRaises(frappe.ValidationError):
@@ -633,7 +650,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 		self.assertIsNone(rows[0]["to_date"])
 
 	def test_no_depreciation_normal_cycle(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-01-01", "No Depreciation", to_date=None)
 		_submit_usage(asset, "2026-05-01", "Normal", to_date=None)
@@ -645,7 +662,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 		self.assertEqual(factor_on_date(rows, "2026-10-01"), 0.0)
 
 	def test_arbitrary_percentage_transition(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-01-01", "Percentage", 45, to_date=None)
 		_submit_usage(asset, "2026-06-01", "Percentage", 10, to_date=None)
@@ -655,7 +672,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 		self.assertEqual(rows[0]["to_date"], getdate("2026-05-31"))
 
 	def test_rollback_when_final_replan_fails(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		first = _submit_usage(asset, "2026-01-01", "Percentage", 30, to_date=None)
 		frappe.db.savepoint("after_first_usage")
@@ -685,7 +702,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 		self.assertEqual(rows[0]["name"], first.name)
 
 	def test_posted_jes_survive_multiple_transitions(self):
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-01-01", "Percentage", 30, to_date="2026-06-30")
 		ads = _active_schedule(asset.name)
@@ -720,7 +737,7 @@ class TestRepeatedUsageTransitions(unittest.TestCase):
 
 	def test_manual_closed_periods_still_work_with_later_open(self):
 		"""Existing manually closed periods + later open transitions."""
-		_ensure_company_handling("_Test Company", HANDLING_EXTEND)
+		_ensure_company_handling(HANDLING_EXTEND)
 		asset = _make_sl_asset()
 		_submit_usage(asset, "2026-01-01", "Percentage", 30, to_date="2026-03-31")
 		_submit_usage(asset, "2026-04-01", "Normal", to_date="2026-06-30")
@@ -741,6 +758,8 @@ class TestModeBFixedEndIntegration(unittest.TestCase):
 	def setUpClass(cls):
 		frappe.set_user("Administrator")
 		ensure_custom_fields()
+		ensure_replan_fixtures()
+		frappe.db.commit()
 
 	def tearDown(self):
 		frappe.db.rollback()
@@ -762,7 +781,7 @@ class TestModeBFixedEndIntegration(unittest.TestCase):
 		)
 
 	def test_120_rows_30pct_from_installment_3_then_normal_then_30_again(self):
-		_ensure_company_handling("_Test Company", HANDLING_ADJUST_FINAL)
+		_ensure_company_handling(HANDLING_ADJUST_FINAL)
 		asset = self._make_long_asset()
 		ads0 = _active_schedule(asset.name)
 		self.assertEqual(len(ads0.depreciation_schedule), 120)
@@ -814,7 +833,7 @@ class TestModeBFixedEndIntegration(unittest.TestCase):
 		self.assertEqual(sum(amts), self._remaining(asset))
 
 	def test_mode_b_no_depr_then_normal_final_moves(self):
-		_ensure_company_handling("_Test Company", HANDLING_ADJUST_FINAL)
+		_ensure_company_handling(HANDLING_ADJUST_FINAL)
 		asset = _make_sl_asset(total_number_of_depreciations=12)
 		ads0 = _active_schedule(asset.name)
 		end0 = getdate(ads0.depreciation_schedule[-1].schedule_date)
@@ -838,7 +857,7 @@ class TestModeBFixedEndIntegration(unittest.TestCase):
 		self.assertEqual(sum(to_depr_amount(a) for a in _unposted_amounts(ads)), self._remaining(asset))
 
 	def test_mode_b_posted_excluded_from_retroactive_shortfall(self):
-		_ensure_company_handling("_Test Company", HANDLING_ADJUST_FINAL)
+		_ensure_company_handling(HANDLING_ADJUST_FINAL)
 		asset = _make_sl_asset()
 		ads = _active_schedule(asset.name)
 		d0 = getdate(ads.depreciation_schedule[0].schedule_date)
@@ -866,7 +885,7 @@ class TestModeBFixedEndIntegration(unittest.TestCase):
 		self.assertEqual(sum(to_depr_amount(a) for a in _unposted_amounts(ads)), self._remaining(asset))
 
 	def test_mode_b_daily_prorata_balances_final(self):
-		_ensure_company_handling("_Test Company", HANDLING_ADJUST_FINAL)
+		_ensure_company_handling(HANDLING_ADJUST_FINAL)
 		asset = self._make_long_asset(periods=12, amount=120_000, daily=1)
 		ads0 = _active_schedule(asset.name)
 		count0 = len(ads0.depreciation_schedule)
@@ -886,8 +905,9 @@ class TestModeBFixedEndIntegration(unittest.TestCase):
 		)
 
 		ensure_custom_fields()
+		company = _fx()["company"]
 		# Temporarily store legacy label (may not be in Select options after migrate)
 		frappe.db.set_value(
-			"Company", "_Test Company", COMPANY_FIELD_REDUCED_HANDLING, HANDLING_REDISTRIBUTE_LEGACY
+			"Company", company, COMPANY_FIELD_REDUCED_HANDLING, HANDLING_REDISTRIBUTE_LEGACY
 		)
-		self.assertEqual(get_reduced_depreciation_handling("_Test Company"), HANDLING_ADJUST_FINAL)
+		self.assertEqual(get_reduced_depreciation_handling(company), HANDLING_ADJUST_FINAL)
