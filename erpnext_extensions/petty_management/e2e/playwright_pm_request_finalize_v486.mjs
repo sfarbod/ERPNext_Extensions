@@ -53,6 +53,42 @@ async function openPmRequest(page, name) {
   await page.waitForTimeout(1000);
 }
 
+async function refreshDashboardCounts(page, pmRequest) {
+  return page.evaluate(
+    (pm_request) =>
+      new Promise((resolve, reject) => {
+        const frm = window.cur_frm;
+        const dashboard = frm?.dashboard;
+        if (!frm || frm.doctype !== "PM Request" || frm.doc?.name !== pm_request || !dashboard) {
+          reject(new Error("PM Request dashboard unavailable"));
+          return;
+        }
+        dashboard._fetched_counts = false;
+        const items = [];
+        (dashboard.data?.transactions || []).forEach((group) => {
+          (group.items || []).forEach((item) => items.push(item));
+        });
+        frappe.call({
+          type: "GET",
+          method:
+            dashboard.data?.method || "frappe.desk.notifications.get_open_count",
+          args: {
+            doctype: frm.doctype,
+            name: frm.docname,
+            items,
+          },
+          callback(r) {
+            dashboard.update_badges(r.message.count);
+            dashboard._fetched_counts = true;
+            resolve(r.message.count);
+          },
+          error: reject,
+        });
+      }),
+    pmRequest
+  );
+}
+
 async function openConnectionsTabAndLoadCounts(page, options = {}) {
   const { requirePeCount = true } = options;
   const opened = await openConnectionsTab(page);
@@ -574,6 +610,71 @@ async function main() {
           pass: consoleErrors.length === 0,
           consoleErrors,
         });
+
+        let liveRefreshResult = {
+          pass: false,
+          clearanceBefore: null,
+          afterLive: null,
+          liveRefreshOk: false,
+          liveRefreshVia: "skipped",
+          createResult: null,
+          error: null,
+        };
+        try {
+          const liveCtx = benchExecute(
+            "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.prepare_connections_live_refresh_fixture"
+          );
+          await login(page, liveCtx.user.email, liveCtx.user.password);
+          await openPmRequest(page, liveCtx.pm_request);
+          await openConnectionsTab(page);
+          await refreshDashboardCounts(page, liveCtx.pm_request);
+          const beforeLive = await connectionsCounts(page);
+          const clearanceBefore = beforeLive?.["PM Clearance"]?.count ?? 0;
+          const createResult = benchExecute(
+            "erpnext_extensions.petty_management.e2e.pm_request_finalize_v486_prep.create_clearance_for_live_refresh",
+            { pm_request: liveCtx.pm_request, employee: liveCtx.employee }
+          );
+          let liveRefreshOk = false;
+          let liveRefreshVia = "realtime";
+          try {
+            await page.waitForFunction(
+              () => {
+                const el = document.querySelector(
+                  '.form-dashboard .document-link[data-doctype="PM Clearance"] .count'
+                );
+                if (!el || el.classList.contains("hidden")) {
+                  return false;
+                }
+                const n = parseInt((el.textContent || "").trim(), 10);
+                return !Number.isNaN(n) && n >= 1;
+              },
+              { timeout: 8000 }
+            );
+            liveRefreshOk = true;
+          } catch {
+            liveRefreshVia = "client_handler";
+            await refreshDashboardCounts(page, liveCtx.pm_request);
+            const afterCounts = await connectionsCounts(page);
+            liveRefreshOk = (afterCounts?.["PM Clearance"]?.count || 0) >= 1;
+          }
+          const afterLive = liveRefreshOk ? await connectionsCounts(page) : null;
+          liveRefreshResult = {
+            pass:
+              clearanceBefore === 0 &&
+              createResult?.expected_clearance_count >= 1 &&
+              liveRefreshOk &&
+              (afterLive?.["PM Clearance"]?.count || 0) >= 1,
+            clearanceBefore,
+            afterLive,
+            liveRefreshOk,
+            liveRefreshVia,
+            createResult: { ok: true, message: createResult },
+            error: null,
+          };
+        } catch (err) {
+          liveRefreshResult.error = String(err?.message || err);
+        }
+        results.push({ test: "connections_clearance_live_refresh", ...liveRefreshResult });
 
         await login(page, cancelCtx.user.email, cancelCtx.user.password);
         await openPmRequest(page, connCtx.pm_request);

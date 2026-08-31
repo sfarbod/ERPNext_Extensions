@@ -19,10 +19,9 @@ def _docstatus_label(docstatus: int) -> str:
 	return {0: "Draft", 1: "Submitted", 2: "Cancelled"}.get(cint(docstatus), "")
 
 
-def list_clearance_connections_for_pm_request(pm_request: str) -> list[dict]:
-	"""Clearance allocation rows for Connections tab (any parent status)."""
+def _format_clearance_connections(clearance_rows: list[dict]) -> list[dict]:
 	out: list[dict] = []
-	for row in _clearance_allocations_for_request(pm_request):
+	for row in clearance_rows:
 		ds = cint(row.clearance_docstatus)
 		status = (row.clearance_status or "").strip()
 		out.append(
@@ -30,10 +29,7 @@ def list_clearance_connections_for_pm_request(pm_request: str) -> list[dict]:
 				"clearance": row.clearance,
 				"docstatus": _docstatus_label(ds),
 				"status": status,
-				"workflow_state": frappe.db.get_value(
-					"PM Clearance", row.clearance, "workflow_state"
-				)
-				or "",
+				"workflow_state": (row.clearance_workflow_state or "").strip(),
 				"allocated_amount": flt(row.allocated_amount),
 				"settlement_status": status,
 			}
@@ -41,28 +37,41 @@ def list_clearance_connections_for_pm_request(pm_request: str) -> list[dict]:
 	return out
 
 
-def list_journal_entry_connections_for_pm_request(doc: Document) -> list[dict]:
-	"""Request-level and clearance-linked Journal Entries for Connections tab."""
+def _journal_entry_names_for_connections(doc: Document, clearance_rows: list[dict]) -> list[str]:
 	names: set[str] = set()
 	if getattr(doc, "journal_entry", None):
 		names.add(doc.journal_entry)
-	for row in _clearance_allocations_for_request(doc.name):
-		je = frappe.db.get_value("PM Clearance", row.clearance, "journal_entry")
+	for row in clearance_rows:
+		je = (row.clearance_journal_entry or "").strip()
 		if je:
 			names.add(je)
+	return sorted(names)
+
+
+def _format_journal_entry_connections(doc: Document, clearance_rows: list[dict]) -> list[dict]:
+	names = _journal_entry_names_for_connections(doc, clearance_rows)
+	if not names:
+		return []
+
+	rows = frappe.db.sql(
+		"""
+		SELECT
+			name,
+			docstatus,
+			posting_date,
+			total_debit,
+			cheque_no,
+			user_remark
+		FROM `tabJournal Entry`
+		WHERE name IN %(names)s
+		ORDER BY name
+		""",
+		{"names": names},
+		as_dict=True,
+	)
 
 	out: list[dict] = []
-	for name in sorted(names):
-		if not frappe.db.exists("Journal Entry", name):
-			continue
-		je = frappe.db.get_value(
-			"Journal Entry",
-			name,
-			["name", "docstatus", "posting_date", "total_debit", "cheque_no", "user_remark"],
-			as_dict=True,
-		)
-		if not je:
-			continue
+	for je in rows:
 		reference = (je.cheque_no or je.user_remark or "").strip()
 		out.append(
 			{
@@ -76,16 +85,19 @@ def list_journal_entry_connections_for_pm_request(doc: Document) -> list[dict]:
 	return out
 
 
+def list_clearance_connections_for_pm_request(pm_request: str) -> list[dict]:
+	"""Clearance allocation rows for Connections tab (any parent status)."""
+	return _format_clearance_connections(_clearance_allocations_for_request(pm_request))
+
+
+def list_journal_entry_connections_for_pm_request(doc: Document) -> list[dict]:
+	"""Request-level and clearance-linked Journal Entries for Connections tab."""
+	return _format_journal_entry_connections(doc, _clearance_allocations_for_request(doc.name))
+
+
 def build_pm_request_connections_payload(doc: Document) -> dict:
-	"""Authoritative Connections tab payload; funding totals from synced Request fields."""
-	if cint(doc.docstatus) == 1:
-		from erpnext_extensions.petty_management.services.funding_service import (
-			sync_pm_request_funding_fields,
-		)
-
-		sync_pm_request_funding_fields(doc.name)
-		doc.reload()
-
+	"""Authoritative Connections tab payload; read-only — never syncs or writes."""
+	clearance_rows = _clearance_allocations_for_request(doc.name)
 	return {
 		"pm_request": doc.name,
 		"summary": {
@@ -98,6 +110,6 @@ def build_pm_request_connections_payload(doc: Document) -> dict:
 			"status": (doc.status or "").strip(),
 		},
 		"payment_entries": list_payment_entries_for_pm_request(doc.name),
-		"clearances": list_clearance_connections_for_pm_request(doc.name),
-		"journal_entries": list_journal_entry_connections_for_pm_request(doc),
+		"clearances": _format_clearance_connections(clearance_rows),
+		"journal_entries": _format_journal_entry_connections(doc, clearance_rows),
 	}

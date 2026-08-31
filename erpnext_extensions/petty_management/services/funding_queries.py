@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import frappe
+from frappe.model.document import Document
 from frappe.utils import cint, flt
 
 _EPS = 1e-6
@@ -180,6 +181,43 @@ def find_pm_requests_for_payment_entry(pe_name: str) -> list[str]:
 	linked = frappe.get_all("PM Request", filters={"payment_entry": pe_name}, pluck="name")
 	for n in linked:
 		names.add(n)
+	return sorted(names)
+
+
+def find_pm_requests_for_clearance(clearance: str | Document) -> list[str]:
+	"""PM Requests linked via non-legacy Clearance allocation rows."""
+	if isinstance(clearance, Document):
+		names = {
+			(row.pm_request or "").strip()
+			for row in clearance.get("request_allocations") or []
+			if not cint(row.is_legacy_row) and (row.pm_request or "").strip()
+		}
+		return sorted(n for n in names if frappe.db.exists("PM Request", n))
+
+	return frappe.db.sql(
+		"""
+		SELECT DISTINCT a.pm_request
+		FROM `tabPM Clearance Request Allocation` a
+		WHERE a.parent = %s
+			AND a.parenttype = 'PM Clearance'
+			AND a.parentfield = 'request_allocations'
+			AND IFNULL(a.is_legacy_row, 0) = 0
+			AND IFNULL(a.pm_request, '') != ''
+		ORDER BY a.pm_request
+		""",
+		(clearance,),
+		pluck=True,
+	) or []
+
+
+def find_pm_requests_for_journal_entry(je_name: str) -> list[str]:
+	"""PM Requests tied to a Journal Entry directly or via linked Clearance."""
+	names: set[str] = set()
+	for req in frappe.get_all("PM Request", filters={"journal_entry": je_name}, pluck="name"):
+		names.add(req)
+	for clearance in frappe.get_all("PM Clearance", filters={"journal_entry": je_name}, pluck="name"):
+		for req in find_pm_requests_for_clearance(clearance):
+			names.add(req)
 	return sorted(names)
 
 

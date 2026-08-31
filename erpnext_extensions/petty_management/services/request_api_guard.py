@@ -31,16 +31,22 @@ def bump_pm_request_response_version(pm_request: str) -> str:
 def notify_pm_request_funding_updated(pm_request: str, event: str) -> str:
 	"""Bump server list version and push Desk realtime refresh (event-driven UI sync)."""
 	version = bump_pm_request_response_version(pm_request)
-	frappe.publish_realtime(
-		"pm_request_funding_updated",
-		{
-			"pm_request": pm_request,
-			"response_version_id": version,
-			"event": event,
-		},
-		doctype="PM Request",
-		docname=pm_request,
-	)
+	payload = {
+		"pm_request": pm_request,
+		"response_version_id": version,
+		"event": event,
+	}
+	# Doc room: viewers with the form open. User room: actor session (e.g. API create).
+	for target in (
+		{"doctype": "PM Request", "docname": pm_request},
+		{"user": frappe.session.user},
+	):
+		frappe.publish_realtime(
+			"pm_request_funding_updated",
+			payload,
+			after_commit=True,
+			**target,
+		)
 	return version
 
 

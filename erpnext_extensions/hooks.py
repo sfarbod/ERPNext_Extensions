@@ -292,6 +292,11 @@ doc_events = {
 	},
 	"PM Clearance": {
 		"onload": "erpnext_extensions.petty_management.clearance_onload.sync_pm_clearance_on_load",
+		"after_insert": "erpnext_extensions.petty_management.clearance_hooks.on_pm_clearance_after_insert",
+		"on_submit": "erpnext_extensions.petty_management.clearance_hooks.on_pm_clearance_submit",
+		"on_cancel": "erpnext_extensions.petty_management.clearance_hooks.on_pm_clearance_cancel",
+		"on_trash": "erpnext_extensions.petty_management.clearance_hooks.on_pm_clearance_trash",
+		"on_update": "erpnext_extensions.petty_management.clearance_hooks.on_pm_clearance_update",
 	},
 	"Journal Entry": {
 		"on_submit": [

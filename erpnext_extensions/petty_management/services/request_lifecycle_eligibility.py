@@ -52,6 +52,8 @@ def _clearance_allocations_for_request(pm_request: str) -> list[dict]:
 			a.parent AS clearance,
 			cl.docstatus AS clearance_docstatus,
 			IFNULL(cl.status, '') AS clearance_status,
+			IFNULL(cl.workflow_state, '') AS clearance_workflow_state,
+			IFNULL(cl.journal_entry, '') AS clearance_journal_entry,
 			a.allocated_amount
 		FROM `tabPM Clearance Request Allocation` a
 		INNER JOIN `tabPM Clearance` cl

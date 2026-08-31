@@ -147,6 +147,47 @@ def add_second_payment_entry_for_connections(pm_request: str) -> dict:
 
 
 @frappe.whitelist()
+def prepare_connections_live_refresh_fixture() -> dict:
+	"""Submitted PM Request with funding but no clearance — for realtime badge refresh E2E."""
+	_site_ready()
+	user = _ensure_user(E2E_ACCOUNTANT, ("Petty Management Accountant", "Accounts User"))
+	emp = tpm._make_employee()
+	tpm._make_holder(emp)
+	req = _new_submitted_request(emp, 22_000)
+	_create_funding_pe(req, 9_000)
+	_sync_funding_fields(req)
+	doc = frappe.get_doc("PM Request", req)
+	payload = build_pm_request_connections_payload(doc)
+	return {
+		**e2e_run_context(),
+		"pm_request": req,
+		"employee": emp,
+		"user": user,
+		"expected_pe_count": len(payload.get("payment_entries") or []),
+		"expected_clearance_count": 0,
+	}
+
+
+@frappe.whitelist()
+def create_clearance_for_live_refresh(pm_request: str, employee: str) -> dict:
+	"""Insert a clearance linked to pm_request; hooks notify open PM Request forms."""
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		get_pm_request_response_version,
+	)
+
+	_site_ready()
+	cl = _make_clearance(employee, pm_request, 3_500, submit=True)
+	_sync_funding_fields(pm_request)
+	doc = frappe.get_doc("PM Request", pm_request)
+	payload = build_pm_request_connections_payload(doc)
+	return {
+		"clearance": cl,
+		"expected_clearance_count": len(payload.get("clearances") or []),
+		"response_version_id": get_pm_request_response_version(pm_request),
+	}
+
+
+@frappe.whitelist()
 def check_action_flags_as_user(pm_request: str, user: str) -> dict:
 	from erpnext_extensions.petty_management.services.request_action_policy import (
 		compute_pm_request_action_flags,
