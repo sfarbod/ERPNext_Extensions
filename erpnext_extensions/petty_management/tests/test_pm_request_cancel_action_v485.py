@@ -110,6 +110,9 @@ class TestPmRequestCancelActionV485(unittest.TestCase):
 		emp = tpm._make_employee()
 		tpm._make_holder(emp)
 		req = _new_submitted_request(emp, 15_000)
+		self.assertEqual(
+			frappe.db.get_value("PM Request", req, "payment_status"), "Not Paid"
+		)
 		ws = frappe.db.get_value("PM Request", req, "workflow_state")
 		flags = _flags(req, user=ACCOUNTANT_USER)
 		self.assertTrue(flags["can_cancel_pm_request"], msg=flags.get("cancel_block_reason"))
@@ -129,6 +132,21 @@ class TestPmRequestCancelActionV485(unittest.TestCase):
 		req = _new_submitted_request(emp, 20_000)
 		_create_funding_pe(req, 20_000)
 		_sync_funding_fields(req)
+		self.assertEqual(
+			frappe.db.get_value("PM Request", req, "payment_status"), "Paid"
+		)
+		flags = _flags(req, user=ACCOUNTANT_USER)
+		self.assertFalse(flags["can_cancel_pm_request"])
+
+	def test_scenario_d_partially_paid_hidden(self):
+		emp = tpm._make_employee()
+		tpm._make_holder(emp)
+		req = _new_submitted_request(emp, 30_000)
+		_create_funding_pe(req, 12_000)
+		_sync_funding_fields(req)
+		self.assertEqual(
+			frappe.db.get_value("PM Request", req, "payment_status"), "Partially Paid"
+		)
 		flags = _flags(req, user=ACCOUNTANT_USER)
 		self.assertFalse(flags["can_cancel_pm_request"])
 
@@ -147,10 +165,7 @@ class TestPmRequestCancelActionV485(unittest.TestCase):
 		emp = tpm._make_employee()
 		tpm._make_holder(emp)
 		req, pe = _funded_request(emp, 40_000)
-		try:
-			cl = _make_clearance(emp, req, 4_000, submit=False)
-		except ValidationError:
-			self.skipTest("Could not create draft Clearance fixture")
+		cl = _make_clearance(emp, req, 4_000, submit=False)
 		frappe.get_doc("Payment Entry", pe).cancel()
 		_sync_funding_fields(req)
 		_set_clearance_status(cl, "Draft", docstatus=0)
@@ -161,10 +176,7 @@ class TestPmRequestCancelActionV485(unittest.TestCase):
 		emp = tpm._make_employee()
 		tpm._make_holder(emp)
 		req, pe = _funded_request(emp, 40_000)
-		try:
-			cl = _make_clearance(emp, req, 4_000, submit=False)
-		except ValidationError:
-			self.skipTest("Could not create Clearance fixture")
+		cl = _make_clearance(emp, req, 4_000, submit=False)
 		_set_clearance_status(cl, "Approved", docstatus=1)
 		flags = _flags(req, user=ACCOUNTANT_USER)
 		self.assertFalse(flags["can_cancel_pm_request"])
@@ -176,6 +188,16 @@ class TestPmRequestCancelActionV485(unittest.TestCase):
 		tpm._make_holder(emp)
 		req = _new_submitted_request(emp, 7_500)
 		je = _stub_journal_entry(company=tpm.COMPANY, docstatus=1)
+		_link_request_journal_entry(req, je)
+		flags = _flags(req, user=ACCOUNTANT_USER)
+		self.assertFalse(flags["can_cancel_pm_request"])
+
+	def test_scenario_k_draft_journal_entry_hidden(self):
+		_require_journal_entry_field(self)
+		emp = tpm._make_employee()
+		tpm._make_holder(emp)
+		req = _new_submitted_request(emp, 6_500)
+		je = _stub_journal_entry(company=tpm.COMPANY, docstatus=0)
 		_link_request_journal_entry(req, je)
 		flags = _flags(req, user=ACCOUNTANT_USER)
 		self.assertFalse(flags["can_cancel_pm_request"])

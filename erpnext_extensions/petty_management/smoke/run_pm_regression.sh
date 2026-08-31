@@ -49,6 +49,8 @@ MODULES=(
   erpnext_extensions.petty_management.tests.test_pm_request_funding_status_ux
   erpnext_extensions.petty_management.tests.test_pm_request_multi_pe
   erpnext_extensions.petty_management.tests.test_pm_request_multi_pe_integration
+  erpnext_extensions.petty_management.tests.test_pm_request_cancel_delete
+  erpnext_extensions.petty_management.tests.test_pm_request_cancel_action_v485
   erpnext_extensions.petty_management.tests.test_pm_request_payment_entries_security
   erpnext_extensions.petty_management.tests.test_pm_request_ui_messages
   erpnext_extensions.petty_management.tests.test_pm_request_workflow

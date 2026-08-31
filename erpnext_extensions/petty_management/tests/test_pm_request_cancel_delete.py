@@ -25,6 +25,10 @@ from erpnext_extensions.petty_management.services.request_lifecycle_eligibility 
 	get_pm_request_delete_blockers,
 )
 from erpnext_extensions.petty_management.tests import test_pm_clearance as tpm
+from erpnext_extensions.petty_management.tests.pm_cancel_qa_fixtures import (
+	get_doctype_json_role_perm,
+	prepare_pi_for_clearance_fixture,
+)
 from erpnext_extensions.petty_management.tests.test_pm_request_multi_pe import (
 	_create_funding_pe,
 	_new_submitted_request,
@@ -45,8 +49,7 @@ def _draft_pe(req: str, amount: float) -> str:
 
 def _make_clearance(emp: str, req: str, amount: float, *, submit: bool = False):
 	pi = tpm._make_pi_outstanding(amount)
-	pi.insert()
-	pi.submit()
+	prepare_pi_for_clearance_fixture(pi)
 	cl = frappe.new_doc("PM Clearance")
 	cl.company = tpm.COMPANY
 	cl.employee = emp
@@ -374,15 +377,11 @@ class TestPmRequestCancelEligibility(unittest.TestCase):
 		self.assertEqual(cint(frappe.db.get_value("PM Request", req, "docstatus")), 2)
 
 	def test_cancel_permission_accountant_has_docperm(self):
-		meta = frappe.get_meta("PM Request")
-		acct = next((p for p in meta.permissions if p.role == "Petty Management Accountant"), None)
-		self.assertTrue(acct)
+		acct = get_doctype_json_role_perm("PM Request", "Petty Management Accountant")
 		self.assertTrue(cint(acct.cancel))
 
 	def test_cancel_permission_user_lacks_docperm(self):
-		meta = frappe.get_meta("PM Request")
-		user_perm = next((p for p in meta.permissions if p.role == "Petty Management User"), None)
-		self.assertTrue(user_perm)
+		user_perm = get_doctype_json_role_perm("PM Request", "Petty Management User")
 		self.assertFalse(cint(user_perm.cancel))
 
 
@@ -558,9 +557,7 @@ class TestPmRequestDeleteEligibility(unittest.TestCase):
 		self.assertTrue(frappe.db.exists("Journal Entry", je))
 
 	def test_delete_permission_accountant_lacks_docperm(self):
-		meta = frappe.get_meta("PM Request")
-		acct = next((p for p in meta.permissions if p.role == "Petty Management Accountant"), None)
-		self.assertTrue(acct)
+		acct = get_doctype_json_role_perm("PM Request", "Petty Management Accountant")
 		self.assertFalse(cint(acct.delete))
 		self.assertTrue(cint(acct.cancel))
 

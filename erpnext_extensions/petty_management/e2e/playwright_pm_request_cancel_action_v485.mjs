@@ -1,7 +1,6 @@
 /**
  * v4.8.5 — Cancel PM Request business action E2E.
  */
-import { chromium } from "/tmp/e2e-npm/node_modules/playwright/index.mjs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -11,6 +10,7 @@ import {
   waitDocstatus,
   SITE,
 } from "../../e2e/e2e_playwright_db.mjs";
+import { runWithPlaywrightBrowser } from "./playwright_pm_harness.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREEN = path.join(__dirname, "screenshots", "pm_request_cancel_action_v485");
@@ -90,91 +90,94 @@ async function clickCancelPmRequest(page) {
 async function main() {
   fs.mkdirSync(SCREEN, { recursive: true });
   const results = [];
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    locale: "en-US",
-    viewport: { width: 1600, height: 950 },
-    extraHTTPHeaders: { "X-Frappe-Site-Name": SITE },
-  });
-  await context.tracing.start({ screenshots: true, snapshots: true });
-  const page = await context.newPage();
 
   try {
-    const visible = benchExecute(
-      "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_visible"
-    );
-    await login(page, visible.user.email, visible.user.password);
-    await openPmRequest(page, visible.pm_request);
-    const beforeVisible = await isCancelPmRequestVisible(page);
-    const genericBefore = await genericCancelVisible(page);
-    await shot(page, "01_before_cancel_visible");
-    results.push({
-      test: "cancel_visible_unfunded",
-      pass: beforeVisible === true && genericBefore === false,
-      beforeVisible,
-      genericBefore,
-    });
-    await clickCancelPmRequest(page);
-    await waitDocstatus("PM Request", visible.pm_request, 2, { timeoutMs: 180000 });
-    const after = getDocumentState("PM Request", visible.pm_request, [
-      "docstatus",
-      "status",
-      "workflow_state",
-    ]);
-    await shot(page, "02_after_cancel_success");
-    results.push({
-      test: "cancel_success",
-      pass: after.docstatus === 2 && after.status === "Cancelled",
-      db: after,
-    });
+    await runWithPlaywrightBrowser(
+      async ({ page }) => {
+        const visible = benchExecute(
+          "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_visible"
+        );
+        await login(page, visible.user.email, visible.user.password);
+        await openPmRequest(page, visible.pm_request);
+        const beforeVisible = await isCancelPmRequestVisible(page);
+        const genericBefore = await genericCancelVisible(page);
+        await shot(page, "01_before_cancel_visible");
+        results.push({
+          test: "cancel_visible_unfunded",
+          pass: beforeVisible === true && genericBefore === false,
+          beforeVisible,
+          genericBefore,
+        });
+        await clickCancelPmRequest(page);
+        await waitDocstatus("PM Request", visible.pm_request, 2, { timeoutMs: 180000 });
+        const after = getDocumentState("PM Request", visible.pm_request, [
+          "docstatus",
+          "status",
+          "workflow_state",
+        ]);
+        await shot(page, "02_after_cancel_success");
+        results.push({
+          test: "cancel_success",
+          pass: after.docstatus === 2 && after.status === "Cancelled",
+          db: after,
+        });
 
-    const funded = benchExecute(
-      "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_hidden_funded"
-    );
-    await login(page, funded.user.email, funded.user.password);
-    await openPmRequest(page, funded.pm_request);
-    const fundedVisible = await isCancelPmRequestVisible(page);
-    await shot(page, "03_funded_cancel_hidden");
-    results.push({
-      test: "cancel_hidden_funded",
-      pass: fundedVisible === false,
-      fundedVisible,
-    });
+        const funded = benchExecute(
+          "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_hidden_funded"
+        );
+        const fundedDb = getDocumentState("PM Request", funded.pm_request, [
+          "payment_status",
+          "total_paid_amount",
+          "remaining_to_pay",
+        ]);
+        await login(page, funded.user.email, funded.user.password);
+        await openPmRequest(page, funded.pm_request);
+        const fundedVisible = await isCancelPmRequestVisible(page);
+        await shot(page, "03_partially_paid_cancel_hidden");
+        results.push({
+          test: "cancel_hidden_partially_paid",
+          pass:
+            fundedVisible === false && fundedDb.payment_status === "Partially Paid",
+          fundedVisible,
+          db: fundedDb,
+        });
 
-    const closed = benchExecute(
-      "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_hidden_closed"
-    );
-    await login(page, closed.user.email, closed.user.password);
-    await openPmRequest(page, closed.pm_request);
-    const closedVisible = await isCancelPmRequestVisible(page);
-    await shot(page, "04_closed_cancel_hidden");
-    results.push({
-      test: "cancel_hidden_closed",
-      pass: closedVisible === false,
-      closedVisible,
-    });
+        const closed = benchExecute(
+          "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_hidden_closed"
+        );
+        await login(page, closed.user.email, closed.user.password);
+        await openPmRequest(page, closed.pm_request);
+        const closedVisible = await isCancelPmRequestVisible(page);
+        await shot(page, "04_closed_cancel_hidden");
+        results.push({
+          test: "cancel_hidden_closed",
+          pass: closedVisible === false,
+          closedVisible,
+        });
 
-    const draftClr = benchExecute(
-      "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_hidden_draft_clearance"
+        const draftClr = benchExecute(
+          "erpnext_extensions.petty_management.e2e.pm_request_cancel_action_v485_prep.prepare_cancel_action_hidden_draft_clearance"
+        );
+        await login(page, draftClr.user.email, draftClr.user.password);
+        await openPmRequest(page, draftClr.pm_request);
+        const draftClrVisible = await isCancelPmRequestVisible(page);
+        await shot(page, "05_draft_clearance_cancel_hidden");
+        results.push({
+          test: "cancel_hidden_draft_clearance",
+          pass: draftClrVisible === false,
+          draftClrVisible,
+        });
+      },
+      {
+        trace: true,
+        tracePath: TRACE,
+        context: {
+          locale: "en-US",
+          viewport: { width: 1600, height: 950 },
+          extraHTTPHeaders: { "X-Frappe-Site-Name": SITE },
+        },
+      }
     );
-    if (!draftClr.skipped) {
-      await login(page, draftClr.user.email, draftClr.user.password);
-      await openPmRequest(page, draftClr.pm_request);
-      const draftClrVisible = await isCancelPmRequestVisible(page);
-      await shot(page, "05_draft_clearance_cancel_hidden");
-      results.push({
-        test: "cancel_hidden_draft_clearance",
-        pass: draftClrVisible === false,
-        draftClrVisible,
-      });
-    } else {
-      results.push({
-        test: "cancel_hidden_draft_clearance",
-        pass: true,
-        skipped: true,
-        skip_reason: draftClr.skip_reason,
-      });
-    }
 
     const failed = results.filter((r) => !r.pass);
     console.log(JSON.stringify({ ok: failed.length === 0, results }, null, 2));
@@ -182,11 +185,6 @@ async function main() {
       process.exitCode = 1;
     }
   } catch (err) {
-    try {
-      await shot(page, "99_failure");
-    } catch {
-      /* ignore */
-    }
     console.error(
       JSON.stringify(
         { ok: false, error: String(err && err.message ? err.message : err), results },
@@ -195,13 +193,6 @@ async function main() {
       )
     );
     process.exitCode = 1;
-  } finally {
-    try {
-      await context.tracing.stop({ path: TRACE });
-    } catch {
-      /* ignore */
-    }
-    await browser.close();
   }
 }
 

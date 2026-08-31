@@ -116,21 +116,10 @@ def prepare_cancel_action_hidden_draft_clearance() -> dict:
 	req = _new_submitted_request(emp, 35_000)
 	pe = _create_funding_pe(req, 35_000)
 	_sync_funding_fields(req)
-	try:
-		cl = _make_clearance(emp, req, 5_000, submit=False)
-		frappe.get_doc("Payment Entry", pe).cancel()
-		_sync_funding_fields(req)
-		_set_clearance_status(cl, "Draft", docstatus=0)
-	except Exception as exc:
-		frappe.db.commit()
-		return {
-			**e2e_run_context(),
-			"pm_request": req,
-			"user": user,
-			"expect_cancel_visible": False,
-			"skipped": True,
-			"skip_reason": str(exc),
-		}
+	cl = _make_clearance(emp, req, 5_000, submit=False)
+	frappe.get_doc("Payment Entry", pe).cancel()
+	_sync_funding_fields(req)
+	_set_clearance_status(cl, "Draft", docstatus=0)
 	frappe.db.commit()
 	return {
 		**e2e_run_context(),
