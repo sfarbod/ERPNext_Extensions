@@ -67,8 +67,13 @@ class PMRequest(Document):
 		from erpnext_extensions.petty_management.services.draft_approval_guards import (
 			assert_pending_not_deletable,
 		)
+		from erpnext_extensions.petty_management.services.request_lifecycle_eligibility import (
+			user_may_execute_pm_request_delete,
+		)
 
 		assert_pending_not_deletable(self)
+		if not user_may_execute_pm_request_delete(self):
+			frappe.throw(_("Not permitted to delete this PM Request."), frappe.PermissionError)
 		assert_pm_request_delete_allowed(self)
 
 
@@ -191,12 +196,41 @@ def cancel_pm_request(pm_request: str):
 
 
 @frappe.whitelist()
+def delete_pm_request(pm_request: str):
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		bump_pm_request_response_version,
+		get_pm_request_doc_for_write,
+	)
+	from erpnext_extensions.petty_management.services.request_service import delete_pm_request as _delete
+
+	get_pm_request_doc_for_write(pm_request)
+	_delete(pm_request)
+	return {"ok": True, "response_version_id": bump_pm_request_response_version(pm_request)}
+
+
+@frappe.whitelist()
 def get_pm_request_payment_entries(pm_request: str):
 	from erpnext_extensions.petty_management.services.request_api_guard import (
 		build_pm_request_payment_entries_payload,
 	)
 
 	return build_pm_request_payment_entries_payload(pm_request)
+
+
+@frappe.whitelist()
+def get_pm_request_connections(pm_request: str):
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		get_pm_request_doc_for_read,
+		get_pm_request_response_version,
+	)
+	from erpnext_extensions.petty_management.services.request_connections_service import (
+		build_pm_request_connections_payload,
+	)
+
+	doc = get_pm_request_doc_for_read(pm_request)
+	payload = build_pm_request_connections_payload(doc)
+	payload["response_version_id"] = get_pm_request_response_version(doc.name)
+	return payload
 
 
 @frappe.whitelist()

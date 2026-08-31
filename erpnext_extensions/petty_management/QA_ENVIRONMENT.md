@@ -72,6 +72,26 @@ bench --site development.localhost run-tests \
   --skip-before-tests
 ```
 
+## Unit / integration — PM Request delete (v4.8.6)
+
+Delete is **Administrator only**. PM Accountant may cancel but must not delete (action hidden + API denied).
+
+```bash
+bench --site development.localhost run-tests \
+  --module erpnext_extensions.petty_management.tests.test_pm_request_delete_action_v486 \
+  --skip-before-tests
+
+bench --site development.localhost run-tests \
+  --module erpnext_extensions.petty_management.tests.test_pm_request_connections_v486 \
+  --skip-before-tests
+```
+
+Finalize Playwright (Actions menu + Connections tab):
+
+```bash
+node playwright_pm_request_finalize_v486.mjs
+```
+
 Full PM module regression:
 
 ```bash

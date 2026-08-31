@@ -40,6 +40,9 @@ frappe.ui.form.on("PM Request", {
 		if (!frm.is_new() && frm.doc.docstatus === 1) {
 			frm.trigger("refresh_payment_entry_list");
 		}
+		if (!frm.is_new()) {
+			frm.trigger("refresh_connections");
+		}
 		schedule_pm_request_toolbar(frm);
 	},
 	onload_post_render(frm) {
@@ -139,6 +142,29 @@ frappe.ui.form.on("PM Request", {
 			},
 		});
 	},
+	refresh_connections(frm) {
+		if (frm.is_new()) {
+			return;
+		}
+		const field = frm.fields_dict.connections_html;
+		if (!field) {
+			return;
+		}
+		frappe.call({
+			method: "erpnext_extensions.petty_management.doctype.pm_request.pm_request.get_pm_request_connections",
+			args: { pm_request: frm.doc.name },
+			callback(r) {
+				if (r.exc) {
+					render_pm_request_connections(field.$wrapper, null, frm.doc.currency, { failed: true });
+					return;
+				}
+				render_pm_request_connections(field.$wrapper, r.message || {}, frm.doc.currency);
+			},
+			error() {
+				render_pm_request_connections(field.$wrapper, null, frm.doc.currency, { failed: true });
+			},
+		});
+	},
 	setup_pm_request_toolbar(frm) {
 		if (frm.is_new() || !frm.doc.name) {
 			remove_pm_request_toolbar_buttons(frm);
@@ -203,6 +229,7 @@ function bind_pm_request_funding_realtime(frm) {
 			active._pm_pe_response_version = String(data.response_version_id);
 		}
 		active.trigger("refresh_payment_entry_list");
+		active.trigger("refresh_connections");
 		schedule_pm_request_toolbar(active);
 	});
 }
@@ -249,7 +276,9 @@ function apply_pm_request_action_ui(frm, f) {
 	frm._pm_action_flags = f || {};
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, f);
+	apply_pm_request_actions_menu(frm, f);
 	suppress_generic_frappe_cancel_button(frm);
+	suppress_generic_frappe_delete_button(frm);
 	apply_pm_request_intro(frm, f);
 	// Rebuild workflow Actions with can_reject filter (survives clear_actions_menu races).
 	if (erpnext_extensions?.petty_management?.refresh_workflow_actions) {
@@ -264,6 +293,7 @@ window.pm_request_reapply_custom_toolbar = function (frm) {
 	}
 	remove_pm_request_toolbar_buttons(frm);
 	apply_pm_request_toolbar(frm, frm._pm_action_flags);
+	apply_pm_request_actions_menu(frm, frm._pm_action_flags);
 };
 
 function apply_pm_request_pe_list_payload(frm, $wrapper, payload, currency) {
@@ -416,13 +446,14 @@ function apply_pm_request_toolbar(frm, f) {
 			add_pm_request_toolbar_button(frm, __("Close PM Request"), runClose);
 		}
 	}
-	if (f.can_view_payment_entries) {
-		add_pm_request_toolbar_button(frm, __("View Payment Entries"), () =>
-			route_pm_request_payment_entries(frm, f)
-		);
-	}
+}
+
+function apply_pm_request_actions_menu(frm, f) {
 	if (f.can_cancel_pm_request) {
-		add_pm_request_toolbar_button(frm, __("Cancel PM Request"), () => runCancelPmRequest(frm));
+		add_pm_request_toolbar_button(frm, __("Cancel PM Request"), () => runCancelPmRequest(frm), __("Actions"));
+	}
+	if (f.can_delete_pm_request) {
+		add_pm_request_toolbar_button(frm, __("Delete PM Request"), () => runDeletePmRequest(frm), __("Actions"));
 	}
 }
 
@@ -451,14 +482,58 @@ function runCancelPmRequest(frm) {
 	});
 }
 
+function runDeletePmRequest(frm) {
+	frappe.confirm(__("Delete this PM Request permanently?"), () => {
+		frappe.call({
+			method: "erpnext_extensions.petty_management.doctype.pm_request.pm_request.delete_pm_request",
+			args: { pm_request: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Deleting PM Request…"),
+			callback(r) {
+				if (r.exc) {
+					return;
+				}
+				frappe.show_alert({ message: __("PM Request deleted"), indicator: "green" });
+				frappe.set_route("List", "PM Request");
+			},
+			error(r) {
+				frappe.msgprint({
+					title: __("Delete failed"),
+					message: parse_pm_request_server_error(r),
+					indicator: "red",
+				});
+			},
+		});
+	});
+}
+
 function suppress_generic_frappe_cancel_button(frm) {
 	// v4.8.5: business Cancel PM Request replaces Frappe Cancel (DocPerm-independent).
-	if (!frm.page || !frm.page.btn_secondary || !frm.page.btn_secondary.length) {
+	if (!frm.page) {
 		return;
 	}
-	const label = (frm.page.btn_secondary.text() || "").trim();
-	if (/^Cancel$/i.test(label)) {
-		frm.page.clear_secondary_action();
+	if (frm.page.btn_secondary && frm.page.btn_secondary.length) {
+		const label = (frm.page.btn_secondary.text() || "").trim();
+		if (/^Cancel$/i.test(label)) {
+			frm.page.clear_secondary_action();
+		}
+	}
+	if (frm.page.menu) {
+		frm.page.menu.find('a[data-label="Cancel"]').parent().hide();
+	}
+	if (frm.page.menu_btn_group) {
+		frm.page.menu_btn_group.find('a[data-label="Cancel"]').parent().hide();
+	}
+}
+
+function suppress_generic_frappe_delete_button(frm) {
+	// v4.8.6: business Delete PM Request replaces Frappe Delete (DocPerm-independent).
+	if (!frm.page || !frm.page.menu) {
+		return;
+	}
+	frm.page.menu.find('a[data-label="Delete"]').parent().hide();
+	if (frm.page.menu_btn_group) {
+		frm.page.menu_btn_group.find('a[data-label="Delete"]').parent().hide();
 	}
 }
 
@@ -537,6 +612,110 @@ function render_pm_request_payment_entry_table($wrapper, rows, currency, opts) {
 	$wrapper.html(html);
 }
 
+function render_pm_request_connections($wrapper, payload, currency, opts) {
+	opts = opts || {};
+	const esc = frappe.utils.escape_html;
+	if (opts.failed) {
+		$wrapper.html(
+			`<p class="text-muted small">${__(
+				"Connections could not be loaded. Refresh the page to try again."
+			)}</p>`
+		);
+		return;
+	}
+	const data = payload || {};
+	const summary = data.summary || {};
+	let html = `<div class="pm-request-connections">`;
+
+	html += `<h6 class="text-muted">${__("Usage Summary")}</h6>`;
+	html += `<table class="table table-bordered table-sm" style="margin-top:0;margin-bottom:1rem">`;
+	html += `<tbody>`;
+	const summaryRows = [
+		[__("Total Requested"), format_currency(summary.total_requested, currency)],
+		[__("Total Paid"), format_currency(summary.total_paid, currency)],
+		[__("Remaining to Pay"), format_currency(summary.remaining_to_pay, currency)],
+		[__("Allocated to Clearances"), format_currency(summary.allocated_amount, currency)],
+		[__("Available for Clearance"), format_currency(summary.available_for_clearance, currency)],
+		[__("Payment Status"), esc(summary.payment_status || "")],
+		[__("Status"), esc(summary.status || "")],
+	];
+	summaryRows.forEach(([label, value]) => {
+		html += `<tr><td>${label}</td><td>${value}</td></tr>`;
+	});
+	html += `</tbody></table>`;
+
+	const peRows = Array.isArray(data.payment_entries) ? data.payment_entries : [];
+	html += `<h6 class="text-muted">${__("Payment Entries")}</h6>`;
+	html += `<table class="table table-bordered table-sm" style="margin-top:0;margin-bottom:1rem">`;
+	html += `<thead><tr><th>${__("Payment Entry")}</th><th>${__("Status")}</th><th>${__(
+		"Amount"
+	)}</th><th>${__("Posting Date")}</th></tr></thead><tbody>`;
+	if (!peRows.length) {
+		html += `<tr><td colspan="4" class="text-muted">${__(
+			"No Payment Entries linked."
+		)}</td></tr>`;
+	} else {
+		peRows.forEach((row) => {
+			const link = `<a href="/app/payment-entry/${encodeURIComponent(
+				row.payment_entry
+			)}">${esc(row.payment_entry)}</a>`;
+			html += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
+			html += `<td>${format_currency(row.amount, currency)}</td>`;
+			html += `<td>${esc(row.posting_date || "")}</td></tr>`;
+		});
+	}
+	html += `</tbody></table>`;
+
+	const clRows = Array.isArray(data.clearances) ? data.clearances : [];
+	html += `<h6 class="text-muted">${__("PM Clearances")}</h6>`;
+	html += `<table class="table table-bordered table-sm" style="margin-top:0;margin-bottom:1rem">`;
+	html += `<thead><tr><th>${__("Clearance")}</th><th>${__("Status")}</th><th>${__(
+		"Workflow State"
+	)}</th><th>${__("Docstatus")}</th><th>${__("Allocated Amount")}</th><th>${__(
+		"Settlement"
+	)}</th></tr></thead><tbody>`;
+	if (!clRows.length) {
+		html += `<tr><td colspan="6" class="text-muted">${__(
+			"No PM Clearances linked."
+		)}</td></tr>`;
+	} else {
+		clRows.forEach((row) => {
+			const link = `<a href="/app/pm-clearance/${encodeURIComponent(
+				row.clearance
+			)}">${esc(row.clearance)}</a>`;
+			html += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
+			html += `<td>${esc(row.workflow_state || "")}</td><td>${esc(row.docstatus || "")}</td>`;
+			html += `<td>${format_currency(row.allocated_amount, currency)}</td>`;
+			html += `<td>${esc(row.settlement_status || "")}</td></tr>`;
+		});
+	}
+	html += `</tbody></table>`;
+
+	const jeRows = Array.isArray(data.journal_entries) ? data.journal_entries : [];
+	html += `<h6 class="text-muted">${__("Journal Entries")}</h6>`;
+	html += `<table class="table table-bordered table-sm" style="margin-top:0">`;
+	html += `<thead><tr><th>${__("Journal Entry")}</th><th>${__("Docstatus")}</th><th>${__(
+		"Posting Date"
+	)}</th><th>${__("Amount")}</th><th>${__("Reference")}</th></tr></thead><tbody>`;
+	if (!jeRows.length) {
+		html += `<tr><td colspan="5" class="text-muted">${__(
+			"No Journal Entries linked."
+		)}</td></tr>`;
+	} else {
+		jeRows.forEach((row) => {
+			const link = `<a href="/app/journal-entry/${encodeURIComponent(
+				row.journal_entry
+			)}">${esc(row.journal_entry)}</a>`;
+			html += `<tr><td>${link}</td><td>${esc(row.docstatus || "")}</td>`;
+			html += `<td>${esc(row.posting_date || "")}</td>`;
+			html += `<td>${format_currency(row.amount, currency)}</td>`;
+			html += `<td>${esc(row.reference || "")}</td></tr>`;
+		});
+	}
+	html += `</tbody></table></div>`;
+	$wrapper.html(html);
+}
+
 function log_pm_pe_list_error(err) {
 	try {
 		if (typeof console !== "undefined" && console.debug) {
@@ -554,7 +733,11 @@ function format_currency(amount, currency) {
 	return flt(amount);
 }
 
-function add_pm_request_toolbar_button(frm, label, fn) {
+function add_pm_request_toolbar_button(frm, label, fn, group) {
+	if (group) {
+		frm.add_custom_button(label, fn, group);
+		return;
+	}
 	frm.add_custom_button(label, fn);
 }
 
@@ -565,6 +748,7 @@ function remove_pm_request_toolbar_buttons(frm) {
 		"View Payment Entries",
 		"Close PM Request",
 		"Cancel PM Request",
+		"Delete PM Request",
 	];
 	labels.forEach((raw) => {
 		const L = __(raw);

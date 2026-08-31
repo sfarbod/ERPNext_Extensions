@@ -36,6 +36,8 @@
   "workflow_state",
   "section_payment_entries",
   "payment_entries_html",
+  "tab_connections",
+  "connections_html",
   "paid_from_account",
   "payment_entry",
   "column_break_acc",
@@ -329,6 +331,17 @@
    "fieldname": "payment_entries_html",
    "fieldtype": "HTML",
    "label": "Payment Entry List",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tab_connections",
+   "fieldtype": "Tab Break",
+   "label": "Connections"
+  },
+  {
+   "fieldname": "connections_html",
+   "fieldtype": "HTML",
+   "label": "Connections",
    "read_only": 1
   },
   {

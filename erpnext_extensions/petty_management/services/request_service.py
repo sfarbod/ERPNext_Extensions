@@ -559,3 +559,31 @@ def cancel_pm_request(pm_request: str) -> None:
 		doc.cancel()
 	finally:
 		doc.flags.ignore_permissions = False
+
+
+def delete_pm_request(pm_request: str) -> None:
+	"""v4.8.6 — business Delete PM Request (DocPerm-independent; reuses v4.6.8 eligibility)."""
+	from erpnext_extensions.petty_management.services.request_api_guard import (
+		get_pm_request_doc_for_write,
+	)
+	from erpnext_extensions.petty_management.services.request_lifecycle_eligibility import (
+		assert_pm_request_delete_allowed,
+		delete_pm_request_action_flags,
+		user_may_execute_pm_request_delete,
+	)
+
+	doc = get_pm_request_doc_for_write(pm_request)
+	if not user_may_execute_pm_request_delete(doc):
+		frappe.throw(_("Not permitted to delete this PM Request."), frappe.PermissionError)
+	can_delete, reason = delete_pm_request_action_flags(doc)
+	if not can_delete:
+		if reason:
+			frappe.throw(reason, title=_("Cannot delete PM Request"))
+		frappe.throw(_("Cannot delete PM Request."), title=_("Cannot delete PM Request"))
+	assert_pm_request_delete_allowed(doc)
+
+	doc.flags.ignore_permissions = True
+	try:
+		doc.delete()
+	finally:
+		doc.flags.ignore_permissions = False

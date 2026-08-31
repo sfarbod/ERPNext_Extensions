@@ -231,6 +231,23 @@ def cancel_pm_request_action_flags(doc: Document) -> tuple[bool, str]:
 	return True, ""
 
 
+def user_may_execute_pm_request_delete(doc: Document | str) -> bool:
+	"""v4.8.6 — administrative delete permission (Administrator only)."""
+	return frappe.session.user == "Administrator"
+
+
+def delete_pm_request_action_flags(doc: Document) -> tuple[bool, str]:
+	"""Desk visibility for Delete PM Request (cancelled + history eligibility + role policy)."""
+	if not user_may_execute_pm_request_delete(doc):
+		return False, ""
+	if cint(getattr(doc, "docstatus", 0)) != 2:
+		return False, ""
+	blockers = get_pm_request_delete_blockers(doc)
+	if blockers:
+		return False, blockers[0]
+	return True, ""
+
+
 def assert_pm_request_cancel_allowed(doc: Document | str) -> None:
 	"""Throw if PM Request cancel is not allowed (open financial process remains)."""
 	blockers = get_pm_request_cancel_blockers(doc)
