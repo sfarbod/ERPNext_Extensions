@@ -161,33 +161,51 @@ async function waitForConnectionsRender(page) {
   }
 }
 
-async function connectionsHasRows(page, heading) {
-  return page.evaluate((sectionHeading) => {
+async function connectionsHasRows(page, cardTitle) {
+  return page.evaluate((title) => {
     const root = document.querySelector(".pm-request-connections");
     if (!root) {
       return false;
     }
-    const headings = [...root.querySelectorAll("h6")];
-    const h = headings.find((el) =>
-      (el.innerText || "").trim().toLowerCase().includes(sectionHeading.toLowerCase())
+    const cards = [...root.querySelectorAll(".pm-conn-card")];
+    const card = cards.find((c) =>
+      (c.innerText || "").toLowerCase().includes(title.toLowerCase())
     );
-    if (!h) {
+    if (!card) {
       return false;
     }
-    let table = h.nextElementSibling;
-    while (table && table.tagName !== "TABLE") {
-      table = table.nextElementSibling;
-    }
-    if (!table) {
+    const badge = card.querySelector(".badge");
+    const count = badge ? parseInt(badge.innerText, 10) : 0;
+    return count > 0 && card.querySelector("tbody tr") !== null;
+  }, cardTitle);
+}
+
+async function connectionsTabIsTraceabilityOnly(page) {
+  return page.evaluate(() => {
+    const active = document.querySelector(".form-tabs-list .nav-link.active");
+    if (!active || !/connections/i.test(active.innerText || "")) {
       return false;
     }
-    const rows = table.querySelectorAll("tbody tr");
-    if (!rows.length) {
+    if (!document.querySelector(".pm-request-connections")) {
       return false;
     }
-    const firstText = (rows[0].innerText || "").toLowerCase();
-    return !firstText.includes("no payment entries") && !firstText.includes("no pm clearances");
-  }, heading);
+    const blocked = new Set(["details", "remark", "journal_entry", "payment_entry"]);
+    const controls = document.querySelectorAll(".frappe-control[data-fieldname]");
+    for (const el of controls) {
+      const fn = el.getAttribute("data-fieldname");
+      if (!blocked.has(fn)) {
+        continue;
+      }
+      const hidden =
+        el.classList.contains("hide-control") ||
+        el.offsetParent === null ||
+        getComputedStyle(el).display === "none";
+      if (!hidden) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 async function connectionsAudit(page) {
@@ -225,9 +243,9 @@ async function connectionsEmptyState(page) {
     }
     const t = (root.innerText || "").toLowerCase();
     return (
-      t.includes("no payment entries linked") &&
-      t.includes("no pm clearances linked") &&
-      t.includes("no journal entries linked")
+      t.includes("no payment entries") &&
+      t.includes("no pm clearances") &&
+      t.includes("no journal entries")
     );
   });
 }
@@ -311,6 +329,7 @@ async function main() {
         const peRows = rendered ? await connectionsHasRows(page, "Payment Entries") : false;
         const clRows = rendered ? await connectionsHasRows(page, "PM Clearances") : false;
         const audit = rendered ? await connectionsAudit(page) : { ok: false };
+        const traceOnly = tabVisible ? await connectionsTabIsTraceabilityOnly(page) : false;
         await shot(page, "03_connections_tab_populated");
         results.push({
           test: "connections_tab_pe_and_clearance",
@@ -319,6 +338,7 @@ async function main() {
             peRows &&
             clRows &&
             audit.ok &&
+            traceOnly &&
             connCtx.expected_pe_count >= 1 &&
             connCtx.expected_clearance_count >= 1,
           tabVisible,
@@ -326,6 +346,7 @@ async function main() {
           peRows,
           clRows,
           audit,
+          traceOnly,
           connCtx,
         });
 
@@ -337,12 +358,14 @@ async function main() {
         await openConnectionsTab(page);
         const emptyRendered = await waitForConnectionsRender(page);
         const emptyOk = emptyRendered ? await connectionsEmptyState(page) : false;
+        const emptyTraceOnly = await connectionsTabIsTraceabilityOnly(page);
         await shot(page, "04_connections_tab_empty");
         results.push({
           test: "connections_empty_state",
-          pass: emptyRendered && emptyOk,
+          pass: emptyRendered && emptyOk && emptyTraceOnly,
           emptyRendered,
           emptyOk,
+          emptyTraceOnly,
         });
 
         results.push({

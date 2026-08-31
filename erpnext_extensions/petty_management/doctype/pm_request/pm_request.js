@@ -612,12 +612,55 @@ function render_pm_request_payment_entry_table($wrapper, rows, currency, opts) {
 	$wrapper.html(html);
 }
 
+function render_pm_request_connection_card(title, rowCount, bodyHtml, emptyMessage) {
+	const esc = frappe.utils.escape_html;
+	let html = `<div class="card pm-conn-card mb-3">`;
+	html += `<div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">`;
+	html += `<span class="fw-semibold">${esc(title)}</span>`;
+	html += `<span class="badge badge-secondary">${rowCount}</span>`;
+	html += `</div>`;
+	if (rowCount === 0) {
+		html += `<div class="card-body py-2 px-3 text-muted small">${esc(emptyMessage)}</div>`;
+	} else {
+		html += `<div class="card-body p-0">${bodyHtml}</div>`;
+	}
+	html += `</div>`;
+	return html;
+}
+
+function render_pm_request_summary_cards(summary, currency) {
+	const esc = frappe.utils.escape_html;
+	const cards = [
+		[__("Requested"), format_currency(summary.total_requested, currency)],
+		[__("Paid"), format_currency(summary.total_paid, currency)],
+		[__("Remaining"), format_currency(summary.remaining_to_pay, currency)],
+		[__("Allocated"), format_currency(summary.allocated_amount, currency)],
+		[__("Available"), format_currency(summary.available_for_clearance, currency)],
+		[__("Payment Status"), esc(summary.payment_status || "—")],
+		[__("Status"), esc(summary.status || "—")],
+	];
+	let html = `<div class="card pm-conn-card mb-3">`;
+	html += `<div class="card-header py-2 px-3"><span class="fw-semibold">${__(
+		"Usage Summary"
+	)}</span></div>`;
+	html += `<div class="card-body py-2 px-3"><div class="row g-2">`;
+	cards.forEach(([label, value]) => {
+		html += `<div class="col-6 col-md-4 col-xl-3">`;
+		html += `<div class="border rounded px-2 py-2 pm-conn-stat h-100">`;
+		html += `<div class="text-muted text-uppercase" style="font-size:10px;letter-spacing:.04em;line-height:1.2">${label}</div>`;
+		html += `<div class="fw-semibold mt-1" style="font-size:13px;line-height:1.3">${value}</div>`;
+		html += `</div></div>`;
+	});
+	html += `</div></div></div>`;
+	return html;
+}
+
 function render_pm_request_connections($wrapper, payload, currency, opts) {
 	opts = opts || {};
 	const esc = frappe.utils.escape_html;
 	if (opts.failed) {
 		$wrapper.html(
-			`<p class="text-muted small">${__(
+			`<p class="text-muted small mb-0">${__(
 				"Connections could not be loaded. Refresh the page to try again."
 			)}</p>`
 		);
@@ -627,92 +670,76 @@ function render_pm_request_connections($wrapper, payload, currency, opts) {
 	const summary = data.summary || {};
 	let html = `<div class="pm-request-connections">`;
 
-	html += `<h6 class="text-muted">${__("Usage Summary")}</h6>`;
-	html += `<table class="table table-bordered table-sm" style="margin-top:0;margin-bottom:1rem">`;
-	html += `<tbody>`;
-	const summaryRows = [
-		[__("Total Requested"), format_currency(summary.total_requested, currency)],
-		[__("Total Paid"), format_currency(summary.total_paid, currency)],
-		[__("Remaining to Pay"), format_currency(summary.remaining_to_pay, currency)],
-		[__("Allocated to Clearances"), format_currency(summary.allocated_amount, currency)],
-		[__("Available for Clearance"), format_currency(summary.available_for_clearance, currency)],
-		[__("Payment Status"), esc(summary.payment_status || "")],
-		[__("Status"), esc(summary.status || "")],
-	];
-	summaryRows.forEach(([label, value]) => {
-		html += `<tr><td>${label}</td><td>${value}</td></tr>`;
-	});
-	html += `</tbody></table>`;
+	html += render_pm_request_summary_cards(summary, currency);
 
 	const peRows = Array.isArray(data.payment_entries) ? data.payment_entries : [];
-	html += `<h6 class="text-muted">${__("Payment Entries")}</h6>`;
-	html += `<table class="table table-bordered table-sm" style="margin-top:0;margin-bottom:1rem">`;
-	html += `<thead><tr><th>${__("Payment Entry")}</th><th>${__("Status")}</th><th>${__(
+	let peTable = `<table class="table table-bordered table-sm mb-0">`;
+	peTable += `<thead><tr><th>${__("Payment Entry")}</th><th>${__("Status")}</th><th>${__(
 		"Amount"
 	)}</th><th>${__("Posting Date")}</th></tr></thead><tbody>`;
-	if (!peRows.length) {
-		html += `<tr><td colspan="4" class="text-muted">${__(
-			"No Payment Entries linked."
-		)}</td></tr>`;
-	} else {
-		peRows.forEach((row) => {
-			const link = `<a href="/app/payment-entry/${encodeURIComponent(
-				row.payment_entry
-			)}">${esc(row.payment_entry)}</a>`;
-			html += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
-			html += `<td>${format_currency(row.amount, currency)}</td>`;
-			html += `<td>${esc(row.posting_date || "")}</td></tr>`;
-		});
-	}
-	html += `</tbody></table>`;
+	peRows.forEach((row) => {
+		const link = `<a href="/app/payment-entry/${encodeURIComponent(
+			row.payment_entry
+		)}">${esc(row.payment_entry)}</a>`;
+		peTable += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
+		peTable += `<td>${format_currency(row.amount, currency)}</td>`;
+		peTable += `<td>${esc(row.posting_date || "")}</td></tr>`;
+	});
+	peTable += `</tbody></table>`;
+	html += render_pm_request_connection_card(
+		__("Payment Entries"),
+		peRows.length,
+		peTable,
+		__("No Payment Entries")
+	);
 
 	const clRows = Array.isArray(data.clearances) ? data.clearances : [];
-	html += `<h6 class="text-muted">${__("PM Clearances")}</h6>`;
-	html += `<table class="table table-bordered table-sm" style="margin-top:0;margin-bottom:1rem">`;
-	html += `<thead><tr><th>${__("Clearance")}</th><th>${__("Status")}</th><th>${__(
+	let clTable = `<table class="table table-bordered table-sm mb-0">`;
+	clTable += `<thead><tr><th>${__("Clearance")}</th><th>${__("Status")}</th><th>${__(
 		"Workflow State"
 	)}</th><th>${__("Docstatus")}</th><th>${__("Allocated Amount")}</th><th>${__(
 		"Settlement"
 	)}</th></tr></thead><tbody>`;
-	if (!clRows.length) {
-		html += `<tr><td colspan="6" class="text-muted">${__(
-			"No PM Clearances linked."
-		)}</td></tr>`;
-	} else {
-		clRows.forEach((row) => {
-			const link = `<a href="/app/pm-clearance/${encodeURIComponent(
-				row.clearance
-			)}">${esc(row.clearance)}</a>`;
-			html += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
-			html += `<td>${esc(row.workflow_state || "")}</td><td>${esc(row.docstatus || "")}</td>`;
-			html += `<td>${format_currency(row.allocated_amount, currency)}</td>`;
-			html += `<td>${esc(row.settlement_status || "")}</td></tr>`;
-		});
-	}
-	html += `</tbody></table>`;
+	clRows.forEach((row) => {
+		const link = `<a href="/app/pm-clearance/${encodeURIComponent(
+			row.clearance
+		)}">${esc(row.clearance)}</a>`;
+		clTable += `<tr><td>${link}</td><td>${esc(row.status || "")}</td>`;
+		clTable += `<td>${esc(row.workflow_state || "")}</td><td>${esc(row.docstatus || "")}</td>`;
+		clTable += `<td>${format_currency(row.allocated_amount, currency)}</td>`;
+		clTable += `<td>${esc(row.settlement_status || "")}</td></tr>`;
+	});
+	clTable += `</tbody></table>`;
+	html += render_pm_request_connection_card(
+		__("PM Clearances"),
+		clRows.length,
+		clTable,
+		__("No PM Clearances")
+	);
 
 	const jeRows = Array.isArray(data.journal_entries) ? data.journal_entries : [];
-	html += `<h6 class="text-muted">${__("Journal Entries")}</h6>`;
-	html += `<table class="table table-bordered table-sm" style="margin-top:0">`;
-	html += `<thead><tr><th>${__("Journal Entry")}</th><th>${__("Docstatus")}</th><th>${__(
+	let jeTable = `<table class="table table-bordered table-sm mb-0">`;
+	jeTable += `<thead><tr><th>${__("Journal Entry")}</th><th>${__("Docstatus")}</th><th>${__(
 		"Posting Date"
 	)}</th><th>${__("Amount")}</th><th>${__("Reference")}</th></tr></thead><tbody>`;
-	if (!jeRows.length) {
-		html += `<tr><td colspan="5" class="text-muted">${__(
-			"No Journal Entries linked."
-		)}</td></tr>`;
-	} else {
-		jeRows.forEach((row) => {
-			const link = `<a href="/app/journal-entry/${encodeURIComponent(
-				row.journal_entry
-			)}">${esc(row.journal_entry)}</a>`;
-			html += `<tr><td>${link}</td><td>${esc(row.docstatus || "")}</td>`;
-			html += `<td>${esc(row.posting_date || "")}</td>`;
-			html += `<td>${format_currency(row.amount, currency)}</td>`;
-			html += `<td>${esc(row.reference || "")}</td></tr>`;
-		});
-	}
-	html += `</tbody></table></div>`;
+	jeRows.forEach((row) => {
+		const link = `<a href="/app/journal-entry/${encodeURIComponent(
+			row.journal_entry
+		)}">${esc(row.journal_entry)}</a>`;
+		jeTable += `<tr><td>${link}</td><td>${esc(row.docstatus || "")}</td>`;
+		jeTable += `<td>${esc(row.posting_date || "")}</td>`;
+		jeTable += `<td>${format_currency(row.amount, currency)}</td>`;
+		jeTable += `<td>${esc(row.reference || "")}</td></tr>`;
+	});
+	jeTable += `</tbody></table>`;
+	html += render_pm_request_connection_card(
+		__("Journal Entries"),
+		jeRows.length,
+		jeTable,
+		__("No Journal Entries")
+	);
+
+	html += `</div>`;
 	$wrapper.html(html);
 }
 

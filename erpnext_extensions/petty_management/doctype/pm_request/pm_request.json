@@ -36,14 +36,13 @@
   "workflow_state",
   "section_payment_entries",
   "payment_entries_html",
-  "tab_connections",
-  "connections_html",
+  "tab_details",
+  "section_details",
+  "details",
   "paid_from_account",
   "payment_entry",
   "column_break_acc",
   "journal_entry",
-  "section_details",
-  "details",
   "section_close",
   "is_closed",
   "closed_on",
@@ -52,7 +51,9 @@
   "close_reason_detail",
   "section_remark",
   "remark",
-  "amended_from"
+  "amended_from",
+  "tab_connections",
+  "connections_html"
  ],
  "fields": [
   {
@@ -341,7 +342,7 @@
   {
    "fieldname": "connections_html",
    "fieldtype": "HTML",
-   "label": "Connections",
+   "label": " ",
    "read_only": 1
   },
   {
@@ -373,6 +374,11 @@
    "label": "Journal Entry",
    "options": "Journal Entry",
    "read_only": 1
+  },
+  {
+   "fieldname": "tab_details",
+   "fieldtype": "Tab Break",
+   "label": "Details"
   },
   {
    "collapsible": 1,
