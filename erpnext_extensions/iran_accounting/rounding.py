@@ -1,5 +1,14 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Backward-compatible re-exports (use domain/* or core/* in new code)."""
+"""Compatibility facade for Iran Accounting rounding.
+
+This module contains **no business logic**. It only re-exports the public API
+from canonical owners:
+
+	core.rounding → domain.currency → domain.ledger_rounding
+
+New code should import from ``domain.currency`` / ``domain.ledger_rounding``
+(or ``core.rounding``). Legacy callers may keep importing from this module.
+"""
 
 from __future__ import annotations
 

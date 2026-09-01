@@ -926,11 +926,19 @@ def _import_integrity_snapshot() -> dict:
 	import os
 	import sys
 
+	import erpnext_extensions.iran_accounting.domain.ledger_rounding as ledger_rounding
 	import erpnext_extensions.iran_accounting.rounding as rounding
 	from erpnext_extensions.iran_accounting.monkey_patches import apply_monkey_patches
+	from erpnext_extensions.iran_accounting.worker.guard import (
+		DOMAIN_LEDGER_ROUNDING_REQUIRED,
+		ensure_runtime_ready,
+		report_deployment_integrity,
+	)
 
 	apply_monkey_patches()
+	ensure_runtime_ready()
 
+	# Compatibility facade symbols (legacy callers) + canonical ledger owners.
 	required = (
 		"round_currency_amount",
 		"round_row_amount",
@@ -942,19 +950,23 @@ def _import_integrity_snapshot() -> dict:
 	)
 
 	before_has = {k: hasattr(rounding, k) for k in required}
+	canonical_before = {k: hasattr(ledger_rounding, k) for k in DOMAIN_LEDGER_ROUNDING_REQUIRED}
 	try:
 		rounding = importlib.reload(rounding)
+		ledger_rounding = importlib.reload(ledger_rounding)
 	except Exception:
 		pass
 	after_has = {k: hasattr(rounding, k) for k in required}
+	canonical_after = {k: hasattr(ledger_rounding, k) for k in DOMAIN_LEDGER_ROUNDING_REQUIRED}
 
 	try:
 		with open(getattr(rounding, "__file__", "") or "", "rb") as f:
 			src = f.read()
 		src_sha1 = hashlib.sha1(src).hexdigest()
 		src_head = src[:600].decode("utf-8", errors="replace")
-		src_has_round_row_amount = b"def round_row_amount" in src
-		src_has_round_currency_amount = b"def round_currency_amount" in src
+		# Facade is re-export only; defs live on domain modules.
+		src_has_round_row_amount = b"round_row_amount" in src
+		src_has_round_currency_amount = b"round_currency_amount" in src
 	except Exception:
 		src_sha1 = None
 		src_head = None
@@ -979,6 +991,10 @@ def _import_integrity_snapshot() -> dict:
 		"rounding_sysmodules_type": str(type(sys.modules.get("erpnext_extensions.iran_accounting.rounding"))),
 		"has": after_has,
 		"has_before_reload": before_has,
+		"canonical_ledger_has": canonical_after,
+		"canonical_ledger_has_before_reload": canonical_before,
+		"canonical_ledger_file": getattr(ledger_rounding, "__file__", None),
+		"deployment_integrity": report_deployment_integrity(),
 		"rounding_keys_sample": sorted(list(rounding.__dict__.keys()))[:60],
 		"iran_patches_applied": True,
 	}

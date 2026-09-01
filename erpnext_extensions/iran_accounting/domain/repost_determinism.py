@@ -57,7 +57,7 @@ from erpnext_extensions.iran_accounting.manufacture_rounding import (
 	align_manufacture_finished_good_residual,
 	align_manufacture_finished_good_to_outgoing,
 )
-from erpnext_extensions.iran_accounting.rounding import round_stock_entry_totals
+from erpnext_extensions.iran_accounting.domain.ledger_rounding import round_stock_entry_totals
 from erpnext_extensions.iran_accounting.validation import fetch_gl_rows, gl_debit_credit_totals
 
 logger = logging.getLogger(__name__)
