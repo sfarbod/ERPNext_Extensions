@@ -73,11 +73,6 @@ def derive_payment_status(doc: Document) -> None:
 
 
 def validate_request(doc: Document) -> None:
-	from erpnext_extensions.petty_management.services.draft_approval_guards import (
-		assert_pending_not_editable,
-	)
-
-	assert_pending_not_editable(doc)
 	reconcile_payment_entry_link(doc)
 	meta = frappe.get_meta("PM Request")
 	if meta.has_field("total_paid_amount"):

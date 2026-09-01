@@ -36,6 +36,9 @@ frappe.ui.form.on("PM Request", {
 	},
 	refresh(frm) {
 		frappe.workflow.setup(frm.doctype);
+		if (erpnext_extensions?.petty_management?.apply_pending_remark_only_lock) {
+			erpnext_extensions.petty_management.apply_pending_remark_only_lock(frm);
+		}
 		frm.trigger("recalc_totals");
 		if (!frm.is_new() && frm.doc.docstatus === 1) {
 			frm.trigger("refresh_payment_entry_list");
@@ -44,6 +47,9 @@ frappe.ui.form.on("PM Request", {
 	},
 	onload_post_render(frm) {
 		expand_pm_request_main_sections(frm);
+		if (erpnext_extensions?.petty_management?.apply_pending_remark_only_lock) {
+			erpnext_extensions.petty_management.apply_pending_remark_only_lock(frm);
+		}
 		schedule_pm_request_toolbar(frm);
 	},
 	details_add(frm) {

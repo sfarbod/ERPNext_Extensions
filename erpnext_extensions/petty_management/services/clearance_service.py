@@ -33,6 +33,12 @@ from erpnext_extensions.petty_management.utils import get_pm_settings
 
 
 def before_validate_clearance(doc: Document) -> None:
+	from erpnext_extensions.petty_management.services.draft_approval_guards import (
+		assert_pending_not_editable,
+	)
+
+	# v5.0.6: evaluate pending-edit guard before row normalization mutates child tables.
+	assert_pending_not_editable(doc)
 	if doc.docstatus == 0:
 		normalize_funding_allocation_rows(doc)
 		prune_empty_request_allocation_rows(doc)
@@ -53,11 +59,9 @@ def normalize_funding_allocation_rows(doc: Document) -> None:
 
 def validate_clearance(doc: Document) -> None:
 	from erpnext_extensions.petty_management.services.draft_approval_guards import (
-		assert_pending_not_editable,
 		assert_pm_clearance_remark_locked_after_submit,
 	)
 
-	assert_pending_not_editable(doc)
 	assert_pm_clearance_remark_locked_after_submit(doc)
 	doc.je_clearance_date = getdate(doc.transaction_date or today())
 	sync_clearance_holder_fields(doc)

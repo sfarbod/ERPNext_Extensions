@@ -106,3 +106,71 @@ erpnext_extensions.petty_management.refresh_workflow_actions = function (frm) {
 	}
 	frm.states.show_actions();
 };
+
+const PM_PENDING_REMARK_EDIT_STATES = {
+	"PM Request": new Set([
+		"Pending Approval",
+		"Pending Manager Approval",
+		"Pending CEO Approval",
+		"Pending Finance Approval",
+	]),
+	"PM Clearance": new Set([
+		"Pending Approval",
+		"Pending Manager Approval",
+		"Pending Finance Review",
+	]),
+};
+
+function pm_is_pending_remark_edit(frm) {
+	if (!frm?.doc || cint(frm.doc.docstatus) !== 0) {
+		return false;
+	}
+	const states = PM_PENDING_REMARK_EDIT_STATES[frm.doctype];
+	if (!states) {
+		return false;
+	}
+	return states.has(frm.doc.workflow_state || "");
+}
+
+/**
+ * While Pending*: lock every field except Remarks. Save remains enabled for remark-only edits.
+ */
+erpnext_extensions.petty_management.apply_pending_remark_only_lock = function (frm) {
+	if (!frm || (frm.doctype !== "PM Request" && frm.doctype !== "PM Clearance")) {
+		return;
+	}
+	const pending = pm_is_pending_remark_edit(frm);
+	if (!pending) {
+		if (frm._pm_pending_remark_lock_applied) {
+			frm.refresh_fields();
+			delete frm._pm_pending_remark_lock_applied;
+		}
+		return;
+	}
+	frm._pm_pending_remark_lock_applied = true;
+	Object.keys(frm.fields_dict || {}).forEach((fn) => {
+		const field = frm.fields_dict[fn];
+		const df = field?.df || {};
+		if (!fn || ["Tab Break", "Section Break", "Column Break", "HTML"].includes(df.fieldtype)) {
+			return;
+		}
+		if (fn === "remark") {
+			frm.set_df_property(fn, "read_only", 0);
+			return;
+		}
+		if (df.fieldtype === "Table") {
+			frm.set_df_property(fn, "read_only", 1);
+			if (field.grid) {
+				field.grid.df.read_only = 1;
+				field.grid.refresh();
+			}
+			return;
+		}
+		frm.set_df_property(fn, "read_only", 1);
+	});
+};
+
+function cint(v) {
+	const parsed = parseInt(v, 10);
+	return Number.isFinite(parsed) ? parsed : 0;
+}

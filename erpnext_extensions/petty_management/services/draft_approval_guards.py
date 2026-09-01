@@ -13,7 +13,23 @@ from erpnext_extensions.petty_management.services.business_status_service import
 	REQUEST_PENDING_WORKFLOW_TITLES,
 )
 
-PM_CLEARANCE_PENDING_EDITABLE_FIELDS = frozenset({"remark"})
+PM_PENDING_EDITABLE_FIELDS = frozenset({"remark"})
+_PENDING_SAVE_IGNORE_FIELDS = frozenset({"modified", "modified_by"})
+_CHILD_DERIVED_IGNORE_FIELDS = frozenset(
+	{
+		"name",
+		"owner",
+		"creation",
+		"modified",
+		"modified_by",
+		"parent",
+		"parentfield",
+		"parenttype",
+		"idx",
+		"docstatus",
+		"percent_of_total",
+	}
+)
 
 
 def _workflow_title(doc: Document) -> str:
@@ -40,27 +56,52 @@ def _in_workflow_apply() -> bool:
 	)
 
 
-def _child_tables_unchanged(doc: Document) -> bool:
+def _changed_parent_fields(doc: Document) -> set[str]:
+	before = doc.get_doc_before_save()
+	if not before:
+		return set()
+	changed: set[str] = set()
+	for fname in doc.meta.get_valid_columns():
+		if fname in _PENDING_SAVE_IGNORE_FIELDS:
+			continue
+		if (doc.get(fname) or None) != (before.get(fname) or None):
+			changed.add(fname)
+	return changed
+
+
+def _child_tables_changed(doc: Document) -> bool:
+	before = doc.get_doc_before_save()
+	if not before:
+		return False
 	for df in doc.meta.get_table_fields():
-		if doc.has_value_changed(df.fieldname):
-			return False
-	return True
+		fname = df.fieldname
+		before_rows = before.get(fname) or []
+		current_rows = doc.get(fname) or []
+		if len(before_rows) != len(current_rows):
+			return True
+		before_by_name = {row.name: row for row in before_rows}
+		for row in current_rows:
+			prev = before_by_name.get(row.name)
+			if not prev:
+				return True
+			for field in row.meta.get_valid_columns():
+				if field in _CHILD_DERIVED_IGNORE_FIELDS:
+					continue
+				if (row.get(field) or None) != (prev.get(field) or None):
+					return True
+	return False
 
 
-def _only_allowed_pending_field_changes(doc: Document) -> bool:
-	"""v4.8.3: PM Clearance ``remark`` may be edited while Pending* at docstatus 0."""
-	if doc.doctype != "PM Clearance":
+def only_remark_changed_while_pending(doc: Document) -> bool:
+	"""True when the only user change is ``remark`` (explicit allow-list)."""
+	if doc.doctype not in ("PM Request", "PM Clearance"):
 		return False
 	if not doc.get_doc_before_save():
 		return False
-	if not _child_tables_unchanged(doc):
+	if _child_tables_changed(doc):
 		return False
-	changed = {
-		fname
-		for fname in doc.meta.get_valid_columns()
-		if doc.has_value_changed(fname) and fname not in ("modified", "modified_by")
-	}
-	return bool(changed) and changed <= PM_CLEARANCE_PENDING_EDITABLE_FIELDS
+	changed = _changed_parent_fields(doc)
+	return bool(changed) and changed <= PM_PENDING_EDITABLE_FIELDS
 
 
 def assert_pm_clearance_remark_locked_after_submit(doc: Document) -> None:
@@ -80,15 +121,14 @@ def assert_pm_clearance_remark_locked_after_submit(doc: Document) -> None:
 def assert_pending_not_editable(doc: Document) -> None:
 	"""Block edits while Pending* and docstatus=0 unless inside workflow apply.
 
-	Ordinary Desk saves (requester / casual edits) are blocked. Workflow apply
-	and privileged ``ignore_permissions`` saves (ops helpers / stamped field
-	refresh) are allowed.
+	Ordinary Desk saves may update ``remark`` only. Workflow apply and privileged
+	``ignore_permissions`` saves (ops helpers / stamped field refresh) are allowed.
 	"""
 	if cint(getattr(doc, "docstatus", 0)) != 0:
 		return
 	if not is_pending_approval_workflow(doc):
 		return
-	if _only_allowed_pending_field_changes(doc):
+	if only_remark_changed_while_pending(doc):
 		return
 	if _in_workflow_apply():
 		return
@@ -98,10 +138,7 @@ def assert_pending_not_editable(doc: Document) -> None:
 		return
 
 	frappe.throw(
-		_(
-			"Cannot edit {0} while it is pending approval. "
-			"An approver must use Return for Correction, or wait until approval completes."
-		).format(doc.doctype),
+		_("Only Remarks may be edited while approval is pending."),
 		title=_("Pending approval"),
 	)
 
