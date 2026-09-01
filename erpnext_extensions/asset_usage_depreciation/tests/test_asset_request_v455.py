@@ -181,6 +181,8 @@ class TestFulfillmentPermissionsV455(unittest.TestCase):
 		)
 		cls.employee = h.make_employee(company_name=cls.company, user_id=cls.emp_user)
 		cls.item = h.make_fixed_asset_item(title="V455 Perm Item")
+		cls.mgr_emp = h.make_employee(company_name=cls.company, user_id=cls.mgr_user)
+		frappe.db.set_value("Employee", cls.employee, "reports_to", cls.mgr_emp)
 
 	def _ready(self):
 		if getattr(self, "skip", None):
@@ -213,6 +215,15 @@ class TestFulfillmentPermissionsV455(unittest.TestCase):
 		doc.require_planning_approval = 0
 		doc.require_ceo_approval = 0
 		doc.save(ignore_permissions=True)
+		frappe.db.set_value(
+			"Asset Request",
+			doc.name,
+			{
+				"manager_approver": self.mgr_user,
+				"require_planning_approval": 0,
+				"require_ceo_approval": 0,
+			},
+		)
 		apply_workflow(frappe.get_doc("Asset Request", doc.name), ACTION_SUBMIT)
 		doc.reload()
 		frappe.set_user(self.mgr_user)

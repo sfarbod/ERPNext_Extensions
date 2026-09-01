@@ -66,7 +66,10 @@ class TestAssetRequestPermissions(unittest.TestCase):
 			email=f"ar.oth.{suffix}@example.com",
 			roles=["Employee"],
 		)
-		cls.employee = h.make_employee(company_name=cls.company, user_id=cls.emp_user)
+		cls.mgr_emp = h.make_employee(company_name=cls.company, user_id=cls.mgr_user)
+		cls.employee = h.make_employee(
+			company_name=cls.company, user_id=cls.emp_user, reports_to=cls.mgr_emp
+		)
 		cls.other_employee = h.make_employee(company_name=cls.company, user_id=cls.other_user)
 		cls.item = h.make_fixed_asset_item(title="Perm Item")
 
@@ -336,7 +339,10 @@ class TestAssetRequestPermsV488(unittest.TestCase):
 			email=f"ar.v488.am.{suffix}@example.com",
 			roles=["Employee", ROLE_ASSET_MANAGER],
 		)
-		cls.employee = h.make_employee(company_name=cls.company, user_id=cls.emp_user)
+		cls.mgr_emp = h.make_employee(company_name=cls.company, user_id=cls.mgr_user)
+		cls.employee = h.make_employee(
+			company_name=cls.company, user_id=cls.emp_user, reports_to=cls.mgr_emp
+		)
 		cls.item = h.make_fixed_asset_item(title="V488 Perm Item")
 
 	def _ready(self):
@@ -437,6 +443,7 @@ class TestAssetRequestPermsV488(unittest.TestCase):
 			doc.reload()
 			self.assertEqual(doc.workflow_state, "Pending Manager Approval")
 			self.assertEqual(int(doc.docstatus or 0), 0)
+			self.assertEqual(doc.manager_approver, self.mgr_user)
 		finally:
 			frappe.set_user("Administrator")
 

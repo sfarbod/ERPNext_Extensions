@@ -13,6 +13,9 @@ from erpnext_extensions.asset_usage_depreciation.constants import (
 	WF_STATE_DRAFT,
 	WF_STATE_REJECTED,
 )
+from erpnext_extensions.asset_usage_depreciation.services.manager_authorization import (
+	sync_manager_access,
+)
 from erpnext_extensions.asset_usage_depreciation.services.request_service import (
 	mark_approved,
 	stamp_policy_and_approvers,
@@ -31,6 +34,12 @@ class AssetRequest(Document):
 		if self.workflow_state == WF_STATE_REJECTED and not (self.rejection_reason or "").strip():
 			if self.has_value_changed("workflow_state"):
 				frappe.throw(_("Rejection Reason is required."))
+
+	def on_update(self):
+		sync_manager_access(self)
+
+	def after_insert(self):
+		sync_manager_access(self)
 
 	def before_submit(self):
 		stamp_policy_and_approvers(self)

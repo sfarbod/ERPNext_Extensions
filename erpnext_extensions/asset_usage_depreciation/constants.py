@@ -51,6 +51,9 @@ ACTION_APPROVE = "AR Approve"
 ACTION_REJECT = "AR Reject"
 ACTION_SEND_BACK = "AR Send Back"
 
+# Native Workflow condition: only the stamped line manager may act at manager stage.
+MANAGER_APPROVER_CONDITION = "doc.manager_approver == frappe.session.user"
+
 STATUS_DRAFT = "Draft"
 STATUS_PENDING_MANAGER = "Pending Manager Approval"
 STATUS_PENDING_PLANNING = "Pending Planning Approval"
