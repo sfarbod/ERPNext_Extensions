@@ -30,56 +30,7 @@ class TestApprovedMonetaryDecimalPrecision(unittest.TestCase):
 			mod.APPROVED_FIELDS_BY_DOCTYPE["Facility Repayment"],
 			("principal_amount", "profit_amount", "penalty_amount", "total_payment_amount"),
 		)
-		self.assertEqual(
-			mod.APPROVED_FIELDS_BY_DOCTYPE["Sales Order"],
-			(
-				"base_total",
-				"base_net_total",
-				"base_total_taxes_and_charges",
-				"base_discount_amount",
-				"base_grand_total",
-				"base_rounding_adjustment",
-				"base_rounded_total",
-				"total",
-				"net_total",
-				"total_taxes_and_charges",
-				"discount_amount",
-				"grand_total",
-				"rounding_adjustment",
-				"rounded_total",
-			),
-		)
-		self.assertEqual(
-			mod.APPROVED_FIELDS_BY_DOCTYPE["Sales Invoice"],
-			(
-				"base_total",
-				"base_net_total",
-				"base_total_taxes_and_charges",
-				"base_discount_amount",
-				"base_grand_total",
-				"base_rounding_adjustment",
-				"base_rounded_total",
-				"total",
-				"net_total",
-				"total_taxes_and_charges",
-				"discount_amount",
-				"grand_total",
-				"rounding_adjustment",
-				"rounded_total",
-				"total_advance",
-				"outstanding_amount",
-				"base_paid_amount",
-				"paid_amount",
-				"base_change_amount",
-				"change_amount",
-				"write_off_amount",
-				"base_write_off_amount",
-			),
-		)
-		self.assertEqual(mod.APPROVED_FIELDS_BY_DOCTYPE["Sales Order Item"], ("amount", "base_amount", "net_amount", "base_net_amount"))
-		self.assertEqual(mod.APPROVED_FIELDS_BY_DOCTYPE["Sales Invoice Item"], ("amount", "base_amount", "net_amount", "base_net_amount"))
-		self.assertEqual(mod.APPROVED_FIELDS_BY_DOCTYPE["Sales Taxes and Charges"], ("tax_amount", "base_tax_amount", "total", "base_total"))
-		self.assertEqual(len(mod.approved_field_targets()), 65)
+		self.assertEqual(len(mod.approved_field_targets()), 17)
 
 	def test_decide_decimal_action_matrix(self):
 		self.assertEqual(mod.decide_decimal_action(None), mod.SKIP_MISSING_COLUMN)
@@ -123,28 +74,28 @@ class TestApprovedMonetaryDecimalPrecision(unittest.TestCase):
 		logger = MagicMock()
 
 		mock_get_value.side_effect = [None]
-		action, value = mod.ensure_length_property_setter("Sales Order", "base_total", 30, logger)
+		action, value = mod.ensure_length_property_setter("Facility", "principal_amount", 30, logger)
 		self.assertEqual((action, value), ("CREATE_METADATA_LENGTH", 30))
 		mock_make_ps.assert_called_once()
 
 		mock_make_ps.reset_mock()
-		mock_get_value.side_effect = ["Sales Order-base_total-length", "21"]
-		action, value = mod.ensure_length_property_setter("Sales Order", "base_total", 30, logger)
+		mock_get_value.side_effect = ["Facility-principal_amount-length", "21"]
+		action, value = mod.ensure_length_property_setter("Facility", "principal_amount", 30, logger)
 		self.assertEqual((action, value), ("UPDATE_METADATA_LENGTH", 30))
 		mock_set_value.assert_called_once()
 		mock_clear_cache.assert_called()
 
 		mock_set_value.reset_mock()
-		mock_get_value.side_effect = ["Sales Order-base_total-length", "38"]
-		action, value = mod.ensure_length_property_setter("Sales Order", "base_total", 30, logger)
+		mock_get_value.side_effect = ["Facility-principal_amount-length", "38"]
+		action, value = mod.ensure_length_property_setter("Facility", "principal_amount", 30, logger)
 		self.assertEqual((action, value), ("SKIP_METADATA_ALREADY_SET", 38))
 		mock_set_value.assert_not_called()
 
 	def test_verify_and_set_metadata_isolates_errors(self):
 		logger = MagicMock()
 		targets = (
-			mod.ApprovedFieldTarget("Sales Order", "base_total"),
-			mod.ApprovedFieldTarget("Sales Order", "total"),
+			mod.ApprovedFieldTarget("Facility", "principal_amount"),
+			mod.ApprovedFieldTarget("Facility", "received_amount"),
 		)
 
 		with (

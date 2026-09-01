@@ -1,9 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 # License: MIT
-"""Sales Order amount_eligible_for_commission DECIMAL(30,9) hotfix helpers.
+"""Sales Order amount_eligible_for_commission DECIMAL(30,9) hotfix helpers (v5.0.5).
 
-Targeted storage-capacity hardening for one failing Sales Order column only.
-Does not change Frappe global Currency/Float mapping or other Sales Order amounts.
+Superseded by selling_documents_decimal_precision_v507 for complete selling coverage.
+Kept for backward-compatible patch idempotency on sites that already ran v5.0.5.
 """
 
 from __future__ import annotations
