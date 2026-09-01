@@ -22,6 +22,9 @@ frappe.ui.form.on("PM Clearance", {
 	},
 	workflow_state(frm) {
 		setup_settlement_buttons(frm);
+		if (erpnext_extensions?.petty_management?.apply_pending_remark_only_lock) {
+			erpnext_extensions.petty_management.apply_pending_remark_only_lock(frm);
+		}
 	},
 	status(frm) {
 		setup_settlement_buttons(frm);
@@ -312,6 +315,9 @@ frappe.ui.form.on("PM Clearance", {
 	},
 	refresh(frm) {
 		frappe.workflow.setup(frm.doctype);
+		if (erpnext_extensions?.petty_management?.apply_pending_remark_only_lock) {
+			erpnext_extensions.petty_management.apply_pending_remark_only_lock(frm);
+		}
 		setup_settlement_buttons(frm);
 		frm.trigger("pm_refresh_pi_readiness_banner");
 		if (frm.doc.employee && frm.doc.company && can_mutate_derived_fields(frm)) {
@@ -507,6 +513,12 @@ function form_is_dirty(frm) {
 }
 
 function can_mutate_derived_fields(frm) {
+	if (
+		erpnext_extensions?.petty_management?.is_pending_remark_edit &&
+		erpnext_extensions.petty_management.is_pending_remark_edit(frm)
+	) {
+		return false;
+	}
 	return frm.doc.docstatus === 0 && (frm.is_new() || form_is_dirty(frm));
 }
 

@@ -39,6 +39,13 @@ class PMRequest(Document):
 	def validate(self):
 		validate_request(self)
 
+	def before_validate(self):
+		from erpnext_extensions.petty_management.services.draft_approval_guards import (
+			assert_pending_not_editable,
+		)
+
+		assert_pending_not_editable(self)
+
 	def before_submit(self):
 		# v4.7.2: Finance Approve submits (docstatus 0→1). Stamps were set on
 		# Draft → Pending Manager; re-validate / fill gaps without clearing.
