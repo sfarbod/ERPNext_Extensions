@@ -371,6 +371,9 @@ async function run() {
         ? body.slice(0, 240)
         : null;
     });
+    results.employee_manager_approver_stamped =
+      Boolean(createdName) &&
+      inspectRequest(createdName).manager_approver === prep.mgr_email;
 
     await openForm(empPage, prep.approved_request);
     const empApprovedFulfillment = await hasFulfillmentActions(empPage);
@@ -380,7 +383,33 @@ async function run() {
       !empApprovedFulfillment.purchase;
     await empSession.ctx.close();
 
-    // Scenario 2 — Manager approval as the real manager (must stay logged in, no MR)
+    results.mgr_has_no_ar_manager_role = prep.mgr_has_ar_manager_role === false;
+
+    // Negative — unrelated Employee must not see manager actions
+    const otherSession = await openAsUser(browser, prep.other_email, prep.password);
+    const otherPage = otherSession.page;
+    const otherOpened = await openForm(otherPage, prep.pending_request);
+    results.unrelated_employee_opened = otherOpened;
+    const otherLabels = otherOpened ? await collectActionLabels(otherPage) : [];
+    results.unrelated_employee_no_manager_actions =
+      !otherLabels.some((t) => /AR Approve|^Approve$/i.test(t)) &&
+      !otherLabels.some((t) => /AR Reject|^Reject$/i.test(t)) &&
+      !otherLabels.some((t) => /AR Send Back|Send Back/i.test(t));
+    await otherSession.ctx.close();
+
+    // Negative — unstamped Asset Request Manager must not see manager actions
+    const arMgrSession = await openAsUser(browser, prep.ar_mgr_email, prep.password);
+    const arMgrPage = arMgrSession.page;
+    const arMgrOpened = await openForm(arMgrPage, prep.pending_request);
+    results.unstamped_ar_manager_opened = arMgrOpened;
+    const arMgrLabels = arMgrOpened ? await collectActionLabels(arMgrPage) : [];
+    results.unstamped_ar_manager_no_manager_actions =
+      !arMgrLabels.some((t) => /AR Approve|^Approve$/i.test(t)) &&
+      !arMgrLabels.some((t) => /AR Reject|^Reject$/i.test(t)) &&
+      !arMgrLabels.some((t) => /AR Send Back|Send Back/i.test(t));
+    await arMgrSession.ctx.close();
+
+    // Scenario 2 — Manager approval as the real line manager (Employee role only)
     const mgrSession = await openAsUser(browser, prep.mgr_email, prep.password);
     const mgrPage = mgrSession.page;
     await openForm(mgrPage, prep.pending_request);
@@ -396,6 +425,12 @@ async function run() {
     const pendingLabels = await collectActionLabels(mgrPage);
     results.approve_action_visible = pendingLabels.some((t) =>
       /AR Approve|^Approve$/i.test(t)
+    );
+    results.reject_action_visible = pendingLabels.some((t) =>
+      /AR Reject|^Reject$/i.test(t)
+    );
+    results.send_back_action_visible = pendingLabels.some((t) =>
+      /AR Send Back|Send Back/i.test(t)
     );
     mgrPage.on("pageerror", (err) => consoleErrors.push(`mgr pageerror: ${err}`));
     await clickWorkflowApprove(mgrPage);
@@ -565,7 +600,7 @@ async function run() {
       if (/get_open_count|not whitelisted|logged out|Session expired|Please login/i.test(e)) {
         return true;
       }
-      return !/favicon|Failed to load resource: the server responded with a status of (404|400|500)|socket\.io|Unauthorized.*fetch failed|get_open_form is not a function/i.test(
+      return !/favicon|Failed to load resource: the server responded with a status of (404|400|500)|socket\.io|Unauthorized.*fetch failed|get_open_form is not a function|refresh_comments_count/i.test(
         e
       );
     });
@@ -578,10 +613,17 @@ async function run() {
         results.employee_save_ok &&
         results.requested_item_visible &&
         results.employee_submit_workflow &&
+        results.employee_manager_approver_stamped &&
         !results.employee_permission_error &&
         results.employee_no_fulfillment_on_draft &&
         results.employee_no_fulfillment_on_approved &&
+        results.mgr_has_no_ar_manager_role &&
+        results.unrelated_employee_no_manager_actions &&
+        results.unstamped_ar_manager_no_manager_actions &&
         results.manager_sees_pending &&
+        results.approve_action_visible &&
+        results.reject_action_visible &&
+        results.send_back_action_visible &&
         results.manager_approve_ok &&
         results.manager_not_guest &&
         results.manager_approve_no_mr &&

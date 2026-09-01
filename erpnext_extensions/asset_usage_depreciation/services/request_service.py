@@ -226,44 +226,89 @@ def _validate_duplicate_active(doc) -> None:
 
 
 def stamp_policy_and_approvers(doc) -> None:
-	"""Copy Company flags and named approvers. Frozen once a manager is stamped."""
-	if doc.manager_approver:
+	"""Copy Company flags and named approvers. Frozen once the request leaves Draft."""
+	before = doc.get_doc_before_save() if hasattr(doc, "get_doc_before_save") else None
+	prev_state = (before.workflow_state or WF_STATE_DRAFT) if before else WF_STATE_DRAFT
+	already_in_flow = prev_state not in (WF_STATE_DRAFT, "", None)
+
+	if already_in_flow and before and before.manager_approver:
+		if doc.manager_approver != before.manager_approver:
+			doc.manager_approver = before.manager_approver
 		return
 
-	company = doc.company
-	settings = get_settings()
+	if already_in_flow and before and not before.manager_approver:
+		# Legacy unstamped in-flight request: do not guess a manager.
+		return
 
-	require_planning = cint(frappe.db.get_value("Company", company, COMPANY_FIELD_AR_REQUIRE_PLANNING))
-	require_ceo_flag = cint(frappe.db.get_value("Company", company, COMPANY_FIELD_AR_REQUIRE_CEO))
-	min_qty = cint(frappe.db.get_value("Company", company, COMPANY_FIELD_AR_CEO_MIN_QTY)) or 0
-	total_qty = sum(cint(row.qty) for row in doc.items)
-	require_ceo = 0
-	if require_ceo_flag:
-		require_ceo = 1 if min_qty <= 0 or total_qty >= min_qty else 0
+	if not doc.manager_approver:
+		company = doc.company
+		settings = get_settings()
 
-	doc.require_planning_approval = require_planning
-	doc.require_ceo_approval = require_ceo
+		require_planning = cint(frappe.db.get_value("Company", company, COMPANY_FIELD_AR_REQUIRE_PLANNING))
+		require_ceo_flag = cint(frappe.db.get_value("Company", company, COMPANY_FIELD_AR_REQUIRE_CEO))
+		min_qty = cint(frappe.db.get_value("Company", company, COMPANY_FIELD_AR_CEO_MIN_QTY)) or 0
+		total_qty = sum(cint(row.qty) for row in doc.items)
+		require_ceo = 0
+		if require_ceo_flag:
+			require_ceo = 1 if min_qty <= 0 or total_qty >= min_qty else 0
 
-	doc.manager_approver = _resolve_manager_user(doc.employee)
-	if cint(settings.get("require_named_manager_approver")) and not doc.manager_approver:
-		frappe.throw(
-			_("Employee {0} has no Reports To user. A manager approver is required.").format(doc.employee)
+		doc.require_planning_approval = require_planning
+		doc.require_ceo_approval = require_ceo
+
+		doc.manager_approver = _resolve_manager_user(doc.employee)
+		if require_planning:
+			doc.planning_approver = settings.get("planning_approver") or doc.planning_approver
+		if require_ceo:
+			doc.ceo_approver = settings.get("ceo_approver") or doc.ceo_approver
+
+	if _is_submitting_for_approval(doc) and not _is_valid_stamped_manager(doc.manager_approver):
+		from erpnext_extensions.asset_usage_depreciation.services.manager_authorization import (
+			manager_resolution_message,
 		)
 
-	if require_planning:
-		doc.planning_approver = settings.get("planning_approver") or doc.planning_approver
-	if require_ceo:
-		doc.ceo_approver = settings.get("ceo_approver") or doc.ceo_approver
+		if doc.manager_approver:
+			frappe.throw(
+				_(
+					"Cannot submit for approval: manager approver {0} is missing or disabled."
+				).format(doc.manager_approver)
+			)
+		frappe.throw(manager_resolution_message(doc.employee))
+
+
+def _is_submitting_for_approval(doc) -> bool:
+	if (doc.workflow_state or "") != WF_STATE_PENDING_MANAGER:
+		return False
+	before = doc.get_doc_before_save() if hasattr(doc, "get_doc_before_save") else None
+	if not before:
+		return True
+	prev = before.workflow_state or WF_STATE_DRAFT
+	return prev in (WF_STATE_DRAFT, "", None)
+
+
+def _is_valid_stamped_manager(user: str | None) -> bool:
+	from erpnext_extensions.asset_usage_depreciation.services.manager_authorization import (
+		is_valid_manager_user,
+	)
+
+	return is_valid_manager_user(user)
 
 
 def _resolve_manager_user(employee: str | None) -> str | None:
 	if not employee:
 		return None
+	if not frappe.db.exists("Employee", employee):
+		return None
 	reports_to = frappe.db.get_value("Employee", employee, "reports_to")
-	if not reports_to:
+	if not reports_to or not frappe.db.exists("Employee", reports_to):
 		return None
 	user_id = frappe.db.get_value("Employee", reports_to, "user_id")
-	return user_id or None
+	if not user_id:
+		return None
+	from erpnext_extensions.asset_usage_depreciation.services.manager_authorization import (
+		is_valid_manager_user,
+	)
+
+	return user_id if is_valid_manager_user(user_id) else None
 
 
 def _sync_status_from_workflow(doc) -> None:

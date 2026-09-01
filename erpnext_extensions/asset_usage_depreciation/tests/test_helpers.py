@@ -98,6 +98,10 @@ def submit_and_approve(doc):
 	frappe.set_user("Administrator")
 	try:
 		doc.reload()
+		if not doc.manager_approver:
+			mgr_user, _mgr_emp = ensure_line_manager(doc.company)
+			frappe.db.set_value("Asset Request", doc.name, "manager_approver", mgr_user)
+			doc.reload()
 		if (doc.workflow_state or "Draft") in ("Draft", "", None):
 			apply_workflow(doc, ACTION_SUBMIT)
 			doc.reload()
@@ -109,6 +113,29 @@ def submit_and_approve(doc):
 		return doc
 	finally:
 		frappe.set_user(current)
+
+
+def ensure_line_manager(company_name: str) -> tuple[str, str]:
+	"""Employee-only line manager used by tests/E2E. Does not grant AR Manager."""
+	email = "ar.qa.default.line.mgr@example.com"
+	make_user(email=email, roles=["Employee"])
+	strip_asset_request_privileged_roles(email)
+	employee = make_employee(company_name=company_name, user_id=email)
+	return email, employee
+
+
+def strip_asset_request_privileged_roles(email: str) -> None:
+	"""Remove AR Manager / Planner / Executive so the user is a real line manager."""
+	if not frappe.db.exists("User", email):
+		return
+	user = frappe.get_doc("User", email)
+	to_remove = [
+		role
+		for role in (ROLE_AR_MANAGER, ROLE_AR_PLANNER, ROLE_AR_EXECUTIVE)
+		if role in {r.role for r in user.roles}
+	]
+	if to_remove:
+		user.remove_roles(*to_remove)
 
 
 def ensure_settings(**values) -> None:
@@ -255,6 +282,7 @@ def make_user(*, email: str, roles: list[str], password: str = "arqa12345") -> s
 			"send_welcome_email": 0,
 			"new_password": password,
 			"last_password_reset_date": today(),
+			"enabled": 1,
 		}
 	)
 	user.flags.ignore_password_policy = True
@@ -264,6 +292,8 @@ def make_user(*, email: str, roles: list[str], password: str = "arqa12345") -> s
 	finally:
 		frappe.flags.in_import = False
 	user.add_roles(*roles)
+	user.enabled = 1
+	user.save(ignore_permissions=True)
 	update_password(email, password)
 	frappe.cache.hdel("login_failed_count", email)
 	frappe.cache.hdel("login_failed_time", email)

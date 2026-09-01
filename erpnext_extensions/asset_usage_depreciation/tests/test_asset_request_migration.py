@@ -74,6 +74,23 @@ class TestAssetRequestMigration(unittest.TestCase):
 		self.assertIn("Pending Manager Approval", states)
 		self.assertIn("Approved", states)
 		self.assertFalse(frappe.get_meta(ASSET_REQUEST_DOCTYPE).has_field("request_type"))
+		pending_mgr = [
+			t
+			for t in wf.transitions
+			if t.state == "Pending Manager Approval"
+		]
+		self.assertTrue(pending_mgr)
+		self.assertFalse(
+			any(t.allowed == ROLE_AR_MANAGER for t in pending_mgr),
+			"Asset Request Manager must not bypass stamped manager_approver",
+		)
+		employee_mgr = [t for t in pending_mgr if t.allowed == "Employee"]
+		self.assertTrue(employee_mgr)
+		for t in employee_mgr:
+			self.assertIn("doc.manager_approver == frappe.session.user", t.condition or "")
+		self.assertTrue(
+			any(t.allowed == "System Manager" and t.action == "AR Approve" for t in pending_mgr)
+		)
 
 	def test_asset_manager_has_fulfillment_permlevel(self):
 		meta = frappe.get_meta(ASSET_REQUEST_DOCTYPE)
@@ -187,6 +204,56 @@ class TestAssetRequestPermPatchV488(unittest.TestCase):
 			int(frappe.db.get_value("DocPerm", row_name, "cancel") or 0),
 			0,
 		)
+
+
+class TestAssetRequestManagerWorkflowPatchV489(unittest.TestCase):
+	def test_patch_is_idempotent_and_removes_ar_manager_bypass(self):
+		from erpnext_extensions.asset_usage_depreciation.constants import (
+			ROLE_AR_MANAGER,
+			WF_ASSET_REQUEST,
+		)
+		from erpnext_extensions.patches.post_model_sync.fix_asset_request_manager_workflow_v489 import (
+			execute,
+		)
+
+		if not frappe.db.exists("Workflow", WF_ASSET_REQUEST):
+			self.skipTest("Asset Request Workflow not migrated")
+
+		execute()
+		count1 = frappe.db.count("Workflow Transition", {"parent": WF_ASSET_REQUEST})
+		pending1 = frappe.db.count(
+			"Workflow Transition",
+			{"parent": WF_ASSET_REQUEST, "state": "Pending Manager Approval"},
+		)
+		execute()
+		self.assertEqual(
+			frappe.db.count("Workflow Transition", {"parent": WF_ASSET_REQUEST}),
+			count1,
+		)
+		self.assertEqual(
+			frappe.db.count(
+				"Workflow Transition",
+				{"parent": WF_ASSET_REQUEST, "state": "Pending Manager Approval"},
+			),
+			pending1,
+		)
+		self.assertEqual(
+			frappe.db.count(
+				"Workflow Transition",
+				{
+					"parent": WF_ASSET_REQUEST,
+					"state": "Pending Manager Approval",
+					"allowed": ROLE_AR_MANAGER,
+				},
+			),
+			0,
+		)
+		self.assertEqual(count1, pending1 + frappe.db.count(
+			"Workflow Transition",
+			{"parent": WF_ASSET_REQUEST, "state": ["!=", "Pending Manager Approval"]},
+		))
+		wf = frappe.get_doc("Workflow", WF_ASSET_REQUEST)
+		self.assertEqual(cint_active(wf), 1)
 
 
 def cint_active(wf) -> int:

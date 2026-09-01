@@ -70,6 +70,7 @@ def inspect_asset_request(name: str) -> dict:
 		"workflow_state": doc.workflow_state,
 		"status": doc.status,
 		"fulfillment_status": doc.fulfillment_status,
+		"manager_approver": doc.manager_approver,
 		"material_request": doc.material_request,
 		"item_codes": [r.requested_item_code for r in (doc.items or [])],
 		"asset_movements": [a.asset_movement for a in (doc.allocations or []) if a.asset_movement],
@@ -121,28 +122,39 @@ def prepare_asset_request_e2e() -> dict:
 	emp_email = "ar.e2e.emp@example.com"
 	mgr_email = "ar.e2e.mgr@example.com"
 	am_email = "ar.e2e.am@example.com"
+	other_email = "ar.e2e.other@example.com"
+	ar_mgr_email = "ar.e2e.armgr@example.com"
 	# Desk User keeps Employee on the desk without elevating to System Manager.
 	h.make_user(email=emp_email, roles=["Employee", "Desk User"], password=PASSWORD)
 	h.ensure_employee_asset_request_perms()
-	if not frappe.db.exists("User Permission", {"user": emp_email, "allow": "Company", "for_value": company}):
-		frappe.get_doc(
-			{
-				"doctype": "User Permission",
-				"user": emp_email,
-				"allow": "Company",
-				"for_value": company,
-			}
-		).insert(ignore_permissions=True)
-	h.make_user(email=mgr_email, roles=["Employee", "Desk User", ROLE_AR_MANAGER], password=PASSWORD)
+	h.make_user(email=mgr_email, roles=["Employee", "Desk User"], password=PASSWORD)
+	h.strip_asset_request_privileged_roles(mgr_email)
+	h.make_user(email=other_email, roles=["Employee", "Desk User"], password=PASSWORD)
+	h.make_user(email=ar_mgr_email, roles=["Employee", "Desk User", ROLE_AR_MANAGER], password=PASSWORD)
 	h.make_user(email=am_email, roles=["Employee", "Desk User", ROLE_ASSET_MANAGER], password=PASSWORD)
+	for extra in (emp_email, mgr_email, other_email, ar_mgr_email, am_email):
+		if not frappe.db.exists(
+			"User Permission", {"user": extra, "allow": "Company", "for_value": company}
+		):
+			frappe.get_doc(
+				{
+					"doctype": "User Permission",
+					"user": extra,
+					"allow": "Company",
+					"for_value": company,
+				}
+			).insert(ignore_permissions=True)
 	from frappe.utils.password import update_password, delete_login_failed_cache
 
-	for email in (emp_email, mgr_email, am_email):
+	for email in (emp_email, mgr_email, am_email, other_email, ar_mgr_email):
 		frappe.db.set_value("User", email, {"user_type": "System User", "enabled": 1})
 		update_password(email, PASSWORD)
 		delete_login_failed_cache(email)
 
-	employee = h.make_employee(company_name=company, user_id=emp_email)
+	mgr_employee = h.make_employee(company_name=company, user_id=mgr_email)
+	employee = h.make_employee(company_name=company, user_id=emp_email, reports_to=mgr_employee)
+	h.make_employee(company_name=company, user_id=other_email)
+	h.make_employee(company_name=company, user_id=ar_mgr_email)
 	category = h.make_isolated_category(tag)
 	samsung = h.make_fixed_asset_item(code=f"AUD-E2E-S-{tag}", title="Samsung Monitor 24 inch", category=category)
 	lg = h.make_fixed_asset_item(code=f"AUD-E2E-L-{tag}", title="LG Monitor 24 inch", category=category)
@@ -194,6 +206,9 @@ def prepare_asset_request_e2e() -> dict:
 		"emp_email": emp_email,
 		"mgr_email": mgr_email,
 		"am_email": am_email,
+		"other_email": other_email,
+		"ar_mgr_email": ar_mgr_email,
+		"mgr_has_ar_manager_role": ROLE_AR_MANAGER in frappe.get_roles(mgr_email),
 		"password": PASSWORD,
 		"emp_sid": emp_sid,
 		"mgr_sid": mgr_sid,
