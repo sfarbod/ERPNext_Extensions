@@ -238,6 +238,11 @@ def align_stock_entry_item_amounts(doc) -> None:
 			row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, currency)
 
 
+def _row_has_distributed_discount(row) -> bool:
+	"""ERPNext additional-discount allocation leaves net_amount ≠ qty × net_rate."""
+	return abs(flt(row.get("distributed_discount_amount"))) > 0
+
+
 def _align_po_pi_si_row(row, company_currency: str, transaction_currency: str) -> None:
 	qty = flt(row.qty)
 	if row.get("rate") is not None:
@@ -245,7 +250,13 @@ def _align_po_pi_si_row(row, company_currency: str, transaction_currency: str) -
 		row.amount = rounding.round_row_amount(qty, row.rate, transaction_currency)
 	if row.get("net_rate") is not None:
 		row.net_rate = rounding.round_monetary_rate(row.net_rate, transaction_currency)
-		row.net_amount = rounding.round_row_amount(qty, row.net_rate, transaction_currency)
+		# Document-level discount is applied onto net_amount (distributed_discount_amount).
+		# Rebuilding net_amount from qty×net_rate would wipe that allocation and unbalance GL
+		# (seen on Purchase Invoice ACC-PINV-2026-00327: Δ=105).
+		if _row_has_distributed_discount(row) and row.get("net_amount") is not None:
+			row.net_amount = rounding.round_currency(row.net_amount, transaction_currency)
+		else:
+			row.net_amount = rounding.round_row_amount(qty, row.net_rate, transaction_currency)
 	for base_field, tx_field in (
 		("base_rate", "rate"),
 		("base_amount", "amount"),
@@ -258,8 +269,14 @@ def _align_po_pi_si_row(row, company_currency: str, transaction_currency: str) -
 			else:
 				br = row.get("base_rate") if base_field.endswith("rate") else None
 				if base_field.endswith("amount"):
-					src_rate = row.get("base_net_rate" if "net" in base_field else "base_rate")
-					row.set(base_field, rounding.round_row_amount(qty, src_rate, company_currency))
+					if "net" in base_field and _row_has_distributed_discount(row):
+						row.set(
+							base_field,
+							rounding.round_currency(row.get(base_field), company_currency),
+						)
+					else:
+						src_rate = row.get("base_net_rate" if "net" in base_field else "base_rate")
+						row.set(base_field, rounding.round_row_amount(qty, src_rate, company_currency))
 				elif br is not None:
 					row.set(base_field, rounding.round_monetary_rate(br, company_currency))
 
