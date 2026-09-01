@@ -13,13 +13,18 @@ from erpnext_extensions.iran_accounting.validation import fetch_gl_rows, fetch_s
 def _make_item(item_code: str, properties: dict | None = None):
 	if frappe.db.exists("Item", item_code):
 		return frappe.get_doc("Item", item_code)
+	item_group = "Products"
+	if not frappe.db.exists("Item Group", item_group):
+		item_group = frappe.db.get_value(
+			"Item Group", {"is_group": 0}, "name", order_by="creation asc"
+		) or frappe.db.get_value("Item Group", {}, "name")
 	item = frappe.get_doc(
 		{
 			"doctype": "Item",
 			"item_code": item_code,
 			"item_name": item_code,
 			"description": item_code,
-			"item_group": "Products",
+			"item_group": item_group,
 		}
 	)
 	if properties:

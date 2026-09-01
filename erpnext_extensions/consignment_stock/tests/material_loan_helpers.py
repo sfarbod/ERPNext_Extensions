@@ -86,14 +86,35 @@ def ensure_material_loan_accounts(company: str) -> dict:
 
 
 def receive_stock(*, company: str, warehouse: str, item_code: str, qty: float, rate: float):
-	se = make_stock_entry(
-		item_code=item_code,
-		qty=qty,
-		rate=rate,
-		target=warehouse,
-		company=company,
-		purpose="Material Receipt",
-	)
+	"""Receive stock for Material Loan tests.
+
+	Builds a Material Receipt Stock Entry explicitly so mandatory Accounting
+	Dimensions (e.g. Department) can be set before insert.
+	"""
+	se = frappe.new_doc("Stock Entry")
+	se.company = company
+	se.purpose = "Material Receipt"
+	se.stock_entry_type = "Material Receipt"
+	se.posting_date = today()
+	row = {
+		"item_code": item_code,
+		"qty": qty,
+		"transfer_qty": qty,
+		"basic_rate": rate,
+		"t_warehouse": warehouse,
+		"conversion_factor": 1,
+		"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+		"stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+		"set_basic_rate_manually": 1,
+	}
+	dept_df = frappe.get_meta("Stock Entry Detail").get_field("department")
+	if dept_df and cint(dept_df.reqd):
+		dept = frappe.db.get_value("Department", {"company": company}, "name")
+		if dept:
+			row["department"] = dept
+	se.append("items", row)
+	se.insert()
+	se.submit()
 	return se
 
 
@@ -178,6 +199,7 @@ def make_material_loan_issue(
 	batch_no: str | None = None,
 	serial_no: str | None = None,
 	expected_return_date=None,
+	item_dimensions: dict | None = None,
 ):
 	se = frappe.new_doc("Stock Entry")
 	se.company = company
@@ -207,6 +229,13 @@ def make_material_loan_issue(
 		row["batch_no"] = batch_no
 	if serial_no:
 		row["serial_no"] = serial_no
+	if item_dimensions:
+		row.update(item_dimensions)
+	dept_df = frappe.get_meta("Stock Entry Detail").get_field("department")
+	if dept_df and cint(dept_df.reqd) and not row.get("department"):
+		dept = frappe.db.get_value("Department", {"company": company}, "name")
+		if dept:
+			row["department"] = dept
 	se.append("items", row)
 	se.insert()
 	if submit:
@@ -229,6 +258,10 @@ def make_material_loan_return(
 	batch_no: str | None = None,
 	serial_no: str | None = None,
 ):
+	from erpnext_extensions.consignment_stock.accounting import (
+		copy_accounting_dimensions_from_source_row,
+	)
+
 	se = frappe.new_doc("Stock Entry")
 	se.company = company
 	se.stock_entry_type = stock_entry_type
@@ -255,6 +288,10 @@ def make_material_loan_return(
 		row["batch_no"] = batch_no
 	if serial_no:
 		row["serial_no"] = serial_no
+	if issue_detail and frappe.db.exists("Stock Entry Detail", issue_detail):
+		copy_accounting_dimensions_from_source_row(
+			frappe.get_doc("Stock Entry Detail", issue_detail), row
+		)
 	se.append("items", row)
 	se.insert()
 	if submit:
@@ -266,7 +303,7 @@ def ensure_batch_item(prefix: str = "ML-BATCH") -> str:
 	from erpnext_extensions.iran_accounting.e2e_bootstrap import _make_item
 
 	item_code = f"{prefix}-{random_string(5)}"
-	_make_item(
+	doc = _make_item(
 		item_code,
 		{
 			"is_stock_item": 1,
@@ -275,14 +312,16 @@ def ensure_batch_item(prefix: str = "ML-BATCH") -> str:
 			"batch_number_series": "MLB.#####",
 		},
 	)
-	return item_code
+	frappe.db.commit()
+	# Site may autoname Item differently from item_code; Stock Entry links by name.
+	return doc.name
 
 
 def ensure_serial_item(prefix: str = "ML-SER") -> str:
 	from erpnext_extensions.iran_accounting.e2e_bootstrap import _make_item
 
 	item_code = f"{prefix}-{random_string(5)}"
-	_make_item(
+	doc = _make_item(
 		item_code,
 		{
 			"is_stock_item": 1,
@@ -290,7 +329,8 @@ def ensure_serial_item(prefix: str = "ML-SER") -> str:
 			"serial_no_series": "MLS.#####",
 		},
 	)
-	return item_code
+	frappe.db.commit()
+	return doc.name
 
 
 def enable_serial_batch_fields():
@@ -373,6 +413,11 @@ def receive_stock_with_batch_or_serial(
 		row["batch_no"] = batch_no
 	if serial_no:
 		row["serial_no"] = serial_no
+	dept_df = frappe.get_meta("Stock Entry Detail").get_field("department")
+	if dept_df and cint(dept_df.reqd) and not row.get("department"):
+		dept = frappe.db.get_value("Department", {"company": company}, "name")
+		if dept:
+			row["department"] = dept
 	se.append("items", row)
 	se.insert()
 	se.submit()

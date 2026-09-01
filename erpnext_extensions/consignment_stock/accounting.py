@@ -191,3 +191,31 @@ def resolve_cost_center_from_stock_entry(stock_entry) -> str | None:
 def resolve_finance_book_from_stock_entry(stock_entry) -> str | None:
 	"""Copy finance book from source Stock Entry only when explicitly set."""
 	return stock_entry.get("finance_book") or None
+
+
+def get_stock_entry_detail_dimension_fields() -> list[str]:
+	"""Return cost_center, project, and enabled Accounting Dimension fields on Stock Entry Detail."""
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_dimensions
+
+	dimensions, _ = get_dimensions(with_cost_center_and_project=True)
+	meta = frappe.get_meta("Stock Entry Detail")
+	return [d["fieldname"] for d in dimensions if meta.has_field(d["fieldname"])]
+
+
+def copy_accounting_dimensions_from_source_row(source_row, target_row: dict) -> dict:
+	"""Copy accounting dimensions from a source Stock Entry Detail into a return row dict.
+
+	Precedence:
+	1. Keep any value already set on ``target_row``.
+	2. Copy non-empty values from ``source_row``.
+	3. Leave empty otherwise (standard ERPNext defaults may fill later).
+
+	Does not hardcode Department or any single dimension.
+	"""
+	for fieldname in get_stock_entry_detail_dimension_fields():
+		if target_row.get(fieldname) not in (None, ""):
+			continue
+		value = source_row.get(fieldname)
+		if value not in (None, ""):
+			target_row[fieldname] = value
+	return target_row

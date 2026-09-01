@@ -62,24 +62,27 @@ def make_consignment_return_from_receipt(source_name: str) -> dict:
 	target.set(F_HAS_RECEIPT_REF, 1)
 	target.set(F_RECEIPT_REF, source.name)
 
+	from erpnext_extensions.consignment_stock.accounting import (
+		copy_accounting_dimensions_from_source_row,
+	)
+
 	for row in source.items:
 		remaining = get_remaining_returnable_qty(row.name)
 		if remaining <= 0:
 			continue
-		target.append(
-			"items",
-			{
-				"item_code": row.item_code,
-				"qty": remaining,
-				"transfer_qty": remaining,
-				"uom": row.uom,
-				"stock_uom": row.stock_uom,
-				"conversion_factor": row.conversion_factor,
-				"s_warehouse": row.t_warehouse,
-				F_RECEIPT_SE: source.name,
-				F_RECEIPT_DETAIL: row.name,
-			},
-		)
+		item_row = {
+			"item_code": row.item_code,
+			"qty": remaining,
+			"transfer_qty": remaining,
+			"uom": row.uom,
+			"stock_uom": row.stock_uom,
+			"conversion_factor": row.conversion_factor,
+			"s_warehouse": row.t_warehouse,
+			F_RECEIPT_SE: source.name,
+			F_RECEIPT_DETAIL: row.name,
+		}
+		copy_accounting_dimensions_from_source_row(row, item_row)
+		target.append("items", item_row)
 
 	if not target.items:
 		frappe.throw(_("No remaining returnable quantity on {0}.").format(source.name))

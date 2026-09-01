@@ -124,7 +124,10 @@ class TestConsignmentSettlement(unittest.TestCase):
 		from erpnext_extensions.consignment_stock.accounting import resolve_cost_center_from_stock_entry
 
 		_receipt, ret = self._return_after_receipt("CS-SET-CC", qty=2, rate=1000)
-		cc = frappe.db.get_value("Company", self.company, "cost_center")
+		cc = frappe.db.get_value(
+			"Cost Center", {"company": self.company, "is_group": 0}, "name"
+		) or frappe.db.get_value("Company", self.company, "cost_center")
+		self.assertTrue(cc, "Need a Cost Center for this company")
 		other_cc = frappe.db.get_value(
 			"Cost Center",
 			{"company": self.company, "is_group": 0, "name": ("!=", cc)},

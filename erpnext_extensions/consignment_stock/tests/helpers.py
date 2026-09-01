@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import frappe
-from frappe.utils import flt, random_string, today
+from frappe.utils import cint, flt, random_string, today
 
 from erpnext_extensions.iran_accounting.e2e_bootstrap import (
 	enable_perpetual_inventory,
@@ -217,7 +217,7 @@ def ensure_stock_entry_types() -> dict:
 
 
 def ensure_supplier(company: str) -> str:
-	supplier = f"CS-SUP-{random_string(5)}"
+	supplier = f"CS-SUP-{random_string(10)}"
 	sg = frappe.db.get_value("Supplier Group", {}, "name", order_by="creation asc") or "All Supplier Groups"
 	doc = frappe.get_doc(
 		{
@@ -228,7 +228,16 @@ def ensure_supplier(company: str) -> str:
 	)
 	from erpnext.accounts.party import get_party_account
 
-	doc.insert(ignore_permissions=True)
+	# Site may enforce "similar supplier" duplicate checks.
+	doc.flags.ignore_permissions = True
+	try:
+		doc.insert(ignore_permissions=True)
+	except frappe.ValidationError:
+		# Fall back to any existing supplier when duplicate prevention blocks create.
+		existing = frappe.db.get_value("Supplier", {"disabled": 0}, "name", order_by="modified desc")
+		if existing:
+			return existing
+		raise
 	acc = get_party_account("Supplier", doc.name, company)
 	if not acc:
 		payable = frappe.db.get_value(
@@ -248,14 +257,17 @@ def ensure_customer(company: str) -> str:
 	territory = frappe.db.get_value(
 		"Territory", {"is_group": 0}, "name", order_by="creation asc"
 	) or frappe.db.get_value("Territory", {}, "name", order_by="lft desc")
-	doc = frappe.get_doc(
-		{
-			"doctype": "Customer",
-			"customer_name": f"CS-CUST-{random_string(5)}",
-			"customer_group": cg,
-			"territory": territory,
-		}
-	)
+	payload = {
+		"doctype": "Customer",
+		"customer_name": f"CS-CUST-{random_string(10)}",
+		"customer_group": cg,
+		"territory": territory,
+	}
+	if frappe.get_meta("Customer").has_field("tax_id"):
+		tax_df = frappe.get_meta("Customer").get_field("tax_id")
+		if tax_df and (cint(tax_df.reqd) or True):
+			payload["tax_id"] = f"EE-{random_string(10)}"
+	doc = frappe.get_doc(payload)
 	from erpnext.accounts.party import get_party_account
 
 	doc.insert(ignore_permissions=True)
@@ -282,6 +294,7 @@ def make_consignment_receipt(
 	party: str,
 	stock_entry_type: str,
 	submit: bool = True,
+	item_dimensions: dict | None = None,
 ):
 	se = frappe.new_doc("Stock Entry")
 	se.company = company
@@ -292,20 +305,25 @@ def make_consignment_receipt(
 	se.set(F_IS_RETURN, 0)
 	se.set(F_PARTY_TYPE, party_type)
 	se.set(F_PARTY, party)
-	se.append(
-		"items",
-		{
-			"item_code": item_code,
-			"qty": qty,
-			"transfer_qty": qty,
-			"basic_rate": rate,
-			"t_warehouse": warehouse,
-			"conversion_factor": 1,
-			"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
-			"stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
-			"set_basic_rate_manually": 1,
-		},
-	)
+	row = {
+		"item_code": item_code,
+		"qty": qty,
+		"transfer_qty": qty,
+		"basic_rate": rate,
+		"t_warehouse": warehouse,
+		"conversion_factor": 1,
+		"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+		"stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+		"set_basic_rate_manually": 1,
+	}
+	if item_dimensions:
+		row.update(item_dimensions)
+	dept_df = frappe.get_meta("Stock Entry Detail").get_field("department")
+	if dept_df and cint(dept_df.reqd) and not row.get("department"):
+		dept = frappe.db.get_value("Department", {"company": company}, "name")
+		if dept:
+			row["department"] = dept
+	se.append("items", row)
 	se.insert()
 	if submit:
 		se.submit()
@@ -325,6 +343,10 @@ def make_consignment_return(
 	receipt_detail: str,
 	submit: bool = True,
 ):
+	from erpnext_extensions.consignment_stock.accounting import (
+		copy_accounting_dimensions_from_source_row,
+	)
+
 	se = frappe.new_doc("Stock Entry")
 	se.company = company
 	se.stock_entry_type = stock_entry_type
@@ -336,20 +358,22 @@ def make_consignment_return(
 	se.set(F_PARTY, party)
 	se.set(F_HAS_RECEIPT_REF, 1)
 	se.set(F_RECEIPT_REF, receipt_name)
-	se.append(
-		"items",
-		{
-			"item_code": item_code,
-			"qty": qty,
-			"transfer_qty": qty,
-			"s_warehouse": warehouse,
-			"conversion_factor": 1,
-			"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
-			"stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
-			F_RECEIPT_SE: receipt_name,
-			F_RECEIPT_DETAIL: receipt_detail,
-		},
-	)
+	row = {
+		"item_code": item_code,
+		"qty": qty,
+		"transfer_qty": qty,
+		"s_warehouse": warehouse,
+		"conversion_factor": 1,
+		"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+		"stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+		F_RECEIPT_SE: receipt_name,
+		F_RECEIPT_DETAIL: receipt_detail,
+	}
+	if receipt_detail and frappe.db.exists("Stock Entry Detail", receipt_detail):
+		copy_accounting_dimensions_from_source_row(
+			frappe.get_doc("Stock Entry Detail", receipt_detail), row
+		)
+	se.append("items", row)
 	se.insert()
 	if submit:
 		se.submit()
