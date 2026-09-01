@@ -15,6 +15,27 @@ from erpnext_extensions.petty_management.services.business_status_service import
 
 PM_PENDING_EDITABLE_FIELDS = frozenset({"remark"})
 _PENDING_SAVE_IGNORE_FIELDS = frozenset({"modified", "modified_by"})
+# Parent fields recomputed/stamped by Desk or validate — not user business edits.
+_PARENT_DERIVED_IGNORE_FIELDS = frozenset(
+	{
+		"pending_amount",
+		"total_available",
+		"funded_available",
+		"opening_available",
+		"current_petty_balance",
+		"total_funded_amount",
+		"total_cleared_amount",
+		"total_expense_without_tax",
+		"total_tax_amount",
+		"total_expense_amount",
+		"total_petty_cash",
+		"remaining_amount",
+		"je_clearance_date",
+		"total_requested_amount",
+		"previous_balance",
+		"max_balance_for_petty_cash",
+	}
+)
 _CHILD_DERIVED_IGNORE_FIELDS = frozenset(
 	{
 		"name",
@@ -28,6 +49,13 @@ _CHILD_DERIVED_IGNORE_FIELDS = frozenset(
 		"idx",
 		"docstatus",
 		"percent_of_total",
+		"amount_plus_tax",
+		"outstanding_amount",
+		"request_amount",
+		"paid_amount",
+		"previously_allocated_amount",
+		"available_amount",
+		"currency",
 	}
 )
 
@@ -63,6 +91,8 @@ def _changed_parent_fields(doc: Document) -> set[str]:
 	changed: set[str] = set()
 	for fname in doc.meta.get_valid_columns():
 		if fname in _PENDING_SAVE_IGNORE_FIELDS:
+			continue
+		if fname in _PARENT_DERIVED_IGNORE_FIELDS:
 			continue
 		if (doc.get(fname) or None) != (before.get(fname) or None):
 			changed.add(fname)
