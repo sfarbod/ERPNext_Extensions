@@ -32,18 +32,75 @@ function benchExecuteOnce(method, kwargs, args) {
   if (kwargs != null) {
     cmd += ` --kwargs '${JSON.stringify(kwargs).replace(/'/g, "'\\''")}'`;
   }
-  const out = execSync(cmd, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+  let out;
+  try {
+    out = execSync(cmd, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+  } catch (e) {
+    const blob = `${e.stdout || ""}\n${e.stderr || ""}\n${e.message || ""}`;
+    throw new Error(
+      `bench execute ${method} failed:\n${extractBenchExecuteError(blob)}`
+    );
+  }
   const lines = out.trim().split("\n").filter(Boolean);
   const last = lines[lines.length - 1];
   try {
     return JSON.parse(last);
   } catch {
     throw new Error(
-      `bench execute ${method} did not return JSON. Last line: ${last}\n${out.slice(
-        -2000
+      `bench execute ${method} did not return JSON. Last line: ${last}\n${extractBenchExecuteError(
+        out
       )}`
     );
   }
+}
+
+function extractBenchExecuteError(blob) {
+  if (!blob) {
+    return "(no output)";
+  }
+  if (/Workflow approver cannot execute/i.test(blob)) {
+    const match = blob.match(
+      /Workflow approver cannot execute[\s\S]*?(?:Please correct[^\n]*|Finance reviewer required[^\n]*)/i
+    );
+    if (match) {
+      return match[0].replace(/<[^>]+>/g, "").trim();
+    }
+  }
+  const lines = blob.split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (
+      /ValidationError|PermissionError|WorkflowPermissionError|DoesNotExistError/.test(
+        line
+      )
+    ) {
+      return lines.slice(Math.max(0, i - 8), i + 1).join("\n");
+    }
+  }
+  if (/NameError: name 'erpnext_extensions' is not defined/.test(blob)) {
+    return (
+      "Frappe bench execute eval fallback (underlying prep exception was swallowed). " +
+      "Use benchExecutePrep() via e2e_runner.run_e2e_method.\n" +
+      blob.slice(-2500)
+    );
+  }
+  return blob.slice(-3000);
+}
+
+/** Call E2E prep callables without Frappe execute eval fallback on exceptions. */
+export function benchExecutePrep(method, kwargs = null) {
+  const envelope = benchExecute(
+    "erpnext_extensions.e2e.e2e_runner.run_e2e_method",
+    { method, kwargs: kwargs || {} }
+  );
+  if (!envelope?.ok) {
+    throw new Error(
+      `E2E prep ${method} failed (${envelope?.exc_type || "Error"}): ${
+        envelope?.error || "unknown"
+      }`
+    );
+  }
+  return envelope.result;
 }
 
 export function benchExecute(

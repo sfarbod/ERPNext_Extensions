@@ -91,6 +91,14 @@ def apply_workflow(doc, action):
 			validate_pm_request_workflow_action(req_doc, action_s)
 			from_state = req_doc.workflow_state
 
+		if doctype in ("PM Request", "PM Clearance") and name and action_s:
+			from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+				validate_acting_approver_can_read,
+			)
+
+			check_doc = frappe.get_doc(doctype, name)
+			validate_acting_approver_can_read(check_doc, action_s)
+
 		# v4.7.2: serialize Return — lock row, re-read state, reject if already Draft
 		if (
 			doctype in ("PM Request", "PM Clearance")

@@ -251,11 +251,11 @@ def handle_return_for_correction(
 	if doc.doctype not in ("PM Request", "PM Clearance"):
 		return doc
 	doc.reload()
-	clear_approver_stamps(doc)
 	close_todos_for_doc(doc.doctype, doc.name)
 	close_open_workflow_actions(doc.doctype, doc.name)
 	assign_requester(doc)
 	add_return_timeline_comment(doc, from_state=from_state, reason=reason)
+	clear_approver_stamps(doc)
 	sync_draft_business_status(doc)
 	doc.reload()
 	return doc

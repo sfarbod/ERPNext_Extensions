@@ -5,7 +5,7 @@ import { chromium } from "/tmp/e2e-npm/node_modules/playwright/index.mjs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { benchExecute } from "../../e2e/e2e_playwright_db.mjs";
+import { benchExecutePrep } from "../../e2e/e2e_playwright_db.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREEN = path.join(__dirname, "screenshots", "pm_clearance_return_remarks_v483");
@@ -15,7 +15,7 @@ const PREP =
   "erpnext_extensions.petty_management.e2e.pm_clearance_return_remarks_v483_prep";
 
 function bench(method, kwargs = null) {
-  return benchExecute(method, kwargs);
+  return benchExecutePrep(method, kwargs);
 }
 
 function assert(cond, msg) {

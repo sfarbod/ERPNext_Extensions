@@ -98,6 +98,12 @@ def stamp_pm_request_approvers(doc: Document) -> None:
 			title=_("Approver required"),
 		)
 
+	from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+		validate_workflow_approvers,
+	)
+
+	validate_workflow_approvers(doc, "PM Request")
+
 
 def stamp_pm_clearance_approvers(doc: Document) -> None:
 	"""Stamp manager on PM Clearance; finance uses role queue (v4.5.3).
@@ -121,6 +127,11 @@ def stamp_pm_clearance_approvers(doc: Document) -> None:
 	doc.finance_approver = None
 	ensure_clearance_finance_review_role_configured()
 
+	from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+		validate_workflow_approvers,
+	)
+
+	validate_workflow_approvers(doc, "PM Clearance")
 
 
 def ensure_pm_request_approver_stamps(doc: Document) -> None:
@@ -131,6 +142,11 @@ def ensure_pm_request_approver_stamps(doc: Document) -> None:
 		and (getattr(doc, "finance_approver", None) or "").strip()
 	)
 	if has_all:
+		from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+			validate_workflow_approvers,
+		)
+
+		validate_workflow_approvers(doc, "PM Request")
 		return
 	# Preserve any already-stamped fields while filling gaps
 	prev_manager = (getattr(doc, "manager_approver", None) or "").strip() or None
@@ -144,6 +160,12 @@ def ensure_pm_request_approver_stamps(doc: Document) -> None:
 	if prev_finance:
 		doc.finance_approver = prev_finance
 
+	from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+		validate_workflow_approvers,
+	)
+
+	validate_workflow_approvers(doc, "PM Request")
+
 
 def ensure_pm_clearance_manager_stamp(doc: Document) -> None:
 	"""On Clearance Approve submit: require manager stamp; never clear finance_approver."""
@@ -151,7 +173,11 @@ def ensure_pm_clearance_manager_stamp(doc: Document) -> None:
 		from erpnext_extensions.petty_management.services.clearance_finance_review import (
 			ensure_clearance_finance_review_role_configured,
 		)
+		from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+			validate_workflow_approvers,
+		)
 
+		validate_workflow_approvers(doc, "PM Clearance")
 		ensure_clearance_finance_review_role_configured()
 		return
 	# Manager missing — resolve without wiping finance_approver
@@ -168,5 +194,9 @@ def ensure_pm_clearance_manager_stamp(doc: Document) -> None:
 	from erpnext_extensions.petty_management.services.clearance_finance_review import (
 		ensure_clearance_finance_review_role_configured,
 	)
+	from erpnext_extensions.petty_management.services.workflow_approver_validation_service import (
+		validate_workflow_approvers,
+	)
 
 	ensure_clearance_finance_review_role_configured()
+	validate_workflow_approvers(doc, "PM Clearance")

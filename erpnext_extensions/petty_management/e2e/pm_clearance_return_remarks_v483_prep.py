@@ -160,7 +160,8 @@ def prepare_v483_fixtures():
 	settings = frappe.get_single("PM Settings")
 	settings.db_set("require_named_manager_approver", 1, update_modified=False)
 	settings.db_set("clearance_finance_review_role", review_role, update_modified=False)
-	settings.db_set("finance_manager", REVIEWER, update_modified=False)
+	settings.db_set("ceo_approver", "Administrator", update_modified=False)
+	settings.db_set("finance_manager", "Administrator", update_modified=False)
 
 	_ensure_user(HOLDER, ["Petty Management User", *_desk_roles()])
 	_ensure_user(
