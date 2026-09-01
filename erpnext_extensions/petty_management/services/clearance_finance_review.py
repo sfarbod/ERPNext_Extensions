@@ -34,7 +34,7 @@ def get_clearance_finance_review_role() -> str:
 
 
 def ensure_clearance_finance_review_role_configured() -> None:
-	"""Fail closed when the review role is missing from the site."""
+	"""Fail closed when the review role is missing or no enabled reviewer exists."""
 	role = get_clearance_finance_review_role()
 	if not role or not frappe.db.exists("Role", role):
 		frappe.throw(
@@ -43,6 +43,38 @@ def ensure_clearance_finance_review_role_configured() -> None:
 				"{0} is not configured in Petty Management Settings."
 			).format(role or "(empty)"),
 			title=_("Finance review role required"),
+		)
+	validate_clearance_finance_reviewer_queue(role)
+
+
+def count_enabled_users_with_role(role: str) -> int:
+	"""Count enabled Users (excluding Guest) that hold ``role``."""
+	if not role:
+		return 0
+	return frappe.db.sql(
+		"""
+		SELECT COUNT(DISTINCT u.name)
+		FROM `tabUser` u
+		INNER JOIN `tabHas Role` hr ON hr.parent = u.name AND hr.parenttype = 'User'
+		WHERE hr.role = %s
+			AND u.enabled = 1
+			AND u.name NOT IN ('Guest', 'Administrator')
+		""",
+		(role,),
+	)[0][0]
+
+
+def validate_clearance_finance_reviewer_queue(role: str | None = None) -> None:
+	"""Fail when no enabled user can serve the Clearance Finance Review queue."""
+	role = role or get_clearance_finance_review_role()
+	if count_enabled_users_with_role(role) < 1:
+		frappe.throw(
+			_(
+				"Cannot submit PM Clearance: no enabled User holds the Clearance Finance "
+				"Review role {0}. Assign this role to at least one active user."
+			).format(frappe.bold(role)),
+			title=_("Finance reviewer required"),
+			exc=frappe.ValidationError,
 		)
 
 
