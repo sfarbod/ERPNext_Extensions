@@ -187,16 +187,6 @@ def add_return_timeline_comment(
 	"""Timeline: who returned, previous stage, timestamp, optional reason. Failures propagate."""
 	from frappe.utils import now_datetime
 
-	# Idempotency under lock: refuse a second Return marker if one already exists
-	# after a successful prior Return (should not happen if state guard works).
-	if count_return_timeline_comments(doc.doctype, doc.name) > 0 and _workflow_title_from_link(
-		doc.workflow_state
-	) == "Draft":
-		frappe.throw(
-			_("Return for Correction timeline already recorded for {0}.").format(doc.name),
-			title=_("Already returned"),
-		)
-
 	user = frappe.session.user
 	full_name = frappe.db.get_value("User", user, "full_name") or user
 	when = now_datetime()
