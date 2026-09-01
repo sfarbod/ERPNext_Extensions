@@ -275,3 +275,11 @@ Hook order: after iran_accounting + inbound consignment handlers; early-return w
 7. Daily Overdue refresh job — include in 3.8.1 or Phase 4.
 
 **Do not implement until Party account model (item 1) is explicitly approved.**
+
+---
+
+## 12. Future Enhancement (post-5.0.3)
+
+**Accounting Dimension propagation for Material Loan Settlement Difference Journal Entry lines.**
+
+Settlement JE builders currently auto-set Cost Center only. On sites where dimensions such as Department are `mandatory_for_pl`, Valuation Difference lines (`D ≠ 0`, P&L account) may fail GL validation until those dimensions are propagated onto Diff JE lines. Recognition and normal Settlement BS lines are unaffected. Tracked as a known limitation of release 5.0.3; do not implement as part of that release.

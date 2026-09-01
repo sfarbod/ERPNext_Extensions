@@ -63,24 +63,27 @@ def make_material_loan_return_from_issue(source_name: str) -> dict:
 	target.set(F_PARTY, source.get(F_PARTY))
 	target.set(F_ISSUE_REF_HEADER, source.name)
 
+	from erpnext_extensions.consignment_stock.accounting import (
+		copy_accounting_dimensions_from_source_row,
+	)
+
 	for row in source.items:
 		remaining = get_remaining_returnable_qty(row.name)
 		if remaining <= 0:
 			continue
-		target.append(
-			"items",
-			{
-				"item_code": row.item_code,
-				"qty": remaining,
-				"transfer_qty": remaining,
-				"uom": row.uom,
-				"stock_uom": row.stock_uom,
-				"conversion_factor": row.conversion_factor,
-				"t_warehouse": row.s_warehouse,
-				F_ISSUE_SE: source.name,
-				F_ISSUE_DETAIL: row.name,
-			},
-		)
+		item_row = {
+			"item_code": row.item_code,
+			"qty": remaining,
+			"transfer_qty": remaining,
+			"uom": row.uom,
+			"stock_uom": row.stock_uom,
+			"conversion_factor": row.conversion_factor,
+			"t_warehouse": row.s_warehouse,
+			F_ISSUE_SE: source.name,
+			F_ISSUE_DETAIL: row.name,
+		}
+		copy_accounting_dimensions_from_source_row(row, item_row)
+		target.append("items", item_row)
 
 	if not target.items:
 		frappe.throw(_("No remaining returnable quantity on {0}.").format(source.name))

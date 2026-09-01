@@ -55,6 +55,38 @@ def _force_return_actual_value(return_name: str, actual_a: float, settlement_r: 
 		frappe.db.set_value("Stock Entry Detail", row, F_SETTLEMENT_AMOUNT, settlement_r)
 
 
+def _apply_department_on_je_for_site_ad(je, stock_entry_name: str) -> None:
+	"""Site Accounting Dimension may require Department on P&L JE lines (Diff account).
+
+	Product JE builders only propagate cost_center today; tests fill Department from the
+	source Stock Entry when present so Diff-account submit matches site AD rules.
+	"""
+	if not je.meta.has_field("department") and not frappe.get_meta("Journal Entry Account").has_field(
+		"department"
+	):
+		return
+	dept = None
+	for row in frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": stock_entry_name},
+		fields=["department"],
+	):
+		if row.department:
+			dept = row.department
+			break
+	if not dept:
+		dept = frappe.db.get_value(
+			"Department",
+			{"company": je.company},
+			"name",
+		)
+	if not dept:
+		return
+	for row in je.accounts:
+		if not row.get("department"):
+			row.department = dept
+
+
 class TestMaterialLoanValuationDiff(unittest.TestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -102,6 +134,7 @@ class TestMaterialLoanValuationDiff(unittest.TestCase):
 		amounts = compute_settlement_amounts(frappe.get_doc("Stock Entry", ret.name))
 		self.assertAlmostEqual(amounts["valuation_difference"], 0, places=2)
 		je = frappe.get_doc("Journal Entry", create_settlement_journal_entry(ret.name))
+		_apply_department_on_je_for_site_ad(je, ret.name)
 		je.submit()
 		temp_dr, temp_cr = _je_account_totals(je.name, self.accounts["temporary"])
 		party_dr, party_cr = _je_account_totals(je.name, self.accounts["customer_receivable"])
@@ -133,6 +166,7 @@ class TestMaterialLoanValuationDiff(unittest.TestCase):
 		self.assertAlmostEqual(amounts["valuation_difference"], D, places=2)
 
 		je = frappe.get_doc("Journal Entry", create_settlement_journal_entry(ret.name))
+		_apply_department_on_je_for_site_ad(je, ret.name)
 		temp_line = next(r for r in je.accounts if r.account == self.accounts["temporary"])
 		party_line = next(r for r in je.accounts if r.party)
 		diff_line = next(r for r in je.accounts if r.account == self.accounts["difference"])
@@ -170,6 +204,7 @@ class TestMaterialLoanValuationDiff(unittest.TestCase):
 		self.assertAlmostEqual(amounts["valuation_difference"], D, places=2)
 
 		je = frappe.get_doc("Journal Entry", create_settlement_journal_entry(ret.name))
+		_apply_department_on_je_for_site_ad(je, ret.name)
 		temp_line = next(r for r in je.accounts if r.account == self.accounts["temporary"])
 		party_line = next(r for r in je.accounts if r.party)
 		diff_line = next(r for r in je.accounts if r.account == self.accounts["difference"])
