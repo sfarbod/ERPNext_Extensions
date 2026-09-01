@@ -2,9 +2,13 @@
 
 ## Summary
 
-- **Bug:** PM Clearance remark-only save still failed while Pending with *"Only Remarks may be edited while approval is pending."* even though v5.0.6 allowed remark-only saves for PM Request.
-- **Root cause:** Desk sends derived parent and child field drift on save (holder balances, totals, allocation snapshots, `amount_plus_tax`, etc.). The pending-edit guard treated that drift as illegal user edits. PM Request only ignored `percent_of_total`; PM Clearance has many more derived fields.
-- **Fix:** Extend pending-save derived-field ignore lists for PM Clearance (and request total snapshots) so only real business-field changes are blocked.
+- **Bug:** PM Clearance remark-only save failed while Pending with *"Only Remarks may be edited while approval is pending."*
+- **Root cause:** Desk posts derived/read-only field drift on save. The guard compared all DB columns and treated drift as illegal user edits.
+- **Fix:** Compare only **user-editable** fields (`read_only=0` per DocType meta). Derived/read-only fields (balances, totals, allocation snapshots, `percent_of_total`, etc.) are excluded from comparison automatically — no growing ignore list.
+
+## Rule (unchanged)
+
+While Pending approval: only `remark` may change among user-editable parent fields; no user-editable child field may change; no-op save allowed.
 
 ## Scope
 
@@ -13,15 +17,14 @@
 
 ## Files
 
-- `petty_management/services/draft_approval_guards.py` — derived parent/child ignore fields
+- `petty_management/services/draft_approval_guards.py` — meta-based editable-field comparison
 - `petty_management/tests/test_pm_pending_remark_clearance_drift_v508.py`
-- `petty_management/tests/reproduce_clearance_remark_v508.py` — diagnostic reproducer
+- `petty_management/tests/reproduce_clearance_remark_v508.py`
 
 ## Test coverage
 
-- **Unit:** `test_pm_pending_remark_clearance_drift_v508` — simulated Desk derived-field drift on remark save; illegal `allocated_amount` edit still blocked.
-- **Unit:** `test_pm_pending_remark_edit_v506` — existing remark/no-op/illegal-edit coverage (Clearance cases skip when PI fixture unavailable).
-- **Diagnostic:** `reproduce_clearance_remark_v508.diagnose_client_child_drift` — verified on production-like pending clearance.
+- `test_pm_pending_remark_clearance_drift_v508` — Desk drift on read-only fields passes; editable field edits blocked.
+- `test_pm_pending_remark_edit_v506` — remark/no-op/illegal-edit/return-resubmit (Clearance skips when PI fixture unavailable).
 
 ## Compatibility
 

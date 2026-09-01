@@ -51,3 +51,15 @@ class TestPMPendingRemarkClearanceDriftV508(base.TestPMPendingRemarkEditV506):
 		doc.save()
 		out = doc.reload()
 		self.assertEqual(out.remark, "request parent drift")
+
+	def test_clearance_blocks_editable_parent_field_with_remark(self):
+		name = self._make_clearance_pending("Pending Manager Approval")
+		doc = frappe.get_doc("PM Clearance", name)
+		doc.remark = "blocked parent"
+		doc.project = doc.project or frappe.get_all("Project", pluck="name", limit=1)[0]
+		others = frappe.get_all("Project", filters={"name": ["!=", doc.project]}, pluck="name", limit=1)
+		if others:
+			doc.project = others[0]
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				doc.save()
+			self.assertIn("Only Remarks may be edited", str(ctx.exception))

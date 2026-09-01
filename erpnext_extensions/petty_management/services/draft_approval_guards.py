@@ -15,28 +15,7 @@ from erpnext_extensions.petty_management.services.business_status_service import
 
 PM_PENDING_EDITABLE_FIELDS = frozenset({"remark"})
 _PENDING_SAVE_IGNORE_FIELDS = frozenset({"modified", "modified_by"})
-# Parent fields recomputed/stamped by Desk or validate — not user business edits.
-_PARENT_DERIVED_IGNORE_FIELDS = frozenset(
-	{
-		"pending_amount",
-		"total_available",
-		"funded_available",
-		"opening_available",
-		"current_petty_balance",
-		"total_funded_amount",
-		"total_cleared_amount",
-		"total_expense_without_tax",
-		"total_tax_amount",
-		"total_expense_amount",
-		"total_petty_cash",
-		"remaining_amount",
-		"je_clearance_date",
-		"total_requested_amount",
-		"previous_balance",
-		"max_balance_for_petty_cash",
-	}
-)
-_CHILD_DERIVED_IGNORE_FIELDS = frozenset(
+_CHILD_SYSTEM_FIELDS = frozenset(
 	{
 		"name",
 		"owner",
@@ -48,14 +27,16 @@ _CHILD_DERIVED_IGNORE_FIELDS = frozenset(
 		"parenttype",
 		"idx",
 		"docstatus",
-		"percent_of_total",
-		"amount_plus_tax",
-		"outstanding_amount",
-		"request_amount",
-		"paid_amount",
-		"previously_allocated_amount",
-		"available_amount",
-		"currency",
+	}
+)
+_LAYOUT_FIELDTYPES = frozenset(
+	{
+		"Section Break",
+		"Column Break",
+		"Tab Break",
+		"HTML",
+		"Table",
+		"Fold",
 	}
 )
 
@@ -84,15 +65,39 @@ def _in_workflow_apply() -> bool:
 	)
 
 
+def _parent_field_is_user_editable(doc: Document, fieldname: str) -> bool:
+	if fieldname in _PENDING_SAVE_IGNORE_FIELDS:
+		return False
+	df = doc.meta.get_field(fieldname)
+	if not df or df.fieldtype in _LAYOUT_FIELDTYPES:
+		return False
+	if cint(getattr(df, "read_only", 0)):
+		return False
+	if cint(getattr(df, "is_virtual", 0)):
+		return False
+	return True
+
+
+def _child_field_is_user_editable(row: Document, fieldname: str) -> bool:
+	if fieldname in _CHILD_SYSTEM_FIELDS:
+		return False
+	df = row.meta.get_field(fieldname)
+	if not df:
+		return False
+	if cint(getattr(df, "read_only", 0)):
+		return False
+	if cint(getattr(df, "is_virtual", 0)):
+		return False
+	return True
+
+
 def _changed_parent_fields(doc: Document) -> set[str]:
 	before = doc.get_doc_before_save()
 	if not before:
 		return set()
 	changed: set[str] = set()
 	for fname in doc.meta.get_valid_columns():
-		if fname in _PENDING_SAVE_IGNORE_FIELDS:
-			continue
-		if fname in _PARENT_DERIVED_IGNORE_FIELDS:
+		if not _parent_field_is_user_editable(doc, fname):
 			continue
 		if (doc.get(fname) or None) != (before.get(fname) or None):
 			changed.add(fname)
@@ -115,7 +120,7 @@ def _child_tables_changed(doc: Document) -> bool:
 			if not prev:
 				return True
 			for field in row.meta.get_valid_columns():
-				if field in _CHILD_DERIVED_IGNORE_FIELDS:
+				if not _child_field_is_user_editable(row, field):
 					continue
 				if (row.get(field) or None) != (prev.get(field) or None):
 					return True
