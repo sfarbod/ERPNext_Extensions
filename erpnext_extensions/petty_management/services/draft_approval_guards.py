@@ -93,7 +93,7 @@ def _child_tables_changed(doc: Document) -> bool:
 
 
 def only_remark_changed_while_pending(doc: Document) -> bool:
-	"""True when the only user change is ``remark`` (explicit allow-list)."""
+	"""True when save is allowed while Pending: no-op or remark-only (explicit allow-list)."""
 	if doc.doctype not in ("PM Request", "PM Clearance"):
 		return False
 	if not doc.get_doc_before_save():
@@ -101,7 +101,9 @@ def only_remark_changed_while_pending(doc: Document) -> bool:
 	if _child_tables_changed(doc):
 		return False
 	changed = _changed_parent_fields(doc)
-	return bool(changed) and changed <= PM_PENDING_EDITABLE_FIELDS
+	if not changed:
+		return True
+	return changed <= PM_PENDING_EDITABLE_FIELDS
 
 
 def assert_pm_clearance_remark_locked_after_submit(doc: Document) -> None:

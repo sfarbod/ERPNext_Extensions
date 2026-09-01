@@ -82,6 +82,23 @@ def save_request_remark_as_holder(pm_request: str, holder_email: str, remark: st
 
 
 @frappe.whitelist()
+def noop_save_request_as_holder(pm_request: str, holder_email: str) -> dict:
+	frappe.set_user(holder_email)
+	doc = frappe.get_doc("PM Request", pm_request)
+	try:
+		doc.save()
+		frappe.db.commit()
+		ok = True
+		error = None
+	except Exception as exc:
+		ok = False
+		error = str(exc)
+	finally:
+		frappe.set_user("Administrator")
+	return {"ok": ok, "error": error}
+
+
+@frappe.whitelist()
 def attempt_illegal_request_edit(pm_request: str, holder_email: str) -> dict:
 	frappe.set_user(holder_email)
 	doc = frappe.get_doc("PM Request", pm_request)

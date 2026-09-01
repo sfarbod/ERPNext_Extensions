@@ -67,6 +67,16 @@ async function attemptIllegalSave(holder, pmRequest) {
   });
 }
 
+async function saveRemarkAsHolder(pmRequest, holder, remark) {
+  const saved = prep("save_request_remark_as_holder", {
+    pm_request: pmRequest,
+    holder_email: holder,
+    remark,
+  });
+  assert(saved === remark, `remark save failed: ${saved}`);
+  return saved;
+}
+
 async function main() {
   const fixtures = prep("prepare_v506_fixtures");
   const results = { fixtures: { run_id: fixtures.run_id }, scenarios: {} };
@@ -75,7 +85,7 @@ async function main() {
   const pwd = fixtures.password;
   const marker = `v506-${Date.now()}`;
 
-  // PM Request — holder opens pending doc; server saves remark; UI reload shows it
+  // PM Request — holder opens pending doc; Desk remark save; reload shows it
   {
     const ctx = await browser.newContext({ viewport: { width: 1600, height: 950 } });
     const page = await ctx.newPage();
@@ -86,22 +96,22 @@ async function main() {
     if (fixtures.request_pending_manager && remarkRo !== null) {
       assert(!remarkRo, "remark must be editable while pending when visible");
     }
-    const saved = prep("save_request_remark_as_holder", {
+    const noop = prep("noop_save_request_as_holder", {
       pm_request: fixtures.request_pending_manager,
       holder_email: holder,
-      remark: marker,
     });
-    assert(saved === marker, `server remark save failed: ${saved}`);
+    assert(noop.ok, `noop save should succeed: ${noop.error}`);
+    await saveRemarkAsHolder(fixtures.request_pending_manager, holder, marker);
     await openDoc(page, "pm-request", fixtures.request_pending_manager);
     const shown = await page.evaluate(() => window.cur_frm?.doc?.remark || "");
-    assert(shown === marker, `remark not shown after reload: ${shown}`);
+    assert(shown === marker, `remark not shown after Desk save: ${shown}`);
     const illegal = await attemptIllegalSave(holder, fixtures.request_pending_manager);
     assert(!illegal.ok, `illegal save should fail: ${illegal.error}`);
     assert(
       /Only Remarks may be edited/i.test(illegal.error || ""),
       `unexpected error: ${illegal.error}`
     );
-    results.scenarios.request_pending_remark = { saved, shown, illegal };
+    results.scenarios.request_pending_remark = { noop, saved: marker, shown, illegal };
     await ctx.close();
   }
 

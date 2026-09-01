@@ -132,6 +132,8 @@ function pm_is_pending_remark_edit(frm) {
 	return states.has(frm.doc.workflow_state || "");
 }
 
+erpnext_extensions.petty_management.is_pending_remark_edit = pm_is_pending_remark_edit;
+
 /**
  * While Pending*: lock every field except Remarks. Save remains enabled for remark-only edits.
  */

@@ -513,6 +513,12 @@ function form_is_dirty(frm) {
 }
 
 function can_mutate_derived_fields(frm) {
+	if (
+		erpnext_extensions?.petty_management?.is_pending_remark_edit &&
+		erpnext_extensions.petty_management.is_pending_remark_edit(frm)
+	) {
+		return false;
+	}
 	return frm.doc.docstatus === 0 && (frm.is_new() || form_is_dirty(frm));
 }
 

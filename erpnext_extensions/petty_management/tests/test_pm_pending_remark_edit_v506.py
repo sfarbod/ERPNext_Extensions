@@ -130,11 +130,38 @@ class TestPMPendingRemarkEditV506(unittest.TestCase):
 		doc.save()
 		return doc.reload()
 
+	def _save_unchanged(self, doc: frappe.Document) -> frappe.Document:
+		doc.save()
+		return doc.reload()
+
 	def _assert_blocked(self, doc: frappe.Document, mutate) -> None:
 		mutate(doc)
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			doc.save()
 		self.assertIn("Only Remarks may be edited", str(ctx.exception))
+
+	def test_request_noop_save_pending(self):
+		doc = self._pending_request("Pending Manager Approval")
+		out = self._save_unchanged(doc)
+		self.assertEqual(_wf_title(out.workflow_state), "Pending Manager Approval")
+
+	def test_request_repeated_remark_saves(self):
+		doc = self._pending_request("Pending Manager Approval")
+		out = self._save_remark(doc, "first note")
+		self.assertEqual(out.remark, "first note")
+		out = self._save_remark(out, "second note")
+		self.assertEqual(out.remark, "second note")
+
+	def test_request_remark_after_return_resubmit(self):
+		doc = self._pending_request("Pending Manager Approval")
+		frappe.set_user(self.mgr)
+		doc = apply_pm_workflow(doc, "PM Return for Correction")
+		frappe.set_user("Administrator")
+		self.assertEqual(_wf_title(doc.workflow_state), "Draft")
+		doc = self._submit_request(doc)
+		self.assertEqual(_wf_title(doc.workflow_state), "Pending Manager Approval")
+		out = self._save_remark(doc, "after return note")
+		self.assertEqual(out.remark, "after return note")
 
 	def test_request_remark_save_pending_manager(self):
 		doc = self._pending_request("Pending Manager Approval")
@@ -216,6 +243,20 @@ class TestPMPendingRemarkEditV506(unittest.TestCase):
 		frappe.set_user("Administrator")
 		return cl.name
 
+	def test_clearance_noop_save_pending(self):
+		name = self._make_clearance_pending("Pending Manager Approval")
+		doc = frappe.get_doc("PM Clearance", name)
+		out = self._save_unchanged(doc)
+		self.assertEqual(_wf_title(out.workflow_state), "Pending Manager Approval")
+
+	def test_clearance_repeated_remark_saves(self):
+		name = self._make_clearance_pending("Pending Manager Approval")
+		doc = frappe.get_doc("PM Clearance", name)
+		out = self._save_remark(doc, "clearance first")
+		self.assertEqual(out.remark, "clearance first")
+		out = self._save_remark(out, "clearance second")
+		self.assertEqual(out.remark, "clearance second")
+
 	def test_clearance_remark_save_pending_manager(self):
 		name = self._make_clearance_pending("Pending Manager Approval")
 		doc = frappe.get_doc("PM Clearance", name)
@@ -265,8 +306,9 @@ class TestPMPendingRemarkEditV506(unittest.TestCase):
 
 	def test_only_remark_changed_helper(self):
 		doc = self._pending_request("Pending Manager Approval")
-		doc.remark = "helper note"
 		doc.load_doc_before_save(raise_exception=True)
+		self.assertTrue(only_remark_changed_while_pending(doc))
+		doc.remark = "helper note"
 		self.assertTrue(only_remark_changed_while_pending(doc))
 		doc.details[0].advance_amount = 2000
 		self.assertFalse(only_remark_changed_while_pending(doc))

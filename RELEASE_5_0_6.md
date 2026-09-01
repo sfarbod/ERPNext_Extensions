@@ -12,6 +12,11 @@
 
 **PM Clearance:** Pending Manager Approval, Pending Finance Review
 
+## v5.0.6 hardening (release blockers)
+
+- **No-op save:** Pending documents with zero business-field changes now save successfully (no misleading rejection).
+- **Clearance Desk drift:** `can_mutate_derived_fields()` returns false while Pending remark-only mode, so `refresh_holder_pending` / allocation refresh no longer dirties derived fields when the user edits only Remarks.
+
 ## Scope
 
 - Remark-only save during Pending approval only.
@@ -32,3 +37,8 @@
 
 - ERPNext 16.x / Frappe 16.x
 - Builds on v5.0.5
+
+## Test coverage
+
+- **Unit:** `test_pm_pending_remark_edit_v506` — Request paths fully covered; Clearance paths skip when Purchase Invoice fixture is unavailable on the site.
+- **E2E:** `playwright_pm_pending_remark_v506.mjs` — PM Request (noop save, remark save, illegal edit blocked); PM Clearance skipped on dev site when PI insert fails (mandatory `remarks` on PI fixture).
