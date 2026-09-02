@@ -77,6 +77,7 @@ class TestAccountExplorerArchitectureFoundation(unittest.TestCase):
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_workspace_tokens.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_workspace_state.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/ae_user_preferences.js" %}',
+			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/ae_date_format.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/adapters/ae_datatable_adapter.js" %}',
 			'$(wrapper).bind("show"',
 			"_init_explorer_architecture",

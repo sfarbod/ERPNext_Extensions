@@ -552,7 +552,10 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 			const full = frappe.utils.escape_html(String(formatted.full ?? compact));
 			return `<span class="ae-amount-compact ae-dt-amount-cell" title="${full}" aria-label="${full}">${compact}</span>`;
 		}
-		const display = value ?? "";
+		let display = value ?? "";
+		if (source_col?.fieldtype === "Date") {
+			display = format_ae_date(value);
+		}
 		const col_index = this._column_defs.findIndex((col) => col.id === source_col.id);
 		const drillable =
 			col_index === 0 &&
