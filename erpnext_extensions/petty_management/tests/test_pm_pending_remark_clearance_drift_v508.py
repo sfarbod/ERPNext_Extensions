@@ -52,7 +52,17 @@ class TestPMPendingRemarkClearanceDriftV508(base.TestPMPendingRemarkEditV506):
 		out = doc.reload()
 		self.assertEqual(out.remark, "request parent drift")
 
-	def test_clearance_blocks_editable_parent_field_with_remark(self):
+	def test_clearance_remark_save_with_hidden_reference_stamp_drift(self):
+		name = self._make_clearance_pending("Pending Manager Approval")
+		doc = frappe.get_doc("PM Clearance", name)
+		doc.remark = "remark with hidden stamp drift"
+		row = doc.details[0]
+		row.reference = row.purchase_invoice
+		row.reference_doctype = None
+		doc.save()
+		out = doc.reload()
+		self.assertEqual(out.remark, "remark with hidden stamp drift")
+
 		name = self._make_clearance_pending("Pending Manager Approval")
 		doc = frappe.get_doc("PM Clearance", name)
 		doc.remark = "blocked parent"
