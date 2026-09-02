@@ -6,7 +6,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint
+from frappe.utils import cint, cstr, flt, get_datetime, getdate, sbool
 
 from erpnext_extensions.petty_management.services.business_status_service import (
 	CLEARANCE_PENDING_WORKFLOW_TITLES,
@@ -91,6 +91,51 @@ def _child_field_is_user_editable(row: Document, fieldname: str) -> bool:
 	return True
 
 
+def _is_semantically_empty(value) -> bool:
+	return value is None or value == ""
+
+
+def normalize_pending_field_value(value, fieldtype: str | None):
+	"""Normalize a DocField value for semantic pending-save comparison."""
+	if _is_semantically_empty(value):
+		return None
+	ft = fieldtype or "Data"
+	if ft in ("Currency", "Float", "Percent"):
+		return flt(value)
+	if ft == "Int":
+		return cint(value)
+	if ft == "Check":
+		return cint(sbool(value))
+	if ft == "Date":
+		return getdate(value)
+	if ft == "Datetime":
+		return get_datetime(value)
+	if ft == "Time":
+		from frappe.utils.data import get_timedelta
+
+		return get_timedelta(value)
+	if ft in (
+		"Data",
+		"Text",
+		"Small Text",
+		"Long Text",
+		"Text Editor",
+		"Select",
+		"Link",
+		"Dynamic Link",
+		"Password",
+	):
+		return cstr(value)
+	return cstr(value)
+
+
+def pending_field_values_semantically_equal(before_val, after_val, fieldtype: str | None) -> bool:
+	"""True when two DocField values are semantically identical (Desk vs DB types)."""
+	return normalize_pending_field_value(before_val, fieldtype) == normalize_pending_field_value(
+		after_val, fieldtype
+	)
+
+
 def _changed_parent_fields(doc: Document) -> set[str]:
 	before = doc.get_doc_before_save()
 	if not before:
@@ -99,7 +144,9 @@ def _changed_parent_fields(doc: Document) -> set[str]:
 	for fname in doc.meta.get_valid_columns():
 		if not _parent_field_is_user_editable(doc, fname):
 			continue
-		if (doc.get(fname) or None) != (before.get(fname) or None):
+		df = doc.meta.get_field(fname)
+		fieldtype = getattr(df, "fieldtype", None) if df else None
+		if not pending_field_values_semantically_equal(before.get(fname), doc.get(fname), fieldtype):
 			changed.add(fname)
 	return changed
 
@@ -122,7 +169,11 @@ def _child_tables_changed(doc: Document) -> bool:
 			for field in row.meta.get_valid_columns():
 				if not _child_field_is_user_editable(row, field):
 					continue
-				if (row.get(field) or None) != (prev.get(field) or None):
+				child_df = row.meta.get_field(field)
+				fieldtype = getattr(child_df, "fieldtype", None) if child_df else None
+				if not pending_field_values_semantically_equal(
+					prev.get(field), row.get(field), fieldtype
+				):
 					return True
 	return False
 
