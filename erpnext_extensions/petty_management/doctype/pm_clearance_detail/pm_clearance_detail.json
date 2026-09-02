@@ -124,14 +124,16 @@
    "fieldname": "reference",
    "fieldtype": "Data",
    "hidden": 1,
-   "label": "Reference"
+   "label": "Reference",
+   "read_only": 1
   },
   {
    "fieldname": "reference_doctype",
    "fieldtype": "Link",
    "hidden": 1,
    "label": "Reference DocType",
-   "options": "DocType"
+   "options": "DocType",
+   "read_only": 1
   },
   {
    "fieldname": "created_by_user",
