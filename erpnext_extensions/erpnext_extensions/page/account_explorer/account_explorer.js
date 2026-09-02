@@ -7,6 +7,7 @@
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_workspace_tokens.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_workspace_state.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/ae_user_preferences.js" %}
+{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/ae_date_format.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/voucher_gl_print_client.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/adapters/ae_datatable_adapter.js" %}
 
@@ -4514,7 +4515,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const voucher_scope = this.analysis_context.voucher_scope || {};
 		const voucher_type = header.voucher_type || voucher_scope.voucher_type || "";
 		const voucher_no = header.voucher_no || voucher_scope.voucher_no || "";
-		const posting_date = header.posting_date || "";
+		const posting_date = format_ae_date(header.posting_date || "");
 		const company = this.document_scope.company || this.company_field?.get_value() || "";
 		const currency_label = this.currency_code || frappe.defaults.get_default("currency") || "";
 		const total_debit = this.totals?.debit ?? header.total_debit ?? 0;
@@ -4845,12 +4846,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				let value = row[col.id];
 				const $cell = $("<td>").addClass(cls);
 				if (col_index === 0 && is_drillable) {
+					const display = col.fieldtype === "Date" ? format_ae_date(value) : value ?? "";
 					$cell.addClass("ae-drill-cell").append(
 						$('<span class="ae-drill-icon" aria-hidden="true">›</span>'),
-						$('<span class="ae-drill-label">').text(value ?? "")
+						$('<span class="ae-drill-label">').text(display)
 					);
 				} else if (col.fieldtype === "Currency") {
 					this.render_amount_cell($cell, value);
+				} else if (col.fieldtype === "Date") {
+					$cell.text(format_ae_date(value));
 				} else {
 					$cell.text(value ?? "");
 				}
@@ -4987,6 +4991,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				}
 				if (col.fieldtype === "Currency") {
 					this.render_amount_cell($cell, value);
+				} else if (col.fieldtype === "Date") {
+					$cell.text(format_ae_date(value));
 				} else {
 					$cell.text(value ?? "");
 				}
