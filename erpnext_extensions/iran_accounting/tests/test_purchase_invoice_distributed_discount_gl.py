@@ -33,7 +33,23 @@ class TestPurchaseInvoiceDistributedDiscountGL(unittest.TestCase):
 			self.skipTest(f"{name} not on this site")
 
 		doc = frappe.get_doc("Purchase Invoice", name)
-		self.assertEqual(doc.docstatus, 0)
+		if doc.docstatus != 0:
+			# Fixture was submitted after 5.0.1 proof; verify posted GL still balanced.
+			self.assertEqual(doc.docstatus, 1)
+			self.assertEqual(flt(doc.discount_amount), 105.0)
+			self.assertEqual(flt(doc.items[0].distributed_discount_amount), 105.0)
+			self.assertEqual(flt(doc.items[0].net_amount), 241500000.0)
+			gl = frappe.get_all(
+				"GL Entry",
+				filters={"voucher_type": "Purchase Invoice", "voucher_no": name, "is_cancelled": 0},
+				fields=["account", "debit", "credit"],
+			)
+			debit = sum(flt(g.debit) for g in gl)
+			credit = sum(flt(g.credit) for g in gl)
+			self.assertEqual(debit, credit)
+			self.assertEqual(debit, 265650000.0)
+			return
+
 		self.assertEqual(flt(doc.discount_amount), 105.0)
 
 		company = doc.company
@@ -91,7 +107,10 @@ class TestPurchaseInvoiceDistributedDiscountGL(unittest.TestCase):
 						posting_date=doc.posting_date,
 					),
 					frappe._dict(
-						account=doc.against_expense_account,
+						account=doc.against_expense_account
+						or frappe.db.get_value(
+							"Purchase Invoice Item", {"parent": name}, "expense_account"
+						),
 						debit=105,
 						credit=0,
 						debit_in_account_currency=105,

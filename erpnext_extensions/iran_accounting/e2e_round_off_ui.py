@@ -238,7 +238,12 @@ def ensure_round_off_ui_prerequisites(company: str | None = None) -> dict:
 	frappe.clear_cache()
 	frappe.db.commit()
 
-	dept = frappe.db.get_value("Department", {"company": company}, "name", order_by="creation asc")
+	dept = None
+	# Site Server Script on this bench requires this exact Department on PR rows.
+	if frappe.db.exists("Department", "واحد انبار - E"):
+		dept = "واحد انبار - E"
+	if not dept:
+		dept = frappe.db.get_value("Department", {"company": company}, "name", order_by="creation asc")
 	if not dept:
 		dept = frappe.db.get_value("Department", {}, "name", order_by="creation asc")
 	if not dept:
@@ -382,7 +387,10 @@ def set_company_round_off_department_default(company: str, department: str | Non
 
 def _pick_pr_masters(company: str) -> dict:
 	wh = frappe.db.get_value(
-		"Warehouse", {"company": company, "is_group": 0}, "name", order_by="creation asc"
+		"Warehouse",
+		{"company": company, "is_group": 0, "disabled": 0},
+		"name",
+		order_by="creation asc",
 	)
 	item = frappe.db.get_value(
 		"Item", {"is_stock_item": 1, "disabled": 0, "has_serial_no": 0, "has_batch_no": 0}, "name"
@@ -408,25 +416,32 @@ def create_class_b_pr_draft(company: str | None = None) -> dict:
 	pr.set_posting_time = 1
 	pr.currency = "IRR"
 	pr.conversion_rate = 1
-	pr.append(
-		"items",
-		{
-			"item_code": m["item"],
-			"qty": 1,
-			"uom": frappe.db.get_value("Item", m["item"], "stock_uom"),
-			"stock_uom": frappe.db.get_value("Item", m["item"], "stock_uom"),
-			"conversion_factor": 1,
-			"warehouse": m["warehouse"],
-			"rate": 1_000_000,
-			"amount": 1_000_000,
-			"base_rate": 1_000_000,
-			"base_amount": 1_000_000,
-			"net_amount": 1_000_000,
-			"base_net_amount": 1_000_000,
-			"item_tax_amount": 0,
-			"valuation_rate": 0,
-		},
+	dept = (
+		"واحد انبار - E"
+		if frappe.db.exists("Department", "واحد انبار - E")
+		else frappe.db.get_value("Department", {"company": company}, "name")
 	)
+	item_row = {
+		"item_code": m["item"],
+		"qty": 1,
+		"uom": frappe.db.get_value("Item", m["item"], "stock_uom"),
+		"stock_uom": frappe.db.get_value("Item", m["item"], "stock_uom"),
+		"conversion_factor": 1,
+		"warehouse": m["warehouse"],
+		"rate": 1_000_000,
+		"amount": 1_000_000,
+		"base_rate": 1_000_000,
+		"base_amount": 1_000_000,
+		"net_amount": 1_000_000,
+		"base_net_amount": 1_000_000,
+		"item_tax_amount": 0,
+		"valuation_rate": 0,
+	}
+	if dept and pr.meta.has_field("department"):
+		pr.department = dept
+	if dept and frappe.get_meta("Purchase Receipt Item").has_field("department"):
+		item_row["department"] = dept
+	pr.append("items", item_row)
 	pr.insert(ignore_permissions=True)
 	_register_force(pr.name, "class_b")
 	frappe.db.set_value("Purchase Receipt Item", pr.items[0].name, "valuation_rate", 0)

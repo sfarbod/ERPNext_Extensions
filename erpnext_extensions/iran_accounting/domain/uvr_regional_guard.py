@@ -36,20 +36,22 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 # ---------------------------------------------------------------------------
 # Explicit support allow-list (major.minor). Unknown versions → BLOCK.
 # Fingerprints measured on ERPNext 16.31.1 / Frappe 16.30.0; revalidated
-# identical on ERPNext 16.32.0 / Frappe 16.31.0 and ERPNext 16.33.0 /
-# Frappe 16.32.0 (guarded UVR / regional bodies unchanged).
+# identical on ERPNext 16.32.0 / Frappe 16.31.0, ERPNext 16.33.0 /
+# Frappe 16.32.0, and ERPNext 16.34.1 / Frappe 16.33.0 (guarded UVR /
+# regional bodies unchanged).
 # UVR body changed in 16.31 (round_floats_in gains do_not_round_fields for
 # conversion_factor); regional stub + hook call site remain compatible.
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33"})
-_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32"})
+_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"})
+_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33"})
 
 _FN_FINGERPRINTS = {
 	"update_valuation_rate": {
 		"signature": "(self, reset_outgoing_rate=True)",
-		# 16.31.x / 16.32.x normalized source. Older minors keep passing when
-		# their digest matches this table or the legacy alternate below.
+		# 16.31.x–16.34.x normalized source (identical on 16.34.1). Older minors
+		# keep passing when their digest matches this table or the legacy
+		# alternate below.
 		"source_sha256": "a09fe875f076df168c16faaf18a281da824c052160672dcf44c163c6f1166f63",
 		"source_sha256_alternates": (
 			# ERPNext 16.29 / 16.30 (round_floats_in without do_not_round_fields)

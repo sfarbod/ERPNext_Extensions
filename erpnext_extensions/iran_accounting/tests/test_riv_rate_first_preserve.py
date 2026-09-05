@@ -94,12 +94,15 @@ class TestRivRateGuardUnit(unittest.TestCase):
 	def test_fingerprints_match_allow_list(self):
 		assert_erpnext_riv_rate_patch_supported()
 		report = collect_fingerprint_report()
-		self.assertIn(report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33"})
-		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31", "16.32"})
+		self.assertIn(
+			report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"}
+		)
+		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33"})
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
 			self.assertEqual(got["signature"], expected["signature"], name)
-			self.assertEqual(got["source_sha256"], expected["source_sha256"], name)
+			accepted = {expected["source_sha256"], *expected.get("source_sha256_alternates", ())}
+			self.assertIn(got["source_sha256"], accepted, name)
 
 	def test_wrapper_skips_set_value_for_irr(self):
 		calls = []

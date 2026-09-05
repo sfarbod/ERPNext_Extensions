@@ -28,13 +28,14 @@ from frappe.utils import flt
 # Re-validate and extend this table before enabling on a new ERPNext build.
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33"})
-_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32"})
+_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"})
+_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33"})
 
 # Fingerprints measured on ERPNext 16.30.0 / Frappe 16.29.0 (also valid for
 # 16.29.x / 16.31.x / 16.32.x / 16.33.x when the method bodies are identical —
 # revalidated on ERPNext 16.32.0 / Frappe 16.31.0 and ERPNext 16.33.0 /
-# Frappe 16.32.0).
+# Frappe 16.32.0). ERPNext 16.34.1 / Frappe 16.33.0: recalculate body gained
+# additional-cost redistributed-row persistence; update_rate / sabb unchanged.
 _FN_FINGERPRINTS = {
 	"update_rate_on_stock_entry": {
 		"signature": "(self, sle, outgoing_rate)",
@@ -43,7 +44,12 @@ _FN_FINGERPRINTS = {
 	},
 	"recalculate_amounts_in_stock_entry": {
 		"signature": "(self, voucher_no, voucher_detail_no)",
-		"source_sha256": "62f15a743e48a8ed39d1a004c5c64e23e5a708bb07de82346f14ff39643de0ac",
+		# ERPNext 16.34.x — also db_update incoming rows when additional_costs
+		"source_sha256": "d54d175ca9c3a170df15362415fe230b63fe6a55f4ca52b0796fddb7a6e00247",
+		"source_sha256_alternates": (
+			# ERPNext 16.29–16.33 (only voucher_detail_no / FG-scrap / Manufacture|Repack)
+			"62f15a743e48a8ed39d1a004c5c64e23e5a708bb07de82346f14ff39643de0ac",
+		),
 		"must_contain": ("reset_outgoing_rate=False", "calculate_rate_and_amount"),
 	},
 	"is_manufacture_entry_with_sabb": {
@@ -234,9 +240,10 @@ def assert_erpnext_riv_rate_patch_supported() -> None:
 			continue
 		norm = normalize_function_source(fn)
 		digest = hashlib.sha256(norm.encode()).hexdigest()
-		if digest != expected["source_sha256"]:
+		accepted = {expected["source_sha256"], *(expected.get("source_sha256_alternates") or ())}
+		if digest not in accepted:
 			errors.append(
-				f"{name}: source fingerprint {digest} != allow-list {expected['source_sha256']}"
+				f"{name}: source fingerprint {digest} != allow-list {sorted(accepted)}"
 			)
 		for token in expected.get("must_contain") or ():
 			if token not in norm:
