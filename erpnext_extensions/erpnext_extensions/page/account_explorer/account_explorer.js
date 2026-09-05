@@ -1,5 +1,6 @@
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_events.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_analysis_filters.js" %}
+{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_analysis_filter_summary.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_drill_graph.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_store.js" %}
 {% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_plugins.js" %}
@@ -20,6 +21,7 @@ function ae_clone_document_scope(scope) {
 		accounting: { ...(scope.accounting || {}) },
 		accounting_dimensions: { ...(scope.accounting_dimensions || {}) },
 		currency: { ...(scope.currency || {}) },
+		inventory: { ...(scope.inventory || {}) },
 		status: { ...(scope.status || {}) },
 	};
 }
@@ -44,6 +46,11 @@ function ae_clear_advanced_document_scope(scope, status_defaults = {}) {
 		currency: {
 			currency_type: scope.currency?.currency_type || "account_currency",
 			currency: null,
+		},
+		inventory: {
+			item_group: null,
+			item: null,
+			warehouse: null,
 		},
 		status: {
 			include_opening_entries: status_defaults.include_opening_entries ?? 1,
@@ -86,6 +93,13 @@ function ae_count_active_document_scope_filters(scope) {
 	if (scope.currency?.currency_type && scope.currency.currency_type !== "account_currency") {
 		count += 1;
 	}
+	const inventory = scope.inventory || {};
+	["item_group", "item", "warehouse"].forEach((key) => {
+		const value = inventory[key];
+		if (value && (!Array.isArray(value) || value.length)) {
+			count += 1;
+		}
+	});
 	const status = scope.status || {};
 	if (!status.include_opening_entries) {
 		count += 1;
@@ -114,6 +128,7 @@ function ae_serialize_document_scope(scope) {
 		accounting: { ...(scope.accounting || {}) },
 		accounting_dimensions: { ...(scope.accounting_dimensions || {}) },
 		currency: { ...(scope.currency || {}) },
+		inventory: { ...(scope.inventory || {}) },
 		status: { ...(scope.status || {}) },
 	});
 }
@@ -278,6 +293,8 @@ function ae_clone_analysis_context(context) {
 		unified_party_scope: { ...(context.unified_party_scope || {}) },
 		dimension_scope: { ...(context.dimension_scope || {}) },
 		voucher_scope: { ...(context.voucher_scope || {}) },
+		item_group_scope: { ...(context.item_group_scope || {}) },
+		item_scope: { ...(context.item_scope || {}) },
 	};
 }
 
@@ -306,6 +323,12 @@ function ae_default_document_scope(overrides = {}) {
 			currency_type: "account_currency",
 			currency: null,
 		},
+		inventory: {
+			item_group: null,
+			item: null,
+			warehouse: null,
+			inventory_account: null,
+		},
 		status: {
 			include_opening_entries: 1,
 			include_cancelled_entries: 0,
@@ -313,6 +336,18 @@ function ae_default_document_scope(overrides = {}) {
 			include_period_closing_vouchers: 0,
 		},
 		...overrides,
+	};
+}
+
+function ae_bootstrap_scope_defaults() {
+	const company =
+		frappe.defaults.get_user_default("Company") || frappe.boot?.sysdefaults?.company || null;
+	const fiscal_year = frappe.defaults.get_user_default("fiscal_year") || null;
+	return {
+		company,
+		fiscal_year,
+		from_date: frappe.datetime.year_start(),
+		to_date: frappe.datetime.get_today(),
 	};
 }
 
@@ -406,6 +441,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				voucher_type: null,
 				voucher_no: null,
 			},
+			item_group_scope: {
+				selected_item_group: null,
+			},
+			item_scope: {
+				selected_item: null,
+			},
 			detail_mode: "summary",
 			sort_field: "display_code",
 			sort_order: "asc",
@@ -420,6 +461,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._init_explorer_architecture();
 		this.setup_actions();
 		this.render_shell();
+		this.setup_primary_toolbar_skeleton();
 		this.load_metadata();
 	}
 
@@ -562,6 +604,21 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (!Object.keys(filters.dimensions || {}).length) {
 			this.analysis_context.dimension_scope.selected_dimension_value = null;
 		}
+		// Always re-project inventory mirrors from the active analysis bag so chip
+		// removal cannot leave stale document_scope.inventory values.
+		this.document_scope.inventory = {
+			...(this.document_scope.inventory || ae_default_document_scope().inventory),
+			item_group: filters.item_group ? filters.item_group.value : null,
+			item: filters.item ? filters.item.value : null,
+			warehouse: filters.warehouse ? filters.warehouse.value : null,
+			inventory_account: filters.inventory_account ? filters.inventory_account.value : null,
+		};
+		if (!filters.item_group) {
+			this.analysis_context.item_group_scope = { selected_item_group: null };
+		}
+		if (!filters.item) {
+			this.analysis_context.item_scope = { selected_item: null };
+		}
 		erpnext_extensions.account_explorer.core.AnalysisFilters.list_entries(filters).forEach((entry) => {
 			this._mirror_filter_entry_to_scopes(entry);
 		});
@@ -674,6 +731,18 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			event.stopPropagation();
 			const source_row = this.datatable_adapter.resolve_row_from_event(event);
 			const action = $(event.currentTarget).data("action");
+			if (this.analysis_context.view_axis === "inventory_account") {
+				this.handle_inventory_account_row_action(source_row, action);
+				return;
+			}
+			if (
+				this.analysis_context.view_axis === "account_level" &&
+				this.is_account_construction_mode() &&
+				["constructed", "posted_gl", "analyze"].includes(action)
+			) {
+				this.handle_account_construction_row_action(source_row, action);
+				return;
+			}
 			this.handle_voucher_row_action(source_row, action);
 		});
 	}
@@ -691,10 +760,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.analysis_context.view_axis === "voucher" &&
 			(this.analysis_context.detail_mode === "grouped_gl" ||
 				this.analysis_context.voucher_scope?.voucher_no);
+		const has_item_group_drill =
+			this.analysis_context.view_axis === "item_group" &&
+			!!this.analysis_context.item_group_scope?.selected_item_group;
 		if (this.$back_btn) {
 			this.$back_btn.toggle(
 				!!this.get_scope_trail().length ||
 					has_voucher_drill ||
+					has_item_group_drill ||
 					this.analysis_context.detail_mode === "grouped_gl"
 			);
 		}
@@ -707,6 +780,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				this.metadata = r.message || {};
 				this.store.patch({ loading: { metadata: false } });
 				if (!this.metadata.enabled) {
+					this._hide_metadata_grid_loading();
 					this.show_disabled(
 						__("Account Explorer is not enabled. Open Iran Accounting Settings to configure and enable it.")
 					);
@@ -723,6 +797,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (this.analysis_context.view_axis === "unified_party") {
 			this.analysis_context.view_axis = "party";
 		}
+		this._hide_metadata_grid_loading();
 		this.$disabled.hide();
 		this.setup_toolbar();
 		this.render_navigator();
@@ -747,30 +822,106 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this._pending_saved_view_from_url = null;
 			this.load_saved_view(name);
 		}
+		const company = this.document_scope.company || this.company_field?.get_value();
+		if (company) {
+			this._load_metadata_enrichment(company);
+		}
 	}
 
-	copy_workspace_link() {
-		return this.workspace_state.copy_workspace_link();
+	_load_metadata_enrichment(company) {
+		frappe.call({
+			method: `${this.api_base}.get_account_explorer_metadata_enrichment`,
+			args: { company },
+			callback: (r) => {
+				const data = r.message || {};
+				if (!this.metadata) {
+					return;
+				}
+				if (Array.isArray(data.currencies)) {
+					this.metadata.currencies = data.currencies;
+				}
+				if (Array.isArray(data.currency_columns)) {
+					this.metadata.currency_columns = data.currency_columns;
+				}
+				this._refresh_currency_filter_options();
+			},
+		});
 	}
 
-	schedule_workspace_url_update({ push = false } = {}) {
-		if (this.workspace_state?.is_hydrating?.()) {
+	_refresh_currency_filter_options() {
+		const control = this.filter_controls?.currency;
+		if (!control) {
 			return;
 		}
-		this.workspace_state?.schedule_url_update?.({ push });
+		const options = ["", ...(this.metadata?.currencies || [])].join("\n");
+		control.df.options = options;
+		control.refresh();
+		const current = this.document_scope.currency?.currency || control.get_value() || "";
+		if (current && !(this.metadata?.currencies || []).includes(current)) {
+			control.set_value("");
+			this.document_scope.currency = {
+				...(this.document_scope.currency || {}),
+				currency: null,
+			};
+		}
 	}
 
-	show_disabled(message) {
-		this.$disabled.text(message).show();
-		this.$toolbar.hide();
-		this.$nav.hide();
+	setup_primary_toolbar_skeleton() {
+		if (this.company_field) {
+			return;
+		}
+		const scopeDefaults = ae_bootstrap_scope_defaults();
+		this._ensure_toolbar_scope_fields(scopeDefaults);
+		this._show_metadata_grid_loading();
 	}
 
-	setup_toolbar() {
-		this.$toolbar.empty();
-		const defaults = this.metadata.defaults || {};
-		const scopeDefaults = defaults.document_scope || defaults;
+	_show_metadata_grid_loading() {
+		if (!this.$grid?.length) {
+			return;
+		}
+		this.$grid.addClass("ae-grid-wrap--loading");
+		this.$grid.html(
+			'<div class="ae-empty ae-metadata-loading" role="status" aria-live="polite">' +
+				'<span class="ae-summary-loading__spinner" aria-hidden="true"></span> ' +
+				'<span class="ae-metadata-loading__text">' +
+				frappe.utils.escape_html(__("Loading Account Explorer…")) +
+				"</span></div>"
+		);
+	}
 
+	_hide_metadata_grid_loading() {
+		this.$grid?.removeClass("ae-grid-wrap--loading");
+		if (this.$grid?.find(".ae-metadata-loading").length) {
+			this.$grid.empty();
+		}
+	}
+
+	_apply_toolbar_scope_defaults(scopeDefaults = {}) {
+		if (!scopeDefaults) {
+			return;
+		}
+		if (scopeDefaults.company && !this.document_scope.company) {
+			this.company_field?.set_value(scopeDefaults.company);
+			this.document_scope.company = scopeDefaults.company;
+		}
+		if (scopeDefaults.fiscal_year && !this.document_scope.fiscal_year) {
+			this.fy_field?.set_value(scopeDefaults.fiscal_year);
+			this.document_scope.fiscal_year = scopeDefaults.fiscal_year;
+		}
+		if (scopeDefaults.from_date && !this.document_scope.from_date) {
+			this.from_date_field?.set_value(scopeDefaults.from_date);
+			this.document_scope.from_date = scopeDefaults.from_date;
+		}
+		if (scopeDefaults.to_date && !this.document_scope.to_date) {
+			this.to_date_field?.set_value(scopeDefaults.to_date);
+			this.document_scope.to_date = scopeDefaults.to_date;
+		}
+	}
+
+	_ensure_toolbar_scope_fields(scopeDefaults = {}) {
+		if (this.company_field) {
+			return;
+		}
 		const $row_scope = $('<div class="ae-toolbar-row ae-toolbar-row--scope"></div>').appendTo(this.$toolbar);
 		const $scope = $('<div class="ae-toolbar-scope"></div>').appendTo($row_scope);
 		$('<div class="ae-toolbar-section-label">').text(__("Scope")).appendTo($scope);
@@ -786,6 +937,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				reqd: 1,
 				change: () => {
 					this.document_scope.company = this.company_field.get_value();
+					const company = this.document_scope.company;
+					if (company && this.metadata?.enabled) {
+						this._load_metadata_enrichment(company);
+					}
 				},
 			},
 			render_input: true,
@@ -850,6 +1005,39 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.to_date_field.set_value(scopeDefaults.to_date);
 			this.document_scope.to_date = scopeDefaults.to_date;
 		}
+	}
+
+	copy_workspace_link() {
+		return this.workspace_state.copy_workspace_link();
+	}
+
+	schedule_workspace_url_update({ push = false } = {}) {
+		if (this.workspace_state?.is_hydrating?.()) {
+			return;
+		}
+		this.workspace_state?.schedule_url_update?.({ push });
+	}
+
+	show_disabled(message) {
+		this.$disabled.text(message).show();
+		this.$toolbar.hide();
+		this.$nav.hide();
+	}
+
+	setup_toolbar() {
+		const defaults = this.metadata.defaults || {};
+		const scopeDefaults = defaults.document_scope || defaults;
+
+		if (!this.company_field) {
+			this._ensure_toolbar_scope_fields(scopeDefaults);
+		} else {
+			this._apply_toolbar_scope_defaults(scopeDefaults);
+		}
+
+		if (this._toolbar_actions_built) {
+			return;
+		}
+		this._toolbar_actions_built = true;
 
 		this.analysis_context.level_sequence = this.metadata.default_level_sequence;
 		if (!this.analysis_context.page_size) {
@@ -865,6 +1053,24 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 		if (scopeDefaults.currency) {
 			this.document_scope.currency = { ...this.document_scope.currency, ...scopeDefaults.currency };
+		}
+		if (scopeDefaults.inventory) {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || {}),
+				...scopeDefaults.inventory,
+			};
+		}
+		if (scopeDefaults.from_date && !this.document_scope.from_date) {
+			this.from_date_field?.set_value(scopeDefaults.from_date);
+			this.document_scope.from_date = scopeDefaults.from_date;
+		}
+		if (scopeDefaults.to_date && !this.document_scope.to_date) {
+			this.to_date_field?.set_value(scopeDefaults.to_date);
+			this.document_scope.to_date = scopeDefaults.to_date;
+		}
+		if (scopeDefaults.fiscal_year && !this.document_scope.fiscal_year) {
+			this.fy_field?.set_value(scopeDefaults.fiscal_year);
+			this.document_scope.fiscal_year = scopeDefaults.fiscal_year;
 		}
 
 		const $row_actions = $('<div class="ae-toolbar-row ae-toolbar-row--actions"></div>').appendTo(this.$toolbar);
@@ -1585,6 +1791,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				...(analysis.dimension_scope || {}),
 			},
 			voucher_scope: { ...this.analysis_context.voucher_scope, ...(analysis.voucher_scope || {}) },
+			item_group_scope: {
+				...this.analysis_context.item_group_scope,
+				...(analysis.item_group_scope || {}),
+			},
+			item_scope: {
+				...this.analysis_context.item_scope,
+				...(analysis.item_scope || {}),
+			},
 		};
 
 		const presentation = view.presentation || {};
@@ -1903,6 +2117,39 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			);
 		});
 
+		const inventory_body = this.make_filter_section(__("Inventory"), $grid, "inventory");
+		this.filter_controls.item_group = this.make_filter_control(inventory_body, {
+			fieldtype: "MultiSelectList",
+			label: __("Item Group"),
+			fieldname: "item_group",
+			options: "Item Group",
+			get_data: (txt) => frappe.db.get_link_options("Item Group", txt),
+		});
+		this.filter_controls.item = this.make_filter_control(inventory_body, {
+			fieldtype: "MultiSelectList",
+			label: __("Item"),
+			fieldname: "item",
+			options: "Item",
+			get_data: (txt) =>
+				frappe.db.get_link_options("Item", txt, {
+					is_stock_item: 1,
+				}),
+		});
+		this.filter_controls.warehouse = this.make_filter_control(inventory_body, {
+			fieldtype: "MultiSelectList",
+			label: __("Warehouse"),
+			fieldname: "warehouse",
+			options: "Warehouse",
+			get_data: (txt) => {
+				const company = this.document_scope.company || this.company_field?.get_value();
+				const filters = { is_group: 0 };
+				if (company) {
+					filters.company = company;
+				}
+				return frappe.db.get_link_options("Warehouse", txt, filters);
+			},
+		});
+
 		const currency_body = this.make_filter_section(__("Currency"), $grid, "currency");
 		const currency_type_values = (this.metadata?.currency_types || [
 			{ value: "account_currency", label: __("Account Currency") },
@@ -1977,6 +2224,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		Object.entries(this.filter_controls.dimensions || {}).forEach(([fieldname, control]) => {
 			control.set_value(ae_scope_value_to_control(scope.accounting_dimensions?.[fieldname]));
 		});
+		const inventory = scope.inventory || {};
+		this.filter_controls.item_group?.set_value(ae_scope_value_to_control(inventory.item_group));
+		this.filter_controls.item?.set_value(ae_scope_value_to_control(inventory.item));
+		this.filter_controls.warehouse?.set_value(ae_scope_value_to_control(inventory.warehouse));
 		this.filter_controls.currency_type?.set_value(scope.currency?.currency_type || "account_currency");
 		this.filter_controls.currency?.set_value(scope.currency?.currency || "");
 		this.filter_controls.include_opening_entries?.set_value(scope.status?.include_opening_entries ? 1 : 0);
@@ -2018,6 +2269,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.document_scope.currency = {
 			currency_type: this.filter_controls.currency_type?.get_value() || "account_currency",
 			currency: this.filter_controls.currency?.get_value() || null,
+		};
+		this.document_scope.inventory = {
+			item_group: ae_normalize_multi_value(this.filter_controls.item_group?.get_value()),
+			item: ae_normalize_multi_value(this.filter_controls.item?.get_value()),
+			warehouse: ae_normalize_multi_value(this.filter_controls.warehouse?.get_value()),
 		};
 		this.document_scope.status = {
 			include_opening_entries: this.filter_controls.include_opening_entries?.get_value() ? 1 : 0,
@@ -2210,6 +2466,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filter:removed", { key, filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._clear_legacy_scope_for_filter_key(key);
+		// Re-project remaining filters so inventory/account/party scopes stay consistent.
+		this._sync_scopes_from_analysis_filters();
+		this.sync_filter_controls_from_document_scope();
 		this.analysis_context.page = 1;
 		this.clear_grid_selection();
 		this._sync_store_context({ emit: true });
@@ -2227,6 +2486,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filters:cleared", { filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._reset_analytical_legacy_scopes();
+		this._sync_scopes_from_analysis_filters();
+		this.sync_filter_controls_from_document_scope();
 		this.analysis_context.page = 1;
 		this.clear_grid_selection();
 		this._sync_store_context({ emit: true });
@@ -2256,6 +2517,28 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.analysis_context.voucher_scope = { voucher_type: null, voucher_no: null };
 		} else if (parsed === "currency") {
 			// Analytical currency lives in filters; do not wipe document currency framing unless mirrored
+		} else if (parsed === "item_group") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				item_group: null,
+			};
+			this.analysis_context.item_group_scope = { selected_item_group: null };
+		} else if (parsed === "item") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				item: null,
+			};
+			this.analysis_context.item_scope = { selected_item: null };
+		} else if (parsed === "warehouse") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				warehouse: null,
+			};
+		} else if (parsed === "inventory_account") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				inventory_account: null,
+			};
 		} else if (parsed.startsWith("dimensions.")) {
 			const field = parsed.slice("dimensions.".length);
 			if (this.analysis_context.dimension_scope?.dimension_type === field) {
@@ -2280,6 +2563,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		};
 		this.analysis_context.dimension_scope.selected_dimension_value = null;
 		this.analysis_context.voucher_scope = { voucher_type: null, voucher_no: null };
+		this.analysis_context.item_group_scope = { selected_item_group: null };
+		this.analysis_context.item_scope = { selected_item: null };
+		this.document_scope.inventory = {
+			...(this.document_scope.inventory || ae_default_document_scope().inventory),
+			item_group: null,
+			item: null,
+			warehouse: null,
+		};
 	}
 
 	get_account_level_nav_items() {
@@ -2329,8 +2620,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			dimension: __("Dimensions"),
 			currency: __("Currencies"),
 			voucher: __("Vouchers"),
+			item_group: __("Item Groups"),
+			item: __("Items"),
+			inventory_account: __("Inventory Account"),
 		};
 		return map[axis] || axis || __("Analysis");
+	}
+
+	get_axis_nav_label(axis) {
+		const fallback = this.get_axis_path_label(axis?.id);
+		return this.get_bilingual_label(axis?.label_fa, fallback || axis?.label || axis?.id);
 	}
 
 	get_breadcrumb_axis_label(axis) {
@@ -2341,6 +2640,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			dimension: __("Dimension"),
 			currency: __("Currency"),
 			voucher: __("Voucher"),
+			item_group: __("Item Group"),
+			item: __("Item"),
+			inventory_account: __("Inventory Account"),
 		};
 		return map[axis] || axis || __("Step");
 	}
@@ -2695,17 +2997,26 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			dimension: __("Dimensions"),
 			currency: __("Currencies"),
 			voucher: __("Vouchers"),
+			item_group: __("Item Groups"),
+			item: __("Items"),
+			inventory_account: __("Inventory Account"),
 		};
 
 		(this.metadata.axes || []).forEach((axis) => {
-			// v4.6.2: Unified Parties tab removed from UI (backend APIs retained).
-			if (!axis.enabled || axis.id === "unified_party") {
+			// Unified Parties / legacy Inventory Account tabs hidden (backend retained if needed).
+			if (
+				!axis.enabled ||
+				axis.id === "unified_party" ||
+				axis.id === "inventory_account" ||
+				axis.ui_nav === 0
+			) {
 				return;
 			}
 			const is_active =
 				this.analysis_context.view_axis === axis.id && this.analysis_context.detail_mode === "summary";
 			$('<button type="button" class="ae-nav-tab" role="tab">')
-				.text(label_map[axis.id] || axis.label)
+				.attr("data-axis", axis.id)
+				.text(this.get_axis_nav_label(axis) || label_map[axis.id] || axis.label)
 				.toggleClass("active", is_active)
 				.attr("aria-selected", is_active ? "true" : "false")
 				.on("click", () => {
@@ -2773,12 +3084,49 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			});
 		}
 		$sub.toggle(has_sub);
+
+		// Measure-family hint: stock journey vs GL (no banner mode switch).
+		const axis_meta = (this.metadata.axes || []).find(
+			(a) => a.id === this.analysis_context.view_axis
+		);
+		this.$nav.find(".ae-measure-family-hint").remove();
+		if (axis_meta?.subtitle || axis_meta?.measure_family) {
+			const family = axis_meta.measure_family || "";
+			const mode = axis_meta.inventory_filter_mode || "";
+			const hint =
+				axis_meta.subtitle ||
+				(family === "stock"
+					? __("Stock valuation — peer of Item Group / Item")
+					: mode === "sle_scoped_stock"
+						? __(
+								"Case A with Item/Item Group filters: SLE-scoped stock breakdown (→ Account EQUAL); Case B without: posted GL (reverse not equal)"
+						  )
+						: mode === "stock_construction_replay"
+						? __(
+								"Diagnostic only — not the Account summary engine"
+						  )
+						: mode === "voucher_scoped_gl"
+							? __(
+									"Real GL — with inventory filters: documents related to scoped stock movements"
+							  )
+							: __("General Ledger — Case B: reverse Item/IG equality not required"));
+			$('<div class="ae-measure-family-hint">')
+				.attr("data-measure-family", family)
+				.attr("data-inventory-filter-mode", mode || "")
+				.text(__(hint))
+				.appendTo(this.$nav);
+		}
 	}
 
 	switch_axis(view_axis, level_or_dimension = null) {
 		// v4.6.2: Unified Parties tab is UI-hidden; coerce any leftover prefs/URL.
 		if (view_axis === "unified_party") {
 			view_axis = "party";
+			level_or_dimension = null;
+		}
+		// v5.1.1: Inventory Account axis removed — Account Levels is the only account axis.
+		if (view_axis === "inventory_account") {
+			view_axis = "account_level";
 			level_or_dimension = null;
 		}
 		this.analysis_context.view_axis = view_axis;
@@ -2826,6 +3174,24 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		} else if (view_axis === "voucher") {
 			this.analysis_context.sort_field = "posting_date";
 			this.analysis_context.sort_order = "desc";
+		} else if (view_axis === "item_group") {
+			this.analysis_context.sort_field = "display_code";
+			this.analysis_context.item_group_scope = {
+				selected_item_group: null,
+			};
+			this.analysis_context.item_scope = {
+				selected_item: null,
+			};
+		} else if (view_axis === "item") {
+			this.analysis_context.sort_field = "display_code";
+			this.analysis_context.item_scope = {
+				selected_item: null,
+			};
+			this.analysis_context.item_group_scope = {
+				selected_item_group: null,
+			};
+		} else if (view_axis === "inventory_account") {
+			this.analysis_context.sort_field = "display_code";
 		} else {
 			this.analysis_context.sort_field = "display_code";
 		}
@@ -3243,6 +3609,54 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			.join("")}</div>`;
 	}
 
+	build_inventory_account_actions_html(row) {
+		if (!row) {
+			return "";
+		}
+		const specs = [
+			{
+				key: "stock",
+				label: __("Stock Movements"),
+				title: __("Open Stock Ledger for warehouses on this inventory account"),
+			},
+			{
+				key: "gl_report",
+				label: __("Open General Ledger"),
+				title: __("Open native General Ledger for this account (GL amounts may differ)"),
+			},
+			{
+				key: "analyze",
+				label: __("Analyze"),
+				title: __("Use this inventory account as an Analysis Filter"),
+			},
+		];
+		return `<div class="ae-voucher-actions ae-row-actions ae-inventory-account-actions">${specs
+			.map((spec, index) => {
+				const sep = index ? '<span class="ae-voucher-action-sep" aria-hidden="true">|</span>' : "";
+				return `${sep}<button type="button" class="btn btn-xs btn-default ae-voucher-action ae-voucher-action--${spec.key}" data-action="${spec.key}" title="${frappe.utils.escape_html(
+					spec.title
+				)}">${frappe.utils.escape_html(spec.label)}</button>`;
+			})
+			.join("")}</div>`;
+	}
+
+	handle_inventory_account_row_action(row, action) {
+		if (!row) {
+			return;
+		}
+		if (action === "stock") {
+			this.open_inventory_account_stock_ledger(row);
+			return;
+		}
+		if (action === "gl_report") {
+			this.open_inventory_account_general_ledger(row);
+			return;
+		}
+		if (action === "analyze") {
+			this.analyze_row_as_filter(row);
+		}
+	}
+
 	handle_voucher_row_action(row, action) {
 		if (!row) {
 			return;
@@ -3314,8 +3728,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const axis = this.analysis_context.view_axis;
 		const is_summary = this.analysis_context.detail_mode === "summary";
 		const show_voucher_actions = axis === "voucher" && is_summary;
+		const show_inventory_account_actions = axis === "inventory_account" && is_summary;
+		const show_account_construction_actions =
+			axis === "account_level" && is_summary && this.is_account_construction_mode();
 		const show_analyze_action =
-			is_summary && ["account_level", "party", "dimension", "currency"].includes(axis);
+			is_summary &&
+			!show_account_construction_actions &&
+			["account_level", "party", "dimension", "currency", "item_group", "item", "inventory_account"].includes(
+				axis
+			);
 		return {
 			sort_field: this.analysis_context.sort_field,
 			sort_order: this.analysis_context.sort_order,
@@ -3326,16 +3747,24 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			translate: (label) => __(label),
 			actions_column: show_voucher_actions
 				? { width: 360 }
-				: show_analyze_action
-					? { width: 110 }
-					: null,
+				: show_inventory_account_actions
+					? { width: 280 }
+					: show_account_construction_actions
+						? { width: 360 }
+						: show_analyze_action
+							? { width: 110 }
+							: null,
 			format_amount: (value) => this.format_display_amount(value),
 			render_actions_html: (row) =>
 				show_voucher_actions
 					? this.build_voucher_actions_html(row)
-					: show_analyze_action
-						? this.build_analyze_action_html(row)
-						: "",
+					: show_inventory_account_actions
+						? this.build_inventory_account_actions_html(row)
+						: show_account_construction_actions
+							? this.build_account_construction_actions_html(row)
+							: show_analyze_action
+								? this.build_analyze_action_html(row)
+								: "",
 			column_widths: { ...(this.grid_column_widths || {}) },
 			on_server_sort: (column_id, column) => this.handle_datatable_server_sort(column_id, column),
 			on_selection_change: (checked_rows) => this.handle_datatable_selection_change(checked_rows),
@@ -3374,6 +3803,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 		if (axis === "voucher") {
 			return !!(row.voucher_no && !row.is_virtual_group);
+		}
+		if (axis === "item_group") {
+			return !!(row.item_group && !row.is_virtual_group);
+		}
+		if (axis === "item") {
+			return !!(row.item_code && !row.is_virtual_group);
+		}
+		if (axis === "inventory_account") {
+			return !!(row.inventory_account || row.account) && !row.is_virtual_group;
 		}
 		return false;
 	}
@@ -3907,6 +4345,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				accounting: { ...(projected.document_scope.accounting || {}) },
 				accounting_dimensions: { ...(projected.document_scope.accounting_dimensions || {}) },
 				currency: { ...(projected.document_scope.currency || {}) },
+				inventory: { ...(this.document_scope.inventory || {}) },
 				status: { ...(projected.document_scope.status || {}) },
 			},
 			analysis_context: {
@@ -3916,6 +4355,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				unified_party_scope: { ...(projected.analysis_context.unified_party_scope || {}) },
 				dimension_scope: { ...(projected.analysis_context.dimension_scope || {}) },
 				voucher_scope: { ...(projected.analysis_context.voucher_scope || {}) },
+				item_group_scope: { ...(this.analysis_context.item_group_scope || {}) },
+				item_scope: { ...(this.analysis_context.item_scope || {}) },
 			},
 			...(this.prepared_mode ? { prepared_mode: this.prepared_mode } : {}),
 		};
@@ -3924,6 +4365,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	get_summary_method() {
 		if (this.analysis_context.detail_mode === "grouped_gl") {
 			return `${this.api_base}.get_grouped_gl_entries`;
+		}
+		if (this.analysis_context.detail_mode === "constructed_legs") {
+			return `${this.api_base}.get_constructed_accounting_legs`;
 		}
 		const axis = this.analysis_context.view_axis || "account_level";
 		if (axis === "party") {
@@ -3941,7 +4385,46 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (axis === "voucher") {
 			return `${this.api_base}.get_voucher_summary`;
 		}
+		if (axis === "item_group") {
+			return `${this.api_base}.get_item_group_summary`;
+		}
+		if (axis === "item") {
+			return `${this.api_base}.get_item_summary`;
+		}
+		if (axis === "inventory_account") {
+			return `${this.api_base}.get_inventory_account_summary`;
+		}
 		return `${this.api_base}.get_account_summary`;
+	}
+
+	has_inventory_scope_active() {
+		const inv = this.document_scope?.inventory || {};
+		const filters = this.get_analysis_filters?.() || {};
+		return !!(
+			inv.item_group ||
+			inv.item ||
+			inv.warehouse ||
+			filters.item_group ||
+			filters.item ||
+			filters.warehouse ||
+			this.analysis_context?.item_group_scope?.selected_item_group ||
+			this.analysis_context?.item_scope?.selected_item
+		);
+	}
+
+	is_account_construction_mode() {
+		return this.account_fact_engine === "stock_construction_replay";
+	}
+
+	is_account_voucher_scoped_mode() {
+		return this.account_fact_engine === "voucher_scoped_gl";
+	}
+
+	is_account_sle_scoped_mode() {
+		return (
+			this.account_fact_engine === "sle_scoped_stock" ||
+			(this.analysis_context?.view_axis === "account_level" && this.has_inventory_scope_active())
+		);
 	}
 
 	apply_scope() {
@@ -3959,6 +4442,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.update_advanced_filters_button();
 		this.render_filter_summary();
 		this.schedule_workspace_url_update({ push: false });
+		if (this.document_scope.company) {
+			this._load_metadata_enrichment(this.document_scope.company);
+		}
 		this.refresh_summary();
 	}
 
@@ -4131,10 +4617,20 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			}
 			this.rows = data.rows || [];
 			this.totals = data.totals || {};
+			this.inventory_attribution = null;
 			this.currency_code = data.currency?.code || this.currency_code;
 			this.totals_currency = data.totals_currency || data.currency?.code || this.currency_code;
 			this.pagination = data.pagination || this.pagination;
 			this.warnings = data.warnings || [];
+			this.account_fact_engine = data.account_fact_engine || null;
+			this.construction_meta = {
+				ready: data.construction_ready,
+				incomplete: data.construction_incomplete,
+				voucher_count: data.construction_voucher_count,
+				sle_count: data.construction_sle_count,
+				leg_count: data.construction_leg_count,
+				label: data.construction_label || null,
+			};
 			this.voucher_header = data.voucher_header || null;
 			this.gl_dimensions = data.dimensions || this.gl_dimensions || [];
 			this.sync_gl_dimension_visibility();
@@ -4289,6 +4785,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				credit_balance: flt(totals.credit_balance || 0),
 				scoped_debit: flt(totals.scoped_debit || 0),
 				scoped_credit: flt(totals.scoped_credit || 0),
+				inward_value: flt(totals.inward_value || 0),
+				outward_value: flt(totals.outward_value || 0),
+				balance_value: flt(totals.balance_value || 0),
+				in_qty: flt(totals.in_qty || 0),
+				out_qty: flt(totals.out_qty || 0),
+				balance_qty: flt(totals.balance_qty || 0),
 			},
 			ok: true,
 			failures: [],
@@ -4308,18 +4810,37 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 		if (include_dom_totals && returned_rows > 0 && this.analysis_context.detail_mode !== "grouped_gl") {
 			const bar = this._read_totals_bar_amounts();
-			const checks =
-				axis === "voucher"
-					? [
-							[__("Scoped Debit"), payload.totals.scoped_debit, "voucher_scoped_debit_mismatch"],
-							[__("Scoped Credit"), payload.totals.scoped_credit, "voucher_scoped_credit_mismatch"],
-						]
-					: [
-							[__("Debit Turnover"), payload.totals.debit_turnover, "debit_turnover_mismatch"],
-							[__("Credit Turnover"), payload.totals.credit_turnover, "credit_turnover_mismatch"],
-							[__("Debit Balance"), payload.totals.debit_balance, "debit_balance_mismatch"],
-							[__("Credit Balance"), payload.totals.credit_balance, "credit_balance_mismatch"],
-						];
+			let checks;
+			if (axis === "voucher") {
+				checks = [
+					[__("Scoped Debit"), payload.totals.scoped_debit, "voucher_scoped_debit_mismatch"],
+					[__("Scoped Credit"), payload.totals.scoped_credit, "voucher_scoped_credit_mismatch"],
+				];
+			} else if (axis === "item_group") {
+				checks = [
+					[__("Inward Value"), payload.totals.inward_value, "item_group_inward_mismatch"],
+					[__("Outward Value"), payload.totals.outward_value, "item_group_outward_mismatch"],
+					[__("Debit Balance"), payload.totals.debit_balance, "item_group_debit_balance_mismatch"],
+					[__("Credit Balance"), payload.totals.credit_balance, "item_group_credit_balance_mismatch"],
+				];
+			} else if (axis === "item") {
+				checks = [
+					[__("In Qty"), payload.totals.in_qty, "item_in_qty_mismatch"],
+					[__("Out Qty"), payload.totals.out_qty, "item_out_qty_mismatch"],
+					[__("Balance Qty"), payload.totals.balance_qty, "item_balance_qty_mismatch"],
+					[__("Inward Value"), payload.totals.inward_value, "item_inward_mismatch"],
+					[__("Outward Value"), payload.totals.outward_value, "item_outward_mismatch"],
+					[__("Debit Balance"), payload.totals.debit_balance, "item_debit_balance_mismatch"],
+					[__("Credit Balance"), payload.totals.credit_balance, "item_credit_balance_mismatch"],
+				];
+			} else {
+				checks = [
+					[__("Debit Turnover"), payload.totals.debit_turnover, "debit_turnover_mismatch"],
+					[__("Credit Turnover"), payload.totals.credit_turnover, "credit_turnover_mismatch"],
+					[__("Debit Balance"), payload.totals.debit_balance, "debit_balance_mismatch"],
+					[__("Credit Balance"), payload.totals.credit_balance, "credit_balance_mismatch"],
+				];
+			}
 			checks.forEach(([label, expected, failure]) => {
 				if (!(label in bar)) {
 					return;
@@ -4500,6 +5021,55 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				cols.push("full_voucher_debit", "full_voucher_credit");
 			}
 			return cols;
+		}
+		if (axis === "item_group") {
+			const cols = (this.metadata?.item_group_columns || [])
+				.map((col) => col.id)
+				.filter(Boolean);
+			if (cols.length) {
+				return cols;
+			}
+			return [
+				"display_code",
+				"display_title",
+				"inward_value",
+				"outward_value",
+				"debit_balance",
+				"credit_balance",
+			];
+		}
+		if (axis === "item") {
+			const cols = (this.metadata?.item_columns || []).map((col) => col.id).filter(Boolean);
+			if (cols.length) {
+				return cols;
+			}
+			return [
+				"display_code",
+				"display_title",
+				"in_qty",
+				"out_qty",
+				"balance_qty",
+				"inward_value",
+				"outward_value",
+				"debit_balance",
+				"credit_balance",
+			];
+		}
+		if (axis === "inventory_account") {
+			const cols = (this.metadata?.inventory_account_columns || [])
+				.map((col) => col.id)
+				.filter(Boolean);
+			if (cols.length) {
+				return cols;
+			}
+			return [
+				"display_code",
+				"display_title",
+				"inward_value",
+				"outward_value",
+				"debit_balance",
+				"credit_balance",
+			];
 		}
 		return ["display_code", "display_title", "period_debit", "period_credit", "debit_balance", "credit_balance"];
 	}
@@ -5255,6 +5825,43 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		window.open(frappe.urllib.get_full_url(url));
 	}
 
+	open_inventory_account_stock_ledger(row) {
+		const account = row?.inventory_account || row?.account;
+		if (!account) {
+			return;
+		}
+		const warehouses = row?.warehouses || [];
+		const filters = {
+			company: this.document_scope.company,
+			from_date: this.document_scope.from_date,
+			to_date: this.document_scope.to_date,
+		};
+		if (warehouses.length === 1) {
+			filters.warehouse = warehouses[0];
+		} else if (warehouses.length > 1) {
+			filters.warehouse = warehouses;
+		}
+		const inv = this.document_scope.inventory || {};
+		if (inv.item) {
+			filters.item_code = Array.isArray(inv.item) ? inv.item[0] : inv.item;
+		}
+		frappe.set_route("query-report", "Stock Ledger", filters);
+	}
+
+	open_inventory_account_general_ledger(row) {
+		const account = row?.inventory_account || row?.account;
+		if (!account) {
+			return;
+		}
+		// Native GL — must not pretend GL amounts equal Inventory Account stock row.
+		frappe.set_route("query-report", "General Ledger", {
+			company: this.document_scope.company,
+			from_date: this.document_scope.from_date,
+			to_date: this.document_scope.to_date,
+			account,
+		});
+	}
+
 	navigate_gl_list(row) {
 		this.navigate_with_target(row, "gl_list_route");
 	}
@@ -5539,6 +6146,50 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				},
 			};
 		}
+		if (action.filter_key === "item_group" || node_id === "ItemGroupValue") {
+			return {
+				key: "item_group",
+				value: row.item_group,
+				origin,
+				lifetime,
+				meta: {
+					display_label: row.display_title || row.item_group,
+					source_axis_label,
+				},
+			};
+		}
+		if (action.filter_key === "item" || node_id === "ItemValue") {
+			const code = row.item_code || row.display_code;
+			const title = row.display_title || row.item_name;
+			const label = title && code && title !== code ? `${code} - ${title}` : code || title;
+			return {
+				key: "item",
+				value: code,
+				origin,
+				lifetime,
+				meta: {
+					item_code: code,
+					item_name: title,
+					display_label: label,
+					source_axis_label,
+				},
+			};
+		}
+		if (action.filter_key === "inventory_account" || node_id === "InventoryAccountValue") {
+			const account = row.inventory_account || row.account;
+			return {
+				key: "inventory_account",
+				value: account,
+				origin,
+				lifetime,
+				meta: {
+					inventory_account: account,
+					warehouses: row.warehouses || [],
+					display_label: row.display_title || row.display_code || account,
+					source_axis_label,
+				},
+			};
+		}
 		return null;
 	}
 
@@ -5612,11 +6263,24 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 					true
 				);
 				navigated = true;
+			} else if (action.edge_type === "change_axis" && action.target === "item") {
+				if (entry) {
+					this._mirror_filter_entry_to_scopes(entry);
+				}
+				this.sync_filter_controls_from_document_scope();
+				this.switch_axis("item");
+				navigated = true;
 			} else if (action.edge_type === "open_detail") {
 				this.open_grouped_gl_detail(resolution.row);
 				navigated = true;
 			} else if (action.edge_type === "open_source") {
 				this.navigate_source_voucher(resolution.row);
+				navigated = true;
+			} else if (action.edge_type === "open_stock_ledger") {
+				this.open_inventory_account_stock_ledger(resolution.row);
+				navigated = true;
+			} else if (action.edge_type === "open_general_ledger") {
+				this.open_inventory_account_general_ledger(resolution.row);
 				navigated = true;
 			}
 		});
@@ -5665,6 +6329,26 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.analysis_context.dimension_scope = {
 				dimension_type: field,
 				selected_dimension_value: entry.value,
+			};
+		} else if (entry.key === "item_group") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				item_group: entry.value,
+			};
+		} else if (entry.key === "item") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				item: entry.value,
+			};
+		} else if (entry.key === "warehouse") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				warehouse: entry.value,
+			};
+		} else if (entry.key === "inventory_account") {
+			this.document_scope.inventory = {
+				...(this.document_scope.inventory || ae_default_document_scope().inventory),
+				inventory_account: entry.value,
 			};
 		}
 	}
@@ -5738,6 +6422,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (axis === "account_level" && !row.drill_down_enabled && row.drill_down_enabled !== undefined) {
 			return;
 		}
+		if (axis === "item_group") {
+			if (row.is_virtual_group || !row.item_group) {
+				return;
+			}
+		}
 
 		const node_id = this.row_to_drill_node(row);
 		const intent = explicit_intent || this.resolve_default_intent_for_row(row, node_id);
@@ -5766,6 +6455,33 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (result.changed_filters || !result.navigated) {
 			this._refresh_after_drill();
 		}
+	}
+
+	_drill_item_group_row(row) {
+		if (row.is_virtual_group || !row.item_group) {
+			return;
+		}
+		if (cint(row.is_group)) {
+			this.analysis_context.item_group_scope = {
+				selected_item_group: row.item_group,
+			};
+			this.analysis_context.page = 1;
+			this._pending_grid_perf_operation = "drill_down";
+			this._sync_store_context({ emit: true });
+			this.update_context_actions();
+			this.schedule_workspace_url_update({ push: true });
+			this.refresh_summary();
+			return;
+		}
+		this.document_scope.inventory = {
+			...(this.document_scope.inventory || ae_default_document_scope().inventory),
+			item_group: row.item_group,
+		};
+		this.analysis_context.item_group_scope = {
+			selected_item_group: null,
+		};
+		this.sync_filter_controls_from_document_scope();
+		this.switch_axis("item");
 	}
 
 	analyze_row_as_filter(row) {
@@ -5914,6 +6630,20 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.update_context_actions();
 			return;
 		}
+		if (
+			this.analysis_context.view_axis === "item_group" &&
+			this.analysis_context.item_group_scope?.selected_item_group
+		) {
+			this.analysis_context.item_group_scope = { selected_item_group: null };
+			this.analysis_context.page = 1;
+			this._sync_store_context({ emit: true });
+			this.render_breadcrumbs();
+			this.render_filter_summary();
+			this.schedule_workspace_url_update({ push: true });
+			this.refresh_summary();
+			this.update_context_actions();
+			return;
+		}
 		if (this.breadcrumbs.length) {
 			this._reset_breadcrumbs(this.get_scope_trail().slice(0, -1));
 			this.evaluate_analysis_filter_lifetimes({ consume_temporary: false });
@@ -6021,6 +6751,30 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				["scoped_credit", __("Scoped Credit")],
 				["scoped_net", __("Scoped Net")],
 			];
+		} else if (this.analysis_context.view_axis === "item_group") {
+			items = [
+				["inward_value", __("Inward Value")],
+				["outward_value", __("Outward Value")],
+				["debit_balance", __("Debit Balance")],
+				["credit_balance", __("Credit Balance")],
+			];
+		} else if (this.analysis_context.view_axis === "item") {
+			items = [
+				["in_qty", __("In Qty")],
+				["out_qty", __("Out Qty")],
+				["balance_qty", __("Balance Qty")],
+				["inward_value", __("Inward Value")],
+				["outward_value", __("Outward Value")],
+				["debit_balance", __("Debit Balance")],
+				["credit_balance", __("Credit Balance")],
+			];
+		} else if (this.analysis_context.view_axis === "inventory_account") {
+			items = [
+				["inward_value", __("Inward Value")],
+				["outward_value", __("Outward Value")],
+				["debit_balance", __("Debit Balance")],
+				["credit_balance", __("Credit Balance")],
+			];
 		} else {
 			items = [
 				["period_debit", __("Debit Turnover")],
@@ -6048,18 +6802,111 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	render_warnings() {
-		if (!this.warnings.length) {
-			this.$warnings.empty();
+		this.$warnings.empty().removeClass("ae-warning-banner ae-construction-banner");
+		const parts = [];
+		if (this.is_account_sle_scoped_mode() && this.analysis_context.detail_mode === "summary") {
+			parts.push(
+				$('<div class="ae-construction-badge">').text(
+					__("Case A: SLE-scoped stock breakdown — Item/Item Group → Account EQUAL (Δ=0)")
+				)
+			);
+		}
+		(this.warnings || []).forEach((warning) => {
+			parts.push(
+				$('<div class="ae-warning-item">').append(
+					$("<span class='ae-warning-indicator'>").text("!"),
+					warning
+				)
+			);
+		});
+		if (!parts.length) {
 			return;
 		}
 		this.$warnings
-			.empty()
 			.addClass("ae-warning-banner")
-			.append(
-				this.warnings.map((warning) =>
-					$('<div class="ae-warning-item">').append($("<span class='ae-warning-indicator'>").text("!"), warning)
-				)
-			);
+			.toggleClass("ae-construction-banner", this.is_account_sle_scoped_mode())
+			.append(parts);
+	}
+
+	open_constructed_accounting_legs(row) {
+		this.destroy_summary_datatable?.();
+		this.analysis_context.detail_mode = "constructed_legs";
+		this.analysis_context.view_axis = "account_level";
+		if (row?.selected_account || row?.account) {
+			this.analysis_context.account_scope = {
+				...(this.analysis_context.account_scope || {}),
+				selected_account: row.selected_account || row.account,
+				mode: "account",
+			};
+		}
+		this.analysis_context.page = 1;
+		this.render_breadcrumbs();
+		this.render_navigator();
+		this.render_detail_header();
+		this.refresh_summary();
+		this.update_context_actions();
+	}
+
+	open_posted_general_ledger_for_account(row) {
+		const account = row?.selected_account || row?.account;
+		if (!account) {
+			frappe.msgprint(__("Select an account row first."));
+			return;
+		}
+		frappe.set_route("query-report", "General Ledger", {
+			company: this.document_scope.company,
+			from_date: this.document_scope.from_date,
+			to_date: this.document_scope.to_date,
+			account,
+		});
+	}
+
+	build_account_construction_actions_html(row) {
+		if (!row || !this.is_account_construction_mode()) {
+			return this.build_analyze_action_html(row);
+		}
+		const specs = [
+			{
+				key: "constructed",
+				label: __("Constructed Legs"),
+				title: __("Show constructed accounting legs for this account"),
+			},
+			{
+				key: "posted_gl",
+				label: __("Open Posted General Ledger"),
+				title: __("Open native posted General Ledger (separate from construction)"),
+			},
+			{
+				key: "analyze",
+				label: __("Analyze"),
+				title: __("Use this account as an Analysis Filter"),
+			},
+		];
+		return `<div class="ae-voucher-actions ae-row-actions ae-account-construction-actions">${specs
+			.map((spec, index) => {
+				const sep = index ? '<span class="ae-voucher-action-sep" aria-hidden="true">|</span>' : "";
+				return `${sep}<button type="button" class="btn btn-xs btn-default ae-voucher-action ae-voucher-action--${spec.key}" data-action="${spec.key}" title="${frappe.utils.escape_html(
+					spec.title
+				)}">${frappe.utils.escape_html(spec.label)}</button>`;
+			})
+			.join("")}</div>`;
+	}
+
+	handle_account_construction_row_action(row, action) {
+		if (!row) {
+			return;
+		}
+		if (action === "constructed") {
+			this.open_constructed_accounting_legs(row);
+			return;
+		}
+		if (action === "posted_gl") {
+			this.open_posted_general_ledger_for_account(row);
+			return;
+		}
+		if (action === "analyze") {
+			this.analyze_row_as_filter(row);
+		}
 	}
 
 	render_pagination() {

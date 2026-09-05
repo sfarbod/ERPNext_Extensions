@@ -30,7 +30,8 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 		"ae_v", "ae_state", "company", "fiscal_year", "from_date", "to_date", "finance_book", "hide_zero_rows",
 		"axis", "level", "detail", "account", "party_type", "party", "dimension_type", "dimension_value",
 		"unified_party", "include_unmapped", "currency_type", "currency", "voucher_type", "voucher_no",
-		"against_voucher_type", "against_voucher_no", "reference_no", "page", "sort", "order", "saved_view",
+		"against_voucher_type", "against_voucher_no", "reference_no", "inv_ig", "inv_item", "inv_wh",
+		"page", "sort", "order", "saved_view",
 		"include_opening", "include_cancelled", "include_default_book", "include_pcv",
 		"as_mode", "as_account", "as_virtual", "as_level", "dims", "af",
 	];
@@ -141,6 +142,9 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 			(view_axis === "dimension" && metadata.dimension_columns) ||
 			(view_axis === "currency" && metadata.currency_columns) ||
 			(view_axis === "voucher" && metadata.voucher_columns) ||
+			(view_axis === "item_group" && metadata.item_group_columns) ||
+			(view_axis === "item" && metadata.item_columns) ||
+			(view_axis === "inventory_account" && metadata.inventory_account_columns) ||
 			metadata.columns ||
 			[];
 		return new Set(columns.map((col) => col.fieldname || col.id).filter(Boolean));
@@ -166,6 +170,7 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 				accounting_dimensions: {},
 				currency: { currency_type: AE_DEFAULT_CURRENCY_TYPE, currency: null },
 				status: { ...AE_STATUS_DEFAULTS },
+				inventory: { item_group: null, item: null, warehouse: null },
 			},
 			analysis_context: {
 				view_axis: AE_DEFAULT_AXIS,
@@ -270,6 +275,10 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 		put("against_voucher_type", voucher.against_voucher_type);
 		put("against_voucher_no", voucher.against_voucher_no);
 		put("reference_no", voucher.reference_no);
+		const inventory = scope.inventory || {};
+		put("inv_ig", this.encode_list(inventory.item_group));
+		put("inv_item", this.encode_list(inventory.item));
+		put("inv_wh", this.encode_list(inventory.warehouse));
 		if (cint(analysis.page) > AE_DEFAULT_PAGE) {
 			put("page", analysis.page);
 		}
@@ -397,6 +406,11 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 		workspace.analysis_context.voucher_scope = {
 			voucher_type: get("voucher_type"),
 			voucher_no: get("voucher_no"),
+		};
+		workspace.document_scope.inventory = {
+			item_group: this.decode_list(get("inv_ig")),
+			item: this.decode_list(get("inv_item")),
+			warehouse: this.decode_list(get("inv_wh")),
 		};
 		workspace.analysis_context.page = Math.max(1, cint(get("page")) || AE_DEFAULT_PAGE);
 		const sort_field = get("sort");

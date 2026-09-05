@@ -15,6 +15,13 @@ def get_account_explorer_metadata():
 
 
 @frappe.whitelist()
+def get_account_explorer_metadata_enrichment(company=None):
+	from erpnext_extensions.iran_accounting.account_explorer.api import get_metadata_enrichment
+
+	return get_metadata_enrichment(company=company)
+
+
+@frappe.whitelist()
 def validate_document_scope(payload=None):
 	from erpnext_extensions.iran_accounting.account_explorer.api import validate_document_scope as _validate
 
@@ -80,10 +87,42 @@ def get_voucher_summary(payload=None):
 
 
 @frappe.whitelist()
+def get_item_group_summary(payload=None):
+	from erpnext_extensions.iran_accounting.account_explorer.api import get_item_group_summary as _summary
+
+	return _summary(payload)
+
+
+@frappe.whitelist()
+def get_item_summary(payload=None):
+	from erpnext_extensions.iran_accounting.account_explorer.api import get_item_summary as _summary
+
+	return _summary(payload)
+
+
+@frappe.whitelist()
+def get_inventory_account_summary(payload=None):
+	from erpnext_extensions.iran_accounting.account_explorer.api import (
+		get_inventory_account_summary as _summary,
+	)
+
+	return _summary(payload)
+
+
+@frappe.whitelist()
 def get_grouped_gl_entries(payload=None):
 	from erpnext_extensions.iran_accounting.account_explorer.api import get_grouped_gl_entries as _entries
 
 	return _entries(payload)
+
+
+@frappe.whitelist()
+def get_constructed_accounting_legs(payload=None):
+	from erpnext_extensions.iran_accounting.account_explorer.api import (
+		get_constructed_accounting_legs as _legs,
+	)
+
+	return _legs(payload)
 
 
 @frappe.whitelist()

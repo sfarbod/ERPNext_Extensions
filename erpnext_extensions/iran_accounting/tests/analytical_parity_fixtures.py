@@ -91,9 +91,11 @@ def _ensure_customer(name: str) -> str:
 			"customer_group": frappe.db.get_value("Customer Group", {"is_group": 0}, "name")
 			or "All Customer Groups",
 			"territory": frappe.db.get_value("Territory", {"is_group": 0}, "name") or "All Territories",
+			"tax_id": f"AE-{frappe.generate_hash(length=10)}",
 		}
 	)
 	doc.flags.ignore_permissions = True
+	doc.flags.ignore_mandatory = True
 	doc.insert()
 	return doc.name
 
@@ -107,9 +109,11 @@ def _ensure_supplier(name: str) -> str:
 			"supplier_name": name,
 			"supplier_group": frappe.db.get_value("Supplier Group", {"is_group": 0}, "name")
 			or "All Supplier Groups",
+			"tax_id": f"AE-{frappe.generate_hash(length=10)}",
 		}
 	)
 	doc.flags.ignore_permissions = True
+	doc.flags.ignore_mandatory = True
 	doc.insert()
 	return doc.name
 

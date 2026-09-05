@@ -13,7 +13,10 @@ const AE_AXIS_KEYS = [
 	"account_level",
 	"party",
 	"unified_party",
+	"dimension",
 	"currency",
+	"item_group",
+	"item",
 	"voucher",
 ];
 
@@ -60,6 +63,8 @@ function ae_prefs_default_axis(axis_key, metadata = {}) {
 		dimension: { sort_field: "display_code", sort_order: "asc" },
 		currency: { sort_field: "currency", sort_order: "asc" },
 		voucher: { sort_field: "posting_date", sort_order: "desc" },
+		item_group: { sort_field: "display_code", sort_order: "asc" },
+		item: { sort_field: "display_code", sort_order: "asc" },
 	};
 	const sort = sort_defaults[axis_key?.split(":")[0]] || sort_defaults.account_level;
 	return {

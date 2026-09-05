@@ -107,6 +107,21 @@ export const SUITE_REGISTRY = [
       "iran_accounting/e2e/playwright_account_explorer_jalali_dates.mjs",
     tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
   },
+  {
+    script:
+      "iran_accounting/e2e/playwright_account_explorer_inventory.mjs",
+    tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
+  },
+  {
+    script:
+      "iran_accounting/e2e/playwright_account_explorer_asymmetric_contract.mjs",
+    tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
+  },
+  {
+    script:
+      "iran_accounting/e2e/playwright_account_explorer_synthetic_rows.mjs",
+    tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
+  },
 ];
 
 export function registryByScript() {

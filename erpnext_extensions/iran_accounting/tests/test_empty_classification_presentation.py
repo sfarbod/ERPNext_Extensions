@@ -47,7 +47,7 @@ def _spec(*, page=1, page_size=50, hide_zero_rows=0) -> AccountExplorerQuerySpec
 
 
 class TestEmptyClassificationPresentation(unittest.TestCase):
-	def test_helper_matches_empty_buckets_not_account_unclassified(self):
+	def test_helper_matches_empty_buckets_including_account_unclassified(self):
 		self.assertTrue(
 			is_empty_classification_presentation_row(
 				{"row_key": VIRTUAL_PARTY_UNSPECIFIED_KEY, "is_virtual_group": 1}
@@ -67,11 +67,13 @@ class TestEmptyClassificationPresentation(unittest.TestCase):
 				{"row_key": VIRTUAL_UNIFIED_UNMAPPED_KEY, "display_code": "__UNMAPPED__", "is_virtual_group": 1}
 			)
 		)
-		self.assertFalse(
+		# v5.1.1: Account Unclassified is also forbidden on the grid.
+		self.assertTrue(
 			is_empty_classification_presentation_row(
 				{
 					"row_key": VIRTUAL_UNCLASSIFIED_KEY,
 					"display_code": "__UNCLASSIFIED__",
+					"display_title": "Unclassified",
 					"is_virtual_group": 1,
 				}
 			)

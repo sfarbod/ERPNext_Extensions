@@ -40,12 +40,23 @@ def get_account_wise_measures(
 ) -> dict[str, dict]:
 	"""Return per-account opening / period / closing measures.
 
-	Engine selection (v4.5.0 OpeningEntryPolicy):
+	Engine selection (v5.1.1 asymmetric contract):
 
-	- **E1** — ERPNext Trial Balance + ``is_opening='Yes'`` pre-period delta.
-	- **E2** — E1 + gap-window opening-flagged supplement (ON + PCV/ACB).
-	- **E3** — Scoped policy GL (advanced filters or OFF+ACB correctness fallback).
+	- **sle_scoped_stock** (Case A) — Item / Item Group / Warehouse filters:
+	  scoped SLE → warehouse → inventory account. Same population as Item /
+	  Item Group. Item|IG → Account EQUAL (Δ=0). Not E3 / voucher GL amounts.
+	- **E3 / E1 / E2** (Case B / other GL filters) — posted tabGL when inventory
+	  filters are absent (or after Case A short-circuit is skipped).
 	"""
+	from erpnext_extensions.iran_accounting.account_explorer.sle_scoped_account import (
+		aggregate_sle_scoped_account_measures,
+		select_sle_scoped_account_engine,
+	)
+
+	# Case A short-circuit: must run before select_account_axis_engine (E3).
+	if select_sle_scoped_account_engine(spec):
+		return aggregate_sle_scoped_account_measures(spec, account_names)
+
 	engine = select_account_axis_engine(spec)
 	if engine == AccountAxisEngine.E3_SCOPED_GL:
 		return _get_account_wise_measures_scoped(spec, account_names)
@@ -310,6 +321,15 @@ def get_accounts_with_direct_gl_postings(
 ) -> set[str]:
 	if not group_account_names:
 		return set()
+
+	from erpnext_extensions.iran_accounting.account_explorer.sle_scoped_account import (
+		aggregate_sle_scoped_account_measures,
+		select_sle_scoped_account_engine,
+	)
+
+	if select_sle_scoped_account_engine(spec):
+		measures = aggregate_sle_scoped_account_measures(spec, list(group_account_names))
+		return {name for name in measures if name in group_account_names}
 
 	gle = frappe.qb.DocType("GL Entry")
 	query = frappe.qb.from_(gle).select(gle.account).distinct()

@@ -95,7 +95,62 @@ def gl_dimension_layout_mode(dimension_count: int, full_dimensions_requested: bo
 		return "expanded"
 	return "compact"
 
-VIEW_AXES = frozenset({"account_level", "party", "unified_party", "dimension", "currency", "voucher"})
+ITEM_GROUP_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"item_group",
+		"inward_value",
+		"outward_value",
+		"debit_balance",
+		"credit_balance",
+		"balance_value",
+	}
+)
+
+ITEM_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"item_code",
+		"item_group",
+		"in_qty",
+		"out_qty",
+		"balance_qty",
+		"inward_value",
+		"outward_value",
+		"debit_balance",
+		"credit_balance",
+		"balance_value",
+	}
+)
+
+INVENTORY_ACCOUNT_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"inventory_account",
+		"inward_value",
+		"outward_value",
+		"debit_balance",
+		"credit_balance",
+		"balance_value",
+	}
+)
+
+VIEW_AXES = frozenset(
+	{
+		"account_level",
+		"party",
+		"unified_party",
+		"dimension",
+		"currency",
+		"voucher",
+		"item_group",
+		"item",
+		"inventory_account",
+	}
+)
 
 DETAIL_MODES = frozenset({"summary", "grouped_gl"})
 

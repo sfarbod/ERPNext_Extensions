@@ -37,6 +37,15 @@ class StatusFilter:
 
 
 @dataclass
+class InventoryFilter:
+	item_group: str | list[str] | None = None
+	item: str | list[str] | None = None
+	warehouse: str | list[str] | None = None
+	# Set by warehouse/inventory-account drill — resolves to warehouses via ERPNext map.
+	inventory_account: str | list[str] | None = None
+
+
+@dataclass
 class DocumentScope:
 	company: str = ""
 	fiscal_year: str | None = None
@@ -48,6 +57,7 @@ class DocumentScope:
 	accounting_dimensions: dict[str, Any] = field(default_factory=dict)
 	currency: CurrencyFilter = field(default_factory=CurrencyFilter)
 	status: StatusFilter = field(default_factory=StatusFilter)
+	inventory: InventoryFilter = field(default_factory=InventoryFilter)
 	hide_zero_rows: bool = True
 
 
@@ -86,6 +96,16 @@ class VoucherScope:
 
 
 @dataclass
+class ItemGroupScope:
+	selected_item_group: str | None = None
+
+
+@dataclass
+class ItemScope:
+	selected_item: str | None = None
+
+
+@dataclass
 class PaginationState:
 	page: int = 1
 	page_size: int = 50
@@ -103,6 +123,8 @@ class AnalysisContext:
 	unified_party_scope: UnifiedPartyScope = field(default_factory=UnifiedPartyScope)
 	dimension_scope: DimensionScope = field(default_factory=DimensionScope)
 	voucher_scope: VoucherScope = field(default_factory=VoucherScope)
+	item_group_scope: ItemGroupScope = field(default_factory=ItemGroupScope)
+	item_scope: ItemScope = field(default_factory=ItemScope)
 	pagination: PaginationState = field(default_factory=PaginationState)
 
 
@@ -185,6 +207,14 @@ class AccountExplorerQuerySpec:
 	@property
 	def voucher_scope(self) -> VoucherScope:
 		return self.analysis.voucher_scope
+
+	@property
+	def item_group_scope(self) -> ItemGroupScope:
+		return self.analysis.item_group_scope
+
+	@property
+	def item_scope(self) -> ItemScope:
+		return self.analysis.item_scope
 
 	@property
 	def pagination(self) -> PaginationState:

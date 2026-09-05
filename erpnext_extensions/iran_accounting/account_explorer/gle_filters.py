@@ -119,7 +119,12 @@ def apply_analysis_scope_filters(
 	if accounts:
 		query = query.where(gle.account.isin(accounts))
 	else:
-		query = query.where(gle.name == "")
+		from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
+			has_inventory_document_filters,
+		)
+
+		if not has_inventory_document_filters(spec):
+			query = query.where(gle.name == "")
 
 	if spec.resolved_member_tuples:
 		query = apply_member_tuple_filter(query, gle, spec.resolved_member_tuples)
@@ -172,6 +177,11 @@ def apply_scoped_gle_filters(
 		party_types=party_types,
 		apply_default_party_types=apply_default_party_types,
 	)
+	from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
+		apply_inventory_voucher_scope_to_gle,
+	)
+
+	query = apply_inventory_voucher_scope_to_gle(query, gle, spec)
 	return query
 
 
@@ -236,6 +246,15 @@ def spec_has_advanced_gle_filters(spec: AccountExplorerQuerySpec) -> bool:
 	if _has_nonempty_filter_value(spec.voucher_scope.voucher_type) or _has_nonempty_filter_value(
 		spec.voucher_scope.voucher_no
 	):
+		return True
+	# Item / Item Group / Warehouse → Case A Account uses sle_scoped_stock
+	# (short-circuited in get_account_wise_measures). Other GL axes still need
+	# E3 scoped posted GL with SLE→voucher EXISTS.
+	from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
+		has_inventory_document_filters,
+	)
+
+	if has_inventory_document_filters(spec):
 		return True
 	# Narrowed account_scope selected_account alone stays on TB (post-subset).
 	# Compatibility fields projected into the shapes above must keep this list current.

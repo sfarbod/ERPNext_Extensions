@@ -102,14 +102,22 @@ async function waitSummaryIdle(page, { timeout = 180000 } = {}) {
 }
 
 async function setScopeAndVoucherAxis(page, prep) {
+	await page.waitForFunction(
+		() => Array.isArray(window.cur_ae?.metadata?.axes) && window.cur_ae.metadata.axes.length > 0,
+		null,
+		{ timeout: 90000 }
+	);
 	const result = await page.evaluate(async (prep) => {
 		const ae = window.cur_ae;
 		ae.document_scope.company = prep.company;
-		ae.document_scope.fiscal_year = null;
+		ae.document_scope.fiscal_year = prep.fiscal_year || null;
 		ae.document_scope.from_date = prep.from_date;
 		ae.document_scope.to_date = prep.to_date;
 		ae.document_scope.hide_zero_rows = 0;
 		await ae.company_field.set_value(prep.company);
+		if (ae.fiscal_year_field && prep.fiscal_year) {
+			await ae.fiscal_year_field.set_value(prep.fiscal_year);
+		}
 		if (ae.from_date_field) await ae.from_date_field.set_value(prep.from_date);
 		if (ae.to_date_field) await ae.to_date_field.set_value(prep.to_date);
 		ae.switch_axis("voucher");
@@ -119,6 +127,7 @@ async function setScopeAndVoucherAxis(page, prep) {
 			company: ae.document_scope.company,
 			row_count: (ae.rows || []).length,
 			first_posting: ae.rows?.[0]?.posting_date || null,
+			axes: (ae.metadata?.axes || []).map((a) => a.id || a),
 		};
 	}, prep);
 	await waitSummaryIdle(page);
