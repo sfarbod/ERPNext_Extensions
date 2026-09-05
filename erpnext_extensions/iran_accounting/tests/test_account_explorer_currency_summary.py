@@ -41,11 +41,39 @@ def ensure_dual_currency_fixture(company: str, posting_date: str) -> dict:
 
 	usd_account = "_Test Bank USD - _TC"
 	eur_account = "_Test Bank EUR - _TC"
-	inr_account = frappe.db.get_value(
-		"Account",
-		{"company": company, "account_currency": frappe.get_cached_value("Company", company, "default_currency"), "is_group": 0},
-		"name",
-	) or "Cash - _TC"
+	# Prefer a non-stock cash/bank leaf — inventory fixtures may leave Stock accounts
+	# as the first INR leaf from an unconstrained get_value().
+	inr_account = (
+		frappe.db.get_value(
+			"Account",
+			{"company": company, "name": "Cash - _TC", "is_group": 0},
+			"name",
+		)
+		or frappe.db.get_value(
+			"Account",
+			{
+				"company": company,
+				"account_type": "Cash",
+				"account_currency": frappe.get_cached_value("Company", company, "default_currency"),
+				"is_group": 0,
+			},
+			"name",
+		)
+		or frappe.db.sql(
+			"""
+			select name from `tabAccount`
+			where company=%s and is_group=0
+			  and ifnull(account_type,'') not in ('Stock', 'Stock Received But Not Billed')
+			  and account_currency=%s
+			order by name
+			limit 1
+			""",
+			(company, frappe.get_cached_value("Company", company, "default_currency")),
+		)
+	)
+	if isinstance(inr_account, (list, tuple)):
+		inr_account = inr_account[0][0] if inr_account else None
+	inr_account = inr_account or "Cash - _TC"
 	cost_center = frappe.db.get_value("Cost Center", {"company": company, "is_group": 0}, "name")
 	if not all(
 		[

@@ -68,6 +68,7 @@ class TestMaterialTransferSameStockAccount(unittest.TestCase):
 		frappe.set_user("Administrator")
 		cls.company = get_irr_company("ESPAD")
 		enable_perpetual_inventory(cls.company)
+		frappe.flags.iran_gate_defaults = True
 		cls.wh_base = get_warehouse(cls.company)
 		cls.stock_account = frappe.db.get_value("Warehouse", cls.wh_base, "account")
 		# Warehouse.account may be empty; ERPNext then falls back to Company default inventory.
@@ -348,8 +349,26 @@ class TestMaterialTransferSameStockAccount(unittest.TestCase):
 		amended = frappe.copy_doc(se)
 		amended.docstatus = 0
 		amended.amended_from = se.name
+		if amended.meta.has_field("workflow_state"):
+			amended.workflow_state = "Draft"
 		amended.insert()
-		amended.submit()
+		# Site Stock Entry workflow may still block Draft→Submitted; disable briefly.
+		frappe.db.sql(
+			"update `tabWorkflow` set is_active=0 where document_type=%s and is_active=1",
+			("Stock Entry",),
+		)
+		frappe.clear_cache()
+		try:
+			amended.reload()
+			if amended.meta.has_field("workflow_state"):
+				amended.db_set("workflow_state", None, update_modified=False)
+			amended.submit()
+		finally:
+			frappe.db.sql(
+				"update `tabWorkflow` set is_active=1 where name=%s",
+				("Stock Entry Final Workflow - Manufacturing + Orchid v2",),
+			)
+			frappe.clear_cache()
 		pipe = _pipeline(amended)
 		self.assertEqual(pipe.get("FINAL_GL_COUNT"), 0)
 

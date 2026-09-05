@@ -21,6 +21,7 @@
   "voucher_analysis_enabled",
   "unified_party_enabled",
   "currency_analysis_enabled",
+  "inventory_analysis_enabled",
   "saved_views_enabled",
   "export_enabled",
   "diagnostics_enabled",
@@ -143,6 +144,13 @@
    "fieldname": "currency_analysis_enabled",
    "fieldtype": "Check",
    "label": "Currency Analysis Enabled"
+  },
+  {
+   "default": "1",
+   "description": "Enable Item Group / Item stock analysis axes on the Account Explorer page.",
+   "fieldname": "inventory_analysis_enabled",
+   "fieldtype": "Check",
+   "label": "Inventory Analysis Enabled"
   },
   {
    "default": "0",

@@ -18,7 +18,18 @@ from erpnext_extensions.iran_accounting.account_explorer.query_spec import (
 from erpnext_extensions.iran_accounting.account_explorer.schemas import AccountExplorerQuerySpec
 
 EXPORT_FORMATS = frozenset({"csv", "xlsx"})
-EXPORT_AXES = frozenset({"account_level", "party", "unified_party", "dimension", "currency", "voucher"})
+EXPORT_AXES = frozenset(
+	{
+		"account_level",
+		"party",
+		"unified_party",
+		"dimension",
+		"currency",
+		"voucher",
+		"item_group",
+		"item",
+	}
+)
 
 # DocType default for Iran Accounting Settings.export_background_threshold.
 # Values < 1 (including 0 from cleared Int fields) are treated as unset.
@@ -85,6 +96,22 @@ def _run_summary_builder(spec: AccountExplorerQuerySpec) -> dict:
 		)
 
 		return build_voucher_summary(spec)
+	if axis == "item_group":
+		from erpnext_extensions.iran_accounting.account_explorer.item_group_summary import (
+			build_item_group_summary,
+		)
+
+		return build_item_group_summary(spec)
+	if axis == "item":
+		from erpnext_extensions.iran_accounting.account_explorer.item_summary import build_item_summary
+
+		return build_item_summary(spec)
+	if axis == "inventory_account":
+		from erpnext_extensions.iran_accounting.account_explorer.inventory_account_summary import (
+			build_inventory_account_summary,
+		)
+
+		return build_inventory_account_summary(spec)
 	frappe.throw(_("Export is not supported for the current analysis context."))
 
 
@@ -194,6 +221,38 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "scoped_credit", "label": _("Scoped Credit")},
 			{"fieldname": "scoped_net", "label": _("Scoped Net")},
 		]
+	if axis == "item_group":
+		return [
+			{"fieldname": "display_code", "label": _("Item Group")},
+			{"fieldname": "display_title", "label": _("Title")},
+			{"fieldname": "inward_value", "label": _("Inward Value")},
+			{"fieldname": "outward_value", "label": _("Outward Value")},
+			{"fieldname": "debit_balance", "label": _("Debit Balance")},
+			{"fieldname": "credit_balance", "label": _("Credit Balance")},
+		]
+	if axis == "item":
+		return [
+			{"fieldname": "display_code", "label": _("Item")},
+			{"fieldname": "display_title", "label": _("Item Name")},
+			{"fieldname": "item_group", "label": _("Item Group")},
+			{"fieldname": "in_qty", "label": _("In Qty")},
+			{"fieldname": "out_qty", "label": _("Out Qty")},
+			{"fieldname": "balance_qty", "label": _("Balance Qty")},
+			{"fieldname": "inward_value", "label": _("Inward Value")},
+			{"fieldname": "outward_value", "label": _("Outward Value")},
+			{"fieldname": "debit_balance", "label": _("Debit Balance")},
+			{"fieldname": "credit_balance", "label": _("Credit Balance")},
+		]
+	if axis == "inventory_account":
+		# Legacy axis id (remapped to account_level in UI) — Case A stock breakdown labels.
+		return [
+			{"fieldname": "display_code", "label": _("Account")},
+			{"fieldname": "display_title", "label": _("Account Name")},
+			{"fieldname": "inward_value", "label": _("Inward Value")},
+			{"fieldname": "outward_value", "label": _("Outward Value")},
+			{"fieldname": "debit_balance", "label": _("Debit Balance")},
+			{"fieldname": "credit_balance", "label": _("Credit Balance")},
+		]
 	frappe.throw(_("Export is not supported for the current analysis context."))
 
 
@@ -210,22 +269,25 @@ def rows_to_matrix(rows: list[dict], columns: list[dict[str, str]]) -> tuple[lis
 	return headers, data
 
 
-def build_csv_content(rows: list[dict], columns: list[dict[str, str]]) -> str:
+def _export_report_title(spec: AccountExplorerQuerySpec) -> str | None:
+	if spec.view_axis == "inventory_account":
+		return _("Account Levels — Case A SLE-scoped stock breakdown")
+	return None
+
+
+def build_csv_content(rows: list[dict], columns: list[dict[str, str]], *, title: str | None = None) -> str:
 	headers, data = rows_to_matrix(rows, columns)
 	buffer = io.StringIO()
 	writer = csv.writer(buffer)
+	if title:
+		writer.writerow([title])
 	writer.writerow(headers)
 	writer.writerows(data)
 	return buffer.getvalue()
 
 
 def build_csv_content_from_rows(rows: list[dict], columns: list[dict[str, str]]) -> str:
-	headers, data = rows_to_matrix(rows, columns)
-	buffer = io.StringIO()
-	writer = csv.writer(buffer)
-	writer.writerow(headers)
-	writer.writerows(data)
-	return buffer.getvalue()
+	return build_csv_content(rows, columns)
 
 
 def _iter_voucher_export_rows(spec: AccountExplorerQuerySpec, *, page_size: int = 500):
@@ -293,9 +355,13 @@ def build_streaming_voucher_xlsx(spec: AccountExplorerQuerySpec, columns: list[d
 
 
 
-def build_xlsx_content(rows: list[dict], columns: list[dict[str, str]]) -> bytes:
+def build_xlsx_content(rows: list[dict], columns: list[dict[str, str]], *, title: str | None = None) -> bytes:
 	headers, data = rows_to_matrix(rows, columns)
-	xlsx_file = make_xlsx([headers, *data], "Account Explorer")
+	sheet_title = (title or "Account Explorer")[:31]
+	matrix = [headers, *data]
+	if title:
+		matrix = [[title], *matrix]
+	xlsx_file = make_xlsx(matrix, sheet_title)
 	return xlsx_file.getvalue()
 
 
@@ -399,6 +465,7 @@ def export_account_explorer(payload: Any, file_format: str = "csv", *, force_syn
 
 	columns = get_export_columns(spec)
 	filename = _export_filename(spec, file_format)
+	report_title = _export_report_title(spec)
 
 	if spec.view_axis == "voucher" and file_format == "csv":
 		content, totals, total_rows = build_streaming_voucher_csv(spec, columns)
@@ -410,9 +477,9 @@ def export_account_explorer(payload: Any, file_format: str = "csv", *, force_syn
 		rows, totals, total_rows = collect_export_rows(spec)
 		rows = _normalize_export_rows(rows, spec)
 		if file_format == "csv":
-			_trigger_download(build_csv_content(rows, columns), filename)
+			_trigger_download(build_csv_content(rows, columns, title=report_title), filename)
 		else:
-			_trigger_download(build_xlsx_content(rows, columns), filename)
+			_trigger_download(build_xlsx_content(rows, columns, title=report_title), filename)
 
 	return {
 		"queued": 0,
@@ -435,10 +502,11 @@ def run_account_explorer_export_job(payload: Any, file_format: str, user: str) -
 	else:
 		rows, _totals, _total_rows = collect_export_rows(spec)
 		rows = _normalize_export_rows(rows, spec)
+		report_title = _export_report_title(spec)
 		if file_format == "csv":
-			content = build_csv_content(rows, columns)
+			content = build_csv_content(rows, columns, title=report_title)
 		else:
-			content = build_xlsx_content(rows, columns)
+			content = build_xlsx_content(rows, columns, title=report_title)
 
 	file_url = _save_export_file(content, filename, file_format)
 	_send_export_ready_email(user, file_url, filename)

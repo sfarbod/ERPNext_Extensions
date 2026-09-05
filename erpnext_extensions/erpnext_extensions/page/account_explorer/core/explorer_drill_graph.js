@@ -155,6 +155,15 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 		if (axis === "currency") {
 			return "CurrencyValue";
 		}
+		if (axis === "item_group") {
+			return "ItemGroupValue";
+		}
+		if (axis === "item") {
+			return "ItemValue";
+		}
+		if (axis === "inventory_account") {
+			return "InventoryAccountValue";
+		}
 		if (axis === "account_level") {
 			const sorted = [...(levels || [])].sort((a, b) => a.sequence - b.sequence);
 			const current = row?.level_sequence;
@@ -191,6 +200,9 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 			{ id: "Voucher", default_intent: "detail" },
 			{ id: "GLDetail", default_intent: "open" },
 			{ id: "SourceDocument", default_intent: "open" },
+			{ id: "ItemGroupValue", default_intent: "navigate" },
+			{ id: "ItemValue", default_intent: "filter" },
+			{ id: "InventoryAccountValue", default_intent: "navigate" },
 		].forEach((node) => graph.register_node(node));
 
 		[
@@ -340,6 +352,63 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 				policy: "append_filter",
 				lifetime: "temporary",
 				meta: { integration_edge: 1 },
+			},
+			{
+				from_node: "ItemGroupValue",
+				intent: "filter",
+				edge_type: "apply_filter",
+				target: null,
+				policy: "replace_filter",
+				filter_key: "item_group",
+				lifetime: "session",
+			},
+			{
+				from_node: "ItemGroupValue",
+				intent: "navigate",
+				edge_type: "apply_filter",
+				target: null,
+				policy: "replace_filter",
+				filter_key: "item_group",
+				lifetime: "session",
+			},
+			{
+				from_node: "ItemGroupValue",
+				intent: "navigate",
+				edge_type: "change_axis",
+				target: "item",
+				policy: "keep_filters",
+			},
+			{
+				from_node: "ItemValue",
+				intent: "filter",
+				edge_type: "apply_filter",
+				target: null,
+				policy: "replace_filter",
+				filter_key: "item",
+				lifetime: "session",
+			},
+			{
+				from_node: "InventoryAccountValue",
+				intent: "filter",
+				edge_type: "apply_filter",
+				target: null,
+				policy: "replace_filter",
+				filter_key: "inventory_account",
+				lifetime: "session",
+			},
+			{
+				from_node: "InventoryAccountValue",
+				intent: "navigate",
+				edge_type: "open_stock_ledger",
+				target: null,
+				policy: "keep_filters",
+			},
+			{
+				from_node: "InventoryAccountValue",
+				intent: "detail",
+				edge_type: "open_general_ledger",
+				target: null,
+				policy: "keep_filters",
 			},
 		].forEach((edge) => graph.register_edge(edge));
 

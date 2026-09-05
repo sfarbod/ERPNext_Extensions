@@ -18,6 +18,7 @@ class TestAccountExplorerCubeNavigation(unittest.TestCase):
 			"css": os.path.join(base, "account_explorer.css"),
 			"graph": os.path.join(base, "core", "explorer_drill_graph.js"),
 			"af": os.path.join(base, "core", "explorer_analysis_filters.js"),
+			"af_summary": os.path.join(base, "core", "explorer_analysis_filter_summary.js"),
 			"ws": os.path.join(base, "core", "explorer_workspace_state.js"),
 			"events": os.path.join(base, "core", "explorer_events.js"),
 			"adr": os.path.join(
@@ -39,6 +40,7 @@ class TestAccountExplorerCubeNavigation(unittest.TestCase):
 	def test_core_modules_included(self):
 		page = self.src["page"]
 		self.assertIn("explorer_analysis_filters.js", page)
+		self.assertIn("explorer_analysis_filter_summary.js", page)
 		self.assertIn("explorer_drill_graph.js", page)
 		self.assertIn("ExplorerDrillGraph.create_default", page)
 
@@ -214,7 +216,7 @@ class TestAccountExplorerCubeNavigation(unittest.TestCase):
 		self.assertIn("render_filter_summary", block)
 
 	def test_account_filter_chip_uses_key_label(self):
-		af = self.src["af"]
+		af = self.src["af"] + "\n" + self.src["af_summary"]
 		self.assertIn('__("Account Group")', af)
 		self.assertIn("source_axis_label", af)
 		self.assertIn("_lifetime_label", af)

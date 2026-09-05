@@ -98,6 +98,19 @@ def assert_currency_analysis_enabled() -> None:
 		)
 
 
+def assert_inventory_analysis_enabled() -> None:
+	assert_feature_enabled()
+	# Default-on when field not yet migrated: getattr/get_single_value may return None.
+	enabled = frappe.db.get_single_value("Iran Accounting Settings", "inventory_analysis_enabled")
+	if enabled is None:
+		return
+	if not enabled:
+		frappe.throw(
+			_("Inventory analysis is not enabled. Configure Iran Accounting Settings."),
+			frappe.ValidationError,
+		)
+
+
 def assert_saved_views_enabled() -> None:
 	assert_feature_enabled()
 	if not frappe.get_single_value("Iran Accounting Settings", "saved_views_enabled"):

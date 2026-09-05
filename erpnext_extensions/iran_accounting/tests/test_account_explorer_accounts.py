@@ -52,8 +52,15 @@ class TestAccountExplorerAccounts(unittest.TestCase):
 				}
 			)
 			result = api.get_account_summary(payload)
+			# v5.1.1: non-numeric account codes are excluded — never grid __UNCLASSIFIED__.
 			unclassified = [row for row in result["rows"] if row.get("row_key") == VIRTUAL_UNCLASSIFIED_KEY]
-			self.assertTrue(unclassified or result["pagination"]["total_rows"] >= 0)
+			self.assertEqual(unclassified, [])
+			self.assertFalse(
+				any(str(row.get("display_code") or "") == "__UNCLASSIFIED__" for row in result["rows"])
+			)
+			residual = result.get("classification_residual") or {}
+			# Residual may or may not include this account depending on activity in range.
+			self.assertIn("excluded_account_count", residual)
 		finally:
 			frappe.db.set_value("Account", acc.name, "account_number", original)
 			frappe.db.commit()

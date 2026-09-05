@@ -212,8 +212,20 @@ def submit_material_receipt(
 		target=warehouse,
 		company=company,
 		purpose="Material Receipt",
+		do_not_save=True,
+		do_not_submit=True,
 	)
+	frappe.flags.iran_gate_defaults = True
+	apply_stock_entry_site_defaults(se)
+	se.insert()
+	se.submit()
 	return se
+
+
+def _ensure_stock_entry_department(se, company: str) -> None:
+	"""Deprecated alias — use apply_stock_entry_site_defaults under iran_gate_defaults."""
+	frappe.flags.iran_gate_defaults = True
+	apply_stock_entry_site_defaults(se)
 
 
 def submit_opening_stock_reconciliation(
@@ -251,7 +263,13 @@ def submit_material_transfer(
 		target=to_wh,
 		company=company,
 		purpose="Material Transfer",
+		do_not_save=True,
+		do_not_submit=True,
 	)
+	frappe.flags.iran_gate_defaults = True
+	apply_stock_entry_site_defaults(se)
+	se.insert()
+	se.submit()
 	return se
 
 

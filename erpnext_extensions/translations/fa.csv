@@ -47,3 +47,28 @@ Assign for Debt Purchase,واگذاری جهت خرید دین
 Return Debt Purchase Cheque,عودت چک خرید دین
 Debt Purchase Assignment,واگذاری خرید دین
 Debt Purchase Settlement,تسویه خرید دین
+Item Groups,گروه‌های کالا
+Items,کالاها
+Item Group,گروه کالا
+Warehouse,انبار
+Inventory,موجودی انبار
+Balance Qty,مقدار مانده
+Balance Value,ارزش مانده
+In Qty,مقدار ورودی
+Out Qty,مقدار خروجی
+Inventory Account,حساب موجودی
+Stock value by inventory account,ارزش موجودی بر اساس حساب موجودی
+Inventory Account — Stock value by inventory account,حساب موجودی — ارزش موجودی بر اساس حساب موجودی
+Inward Value,ارزش ورودی
+Outward Value,ارزش خروجی
+Stock Movements,گردش موجودی
+Open General Ledger,باز کردن دفتر کل
+Stock value by inventory account (not GL Account),ارزش موجودی بر اساس حساب موجودی (نه حساب دفتر کل)
+General Ledger — not stock valuation,دفتر کل — نه ارزش‌گذاری موجودی
+Stock value — peer of Item (not GL Account turnover),ارزش موجودی — هم‌تراز کالا (نه گردش حساب دفتر کل)
+Stock qty/value — peer of Item Group (not GL Account turnover),مقدار/ارزش موجودی — هم‌تراز گروه کالا (نه گردش حساب دفتر کل)
+Real GL — with Item/Item Group/Warehouse: vouchers related to scoped SLE,دفتر کل واقعی — با فیلتر کالا/گروه/انبار: اسناد مرتبط با حرکات موجودی انتخاب‌شده
+Real GL vouchers — with inventory filters: only vouchers with scoped SLE,اسناد دفتر کل واقعی — با فیلتر موجودی: فقط اسناد دارای حرکت موجودی در محدوده
+Real GL — with inventory filters: documents related to scoped stock movements,دفتر کل واقعی — با فیلتر موجودی: اسناد مرتبط با حرکات موجودی انتخاب‌شده
+Stock valuation — peer of Item Group / Item,ارزش‌گذاری موجودی — هم‌تراز گروه کالا / کالا
+General Ledger — not compared to stock Inward/Outward,دفتر کل — با ارزش ورودی/خروجی موجودی مقایسه نمی‌شود

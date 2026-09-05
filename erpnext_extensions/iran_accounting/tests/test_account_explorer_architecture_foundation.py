@@ -32,6 +32,7 @@ class TestAccountExplorerArchitectureFoundation(unittest.TestCase):
 		hard_limit_modules = {
 			"core/explorer_events.js",
 			"core/explorer_analysis_filters.js",
+			"core/explorer_analysis_filter_summary.js",
 			"core/explorer_drill_graph.js",
 			"core/explorer_store.js",
 			"core/explorer_plugins.js",
@@ -43,6 +44,7 @@ class TestAccountExplorerArchitectureFoundation(unittest.TestCase):
 		for rel in (
 			"core/explorer_events.js",
 			"core/explorer_analysis_filters.js",
+			"core/explorer_analysis_filter_summary.js",
 			"core/explorer_drill_graph.js",
 			"core/explorer_store.js",
 			"core/explorer_plugins.js",
@@ -72,6 +74,7 @@ class TestAccountExplorerArchitectureFoundation(unittest.TestCase):
 		for fragment in (
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_events.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_analysis_filters.js" %}',
+			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_analysis_filter_summary.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_drill_graph.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_workspace_codec.js" %}',
 			'{% include "erpnext_extensions/erpnext_extensions/page/account_explorer/core/explorer_workspace_tokens.js" %}',

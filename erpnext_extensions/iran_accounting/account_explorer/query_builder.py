@@ -6,6 +6,8 @@ import frappe
 from frappe import _
 from frappe.utils.caching import request_cache
 
+from frappe.utils import flt
+
 from erpnext_extensions.iran_accounting.account_explorer.account_hierarchy import (
 	account_matches_configured_level,
 	code_prefix,
@@ -66,11 +68,17 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	scoped_names = spec.included_account_names or []
 
 	measures_by_account = get_account_wise_measures(spec, scoped_names)
+
+	from erpnext_extensions.iran_accounting.account_explorer.measures import row_has_activity
+
 	group_accounts = {name for name in scoped_names if _is_group(accounts, name)}
 	direct_posting_groups = get_accounts_with_direct_gl_postings(spec, group_accounts)
 
 	groups: dict[str, dict] = {}
 	warnings: list[str] = []
+	# v5.1.1: never materialize __UNCLASSIFIED__ as a grid row. Track residual only.
+	classification_residual = zero_measures()
+	excluded_unclassified_accounts: list[dict] = []
 
 	for account_name in scoped_names:
 		row = _row_by_name(accounts, account_name)
@@ -78,19 +86,36 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 		account_measures = measures_by_account.get(account_name, zero_measures())
 
 		if not is_pure_numeric_code(normalized):
-			group_key = VIRTUAL_UNCLASSIFIED_KEY
-		else:
-			prefix = code_prefix(normalized, int(level.code_length))
-			if not prefix:
-				group_key = VIRTUAL_UNCLASSIFIED_KEY
-			else:
-				if not account_matches_configured_level(normalized, configured_lengths):
-					warnings.append(
-						_("Account {0} has a code length that does not match configured levels.").format(
-							account_name
-						)
-					)
-				group_key = make_virtual_prefix_key(int(level.sequence), prefix)
+			reason = "non_numeric_or_missing_account_number"
+			_accumulate_unclassified_residual(
+				classification_residual,
+				excluded_unclassified_accounts,
+				account_name=account_name,
+				account_number=row.get("account_number"),
+				reason=reason,
+				measures=account_measures,
+			)
+			continue
+
+		prefix = code_prefix(normalized, int(level.code_length))
+		if not prefix:
+			_accumulate_unclassified_residual(
+				classification_residual,
+				excluded_unclassified_accounts,
+				account_name=account_name,
+				account_number=row.get("account_number"),
+				reason="empty_code_prefix",
+				measures=account_measures,
+			)
+			continue
+
+		if not account_matches_configured_level(normalized, configured_lengths):
+			warnings.append(
+				_("Account {0} has a code length that does not match configured levels.").format(
+					account_name
+				)
+			)
+		group_key = make_virtual_prefix_key(int(level.sequence), prefix)
 
 		group = groups.setdefault(
 			group_key,
@@ -124,22 +149,93 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	result["warnings"] = sorted(set(warnings))
 	result["level_sequence"] = int(level.sequence)
 	result["level_title"] = level.title
+
+	finalize_measures(classification_residual)
+	result["classification_residual"] = {
+		"excluded_account_count": len(excluded_unclassified_accounts),
+		"excluded_accounts": excluded_unclassified_accounts[:50],
+		"period_debit": flt(classification_residual.get("period_debit")),
+		"period_credit": flt(classification_residual.get("period_credit")),
+		"net_balance": flt(classification_residual.get("net_balance")),
+		"note": (
+			"Accounts with missing/non-numeric account_number are excluded from "
+			"visible Account hierarchy rows and analytical totals (v5.1.1)."
+		),
+	}
+	if excluded_unclassified_accounts and row_has_activity(classification_residual):
+		warnings = list(result.get("warnings") or [])
+		warnings.append(
+			_(
+				"Excluded {0} account(s) with missing or non-numeric account codes "
+				"from Account hierarchy (residual Debit {1} / Credit {2})."
+			).format(
+				len(excluded_unclassified_accounts),
+				flt(classification_residual.get("period_debit")),
+				flt(classification_residual.get("period_credit")),
+			)
+		)
+		result["warnings"] = sorted(set(warnings))
+
+	from erpnext_extensions.iran_accounting.account_explorer.sle_scoped_account import (
+		ACCOUNT_FACT_ENGINE_SLE_SCOPED,
+		select_account_fact_engine,
+		sle_scoped_meta,
+	)
+
+	engine = select_account_fact_engine(spec)
+	result["account_fact_engine"] = engine
+	# Never label Case A amounts as E3 / voucher_scoped / construction.
+	if engine == ACCOUNT_FACT_ENGINE_SLE_SCOPED:
+		meta = sle_scoped_meta(spec)
+		result.update(meta)
+		result["account_axis_engine"] = ACCOUNT_FACT_ENGINE_SLE_SCOPED
+		unmapped_n = int(meta.get("sle_scoped_unmapped_warehouses") or 0)
+		unmapped_val = flt(meta.get("sle_scoped_unmapped_signed_value") or 0)
+		if unmapped_n or unmapped_val:
+			warnings = list(result.get("warnings") or [])
+			warnings.append(
+				_(
+					"Case A: {0} warehouse(s) have scoped stock value with no "
+					"resolvable inventory account (unmapped signed value {1}). "
+					"Item/Item Group totals include this residual; Account "
+					"breakdown shows mapped accounts only."
+				).format(unmapped_n, unmapped_val)
+			)
+			result["warnings"] = warnings
+	else:
+		result["account_axis_engine"] = engine
 	return result
 
 
-def _finalize_group_rows(groups: dict, level, accounts: list[dict], configured_lengths: set[int]) -> None:
-	for group_key, group in groups.items():
-		if group_key == VIRTUAL_UNCLASSIFIED_KEY:
-			group.update(
-				{
-					"row_key": VIRTUAL_UNCLASSIFIED_KEY,
-					"display_code": "__UNCLASSIFIED__",
-					"display_title": _("Unclassified"),
-					"is_virtual_group": 1,
-				}
-			)
-			continue
+def _accumulate_unclassified_residual(
+	residual: dict,
+	excluded: list[dict],
+	*,
+	account_name: str,
+	account_number,
+	reason: str,
+	measures: dict,
+) -> None:
+	from erpnext_extensions.iran_accounting.account_explorer.measures import row_has_activity
 
+	if not row_has_activity(measures):
+		return
+	add_measures(residual, measures)
+	excluded.append(
+		{
+			"account": account_name,
+			"account_number": account_number,
+			"reason": reason,
+			"period_debit": flt(measures.get("period_debit")),
+			"period_credit": flt(measures.get("period_credit")),
+		}
+	)
+
+
+def _finalize_group_rows(groups: dict, level, accounts: list[dict], configured_lengths: set[int]) -> None:
+	# Defense: never leave a materialized unclassified taxonomy row in groups.
+	groups.pop(VIRTUAL_UNCLASSIFIED_KEY, None)
+	for group_key, group in list(groups.items()):
 		parsed = parse_virtual_prefix_key(group_key)
 		if not parsed:
 			continue

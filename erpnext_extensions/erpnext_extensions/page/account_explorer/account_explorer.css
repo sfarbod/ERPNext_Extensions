@@ -423,6 +423,18 @@
 	border-bottom: 1px solid var(--border-color);
 }
 
+.account-explorer-page .ae-measure-family-hint {
+	margin-top: 6px;
+	padding: 4px 6px;
+	font-size: var(--text-sm, 12px);
+	line-height: 1.35;
+	color: var(--text-muted, var(--text-light));
+}
+
+.account-explorer-page .ae-measure-family-hint[data-measure-family="stock"] {
+	color: var(--text-color);
+}
+
 .account-explorer-page .ae-nav-tab {
 	appearance: none;
 	border: 1px solid var(--border-color);
@@ -1610,6 +1622,16 @@ html[dir="rtl"] .account-explorer-page .ae-grid-toolbar-meta {
 	border-radius: var(--border-radius);
 	background: var(--yellow-highlight-color, #fff7d3);
 	border: 1px solid var(--border-color);
+}
+
+.account-explorer-page .ae-construction-banner {
+	background: var(--bg-blue, #eaf3ff);
+	border-color: var(--blue-200, #b7d2f0);
+}
+
+.account-explorer-page .ae-construction-badge {
+	font-weight: 600;
+	margin-bottom: 4px;
 }
 
 .account-explorer-page .ae-warning-item {

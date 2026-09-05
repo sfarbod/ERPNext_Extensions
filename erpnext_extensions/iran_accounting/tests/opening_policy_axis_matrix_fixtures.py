@@ -98,7 +98,11 @@ def _ensure_customer(name: str) -> str:
 		frappe.db.get_value("Customer Group", {"is_group": 0}, "name") or "All Customer Groups"
 	)
 	doc.territory = frappe.db.get_value("Territory", {"is_group": 0}, "name") or "All Territories"
+	# Restore sites may mark regional fields (e.g. tax_id) mandatory + unique.
+	if hasattr(doc, "tax_id") and not doc.tax_id:
+		doc.tax_id = f"AE-{frappe.generate_hash(length=10)}"
 	doc.flags.ignore_permissions = True
+	doc.flags.ignore_mandatory = True
 	doc.insert()
 	return doc.name
 

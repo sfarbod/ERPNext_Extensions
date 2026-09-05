@@ -15,6 +15,9 @@ from erpnext_extensions.iran_accounting.account_explorer.constants import (
 	DETAIL_MODES,
 	DIMENSION_SORTABLE_FIELDS,
 	GL_GROUP_SORTABLE_FIELDS,
+	INVENTORY_ACCOUNT_SORTABLE_FIELDS,
+	ITEM_GROUP_SORTABLE_FIELDS,
+	ITEM_SORTABLE_FIELDS,
 	PARTY_SORTABLE_FIELDS,
 	SORTABLE_FIELDS,
 	UNIFIED_PARTY_SORTABLE_FIELDS,
@@ -28,6 +31,7 @@ from erpnext_extensions.iran_accounting.account_explorer.permissions import (
 	assert_currency_analysis_enabled,
 	assert_dimension_analysis_enabled,
 	assert_feature_enabled,
+	assert_inventory_analysis_enabled,
 	assert_party_analysis_enabled,
 	assert_unified_party_enabled,
 	assert_voucher_analysis_enabled,
@@ -40,6 +44,9 @@ from erpnext_extensions.iran_accounting.account_explorer.schemas import (
 	CurrencyFilter,
 	DimensionScope,
 	DocumentScope,
+	InventoryFilter,
+	ItemGroupScope,
+	ItemScope,
 	PaginationState,
 	PartyScope,
 	StatusFilter,
@@ -168,6 +175,16 @@ def build_status_filter(raw: dict | None, defaults: dict) -> StatusFilter:
 	)
 
 
+def build_inventory_filter(raw: dict | None) -> InventoryFilter:
+	raw = raw or {}
+	return InventoryFilter(
+		item_group=_coerce_filter_value(raw.get("item_group")),
+		item=_coerce_filter_value(raw.get("item")),
+		warehouse=_coerce_filter_value(raw.get("warehouse")),
+		inventory_account=_coerce_filter_value(raw.get("inventory_account")),
+	)
+
+
 def build_document_scope(raw: dict, defaults: dict) -> DocumentScope:
 	if not raw:
 		raise AccountExplorerValidationError(_("document_scope is required."))
@@ -212,6 +229,7 @@ def build_document_scope(raw: dict, defaults: dict) -> DocumentScope:
 		accounting_dimensions=dict(raw.get("accounting_dimensions") or {}),
 		currency=build_currency_filter(raw.get("currency")),
 		status=build_status_filter(status_raw, defaults),
+		inventory=build_inventory_filter(raw.get("inventory")),
 		hide_zero_rows=cint(raw.get("hide_zero_rows", defaults["hide_zero_rows"])),
 	)
 
@@ -264,6 +282,20 @@ def build_unified_party_scope(raw: dict) -> UnifiedPartyScope:
 	)
 
 
+def build_item_group_scope(raw: dict) -> ItemGroupScope:
+	scope_raw = raw.get("item_group_scope") or {}
+	return ItemGroupScope(
+		selected_item_group=scope_raw.get("selected_item_group") or None,
+	)
+
+
+def build_item_scope(raw: dict) -> ItemScope:
+	scope_raw = raw.get("item_scope") or {}
+	return ItemScope(
+		selected_item=scope_raw.get("selected_item") or None,
+	)
+
+
 def build_analysis_context(raw: dict, defaults: dict) -> AnalysisContext:
 	view_axis = raw.get("view_axis") or "account_level"
 	detail_mode = (raw.get("detail_mode") or "summary").lower()
@@ -285,6 +317,8 @@ def build_analysis_context(raw: dict, defaults: dict) -> AnalysisContext:
 		unified_party_scope=build_unified_party_scope(raw),
 		dimension_scope=build_dimension_scope(raw),
 		voucher_scope=build_voucher_scope(raw),
+		item_group_scope=build_item_group_scope(raw),
+		item_scope=build_item_scope(raw),
 		pagination=PaginationState(
 			page=page,
 			page_size=page_size,
@@ -305,6 +339,8 @@ def _default_sort_field(view_axis: str, detail_mode: str = "summary") -> str:
 		return "display_title"
 	if view_axis == "currency":
 		return "currency"
+	if view_axis in {"item", "item_group", "inventory_account"}:
+		return "display_code"
 	return "display_code"
 
 
@@ -321,6 +357,12 @@ def _sortable_fields_for_axis(view_axis: str, detail_mode: str = "summary"):
 		return CURRENCY_SORTABLE_FIELDS
 	if view_axis == "voucher":
 		return VOUCHER_SORTABLE_FIELDS
+	if view_axis == "item_group":
+		return ITEM_GROUP_SORTABLE_FIELDS
+	if view_axis == "item":
+		return ITEM_SORTABLE_FIELDS
+	if view_axis == "inventory_account":
+		return INVENTORY_ACCOUNT_SORTABLE_FIELDS
 	return SORTABLE_FIELDS
 
 
@@ -369,6 +411,8 @@ def AccountExplorerQuerySpec_from_client(
 		validate_dimension_field(analysis.dimension_scope.dimension_type)
 	if view_axis == "currency":
 		assert_currency_analysis_enabled()
+	if view_axis in {"item_group", "item", "inventory_account"}:
+		assert_inventory_analysis_enabled()
 	if view_axis == "voucher" or detail_mode == "grouped_gl":
 		assert_voucher_analysis_enabled()
 	if detail_mode == "grouped_gl":
@@ -387,6 +431,11 @@ def AccountExplorerQuerySpec_from_client(
 	)
 
 	spec.included_account_names = resolve_account_scope(spec)
+	from erpnext_extensions.iran_accounting.account_explorer.inventory_account_scope import (
+		apply_inventory_related_account_scope,
+	)
+
+	apply_inventory_related_account_scope(spec)
 	if spec.unified_party_scope.selected_unified_party:
 		from erpnext_extensions.iran_accounting.account_explorer.unified_party_registry import (
 			get_member_tuples,

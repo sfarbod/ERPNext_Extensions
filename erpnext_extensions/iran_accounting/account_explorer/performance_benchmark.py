@@ -15,7 +15,7 @@ from erpnext_extensions.iran_accounting.account_explorer.query_spec import (
 from erpnext_extensions.iran_accounting.account_explorer.schemas import AccountExplorerQuerySpec
 
 BENCHMARK_SCALES = (100_000, 500_000, 1_000_000)
-BENCHMARK_SCENARIOS = ("account_level", "party", "dimension", "voucher")
+BENCHMARK_SCENARIOS = ("account_level", "party", "dimension", "voucher", "item_group", "item")
 
 INDEX_RECOMMENDATIONS = [
 	{
@@ -94,6 +94,16 @@ def _run_summary_for_spec(spec: AccountExplorerQuerySpec) -> dict:
 		)
 
 		return build_voucher_summary(spec)
+	if axis == "item_group":
+		from erpnext_extensions.iran_accounting.account_explorer.item_group_summary import (
+			build_item_group_summary,
+		)
+
+		return build_item_group_summary(spec)
+	if axis == "item":
+		from erpnext_extensions.iran_accounting.account_explorer.item_summary import build_item_summary
+
+		return build_item_summary(spec)
 	frappe.throw(_("Unsupported benchmark scenario."))
 
 
