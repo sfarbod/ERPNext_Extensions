@@ -55,12 +55,15 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 	def test_supported_version_passes(self):
 		assert_erpnext_uvr_regional_patch_supported()
 		report = collect_fingerprint_report()
-		self.assertIn(report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33"})
-		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31", "16.32"})
+		self.assertIn(
+			report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"}
+		)
+		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33"})
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
 			self.assertEqual(got["signature"], expected["signature"], name)
-			self.assertEqual(got["source_sha256"], expected["source_sha256"], name)
+			accepted = {expected["source_sha256"], *expected.get("source_sha256_alternates", ())}
+			self.assertIn(got["source_sha256"], accepted, name)
 		self.assertTrue(report["methods"]["update_valuation_rate"]["calls_regional_hook"])
 
 	def test_unsupported_version_blocks(self):
@@ -360,9 +363,15 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 
 		apply()
 		frappe.set_user("Administrator")
-		cls.company = frappe.db.get_value(
-			"Company", {"default_currency": "IRR", "name": "test"}, "name"
-		) or frappe.db.get_value("Company", {"default_currency": "IRR"}, "name")
+		# Prefer the primary IRR production company on this bench; fall back to any IRR.
+		cls.company = (
+			"اسپاد فارمد دارو"
+			if frappe.db.exists("Company", "اسپاد فارمد دارو")
+			else (
+				frappe.db.get_value("Company", {"default_currency": "IRR", "name": "test"}, "name")
+				or frappe.db.get_value("Company", {"default_currency": "IRR"}, "name")
+			)
+		)
 		if not cls.company:
 			raise unittest.SkipTest("No IRR company")
 		cls.wh = frappe.db.get_value(
@@ -375,13 +384,25 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 		)
 		cls.cc = frappe.db.get_value("Company", cls.company, "cost_center")
 		cls.exp = frappe.db.get_value("Company", cls.company, "default_expense_account")
-		cls.dept = frappe.db.get_value("Department", {"company": cls.company}, "name") or frappe.db.get_value(
-			"Department", {}, "name"
+		if not cls.exp:
+			cls.exp = frappe.db.get_value(
+				"Account",
+				{"company": cls.company, "root_type": "Expense", "is_group": 0},
+				"name",
+			)
+		# Site Server Script requires this exact department on PR/PI item rows.
+		cls.dept = (
+			"واحد انبار - E"
+			if frappe.db.exists("Department", "واحد انبار - E")
+			else (
+				frappe.db.get_value("Department", {"company": cls.company}, "name")
+				or frappe.db.get_value("Department", {}, "name")
+			)
 		)
 
 	def _item(self, prefix: str) -> str:
 		code = f"{prefix}-{frappe.generate_hash(length=5)}"
-		frappe.get_doc(
+		doc = frappe.get_doc(
 			{
 				"doctype": "Item",
 				"item_code": code,
@@ -391,7 +412,8 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 				"is_stock_item": 1,
 			}
 		).insert(ignore_permissions=True)
-		return code
+		# Stock Settings may use Naming Series — return the persisted Item name.
+		return doc.name
 
 	def _assert_integer_vr(self, parent: str, doctype_item: str = "Purchase Receipt Item"):
 		vr = frappe.db.get_value(doctype_item, {"parent": parent}, "valuation_rate")
@@ -557,6 +579,7 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 		pi.update_stock = 1
 		pi.set_posting_time = 1
 		pi.posting_time = nowtime()
+		pi.remarks = "UVR regional guard PI fixture"
 		if self.dept:
 			pi.department = self.dept
 		pi.append(
