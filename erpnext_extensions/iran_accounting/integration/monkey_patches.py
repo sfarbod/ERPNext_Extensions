@@ -44,31 +44,39 @@ def _patch_buying_regional_valuation_rate():
 	update-stock — not an LCV-specific workaround. Reuses
 	align_purchase_receipt_item_amounts (no duplicated rounding).
 
-	Fail-closed: assert_erpnext_uvr_regional_patch_supported() must pass before
-	install (same architecture as riv_rate_guard / stock-ledger engine).
+	Fail-closed + idempotent (5.1.3):
+	- Never store an ``erpnext_extensions`` callable as the upstream original.
+	- HEALTHY → no-op; FLAG_LOST → restore flag only; CLEAN → install.
+	- POISONED / LIVE_IRAN_NO_SAVED / UNKNOWN → fail closed unless a separately
+	  proven vanilla ERPNext callable is resolved first.
 	"""
 	import erpnext.controllers.buying_controller as buying_controller
 
 	from erpnext_extensions.iran_accounting.domain.uvr_regional_guard import (
+		UVRPatchState,
 		assert_erpnext_uvr_regional_patch_supported,
+		classify_uvr_patch_state,
+		ensure_uvr_regional_patch_markers,
+		resolve_vanilla_uvr_regional_original,
 	)
-
-	# Fail-closed upgrade guard before (re)installing the regional UVR binding.
-	assert_erpnext_uvr_regional_patch_supported()
-
-	if getattr(buying_controller, "_iran_patched_regional_valuation_rate", False):
-		return
-
 	from erpnext_extensions.iran_accounting.buying_selling import (
 		update_regional_item_valuation_rate as iran_update_regional_item_valuation_rate,
 	)
 
-	buying_controller._iran_original_regional_valuation_rate = (
-		buying_controller.update_regional_item_valuation_rate
-	)
-	buying_controller.update_regional_item_valuation_rate = iran_update_regional_item_valuation_rate
-	buying_controller._iran_patched_regional_valuation_rate = True
+	# Fail-closed upgrade guard (versions + vanilla fingerprints). Resolves a
+	# proven erpnext.* original and refuses to fingerprint the Iran override.
+	assert_erpnext_uvr_regional_patch_supported()
 
+	state = classify_uvr_patch_state(buying_controller)
+	if state == UVRPatchState.HEALTHY:
+		return
+
+	vanilla = resolve_vanilla_uvr_regional_original(buying_controller)
+	ensure_uvr_regional_patch_markers(
+		buying_controller,
+		vanilla=vanilla,
+		iran_fn=iran_update_regional_item_valuation_rate,
+	)
 
 def _patch_stock_entry_mr_alternative():
 	from erpnext_extensions.stock_extensions.mr_alternative_item import apply_patch

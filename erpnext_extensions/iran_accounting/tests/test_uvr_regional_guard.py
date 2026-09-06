@@ -15,25 +15,62 @@ import frappe
 from frappe.utils import flt, nowdate, nowtime
 
 from erpnext_extensions.iran_accounting.domain.uvr_regional_guard import (
+	UVRPatchState,
+	_ATTR_FLAG,
+	_ATTR_LIVE,
+	_ATTR_SAVED,
 	_FN_FINGERPRINTS,
 	assert_erpnext_uvr_regional_patch_supported,
+	classify_uvr_patch_state,
 	collect_fingerprint_report,
+	describe_uvr_regional_callable,
+	is_iran_uvr_override,
 	normalize_callable_signature,
 	normalize_function_source,
+	resolve_vanilla_uvr_regional_original,
 	source_sha256,
+	validate_vanilla_uvr_regional,
 )
+
+
+_VANILLA_REGIONAL_CACHE = None
+
+
+def _capture_vanilla_regional():
+	"""Return a proven vanilla ERPNext regional stub for test isolation."""
+	global _VANILLA_REGIONAL_CACHE
+	import erpnext.controllers.buying_controller as buying_controller
+
+	if _VANILLA_REGIONAL_CACHE is not None:
+		try:
+			validate_vanilla_uvr_regional(_VANILLA_REGIONAL_CACHE, role="cached vanilla")
+			return _VANILLA_REGIONAL_CACHE
+		except RuntimeError:
+			_VANILLA_REGIONAL_CACHE = None
+
+	saved = getattr(buying_controller, _ATTR_SAVED, None)
+	live = getattr(buying_controller, _ATTR_LIVE, None)
+	for candidate in (saved, live):
+		if candidate is None or is_iran_uvr_override(candidate):
+			continue
+		try:
+			validate_vanilla_uvr_regional(candidate, role="test capture")
+			_VANILLA_REGIONAL_CACHE = candidate
+			return candidate
+		except RuntimeError:
+			continue
+	raise RuntimeError("vanilla ERPNext update_regional_item_valuation_rate unavailable for tests")
 
 
 def _reset_uvr_patch():
 	"""Restore vanilla regional symbol and clear install flag (test isolation)."""
 	import erpnext.controllers.buying_controller as buying_controller
 
-	saved = getattr(buying_controller, "_iran_original_regional_valuation_rate", None)
-	if saved is not None:
-		buying_controller.update_regional_item_valuation_rate = saved
+	vanilla = _capture_vanilla_regional()
+	buying_controller.update_regional_item_valuation_rate = vanilla
 	buying_controller._iran_patched_regional_valuation_rate = False
-	if hasattr(buying_controller, "_iran_original_regional_valuation_rate"):
-		delattr(buying_controller, "_iran_original_regional_valuation_rate")
+	if hasattr(buying_controller, _ATTR_SAVED):
+		delattr(buying_controller, _ATTR_SAVED)
 
 
 def _ensure_uvr_patch():
@@ -636,6 +673,177 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 		self.assertEqual(doc.items[0].valuation_rate, 12.345)
 
 
+class TestUvrPatchStateHardening(unittest.TestCase):
+	"""5.1.3 — never fingerprint / save Iran override as vanilla ERPNext upstream."""
+
+	def setUp(self):
+		_reset_uvr_patch()
+		self.vanilla = _capture_vanilla_regional()
+		from erpnext_extensions.iran_accounting.buying_selling import (
+			update_regional_item_valuation_rate as iran_fn,
+		)
+
+		self.iran = iran_fn
+		self.iran_hash = source_sha256(iran_fn)
+		self.vanilla_hash = _FN_FINGERPRINTS["update_regional_item_valuation_rate"]["source_sha256"]
+		self.assertEqual(self.iran_hash, "753002f193c9f713af7174bbb4882859d1f6c08b4a045b1fc8c59966bd666b93")
+		self.assertEqual(self.vanilla_hash, "0148e05ecb21260fd810be4fd884e83947cc1df9899ced741c6b979acac065e4")
+
+	def tearDown(self):
+		_reset_uvr_patch()
+		try:
+			_ensure_uvr_patch()
+		except Exception:
+			pass
+
+	def _bc(self):
+		import erpnext.controllers.buying_controller as buying_controller
+
+		return buying_controller
+
+	def test_clean_vanilla_install(self):
+		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
+			_patch_buying_regional_valuation_rate,
+		)
+
+		bc = self._bc()
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.CLEAN)
+		_patch_buying_regional_valuation_rate()
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.HEALTHY)
+		self.assertTrue(is_iran_uvr_override(bc.update_regional_item_valuation_rate))
+		self.assertEqual(source_sha256(bc._iran_original_regional_valuation_rate), self.vanilla_hash)
+		self.assertIn("allow_regional", normalize_function_source(bc._iran_original_regional_valuation_rate))
+
+	def test_install_called_twice_idempotent(self):
+		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
+			_patch_buying_regional_valuation_rate,
+		)
+
+		bc = self._bc()
+		_patch_buying_regional_valuation_rate()
+		first_live = bc.update_regional_item_valuation_rate
+		first_saved = bc._iran_original_regional_valuation_rate
+		_patch_buying_regional_valuation_rate()
+		self.assertIs(bc.update_regional_item_valuation_rate, first_live)
+		self.assertIs(bc._iran_original_regional_valuation_rate, first_saved)
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.HEALTHY)
+
+	def test_flag_lost_preserves_saved_vanilla(self):
+		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
+			_patch_buying_regional_valuation_rate,
+		)
+
+		bc = self._bc()
+		_patch_buying_regional_valuation_rate()
+		saved = bc._iran_original_regional_valuation_rate
+		bc._iran_patched_regional_valuation_rate = False
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.FLAG_LOST)
+		_patch_buying_regional_valuation_rate()
+		self.assertTrue(bc._iran_patched_regional_valuation_rate)
+		self.assertIs(bc._iran_original_regional_valuation_rate, saved)
+		self.assertEqual(source_sha256(bc._iran_original_regional_valuation_rate), self.vanilla_hash)
+		self.assertTrue(is_iran_uvr_override(bc.update_regional_item_valuation_rate))
+
+	def test_poisoned_original_fail_closed_exact_production_error(self):
+		"""Reproduce production failure mode; must NOT fingerprint Iran as ERPNext."""
+		bc = self._bc()
+		bc.update_regional_item_valuation_rate = self.iran
+		bc._iran_original_regional_valuation_rate = self.iran
+		bc._iran_patched_regional_valuation_rate = True
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.POISONED_ORIGINAL)
+
+		with self.assertRaises(RuntimeError) as ctx:
+			assert_erpnext_uvr_regional_patch_supported()
+		msg = str(ctx.exception)
+		self.assertIn("Iran override", msg)
+		self.assertNotIn(self.iran_hash, msg)
+		self.assertNotIn("missing required token 'allow_regional'", msg.lower())
+
+		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
+			_patch_buying_regional_valuation_rate,
+		)
+
+		with self.assertRaises(RuntimeError) as ctx2:
+			_patch_buying_regional_valuation_rate()
+		self.assertIn("Iran override", str(ctx2.exception))
+		# Must not have saved Iran as vanilla during the failed attempt.
+		self.assertTrue(is_iran_uvr_override(bc.update_regional_item_valuation_rate))
+
+	def test_live_iran_no_saved_must_not_save_iran_as_vanilla(self):
+		bc = self._bc()
+		bc.update_regional_item_valuation_rate = self.iran
+		if hasattr(bc, _ATTR_SAVED):
+			delattr(bc, _ATTR_SAVED)
+		bc._iran_patched_regional_valuation_rate = False
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.LIVE_IRAN_NO_SAVED)
+
+		with self.assertRaises(RuntimeError) as ctx:
+			resolve_vanilla_uvr_regional_original(bc)
+		self.assertIn("Iran override", str(ctx.exception))
+
+		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
+			_patch_buying_regional_valuation_rate,
+		)
+
+		with self.assertRaises(RuntimeError):
+			_patch_buying_regional_valuation_rate()
+		# Still no saved Iran original
+		saved = getattr(bc, _ATTR_SAVED, None)
+		if saved is not None:
+			self.assertFalse(is_iran_uvr_override(saved))
+
+	def test_poisoned_saved_recovers_when_live_vanilla(self):
+		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
+			_patch_buying_regional_valuation_rate,
+		)
+
+		bc = self._bc()
+		bc.update_regional_item_valuation_rate = self.vanilla
+		bc._iran_original_regional_valuation_rate = self.iran
+		bc._iran_patched_regional_valuation_rate = False
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.POISONED_ORIGINAL)
+		_patch_buying_regional_valuation_rate()
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.HEALTHY)
+		self.assertEqual(source_sha256(bc._iran_original_regional_valuation_rate), self.vanilla_hash)
+		self.assertTrue(is_iran_uvr_override(bc.update_regional_item_valuation_rate))
+
+	def test_unknown_third_party_fail_closed(self):
+		bc = self._bc()
+
+		def foreign(doc):
+			pass
+
+		foreign.__module__ = "some_other_app.overrides"
+		foreign.__name__ = "update_regional_item_valuation_rate"
+		bc.update_regional_item_valuation_rate = foreign
+		if hasattr(bc, _ATTR_SAVED):
+			delattr(bc, _ATTR_SAVED)
+		bc._iran_patched_regional_valuation_rate = False
+		self.assertEqual(classify_uvr_patch_state(bc), UVRPatchState.UNKNOWN_THIRD_PARTY)
+		with self.assertRaises(RuntimeError) as ctx:
+			assert_erpnext_uvr_regional_patch_supported()
+		self.assertIn("third-party", str(ctx.exception).lower())
+
+	def test_missing_allow_regional_invariant_blocks(self):
+		bc = self._bc()
+
+		def plain(doc):
+			pass
+
+		plain.__module__ = "erpnext.controllers.buying_controller"
+		plain.__name__ = "update_regional_item_valuation_rate"
+		with self.assertRaises(RuntimeError) as ctx:
+			validate_vanilla_uvr_regional(plain, role="synthetic")
+		msg = str(ctx.exception).lower()
+		self.assertTrue("allow_regional" in msg or "fingerprint" in msg or "contract failed" in msg)
+
+	def test_iran_override_never_validates_as_vanilla(self):
+		with self.assertRaises(RuntimeError) as ctx:
+			validate_vanilla_uvr_regional(self.iran, role="probe")
+		self.assertIn("Iran override", str(ctx.exception))
+		self.assertNotIn(self.iran_hash, str(ctx.exception))
+
+
 def run_uvr_regional_guard_suite():
 	from erpnext_extensions.iran_accounting.integration.bootstrap import apply
 
@@ -643,6 +851,9 @@ def run_uvr_regional_guard_suite():
 	suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestUvrRegionalGuardUnit)
 	suite.addTests(
 		unittest.defaultTestLoader.loadTestsFromTestCase(TestUvrFingerprintAnnotationInsensitive)
+	)
+	suite.addTests(
+		unittest.defaultTestLoader.loadTestsFromTestCase(TestUvrPatchStateHardening)
 	)
 	suite.addTests(
 		unittest.defaultTestLoader.loadTestsFromTestCase(TestUvrRegionalGuardIntegration)
