@@ -192,8 +192,32 @@ def _format_finance_block_message(
 	return "\n".join(parts)
 
 
+def _skip_prepare_over_allocation_gate(doc: Document) -> bool:
+	"""v5.1.4 — skip ONLY prepare over-allocation (allocated > live outstanding).
+
+	Still stamps live outstanding. Never skips cancelled/company/required-PI checks.
+	Never skips Finance Approve readiness.
+
+	Allowed skip paths:
+	1. PM Clearance Return for Correction (``pm_return_for_correction`` flag).
+	2. Pending remark-only save confirmed by ``only_remark_changed_while_pending``.
+	"""
+	if getattr(frappe.flags, "pm_return_for_correction", False):
+		return True
+	# Approve / other workflow actions must still hit the over-allocation gate.
+	if getattr(frappe.flags, "in_pm_workflow_apply", False):
+		return False
+	from erpnext_extensions.petty_management.services.draft_approval_guards import (
+		is_pending_approval_workflow,
+		only_remark_changed_while_pending,
+	)
+
+	return bool(is_pending_approval_workflow(doc) and only_remark_changed_while_pending(doc))
+
+
 def validate_purchase_invoices_for_prepare(doc: Document) -> None:
 	"""Allow Draft + Submitted PIs; block Cancelled. Stamp informational snapshot only."""
+	skip_over_alloc = _skip_prepare_over_allocation_gate(doc)
 	for row in doc.get("details") or []:
 		if (row.settlement_type or SETTLEMENT_PI).strip() != SETTLEMENT_PI:
 			continue
@@ -234,7 +258,7 @@ def validate_purchase_invoices_for_prepare(doc: Document) -> None:
 				row.allocated_amount = ceiling
 			if flt(row.allocated_amount) <= 0:
 				frappe.throw(_("Row {0}: Allocated Amount must be greater than zero.").format(row.idx))
-			if flt(row.allocated_amount) > ceiling + EPSILON:
+			if not skip_over_alloc and flt(row.allocated_amount) > ceiling + EPSILON:
 				frappe.throw(
 					_(
 						"Row {0}: allocated amount cannot exceed Draft Purchase Invoice grand total ({1})."
@@ -242,15 +266,19 @@ def validate_purchase_invoices_for_prepare(doc: Document) -> None:
 				)
 		else:
 			outstanding = flt(pi.outstanding_amount)
-			if outstanding <= 0:
-				frappe.throw(
-					_("Row {0}: Purchase Invoice has no outstanding amount to settle.").format(row.idx)
-				)
+			# Always stamp live outstanding for UI / subsequent gates.
 			row.outstanding_amount = outstanding
 			if flt(row.allocated_amount) <= 0:
 				row.allocated_amount = outstanding
 			if flt(row.allocated_amount) <= 0:
 				frappe.throw(_("Row {0}: Allocated Amount must be greater than zero.").format(row.idx))
+			# Over-allocation family only (allocated vs live outstanding / zero ceiling).
+			if skip_over_alloc:
+				continue
+			if outstanding <= 0:
+				frappe.throw(
+					_("Row {0}: Purchase Invoice has no outstanding amount to settle.").format(row.idx)
+				)
 			if flt(row.allocated_amount) > outstanding + EPSILON:
 				frappe.throw(
 					_("Row {0}: allocated amount cannot exceed Purchase Invoice outstanding ({1}).").format(
