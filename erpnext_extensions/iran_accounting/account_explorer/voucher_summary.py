@@ -147,6 +147,9 @@ def iter_voucher_summary_pages(spec: AccountExplorerQuerySpec, *, page_size: int
 
 	Materializes the scoped GROUP BY once into a TEMPORARY TABLE, then pages
 	with LIMIT/OFFSET so GL is not re-aggregated per export page.
+
+	Note: UI enrichment path — not for bulk CSV/XLSX export. Use
+	``iter_voucher_export_batches`` for large exports (no OFFSET N+1, no metadata).
 	"""
 	page_size = max(cint(page_size) or 500, 1)
 	table = _create_scoped_voucher_temp_table(spec)
@@ -181,6 +184,58 @@ def iter_voucher_summary_pages(spec: AccountExplorerQuerySpec, *, page_size: int
 		finally:
 			spec.pagination.page = original_page
 			spec.pagination.page_size = original_size
+	finally:
+		frappe.db.sql(f"drop temporary table if exists `{table}`")
+
+
+def iter_voucher_export_batches(spec: AccountExplorerQuerySpec, *, batch_size: int = 10000):
+	"""Lean bulk-export iterator: one GROUP BY temp table, keyset batches, no UI enrichment.
+
+	Yields ``(tuple_rows, totals, total_rows)`` where each tuple is::
+
+	    (posting_date, voucher_type, voucher_no, scoped_debit, scoped_credit)
+
+	Export columns only — no party / voucher-title / full-voucher lookups.
+	Uses keyset pagination (not OFFSET) so SQL count stays O(batches), not O(rows).
+	"""
+	batch_size = max(cint(batch_size) or 10000, 1)
+	table = _create_scoped_voucher_temp_table(spec)
+	try:
+		totals, total_rows = _totals_from_temp_table(table)
+		if total_rows == 0:
+			yield (), totals, 0
+			return
+
+		# Fixed export order — independent of UI sort (stable, keyset-friendly).
+		last = None
+		while True:
+			if last is None:
+				rows = frappe.db.sql(
+					f"""
+					select posting_date, voucher_type, voucher_no, scoped_debit, scoped_credit
+					from `{table}`
+					order by posting_date asc, voucher_type asc, voucher_no asc
+					limit {batch_size}
+					"""
+				)
+			else:
+				rows = frappe.db.sql(
+					f"""
+					select posting_date, voucher_type, voucher_no, scoped_debit, scoped_credit
+					from `{table}`
+					where (posting_date, voucher_type, voucher_no) > (%s, %s, %s)
+					order by posting_date asc, voucher_type asc, voucher_no asc
+					limit {batch_size}
+					""",
+					last,
+				)
+			if not rows:
+				break
+			yield rows, totals, total_rows
+			tail = rows[-1]
+			last = (tail[0], tail[1], tail[2])
+			if len(rows) < batch_size:
+				break
 	finally:
 		frappe.db.sql(f"drop temporary table if exists `{table}`")
 

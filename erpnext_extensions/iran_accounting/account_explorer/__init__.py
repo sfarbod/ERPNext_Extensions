@@ -190,6 +190,12 @@ def export_account_explorer(payload=None, file_format="csv", force_sync=0):
 
 
 @frappe.whitelist()
+def get_account_explorer_export_job_status(job_id=None):
+	from erpnext_extensions.iran_accounting.account_explorer.export import get_export_job_status
+
+	return get_export_job_status(job_id)
+
+@frappe.whitelist()
 def get_account_explorer_diagnostics(company=None):
 	from erpnext_extensions.iran_accounting.account_explorer.diagnostics import run_account_explorer_diagnostics
 

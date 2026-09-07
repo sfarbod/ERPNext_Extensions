@@ -122,6 +122,16 @@ export const SUITE_REGISTRY = [
       "iran_accounting/e2e/playwright_account_explorer_synthetic_rows.mjs",
     tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
   },
+  {
+    script:
+      "iran_accounting/e2e/playwright_account_explorer_export_concurrency.mjs",
+    tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
+  },
+  {
+    script:
+      "iran_accounting/e2e/playwright_account_explorer_export_e2e.mjs",
+    tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
+  },
 ];
 
 export function registryByScript() {

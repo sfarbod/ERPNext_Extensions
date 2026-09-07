@@ -45,11 +45,14 @@ def preparing_response(
 	accounting_revision: int,
 	message: str | None = None,
 ) -> dict:
+	from erpnext_extensions.iran_accounting.account_explorer.queue_policy import AE_PREPARED_QUEUE
+
 	return {
 		"status": "preparing",
 		"job_id": job_id,
 		"fingerprint": fingerprint,
 		"state": state,
+		"queue": AE_PREPARED_QUEUE,
 		"accounting_revision": accounting_revision,
 		"message": message or frappe._("Preparing Account Explorer report…"),
 		"rows": [],
@@ -75,6 +78,22 @@ def resolve_prepared_or_enqueue(
 		artifact = _load_artifact(existing)
 		if artifact and cint(artifact.get("accounting_revision")) == revision:
 			return _present_artifact(spec, columns, artifact, response_builder)
+
+	if existing and existing.status == "Error" and cint(existing.accounting_revision) == revision:
+		return {
+			"status": "Error",
+			"state": "Error",
+			"job_id": existing.name,
+			"fingerprint": fingerprint,
+			"accounting_revision": revision,
+			"message": existing.error_message
+			or frappe._("Account Explorer preparation failed. Please try again."),
+			"error_message": existing.error_message,
+			"rows": [],
+			"totals": {},
+			"pagination": {"page": 1, "page_size": 50, "total_rows": 0, "has_next": False},
+			"warnings": [],
+		}
 
 	if existing and existing.status in ("Queued", "Started") and cint(existing.accounting_revision) == revision:
 		# Poll path: ensure the worker job still exists (enqueue_after_commit can be lost).
@@ -421,6 +440,12 @@ def _enqueue_or_inline(job_name: str, payload: Any) -> None:
 		build_account_explorer_prepared_result(job_name, payload)
 		return
 
+	from erpnext_extensions.iran_accounting.account_explorer.queue_policy import (
+		assert_queues_isolated,
+		prepared_enqueue_kwargs,
+	)
+
+	assert_queues_isolated()
 	# Persist Queued row before worker starts; do not rely on after-commit hooks.
 	frappe.db.commit()
 	_delete_stale_rq_job(job_name)
@@ -429,12 +454,12 @@ def _enqueue_or_inline(job_name: str, payload: Any) -> None:
 		# prepared-doc name that way or the worker never receives it (TypeError).
 		frappe.enqueue(
 			"erpnext_extensions.iran_accounting.account_explorer.background_jobs.build_account_explorer_prepared_result",
-			queue="long",
-			timeout=900,
-			job_id=_rq_job_id(job_name).split("||", 1)[-1],
-			prepared_result_name=job_name,
-			payload=payload,
-			enqueue_after_commit=False,
+			**prepared_enqueue_kwargs(
+				job_id=_rq_job_id(job_name).split("||", 1)[-1],
+				prepared_result_name=job_name,
+				payload=payload,
+				enqueue_after_commit=False,
+			),
 		)
 	except Exception:
 		# DuplicateJobError or redis blip: fall back to inline so UI cannot hang forever.
