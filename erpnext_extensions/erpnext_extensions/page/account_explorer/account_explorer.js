@@ -404,6 +404,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.grid_render_generation = 0;
 		this._summary_loading_generation = null;
 		this._summary_refresh_tail = Promise.resolve();
+		this._export_enqueue_inflight = false;
+		this._export_realtime_bound = false;
+		this._export_jobs = {};
 		this._last_summary_validation = null;
 		this.filter_panel_open = false;
 		this.filter_controls = {};
@@ -1861,6 +1864,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.$export_btn.attr("title", __("Export is disabled in Iran Accounting Settings."));
 		}
 
+		this.$export_status = $(
+			'<div class="ae-export-status" role="status" aria-live="polite" style="display:none;margin-inline-start:8px;align-items:center;gap:8px;"></div>'
+		).appendTo($parent);
+
 		const $menu = $('<ul class="dropdown-menu dropdown-menu-right ae-export-menu"></ul>').appendTo($group);
 		["csv", "xlsx"].forEach((format) => {
 			$("<li>")
@@ -1907,14 +1914,51 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const total_rows = cint(this.pagination?.total_rows || 0);
 
 		if (total_rows > threshold) {
+			// Export enqueue must never claim summary loading / refresh tail / global spinner.
+			if (this._export_enqueue_inflight) {
+				frappe.show_alert({
+					message: __("Export is already being queued…"),
+					indicator: "orange",
+				});
+				return;
+			}
+			this._export_enqueue_inflight = true;
+			this.$export_btn?.prop("disabled", true);
 			frappe.call({
 				method: `${this.api_base}.export_account_explorer`,
 				args,
-				freeze: true,
-				freeze_message: __("Queuing export..."),
+				// Desk freeze would block navigation; keep export UI-local only.
+				freeze: false,
 				callback: (r) => {
-					const message = r.message?.message || __("Export queued in background.");
-					frappe.msgprint(message);
+					const msg = r.message || {};
+					frappe.show_alert({
+						message: msg.message || __("Export is being prepared."),
+						indicator: "blue",
+					});
+					this._set_export_status_ui({
+						status: "queued",
+						job_id: msg.job_id,
+						total_rows: msg.total_rows,
+					});
+					if (msg.job_id) {
+						this._track_export_job(msg.job_id, {
+							total_rows: msg.total_rows,
+							queue: msg.queue,
+						});
+					}
+				},
+				error: () => {
+					frappe.show_alert({
+						message: __("Unable to queue Account Explorer export."),
+						indicator: "red",
+					});
+					this._set_export_status_ui({ status: "failed" });
+				},
+				always: () => {
+					this._export_enqueue_inflight = false;
+					if (this.$export_btn?.length) {
+						this.$export_btn.prop("disabled", !cint(this.metadata?.export_enabled));
+					}
 				},
 			});
 			return;
@@ -1925,6 +1969,161 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		// via open_url_post (which would navigate the browser to the raw API response).
 		args.force_sync = 1;
 		open_url_post(`/api/method/${this.api_base}.export_account_explorer`, args);
+	}
+
+	_set_export_status_ui(state = {}) {
+		if (!this.$export_status?.length) {
+			return;
+		}
+		const status = state.status || "queued";
+		const phase = state.phase;
+		let label = __("Export is being prepared.");
+		if (status === "queued") {
+			label = __("Export queued…");
+		} else if (status === "running") {
+			if (phase === "writing_csv" || phase === "writing_xlsx") {
+				label = __("Writing export…");
+			} else if (phase === "saving_file") {
+				label = __("Saving file…");
+			} else if (phase === "preparing_rows") {
+				label = __("Preparing rows…");
+			} else {
+				label = __("Export running…");
+			}
+			if (state.written && state.total_rows) {
+				label += ` (${cint(state.written)} / ${cint(state.total_rows)})`;
+			}
+		} else if (status === "ready") {
+			label = __("Export ready.");
+		} else if (status === "failed") {
+			label = state.error || __("Export failed.");
+		}
+
+		this.$export_status.empty().css("display", "inline-flex");
+		$("<span class='ae-export-status__text'>").text(label).appendTo(this.$export_status);
+		if (status === "ready" && state.file_url) {
+			const $btn = $("<button type='button' class='btn btn-primary btn-xs ae-export-download-btn'>")
+				.text(__("Download Export"))
+				.on("click", () => {
+					window.open(state.file_url, "_blank");
+				});
+			this.$export_status.append($btn);
+		}
+	}
+
+	_ensure_export_realtime_listener() {
+		if (this._export_realtime_bound) {
+			return;
+		}
+		this._export_realtime_bound = true;
+		frappe.realtime.on("account_explorer_export_ready", (data) => {
+			this._on_export_ready(data || {});
+		});
+		frappe.realtime.on("account_explorer_export_progress", (data) => {
+			const payload = data || {};
+			if (payload.phase === "ready" && payload.file_url) {
+				this._on_export_ready(payload);
+				return;
+			}
+			this._set_export_status_ui({
+				status: "running",
+				phase: payload.phase,
+				written: payload.written,
+				total_rows: payload.total_rows,
+				job_id: payload.job_id,
+			});
+		});
+	}
+
+	_track_export_job(job_id, meta = {}) {
+		this._ensure_export_realtime_listener();
+		this._export_jobs = this._export_jobs || {};
+		this._export_jobs[job_id] = {
+			job_id,
+			status: "queued",
+			started_at: Date.now(),
+			...meta,
+		};
+		const poll = () => {
+			const job = this._export_jobs?.[job_id];
+			if (!job || job.status === "ready" || job.status === "failed") {
+				return;
+			}
+			frappe.call({
+				method: `${this.api_base}.get_account_explorer_export_job_status`,
+				args: { job_id },
+				freeze: false,
+				callback: (r) => {
+					const st = r.message || {};
+					if (!this._export_jobs?.[job_id]) {
+						return;
+					}
+					const ui = st.status || st.rq_status;
+					this._export_jobs[job_id].status = ui;
+					if ((ui === "ready" || ui === "finished") && st.file_url) {
+						this._on_export_ready({ ...st, job_id });
+						return;
+					}
+					if (ui === "failed") {
+						this._set_export_status_ui({
+							status: "failed",
+							error: st.error,
+							job_id,
+						});
+						frappe.show_alert({
+							message:
+								st.error ||
+								__("Account Explorer export failed. Please try again."),
+							indicator: "red",
+						});
+						return;
+					}
+					this._set_export_status_ui({
+						status: ui === "queued" ? "queued" : "running",
+						job_id,
+						total_rows: st.total_rows || job.total_rows,
+					});
+					const elapsed = Date.now() - (job.started_at || Date.now());
+					if (elapsed < 15 * 60 * 1000) {
+						setTimeout(poll, Math.min(4000, 800 + elapsed / 20));
+					}
+				},
+				error: () => {
+					setTimeout(poll, 4000);
+				},
+			});
+		};
+		setTimeout(poll, 1000);
+	}
+
+	_on_export_ready(data) {
+		const file_url = data.file_url;
+		const filename = data.filename || data.file_name || __("export file");
+		if (!file_url) {
+			return;
+		}
+		if (data.job_id && this._export_jobs?.[data.job_id]) {
+			this._export_jobs[data.job_id].status = "ready";
+			this._export_jobs[data.job_id].file_url = file_url;
+		}
+		this._set_export_status_ui({
+			status: "ready",
+			file_url,
+			filename,
+			job_id: data.job_id,
+			total_rows: data.total_rows || data.row_count,
+		});
+		const safe_name = frappe.utils.escape_html(filename);
+		const safe_url = frappe.utils.escape_html(file_url);
+		frappe.msgprint({
+			title: __("Export completed"),
+			indicator: "green",
+			message:
+				__("Account Explorer export is ready:") +
+				` <b>${safe_name}</b><br><a class="ae-export-download-link" href="${safe_url}" target="_blank" rel="noopener">${__(
+					"Download Export"
+				)}</a>`,
+		});
 	}
 
 	toggle_filter_panel(force_open = null) {
@@ -4516,7 +4715,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const payload = JSON.stringify(this.build_payload());
 		const method = this.get_summary_method();
 		const poll_started = performance.now();
-		const max_wait_ms = 10 * 60 * 1000;
+		// Bounded poll: fail loudly and release loading rather than spinning indefinitely.
+		const max_wait_ms = 2 * 60 * 1000;
 		let attempt = 0;
 		this._trace_summary_loading("api_fetch_start", generation);
 		while (true) {
@@ -4524,15 +4724,31 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				this._trace_summary_loading("api_fetch_stale", generation);
 				return null;
 			}
-			const r = await frappe.call({
-				method,
-				args: { payload },
-			});
+			let r;
+			try {
+				r = await frappe.call({
+					method,
+					args: { payload },
+				});
+			} catch (err) {
+				if (this._is_stale_grid_render(generation)) {
+					this._trace_summary_loading("api_fetch_stale_after_error", generation);
+					return null;
+				}
+				throw err;
+			}
 			if (this._is_stale_grid_render(generation)) {
 				this._trace_summary_loading("api_fetch_stale", generation);
 				return null;
 			}
 			const data = r.message || {};
+			if (data.status === "Error" || data.state === "Error") {
+				const err = new Error(
+					data.message || data.error_message || __("Account Explorer preparation failed.")
+				);
+				err.ae_prepared_error = true;
+				throw err;
+			}
 			if (data.status !== "preparing") {
 				this._summary_preparing_state = null;
 				this._trace_summary_loading(
@@ -4542,6 +4758,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 						prepared: data.prepared || 0,
 						row_count: (data.rows || []).length,
 						total_rows: data.pagination?.total_rows ?? null,
+						queue: data.queue || null,
 					}
 				);
 				return data;
@@ -4550,15 +4767,19 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				this._trace_summary_loading("prepared_polling_start", generation, {
 					prepared_state: data.state || "Queued",
 					job_id: data.job_id || null,
+					queue: data.queue || null,
 				});
 			}
 			this._set_preparing_loading_state({
 				state: data.state || "Queued",
 				job_id: data.job_id,
 				fingerprint: data.fingerprint,
+				queue: data.queue || null,
 			});
 			if (performance.now() - poll_started > max_wait_ms) {
-				frappe.throw(__("Account Explorer preparation timed out. Please try again."));
+				const err = new Error(__("Account Explorer preparation timed out. Please try again."));
+				err.ae_prepared_timeout = true;
+				throw err;
 			}
 			attempt += 1;
 			const delay = Math.min(2000, 500 + attempt * 250);
@@ -4705,12 +4926,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				this.destroy_summary_datatable();
 				this.render_grid_empty_state("error");
 				this.end_grid_perf({ failed: 1 });
+				const message =
+					error?.ae_prepared_timeout || error?.ae_prepared_error
+						? error.message || __("Unable to refresh Account Explorer summary.")
+						: __("Unable to refresh Account Explorer summary.");
 				frappe.show_alert({
-					message: __("Unable to refresh Account Explorer summary."),
+					message,
 					indicator: "red",
 				});
 			}
-			throw error;
+			// Do not rethrow: loading must clear in finally; axis navigation must stay usable.
 		} finally {
 			// Safety net: always release this generation's loading ownership.
 			// If already cleared after paint, this is a no-op for the same owner.

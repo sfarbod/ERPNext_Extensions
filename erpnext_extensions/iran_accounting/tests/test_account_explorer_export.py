@@ -92,6 +92,71 @@ class TestAccountExplorerExportStructure(unittest.TestCase):
 		self.assertNotIn("presentation_currency", fieldnames)
 
 
+class TestAccountExplorerExportNotify(unittest.TestCase):
+	"""Notification finalization — no _Test Company required."""
+
+	def test_notify_never_uses_sendmail_now_true(self):
+		"""Broken Email Account must not fail export via after_commit SMTP send."""
+		calls = []
+
+		def _fake_sendmail(**kwargs):
+			calls.append(kwargs)
+			raise RuntimeError("smtp should not abort export")
+
+		with patch.object(frappe, "sendmail", side_effect=_fake_sendmail):
+			with patch.object(frappe, "publish_realtime"):
+				channels = export._notify_export_ready(
+					user="admin@example.com",
+					file_url="/private/files/demo.csv",
+					filename="demo.csv",
+					total_rows=10,
+				)
+		self.assertTrue(calls)
+		self.assertFalse(calls[0].get("now"))
+		self.assertTrue(calls[0].get("delayed"))
+		self.assertTrue(channels.get("email_error"))
+
+	def test_background_job_survives_email_failure(self):
+		payload = {
+			"document_scope": {
+				"company": "X",
+				"from_date": "2026-03-21",
+				"to_date": "2027-03-20",
+				"hide_zero_rows": 0,
+			},
+			"analysis_context": {
+				"view_axis": "account_level",
+				"detail_mode": "summary",
+				"page": 1,
+				"page_size": 50,
+				"level_sequence": 1,
+			},
+		}
+
+		def _boom(*_a, **_k):
+			raise RuntimeError("email broken")
+
+		with patch.object(export, "_prepare_export_payload") as prep:
+			prep.return_value = _fake_spec("account_level")
+			with patch.object(frappe, "sendmail", side_effect=_boom):
+				with patch.object(frappe, "publish_realtime"):
+					with patch.object(export, "collect_export_rows", return_value=([{"display_code": "1"}], {}, 1)):
+						with patch.object(export, "_save_export_file", return_value="/private/files/ae_test.csv"):
+							with patch.object(export, "_file_size_bytes", return_value=12):
+								with patch.object(frappe.db, "commit"):
+									result = export.run_account_explorer_export_job(
+										payload, "csv", "Administrator"
+									)
+		self.assertEqual(result.get("ok"), 1)
+		self.assertEqual(result.get("file_url"), "/private/files/ae_test.csv")
+		self.assertIn("notify", result)
+
+	def test_get_export_job_status_missing(self):
+		st = export.get_export_job_status("missing-job-id-xyz")
+		self.assertEqual(st.get("status"), "missing")
+		self.assertEqual(st.get("ui_status"), "failed")
+
+
 class TestAccountExplorerExport(unittest.TestCase):
 	def setUp(self):
 		self.company = require_site(self)
@@ -245,8 +310,10 @@ class TestAccountExplorerExport(unittest.TestCase):
 				result = export.export_account_explorer(payload, "csv", force_sync=False)
 		self.assertEqual(result.get("queued"), 1)
 		enqueue_mock.assert_called_once()
+		self.assertEqual(enqueue_mock.call_args.kwargs.get("queue"), "long")
 		self.assertIn("background", (result.get("message") or "").lower())
-
+		self.assertEqual(result.get("queue"), "long")
+		self.assertIn("job_id", result)
 	def test_e01_threshold_zero_does_not_queue_small_export(self):
 		"""E01 / E09: stored threshold 0 must normalize to 5000 — small sets stay sync."""
 		payload = build_payload(
@@ -317,6 +384,8 @@ class TestAccountExplorerExport(unittest.TestCase):
 				result = export.export_account_explorer(payload, "xlsx", force_sync=False)
 		self.assertEqual(result.get("queued"), 1)
 		self.assertIn("total_rows", result)
+		self.assertEqual(result.get("queue"), "long")
+		self.assertIn("job_id", result)
 		self.assertIn("message", result)
 		self.assertNotEqual(frappe.local.response.get("type"), "download")
 
