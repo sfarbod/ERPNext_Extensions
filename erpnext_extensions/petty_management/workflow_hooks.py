@@ -110,6 +110,10 @@ def apply_workflow(doc, action):
 				lock_pm_document_for_return,
 			)
 
+			# v5.1.4: Clearance-only — skip prepare over-allocation during Return save.
+			# Does not affect PM Request or other workflow actions.
+			if doctype == "PM Clearance":
+				frappe.flags.pm_return_for_correction = True
 			locked = lock_pm_document_for_return(doctype, name)
 			from_title_locked = assert_return_allowed_under_lock(doctype, locked)
 			from_state = locked.get("workflow_state") or from_state
@@ -175,6 +179,7 @@ def apply_workflow(doc, action):
 		return result
 	finally:
 		frappe.flags.in_pm_workflow_apply = False
+		frappe.flags.pm_return_for_correction = False
 
 
 def _sync_business_status_after_workflow(result) -> None:

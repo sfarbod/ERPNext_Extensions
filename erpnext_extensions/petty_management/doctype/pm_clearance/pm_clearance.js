@@ -319,6 +319,7 @@ frappe.ui.form.on("PM Clearance", {
 			erpnext_extensions.petty_management.apply_pending_remark_only_lock(frm);
 		}
 		setup_settlement_buttons(frm);
+		frm.trigger("pm_refresh_detail_pi_outstanding");
 		frm.trigger("pm_refresh_pi_readiness_banner");
 		if (frm.doc.employee && frm.doc.company && can_mutate_derived_fields(frm)) {
 			frm.trigger("refresh_holder_pending");
@@ -337,6 +338,36 @@ frappe.ui.form.on("PM Clearance", {
 			);
 			setup_settlement_buttons(frm);
 		}
+	},
+	pm_refresh_detail_pi_outstanding(frm) {
+		// v5.1.4: refresh displayed child outstanding from live PI only.
+		// Never touch allocated_amount / request_amount / paid_amount.
+		(frm.doc.details || []).forEach((row) => {
+			if ((row.settlement_type || SETTLEMENT_PI) !== SETTLEMENT_PI || !row.purchase_invoice) {
+				return;
+			}
+			frappe.db.get_value(
+				"Purchase Invoice",
+				row.purchase_invoice,
+				["docstatus", "outstanding_amount", "grand_total", "rounded_total"],
+				(r) => {
+					if (!r || !locals[row.doctype] || !locals[row.doctype][row.name]) {
+						return;
+					}
+					const ceiling =
+						cint(r.docstatus) === 0
+							? flt(r.grand_total || r.rounded_total || 0)
+							: flt(r.outstanding_amount || 0);
+					if (flt(row.outstanding_amount) === ceiling) {
+						return;
+					}
+					// Direct locals write: informational snapshot only (read_only field).
+					locals[row.doctype][row.name].outstanding_amount = ceiling;
+					row.outstanding_amount = ceiling;
+					frm.refresh_field("details");
+				}
+			);
+		});
 	},
 	pm_refresh_pi_readiness_banner(frm) {
 		if (!frm.doc || !frm.doc.name || frm.is_new()) {
