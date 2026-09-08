@@ -266,6 +266,9 @@ function apply_pm_request_action_ui(frm, f) {
 	if (erpnext_extensions?.petty_management?.refresh_workflow_actions) {
 		erpnext_extensions.petty_management.refresh_workflow_actions(frm);
 	}
+	// v5.1.6: Cancelled docs often have no workflow transitions, so show_actions may not
+	// re-stamp page actions. Always apply Cancel/Delete from flags after workflow rebuild.
+	apply_pm_request_page_actions(frm, f);
 }
 
 /** Re-apply custom buttons from cached flags (called after workflow Actions rebuild). */

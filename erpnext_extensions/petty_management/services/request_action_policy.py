@@ -32,6 +32,8 @@ MSG_CLOSED_FROZEN = _(
 )
 MSG_SUBMIT_FIRST = _("Submit the PM Request first.")
 
+MSG_REQUEST_CANCELLED = _("This PM Request is cancelled.")
+
 MSG_FULLY_FUNDED_CREATE_BLOCK = _(
 	"This request has been fully funded. No additional Payment Entry is required."
 )
@@ -77,6 +79,14 @@ def build_pm_request_business_status_presentation(doc: Document) -> dict:
 	from erpnext_extensions.petty_management.services.business_status_service import (
 		REQUEST_PENDING_WORKFLOW_TITLES,
 	)
+
+	# Cancelled lifecycle — never show "Submit first" (docstatus 2 still keeps workflow title).
+	if cint(getattr(doc, "docstatus", 0)) == 2 or status == "Cancelled":
+		return {
+			"business_status_headline": "",
+			"business_status_indicator": "red",
+			"ui_messages": [str(MSG_REQUEST_CANCELLED)],
+		}
 
 	if cint(getattr(doc, "docstatus", 0)) != 1:
 		# v4.7.2: Pending* stays draft — do not nag "Submit first"
@@ -138,6 +148,10 @@ def build_pm_request_ui_messages(
 	"""Single source for Desk intro banners (deduplicated, priority-ordered)."""
 	presentation = build_pm_request_business_status_presentation(doc)
 	parts: list[str] = list(presentation.get("ui_messages") or [])
+
+	# Cancelled docs: presentation message only — never append Submit/Close gate reasons.
+	if cint(getattr(doc, "docstatus", 0)) == 2 or (getattr(doc, "status", None) or "").strip() == "Cancelled":
+		return _unique_ui_messages(*parts)
 
 	from erpnext_extensions.petty_management.services.business_status_service import (
 		request_is_finance_cleared,
