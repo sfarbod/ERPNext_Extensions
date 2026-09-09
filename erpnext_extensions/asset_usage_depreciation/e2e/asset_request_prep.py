@@ -329,3 +329,105 @@ def reset_e2e_passwords(emails=None, password=None):
 			delete_login_failed_cache(email)
 	frappe.db.commit()
 	return {"ok": True, "emails": emails, "site": frappe.local.site}
+
+
+@frappe.whitelist()
+def prepare_material_request_connections_e2e() -> dict:
+	"""Seed MR↔Asset Request fixtures for Connections get_open_count E2E (v5.1.7)."""
+	frappe.set_user("Administrator")
+	frappe.clear_cache(doctype="Material Request")
+	company = h.company()
+	if not company:
+		frappe.throw("No Company")
+	h.ensure_settings(
+		require_named_manager_approver=0,
+		prevent_duplicate_active_requests=0,
+		auto_create_asset_movement=0,
+		auto_create_material_request=0,
+	)
+	tag = random_string(6)
+	employee = h.make_employee(company_name=company)
+	item = h.make_fixed_asset_item(code=f"AUD-E2E-V517-{tag}", title="V517 Connections Item")
+	ar = h.make_request(
+		company_name=company,
+		employee=employee,
+		item_code=item,
+		purpose="V517 MR Connections E2E",
+	)
+	h.submit_and_approve(ar)
+	h.request_purchase(ar)
+	ar.reload()
+	mr_name = ar.material_request
+	if not mr_name:
+		frappe.throw("Expected Material Request from request_purchase")
+
+	orphan_item = h.make_fixed_asset_item(code=f"AUD-E2E-V517-O-{tag}", title="V517 Orphan MR Item")
+	department = frappe.db.get_value("Department", {"company": company, "is_group": 0}, "name")
+	cost_center = h.company_cost_center(company)
+	orphan = frappe.get_doc(
+		{
+			"doctype": "Material Request",
+			"material_request_type": "Purchase",
+			"company": company,
+			"transaction_date": frappe.utils.nowdate(),
+			"schedule_date": frappe.utils.nowdate(),
+			"items": [
+				{
+					"item_code": orphan_item,
+					"qty": 1,
+					"schedule_date": frappe.utils.nowdate(),
+					"uom": "Nos",
+					"department": department,
+					"cost_center": cost_center,
+				}
+			],
+		}
+	)
+	orphan.insert(ignore_permissions=True)
+
+	am_email = "ar.e2e.am@example.com"
+	h.make_user(
+		email=am_email,
+		roles=["Employee", "Desk User", ROLE_ASSET_MANAGER, "Purchase Manager", "Stock User"],
+		password=PASSWORD,
+	)
+	if not frappe.db.exists(
+		"User Permission", {"user": am_email, "allow": "Company", "for_value": company}
+	):
+		frappe.get_doc(
+			{
+				"doctype": "User Permission",
+				"user": am_email,
+				"allow": "Company",
+				"for_value": company,
+			}
+		).insert(ignore_permissions=True)
+	from frappe.utils.password import update_password, delete_login_failed_cache
+
+	frappe.db.set_value("User", am_email, {"user_type": "System User", "enabled": 1})
+	update_password(am_email, PASSWORD)
+	delete_login_failed_cache(am_email)
+	frappe.db.commit()
+	return {
+		"company": company,
+		"asset_request": ar.name,
+		"material_request": mr_name,
+		"orphan_material_request": orphan.name,
+		"custom_asset_request": frappe.db.get_value("Material Request", mr_name, "custom_asset_request"),
+		"am_email": am_email,
+		"password": PASSWORD,
+	}
+
+
+@frappe.whitelist()
+def open_count_material_request(name: str) -> dict:
+	"""Server-side Connections payload — used by Playwright as DB source of truth."""
+	from frappe.desk.notifications import get_open_count
+
+	frappe.set_user("Administrator")
+	try:
+		payload = get_open_count("Material Request", name)
+		return {"ok": True, "payload": payload}
+	except Exception as exc:
+		return {"ok": False, "error": frappe.get_traceback() or str(exc)}
+
