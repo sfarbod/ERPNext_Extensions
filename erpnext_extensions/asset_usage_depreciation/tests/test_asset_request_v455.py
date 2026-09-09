@@ -170,6 +170,7 @@ class TestFulfillmentPermissionsV455(unittest.TestCase):
 		if cls.skip:
 			return
 		h.ensure_settings(prevent_duplicate_active_requests=0, require_named_manager_approver=0)
+		h.ensure_employee_asset_request_perms()
 		cls.company = h.company()
 		suffix = random_string(6).lower()
 		cls.emp_user = h.make_user(email=f"ar.v455.emp.{suffix}@example.com", roles=["Employee"])
