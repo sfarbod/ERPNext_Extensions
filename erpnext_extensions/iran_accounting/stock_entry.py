@@ -53,8 +53,14 @@ def align_zero_value_transfer_totals(doc) -> None:
 
 def before_validate_stock_entry(doc, method=None):
 	from erpnext_extensions.iran_accounting.e2e_bootstrap import apply_stock_entry_site_defaults
+	from erpnext_extensions.iran_accounting.stock_posting_order.prevention import (
+		apply_production_posting_order,
+	)
 
 	apply_stock_entry_site_defaults(doc)
+	# Proven Job Card / Work Order dependents must post at least 1s after the
+	# inbound that supplies them. Not a global Stock Entry timestamp patch.
+	apply_production_posting_order(doc)
 	# Unpriced scrap is otherwise rejected inside ERPNext's own validate(),
 	# before the absorbed cost can be computed at all. See scrap_costing.
 	permit_scrap_zero_valuation(doc)
@@ -82,6 +88,12 @@ def validate_stock_entry(doc, method=None):
 
 
 def before_submit_stock_entry(doc, method=None):
+	from erpnext_extensions.iran_accounting.stock_posting_order.prevention import (
+		apply_production_posting_order,
+	)
+
+	# Re-check immediately before write so concurrent dependents cannot share T+1.
+	apply_production_posting_order(doc)
 	validate_stock_entry(doc, method)
 	if not is_irr_company(doc.company):
 		return
