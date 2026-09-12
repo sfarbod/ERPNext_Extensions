@@ -164,6 +164,7 @@ after_migrate = [
 	"erpnext_extensions.extentionhrms.install.after_migrate",
 	"erpnext_extensions.consignment_stock.install.after_migrate",
 	"erpnext_extensions.asset_usage_depreciation.install.after_migrate",
+	"erpnext_extensions.stock_repost_decimal_precision_v519.after_migrate",
 ]
 
 # ERPNext injects Accounting Dimension custom fields onto these DocTypes (see Accounting Dimension on_update).

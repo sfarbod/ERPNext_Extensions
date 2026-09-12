@@ -17,6 +17,11 @@ Does not suppress legitimate negative-stock validation.
 
 Supersedes partial Stock Reconciliation-only coverage for fields already in that allowlist
 by re-asserting DECIMAL(30,9) idempotently (no conflict).
+
+Runtime reliability for this registry is provided by v5.1.9
+(``stock_repost_decimal_precision_v519``): recurring after_migrate repair + schema assert,
+because one-shot patches alone cannot prevent later ``updatedb`` narrowing when Property
+Setters are missing.
 """
 
 from __future__ import annotations
