@@ -10,6 +10,9 @@ from erpnext_extensions.iran_accounting.manufacture_rounding import (
 	align_manufacture_finished_good_to_outgoing,
 )
 from erpnext_extensions.iran_accounting.qty_rate_amount import align_stock_entry_item_amounts
+from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+	assert_stock_entry_valuation_integrity,
+)
 from erpnext_extensions.iran_accounting.rounding import (
 	get_company_currency,
 	get_currency_precision,
@@ -18,7 +21,7 @@ from erpnext_extensions.iran_accounting.rounding import (
 	round_stock_entry_totals,
 )
 from erpnext_extensions.iran_accounting.scrap_costing import (
-	allocate_scrap_absorbed_cost,
+	apply_iran_manufacture_output_contract,
 	permit_scrap_zero_valuation,
 )
 from erpnext_extensions.iran_accounting.zero_value_transfer import ZERO_VALUE_TRANSFER_STOCK_ENTRY_PURPOSES
@@ -67,9 +70,10 @@ def validate_stock_entry(doc, method=None):
 	round_stock_entry_totals(doc)
 	# Runs after the controller's validate(), so the consumed rows are priced and
 	# the cost pool is real. Must precede the residual alignment, which reads the
-	# scrap amounts produced here.
-	allocate_scrap_absorbed_cost(doc)
+	# scrap amounts produced here. Same helper as RIV L1.
+	apply_iran_manufacture_output_contract(doc)
 	align_manufacture_finished_good_residual(doc)
+	assert_stock_entry_valuation_integrity(doc)
 	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 		assert_round_off_ready_if_needed,
 	)
@@ -96,12 +100,14 @@ def on_submit_stock_entry(doc, method=None):
 	if not is_irr_company(doc.company):
 		return
 	# ERPNext may rewrite row rates from moving-average floats after before_submit.
-	# Re-apply rate-first integers and Manufacture identity, then persist.
+	# Re-apply the Iran Manufacture output contract, rate-first integers, then persist.
+	apply_iran_manufacture_output_contract(doc)
 	align_stock_entry_item_amounts(doc)
 	align_manufacture_finished_good_residual(doc)
 	align_zero_value_transfer_totals(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
+	assert_stock_entry_valuation_integrity(doc)
 	for row in doc.get("items") or []:
 		row.db_update()
 	doc.db_set(
