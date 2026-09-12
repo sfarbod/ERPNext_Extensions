@@ -25,6 +25,12 @@ def persist_processed_sle_if_possible(sle) -> bool:
 	returning. On early return (e.g. negative-stock validation) ``sle`` may be a ``frappe._dict`` without
 	``doctype`` — never call ``frappe.get_doc(sle)`` in that case.
 	"""
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		assert_sle_valuation_integrity_after_sync,
+	)
+
+	assert_sle_valuation_integrity_after_sync(sle)
+
 	name = _get_entry_value(sle, "name")
 	doctype = _get_entry_value(sle, "doctype")
 

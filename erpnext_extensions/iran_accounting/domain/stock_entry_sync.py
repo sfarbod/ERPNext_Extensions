@@ -13,6 +13,9 @@ from erpnext_extensions.iran_accounting.domain.currency import (
 	round_monetary_rate,
 	round_row_amount_financial,
 )
+from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+	assert_non_negative_magnitude,
+)
 
 
 def stock_entry_row_amount(row, company: str) -> float:
@@ -42,11 +45,16 @@ def stock_entry_row_amount(row, company: str) -> float:
 	return 0.0
 
 
-def signed_movement_from_row_amount(magnitude: float, actual_qty: float) -> float:
+def signed_movement_from_row_amount(magnitude: float, actual_qty: float, **context) -> float:
+	"""row.amount is a non-negative magnitude; direction comes from actual_qty.
+
+	Do not abs()-repair a negative incoming amount into a positive SVD.
+	"""
+	assert_non_negative_magnitude(magnitude, actual_qty, **context)
 	if actual_qty < 0:
-		return -abs(magnitude)
+		return -float(magnitude)
 	if actual_qty > 0:
-		return abs(magnitude)
+		return float(magnitude)
 	return 0.0
 
 
@@ -88,8 +96,27 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 
 	ccy = get_company_currency(sle.company)
 	magnitude = stock_entry_row_amount(row, sle.company)
-	movement = round_currency(signed_movement_from_row_amount(magnitude, flt(sle.actual_qty)), ccy)
+	movement = round_currency(
+		signed_movement_from_row_amount(
+			magnitude,
+			flt(sle.actual_qty),
+			sle=sle,
+			row=row,
+		),
+		ccy,
+	)
 	rate = _sle_rate_from_row(row, ccy)
+	if flt(sle.actual_qty) > 0 and rate < 0:
+		from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+			throw_valuation_integrity,
+		)
+
+		throw_valuation_integrity(
+			"I1",
+			detail="incoming Stock Entry valuation_rate is negative",
+			sle=sle,
+			row=row,
+		)
 
 	value_after = flt(sle.stock_value)
 	value_before = value_after - flt(sle.stock_value_difference)

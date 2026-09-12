@@ -171,12 +171,16 @@ def collect_fingerprint_report() -> dict[str, Any]:
 
 	cls = sl.update_entries_after
 	# Prefer saved originals when already patched.
+	live_recalc = cls.recalculate_amounts_in_stock_entry
+	saved_recalc = getattr(cls, "_iran_original_recalculate_amounts_in_stock_entry", None)
+	if saved_recalc is None and getattr(live_recalc, "_iran_riv_recalculate_wrapper", None):
+		saved_recalc = getattr(live_recalc, "_iran_original", None)
 	fns = {
 		"update_rate_on_stock_entry": getattr(
 			cls, "_iran_original_update_rate_on_stock_entry", None
 		)
 		or cls.update_rate_on_stock_entry,
-		"recalculate_amounts_in_stock_entry": cls.recalculate_amounts_in_stock_entry,
+		"recalculate_amounts_in_stock_entry": saved_recalc or live_recalc,
 		"is_manufacture_entry_with_sabb": cls.is_manufacture_entry_with_sabb,
 	}
 	erp_mm, fr_mm = _version_pair()
@@ -225,9 +229,13 @@ def assert_erpnext_riv_rate_patch_supported() -> None:
 	saved = getattr(cls, "_iran_original_update_rate_on_stock_entry", None)
 	if saved is None and getattr(live_rate, "_iran_riv_rate_wrapper", None):
 		saved = getattr(live_rate, "_iran_original", None)
+	live_recalc = cls.recalculate_amounts_in_stock_entry
+	saved_recalc = getattr(cls, "_iran_original_recalculate_amounts_in_stock_entry", None)
+	if saved_recalc is None and getattr(live_recalc, "_iran_riv_recalculate_wrapper", None):
+		saved_recalc = getattr(live_recalc, "_iran_original", None)
 	targets = {
 		"update_rate_on_stock_entry": saved or live_rate,
-		"recalculate_amounts_in_stock_entry": cls.recalculate_amounts_in_stock_entry,
+		"recalculate_amounts_in_stock_entry": saved_recalc or live_recalc,
 		"is_manufacture_entry_with_sabb": cls.is_manufacture_entry_with_sabb,
 	}
 
@@ -275,22 +283,15 @@ def resolve_company_for_sle(engine, sle) -> str | None:
 def persist_irr_contract_after_recalculate(voucher_no: str) -> None:
 	"""Re-apply the single IRR contract engine and persist SE rows/header."""
 	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
-	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
-		align_stock_entry_item_amounts,
-	)
-	from erpnext_extensions.iran_accounting.manufacture_rounding import (
-		align_manufacture_finished_good_residual,
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		apply_irr_stock_entry_contract_after_calculate,
 	)
 
 	doc = frappe.get_doc("Stock Entry", voucher_no)
 	if not is_irr_company(doc.company):
 		return
 
-	align_stock_entry_item_amounts(doc)
-	if doc.purpose in ("Manufacture", "Repack"):
-		align_manufacture_finished_good_residual(doc)
-	if hasattr(doc, "set_total_incoming_outgoing_value"):
-		doc.set_total_incoming_outgoing_value()
+	apply_irr_stock_entry_contract_after_calculate(doc)
 
 	for row in doc.get("items") or []:
 		frappe.db.set_value(

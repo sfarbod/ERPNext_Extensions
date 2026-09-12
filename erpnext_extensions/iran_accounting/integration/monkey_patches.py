@@ -698,6 +698,11 @@ def _patch_stock_ledger_engine():
 		assert_erpnext_riv_rate_patch_supported,
 		make_update_rate_on_stock_entry_wrapper,
 	)
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		assert_sle_valuation_integrity_after_sync,
+		assert_sle_valuation_integrity_before_vanilla,
+		make_recalculate_amounts_wrapper,
+	)
 	from erpnext_extensions.iran_accounting.domain.sle_persistence import (
 		persist_processed_sle_if_possible,
 	)
@@ -723,15 +728,18 @@ def _patch_stock_ledger_engine():
 		sl.update_entries_after.set_precision = set_precision
 
 		def process_sle(self, sle):
-			_orig_process_sle(self, sle)
 			company = getattr(self, "company", None) or (
 				sle.get("company") if hasattr(sle, "get") else None
 			)
+			if company and is_irr_company(company):
+				assert_sle_valuation_integrity_before_vanilla(self, sle)
+			_orig_process_sle(self, sle)
 			if company and is_irr_company(company):
 				sync_irr_sle_from_stock_reconciliation_row(sle)
 				sync_irr_sle_from_stock_entry_row(sle)
 				round_sle_monetary_fields(sle, company)
 				sync_irr_sle_from_stock_entry_row(sle)
+				assert_sle_valuation_integrity_after_sync(sle)
 				persist_processed_sle_if_possible(sle)
 
 		sl.update_entries_after.process_sle = process_sle
@@ -751,6 +759,18 @@ def _patch_stock_ledger_engine():
 			_orig_update_rate_on_stock_entry
 		)
 		sl._iran_patched_update_rate_on_stock_entry = True
+
+	if not getattr(sl, "_iran_patched_recalculate_amounts", None):
+		live_recalc = sl.update_entries_after.recalculate_amounts_in_stock_entry
+		if getattr(live_recalc, "_iran_riv_recalculate_wrapper", None):
+			_orig_recalculate = live_recalc._iran_original
+		else:
+			_orig_recalculate = live_recalc
+		sl.update_entries_after._iran_original_recalculate_amounts_in_stock_entry = _orig_recalculate
+		sl.update_entries_after.recalculate_amounts_in_stock_entry = make_recalculate_amounts_wrapper(
+			_orig_recalculate
+		)
+		sl._iran_patched_recalculate_amounts = True
 
 
 def _patch_stock_ledger_report():

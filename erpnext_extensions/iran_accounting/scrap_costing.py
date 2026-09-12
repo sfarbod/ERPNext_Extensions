@@ -242,6 +242,53 @@ def _issued_rate(doc, item_code: str) -> float:
 	return (amount / qty) if qty > 0 else 0.0
 
 
+def _issued_rate_for_component(doc, row) -> float:
+	"""Issued rate for component scrap, including Z-code → main item fallback."""
+	item_code = row.get("item_code")
+	rate = _issued_rate(doc, item_code)
+	if rate > 0:
+		return rate
+	if not item_code:
+		return 0.0
+	main = frappe.db.get_value("Item", item_code, "custom_main_item_code")
+	if main and main != item_code:
+		return _issued_rate(doc, main)
+	return 0.0
+
+
+def _restore_finished_good_as_residual(doc, fg_row) -> bool:
+	"""Amount-authoritative FG restore after component scrap was repriced.
+
+	ERPNext 16.34 may have already set FG from (RM − poisoned scrap). After
+	component scrap is moved to issued rate, FG must consume the remaining
+	pool rather than stay negative. Large gaps are not ±1 residuals.
+	"""
+	currency_code = get_company_currency(doc.company)
+	outgoing_basic = sum(
+		flt(row.get("basic_amount"))
+		for row in doc.get("items") or []
+		if row.get("s_warehouse")
+	)
+	other_incoming_basic = sum(
+		flt(row.get("basic_amount"))
+		for row in doc.get("items") or []
+		if _is_incoming(row) and row is not fg_row
+	)
+	material = round_currency(outgoing_basic - other_incoming_basic, currency_code)
+	if material < 0:
+		return False
+	qty = _row_qty(fg_row)
+	if qty <= 0:
+		return False
+	fg_row.basic_amount = material
+	fg_row.basic_rate = round_monetary_rate(material / qty, currency_code)
+	fg_row.amount = round_currency(material + _capitalized(fg_row), currency_code)
+	fg_row.valuation_rate = integer_valuation_rate_from_amount(fg_row.amount, qty, currency_code)
+	if flt(fg_row.amount):
+		fg_row.allow_zero_valuation_rate = 0
+	return True
+
+
 def _spread_operating_cost(product_rows, currency, leftover: float = 0.0) -> None:
 	"""Share capitalised operating cost over every unit that was processed.
 
@@ -328,14 +375,16 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 	# here so it is removed from the pool below like any other incoming row.
 	currency_code = get_company_currency(doc.company)
 	for row in component_rows:
-		rate = _issued_rate(doc, row.get("item_code"))
+		rate = _issued_rate_for_component(doc, row)
 		if rate > 0:
 			_apply(row, round_monetary_rate(rate, currency_code), currency_code)
 
 	if not scrap_rows:
-		# Component rejects only: nothing absorbs the product's cost, and the
-		# finished good keeps every rial ERPNext gave it.
-		return bool(component_rows)
+		# Component rejects only: they keep issued cost. FG must consume the
+		# remaining pool — ERPNext 16.34 may already have set a negative FG
+		# from live warehouse/batch scrap valuation.
+		restored = _restore_finished_good_as_residual(doc, good_rows[0])
+		return bool(component_rows) or restored
 
 	def _qty(row) -> float:
 		value = row.get("transfer_qty")
@@ -388,3 +437,61 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 		_apply(row, scrap_rate, currency)
 	_spread_operating_cost([good_rows[0]] + scrap_rows, currency, leftover)
 	return True
+
+
+def _has_product_reject(doc) -> bool:
+	rows = doc.get("items") or []
+	good_rows = [row for row in rows if row.get("is_finished_item") and row.get("t_warehouse")]
+	if len(good_rows) != 1:
+		return False
+	finished_item = good_rows[0].get("item_code")
+	return any(is_scrap_row(row) and is_product_reject(row, finished_item) for row in rows)
+
+
+def _erpnext_manufacture_state_is_valid(doc) -> bool:
+	"""True when ERPNext numbers already satisfy FG ≥ 0 and the output pool.
+
+	Used so healthy documents (25720-class warehouse/batch scrap) are not
+	rewritten to issued-rate scrap on RIV. Poisoned warehouse scrap that makes
+	FG negative still runs issued-rate + residual restore.
+	"""
+	rows = doc.get("items") or []
+	fg_rows = [row for row in rows if row.get("is_finished_item") and row.get("t_warehouse")]
+	if len(fg_rows) != 1:
+		return False
+	fg = fg_rows[0]
+	if flt(fg.get("amount")) < 0 or flt(fg.get("valuation_rate")) < 0:
+		return False
+	if any(flt(row.get("amount")) < 0 for row in rows if _is_incoming(row)):
+		return False
+	outgoing = sum(flt(row.get("amount")) for row in rows if row.get("s_warehouse"))
+	other_incoming = sum(
+		flt(row.get("amount")) for row in rows if _is_incoming(row) and row is not fg
+	)
+	incoming_capitalized = sum(
+		flt(row.get("additional_cost")) + flt(row.get("landed_cost_voucher_amount"))
+		for row in rows
+		if row.get("t_warehouse")
+	)
+	precision = get_currency_precision(get_company_currency(doc.company))
+	quantum = 1.0 if precision == 0 else (1.0 / (10**precision))
+	return other_incoming <= outgoing + incoming_capitalized + quantum
+
+
+def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
+	"""Canonical Iran Manufacture output contract (submit and RIV).
+
+	Product reject always splits the remaining pool. Component scrap is priced
+	at this voucher's issued rate when ERPNext warehouse/batch valuation would
+	make FG negative or exceed the pool. Independent by-product keeps ERPNext
+	valuation only when the finished good remains non-negative (I5 fails closed).
+	"""
+	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
+		return False
+	if not is_irr_company(doc.company):
+		return False
+	if _has_product_reject(doc):
+		return allocate_scrap_absorbed_cost(doc, method)
+	if _erpnext_manufacture_state_is_valid(doc):
+		return False
+	return allocate_scrap_absorbed_cost(doc, method)

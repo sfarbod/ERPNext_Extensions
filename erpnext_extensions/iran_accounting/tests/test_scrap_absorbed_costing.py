@@ -539,6 +539,30 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 		after = [(r.item_code, flt(r.qty), flt(r.transfer_qty)) for r in doc.items]
 		self.assertEqual(before, after)
 
+	def test_component_only_scrap_restores_fg_after_poisoned_rate(self):
+		"""25333-class: warehouse scrap >> RM; issued rate + FG residual must win."""
+		fg = _output("20100067", 10, is_fg=1, rate=-1e12)
+		fg.basic_amount = -1e13
+		fg.amount = -1e13
+		fg.valuation_rate = -1e12
+		scrap = _output("13200023", 2, row_type="Scrap", rate=1e12)
+		scrap.basic_amount = 2e12
+		scrap.amount = 2e12
+		doc = _Doc(
+			items=[
+				_consumed("13200023", 100, 3505),
+				fg,
+				scrap,
+			]
+		)
+		with _irr():
+			self.assertTrue(allocate_scrap_absorbed_cost(doc))
+		self.assertEqual(flt(scrap.basic_rate), 3505)
+		self.assertEqual(flt(scrap.basic_amount), 2 * 3505)
+		self.assertGreaterEqual(flt(fg.amount), 0)
+		self.assertEqual(flt(fg.basic_amount), 100 * 3505 - 2 * 3505)
+		self.assertGreaterEqual(flt(fg.valuation_rate), 0)
+
 
 class TestScrapSecondaryItemTypeCompat(unittest.TestCase):
 	"""ERPNext 16.33 renamed Stock Entry Detail.type → secondary_item_type."""
