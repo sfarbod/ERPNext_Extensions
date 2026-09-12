@@ -1,0 +1,49 @@
+.historical-repair-page .hr-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: flex-end;
+	margin-bottom: 16px;
+}
+.historical-repair-page .hr-toolbar .frappe-control {
+	min-width: 180px;
+	margin-bottom: 0;
+}
+.historical-repair-page .hr-actions {
+	display: flex;
+	gap: 8px;
+}
+.historical-repair-page .hr-section-title {
+	font-weight: 600;
+	margin: 8px 0 12px;
+}
+.historical-repair-page table.hr-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+}
+.historical-repair-page table.hr-table th,
+.historical-repair-page table.hr-table td {
+	border: 1px solid var(--border-color);
+	padding: 6px 8px;
+	vertical-align: top;
+}
+.historical-repair-page .hr-preview {
+	white-space: pre-wrap;
+	background: var(--bg-light-gray);
+	padding: 12px;
+	border-radius: 6px;
+	margin-top: 16px;
+	max-height: 280px;
+	overflow: auto;
+}
+.historical-repair-page .hr-status-ELIGIBLE {
+	color: var(--green-600);
+	font-weight: 600;
+}
+.historical-repair-page .hr-status-INSUFFICIENT_STOCK,
+.historical-repair-page .hr-status-CYCLE,
+.historical-repair-page .hr-status-MANUAL_REVIEW_MIDNIGHT {
+	color: var(--red-600);
+	font-weight: 600;
+}
