@@ -1,6 +1,18 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 """Future-prevention helper for automatic production Stock Entries.
 
+HISTORICAL REPAIR (optimizer / repair.py):
+    Minimum timestamp edits only if the current (posting_datetime, creation)
+    sequence creates a temporary negative. If opening stock already keeps
+    running qty >= 0, leave times unchanged.
+
+FUTURE PREVENTION (this module):
+    A proven prerequisite → dependent pair still gets explicit chronology
+    (T < dependent time) even if current opening stock would cover the
+    issue. Economic dependency must remain deterministic for automatic
+    production documents. Do not skip the bump merely because timestamps
+    match and stock happens to be sufficient.
+
 Contract::
 
     ensure_dependent_stock_posting_after(prerequisite, dependent, minimum_seconds=1)

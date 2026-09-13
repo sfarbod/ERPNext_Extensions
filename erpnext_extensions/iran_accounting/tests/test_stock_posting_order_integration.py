@@ -289,3 +289,107 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		self.assertEqual(plan["proposed"]["A"][-8:], "10:00:00")
 		self.assertEqual(plan["proposed"]["B"][-8:], "10:00:01")
 		self.assertEqual(plan["proposed"]["C"][-8:], "10:00:02")
+
+	def test_no_repair_needed_when_opening_covers(self):
+		rm, fg = self._new_items("NR")
+		submit_material_receipt(self.company, rm, qty=30, rate=1000, warehouse=self.stores)
+		posting_date = "2026-09-01"
+		prev = _enable_negative_stock(True)
+		frappe.flags[PREVENTION_FLAG] = True
+		try:
+			pre = self._make_mtfm(rm, 10, posting_date, "13:00:00")
+			mfg = self._make_manufacture(rm, fg, 10, posting_date, "14:00:00")
+			mtfm = self._make_mtfm(rm, 10, posting_date, "14:00:00")
+			frappe.db.set_value(
+				"Stock Entry Detail",
+				{"parent": mfg.name, "item_code": rm, "s_warehouse": self.wip},
+				"against_stock_entry",
+				mtfm.name,
+			)
+		finally:
+			frappe.flags[PREVENTION_FLAG] = False
+			_enable_negative_stock(bool(prev))
+		rows = scan_production_posting_order_anomalies(
+			company=self.company, from_date=posting_date, to_date=posting_date
+		)
+		match = [r for r in rows if r["inbound_document"] == mtfm.name and r["outbound_document"] == mfg.name]
+		self.assertTrue(match, f"expected chain, got {[(r['chain'], r['status']) for r in rows[:12]]}")
+		self.assertIn(match[0]["optimizer_status"], ("NO_REPAIR_NEEDED", "NO_REPAIR_NEEDED"))
+		self.assertFalse(match[0]["eligible"])
+		self.assertEqual(match[0]["minimum_seconds_label"], "Repair unnecessary")
+		self.assertTrue(pre.name)
+
+	def test_real_shortage_not_repaired(self):
+		rm, fg = self._new_items("SH")
+		submit_material_receipt(self.company, rm, qty=20, rate=1000, warehouse=self.stores)
+		posting_date = "2026-09-01"
+		prev = _enable_negative_stock(True)
+		frappe.flags[PREVENTION_FLAG] = True
+		try:
+			mfg = self._make_manufacture(rm, fg, 15, posting_date, "15:00:00")
+			mtfm = self._make_mtfm(rm, 10, posting_date, "15:00:00")
+			frappe.db.set_value(
+				"Stock Entry Detail",
+				{"parent": mfg.name, "item_code": rm, "s_warehouse": self.wip},
+				"against_stock_entry",
+				mtfm.name,
+			)
+		finally:
+			frappe.flags[PREVENTION_FLAG] = False
+			_enable_negative_stock(bool(prev))
+		rows = scan_production_posting_order_anomalies(
+			company=self.company, from_date=posting_date, to_date=posting_date
+		)
+		match = [r for r in rows if r["inbound_document"] == mtfm.name and r["outbound_document"] == mfg.name]
+		self.assertTrue(match)
+		self.assertEqual(match[0]["optimizer_status"], "REAL_STOCK_SHORTAGE")
+		self.assertFalse(match[0]["eligible"])
+		blocked = apply_repairs([dict(match[0], eligible=True, status="ELIGIBLE")], dry_run=False)
+		self.assertTrue(blocked["blocked"])
+
+	def test_repair_replays_stock_value_and_bin(self):
+		rm, fg, mtfm, mfg, posting_date, posting_time = self._inverted_chain("VAL")
+		rows = scan_production_posting_order_anomalies(
+			company=self.company, from_date=posting_date, to_date=posting_date
+		)
+		match = [
+			r
+			for r in rows
+			if r["inbound_document"] == mtfm.name and r["outbound_document"] == mfg.name and r.get("eligible")
+		]
+		self.assertTrue(match)
+		row = match[0]
+		result = apply_repairs([row], dry_run=False)
+		self.assertTrue(result["applied"], result)
+		gate = integrity_check([mtfm.name, mfg.name], item_code=rm, warehouse=self.wip)
+		self.assertTrue(gate["ok"], gate)
+		self.assertTrue(gate.get("bin"))
+		self.assertLessEqual(abs(flt(gate["bin"]["sle_qty"]) - flt(gate["bin"]["bin_qty"])), 0.5)
+		self.assertLessEqual(abs(flt(gate["bin"]["sle_value"]) - flt(gate["bin"]["bin_value"])), 0.5)
+		applied = result["applied"][0]
+		self.assertTrue(applied.get("replay"))
+
+	def test_operator_batch_same_time_classified(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.scanner import scan_same_time_groups
+
+		exists = frappe.db.exists("Item", "18000007")
+		if not exists:
+			self.skipTest("operator item 18000007 not on site")
+		result = scan_same_time_groups(from_date="2026-06-21", to_date="2026-06-21", include_likely=True)
+		match = [
+			r
+			for r in result["rows"]
+			if r.get("item") == "18000007" and "18:01:20" in str(r.get("current_inbound_time") or "")
+		]
+		if not match:
+			self.skipTest("18:01:20 group not in scan rows")
+		row = match[0]
+		self.assertTrue(row.get("batch"))
+		self.assertTrue(row.get("has_batch"))
+		self.assertEqual(row.get("confidence"), "LIKELY")
+		self.assertFalse(row.get("eligible"))
+		self.assertIn(
+			row.get("optimizer_status"),
+			("NO_REPAIR_NEEDED", "REPAIRABLE_SECONDS", "REAL_STOCK_SHORTAGE"),
+		)
+

@@ -59,6 +59,7 @@ def integrity_check(vouchers: list[str], *, item_code=None, warehouse=None) -> d
 			failures.append({"voucher": vn, "error": "duplicate_sle", "rows": dup})
 
 	neg = []
+	bin_check = None
 	if item_code and warehouse:
 		neg = frappe.db.sql(
 			"""
@@ -72,9 +73,42 @@ def integrity_check(vouchers: list[str], *, item_code=None, warehouse=None) -> d
 			(item_code, warehouse),
 			as_dict=True,
 		)
+		last = frappe.db.sql(
+			"""
+			SELECT qty_after_transaction, stock_value, valuation_rate, posting_datetime
+			FROM `tabStock Ledger Entry`
+			WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+			ORDER BY posting_datetime DESC, creation DESC
+			LIMIT 1
+			""",
+			(item_code, warehouse),
+			as_dict=True,
+		)
+		bin_row = frappe.db.get_value(
+			"Bin",
+			{"item_code": item_code, "warehouse": warehouse},
+			["actual_qty", "stock_value", "valuation_rate"],
+			as_dict=True,
+		)
+		if last and bin_row:
+			bin_check = {
+				"sle_qty": last[0].qty_after_transaction,
+				"bin_qty": bin_row.actual_qty,
+				"sle_value": last[0].stock_value,
+				"bin_value": bin_row.stock_value,
+			}
+			if abs(flt(last[0].qty_after_transaction) - flt(bin_row.actual_qty)) > 0.5:
+				failures.append(
+					{"item": item_code, "warehouse": warehouse, "error": "bin_qty_mismatch", **bin_check}
+				)
+			if abs(flt(last[0].stock_value) - flt(bin_row.stock_value)) > 0.5:
+				failures.append(
+					{"item": item_code, "warehouse": warehouse, "error": "bin_value_mismatch", **bin_check}
+				)
 
 	return {
 		"ok": not failures,
 		"failures": failures,
 		"temporary_negatives": neg,
+		"bin": bin_check,
 	}

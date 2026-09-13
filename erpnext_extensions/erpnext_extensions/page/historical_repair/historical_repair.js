@@ -104,6 +104,57 @@ class HistoricalRepairPage {
 		return selected;
 	}
 
+	format_preview(msg) {
+		const lines = [];
+		lines.push(`status: ${msg.status || "DRY_RUN"}`);
+		if (msg.timing) {
+			lines.push(`start_local: ${msg.timing.start_local || ""}`);
+			lines.push(`end_local: ${msg.timing.end_local || ""}`);
+			lines.push(`elapsed_seconds: ${msg.timing.elapsed_seconds || ""}`);
+		}
+		if (msg.summary) {
+			lines.push(`same_time_groups: ${msg.summary.same_time_groups || 0}`);
+			lines.push(`NO_REPAIR_NEEDED: ${msg.summary.NO_REPAIR_NEEDED || 0}`);
+			lines.push(`REPAIRABLE_SECONDS: ${msg.summary.REPAIRABLE_SECONDS || 0}`);
+			lines.push(`REAL_STOCK_SHORTAGE: ${msg.summary.REAL_STOCK_SHORTAGE || 0}`);
+			const dist = msg.summary.seconds_distribution || {};
+			lines.push(`seconds_distribution: ${JSON.stringify(dist)}`);
+		}
+		lines.push(`count: ${msg.count ?? (msg.rows || []).length}`);
+		lines.push(`eligible: ${(msg.eligible || []).length}`);
+		const rows = msg.rows || [];
+		rows.slice(0, 40).forEach((row, i) => {
+			lines.push("");
+			lines.push(`--- case ${i + 1} ${row.chain || ""} ---`);
+			lines.push(`Item: ${row.item}`);
+			lines.push(`Warehouse: ${row.warehouse}`);
+			lines.push(`Batch: ${row.batch || ""}`);
+			lines.push(`Posting Date: ${row.posting_date || ""}`);
+			lines.push(`Opening Qty: ${row.opening_qty}`);
+			lines.push(`Minimum Seconds Required: ${row.minimum_seconds_label || "No change"}`);
+			lines.push(`Current Min Qty: ${row.min_qty_before}`);
+			lines.push(`Proposed Min Qty: ${row.min_qty_after}`);
+			lines.push(`Final Qty Before: ${row.final_qty_before}`);
+			lines.push(`Final Qty After: ${row.final_qty_after}`);
+			lines.push(`Status: ${row.status}`);
+			(row.row_simulation || []).forEach((sim) => {
+				lines.push(
+					[
+						sim.voucher,
+						sim.purpose || "",
+						`current ${sim.current_time}`,
+						`qty ${sim.actual_qty}`,
+						`run ${sim.current_running_qty}`,
+						`proposed ${sim.proposed_time}`,
+						`proposed_run ${sim.proposed_running_qty}`,
+						`shift ${sim.seconds_shifted}`,
+					].join(" | ")
+				);
+			});
+		});
+		return lines.join("\n");
+	}
+
 	dry_run() {
 		const rows = this.selected_rows();
 		frappe.call({
@@ -116,7 +167,7 @@ class HistoricalRepairPage {
 				this.rows = msg.rows || this.rows;
 				this.render_table();
 				this.btn_repair.prop("disabled", false);
-				this.$preview.text(JSON.stringify(msg, null, 2));
+				this.$preview.text(this.format_preview(msg));
 			},
 		});
 	}
@@ -168,6 +219,17 @@ class HistoricalRepairPage {
 		});
 	}
 
+	status_label(row) {
+		if (row.status === "NO_REPAIR_NEEDED" || row.optimizer_status === "NO_REPAIR_NEEDED") {
+			return __("Repair unnecessary");
+		}
+		return row.status;
+	}
+
+	seconds_label(row) {
+		return row.minimum_seconds_label || (row.status === "NO_REPAIR_NEEDED" ? __("Repair unnecessary") : "");
+	}
+
 	render_table() {
 		const cols = [
 			"",
@@ -177,9 +239,11 @@ class HistoricalRepairPage {
 			__("Item"),
 			__("Warehouse"),
 			__("Batch/SABB"),
+			__("Opening Qty"),
 			__("Current Inbound Time"),
 			__("Current Outbound Time"),
 			__("Proposed Time"),
+			__("Minimum Seconds Required"),
 			__("Minimum Qty Before"),
 			__("Minimum Qty After"),
 			__("Valuation Impact"),
@@ -189,7 +253,7 @@ class HistoricalRepairPage {
 		];
 		const $table = $('<table class="hr-table" data-role="posting-order-table">');
 		const $head = $("<tr>");
-		cols.forEach((c) => $head.append($("<th>").text(c)));
+		cols.forEach((c) => $head.append($("<th>").text(c.trim())));
 		$table.append($("<thead>").append($head));
 		const $body = $("<tbody>");
 		(this.rows || []).forEach((row, idx) => {
@@ -206,19 +270,22 @@ class HistoricalRepairPage {
 				row.item,
 				row.warehouse,
 				row.batch || row.sabb_outbound || "",
+				row.opening_qty,
 				row.current_inbound_time,
 				row.current_outbound_time,
 				row.proposed_outbound_time,
+				this.seconds_label(row),
 				row.min_qty_before,
 				row.min_qty_after,
 				row.valuation_impact,
 				row.gl_impact,
 				row.confidence,
-				row.status,
+				this.status_label(row),
 			];
 			cells.forEach((val, i) => {
 				const $td = $("<td>").text(val == null ? "" : String(val));
 				if (i === cells.length - 1) $td.addClass(`hr-status-${row.status}`);
+				if (i === 10) $td.addClass("hr-min-seconds");
 				$tr.append($td);
 			});
 			$body.append($tr);

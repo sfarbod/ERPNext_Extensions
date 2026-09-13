@@ -19,7 +19,8 @@
   "valuation_impact",
   "gl_impact",
   "confidence",
-  "status"
+  "status",
+  "seconds_shifted"
  ],
  "fields": [
   {
@@ -106,6 +107,11 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Status"
+  },
+  {
+   "fieldname": "seconds_shifted",
+   "fieldtype": "Int",
+   "label": "Seconds Shifted"
   }
  ],
  "istable": 1,

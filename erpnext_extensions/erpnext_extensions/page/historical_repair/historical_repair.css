@@ -34,16 +34,30 @@
 	padding: 12px;
 	border-radius: 6px;
 	margin-top: 16px;
-	max-height: 280px;
+	max-height: 480px;
 	overflow: auto;
 }
-.historical-repair-page .hr-status-ELIGIBLE {
+.historical-repair-page .hr-status-ELIGIBLE,
+.historical-repair-page .hr-status-REPAIRABLE_SECONDS {
 	color: var(--green-600);
 	font-weight: 600;
 }
+.historical-repair-page .hr-status-NO_REPAIR_NEEDED {
+	color: var(--text-muted);
+	font-weight: 600;
+}
 .historical-repair-page .hr-status-INSUFFICIENT_STOCK,
+.historical-repair-page .hr-status-REAL_STOCK_SHORTAGE,
 .historical-repair-page .hr-status-CYCLE,
-.historical-repair-page .hr-status-MANUAL_REVIEW_MIDNIGHT {
+.historical-repair-page .hr-status-DEPENDENCY_CONFLICT,
+.historical-repair-page .hr-status-CROSS_ITEM_CONFLICT,
+.historical-repair-page .hr-status-MANUAL_REVIEW_MIDNIGHT,
+.historical-repair-page .hr-status-MIDNIGHT_REVIEW,
+.historical-repair-page .hr-status-VALUATION_POISON_DEPENDENCY {
 	color: var(--red-600);
 	font-weight: 600;
+}
+.historical-repair-page .hr-min-seconds {
+	font-weight: 600;
+	white-space: nowrap;
 }

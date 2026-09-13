@@ -29,6 +29,13 @@ from erpnext_extensions.iran_accounting.stock_posting_order.ordering import (
 from erpnext_extensions.iran_accounting.stock_posting_order.prevention import (
 	ensure_dependent_stock_posting_after,
 )
+from erpnext_extensions.iran_accounting.stock_posting_order.batch_identity import canonical_batch_no
+from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import (
+	minimum_seconds_label,
+	optimize_group,
+	simulate_running,
+)
+from erpnext_extensions.iran_accounting.stock_posting_order.replay import replay_series, sle_poison_reason
 from erpnext_extensions.iran_accounting.stock_posting_order.simulation import (
 	classify_valuation_impact,
 	running_qty,
@@ -328,3 +335,279 @@ class TestConcurrencySlots(unittest.TestCase):
 		self.assertIn("2026-06-21 18:00:01", times)
 		self.assertIn("2026-06-21 18:00:02", times)
 		self.assertEqual(len(times), 2)
+
+
+T = "2026-06-21 18:01:45"
+
+
+def _row(name, voucher, qty, creation, t=T, **kw):
+	d = {
+		"name": name,
+		"voucher_no": voucher,
+		"actual_qty": qty,
+		"creation": creation,
+		"posting_datetime": t,
+		"item_code": kw.pop("item_code", "X"),
+		"warehouse": kw.pop("warehouse", "W"),
+		"batch_no": kw.pop("batch_no", ""),
+		"canonical_batch": kw.pop("canonical_batch", None),
+		"incoming_rate": kw.pop("incoming_rate", 100),
+		"valuation_rate": kw.pop("valuation_rate", 100),
+		"stock_value_difference": kw.pop("stock_value_difference", qty * 100),
+	}
+	if d["canonical_batch"] is None:
+		d["canonical_batch"] = d["batch_no"]
+	d.update(kw)
+	return d
+
+
+class TestBatchIdentity(unittest.TestCase):
+	def test_sle_batch_wins(self):
+		self.assertEqual(canonical_batch_no({"batch_no": "B1"}, [{"batch_no": "B2"}]), "B1")
+
+	def test_sabb_single_batch(self):
+		self.assertEqual(canonical_batch_no({"batch_no": ""}, [{"batch_no": "B9"}]), "B9")
+
+	def test_sabb_multi_not_mixed(self):
+		self.assertEqual(
+			canonical_batch_no({"batch_no": ""}, [{"batch_no": "A"}, {"batch_no": "B"}]),
+			"*MULTI*",
+		)
+
+	def test_non_batch_none(self):
+		self.assertIsNone(canonical_batch_no({"batch_no": ""}, []))
+
+
+class TestBatchAwareOptimizer(unittest.TestCase):
+	def test_opening_0_in_out_same_t_plus_1(self):
+		sles = [
+			_row("o", "OUT", -10, "2026-09-12 01:00:00"),
+			_row("i", "IN", 10, "2026-09-12 05:00:00"),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		self.assertEqual(r["minimum_seconds_required"], 1)
+		self.assertEqual(r["assignment"]["IN"], 0)
+		self.assertEqual(r["assignment"]["OUT"], 1)
+		self.assertEqual(r["proposed"]["min_qty"], 0)
+		self.assertEqual(r["proposed"]["final_qty"], r["current"]["final_qty"])
+		self.assertEqual(minimum_seconds_label(r["status"], r["minimum_seconds_required"]), "+1 second")
+
+	def test_opening_10_safe_no_historical_change(self):
+		sles = [
+			_row("o", "OUT", -10, "2026-09-12 01:00:00"),
+			_row("i", "IN", 10, "2026-09-12 05:00:00"),
+		]
+		r = optimize_group(sles=sles, opening=10, base_t=T)
+		self.assertEqual(r["status"], "NO_REPAIR_NEEDED")
+		self.assertEqual(r["minimum_seconds_required"], 0)
+		self.assertEqual(r["moves"], [])
+		self.assertEqual(minimum_seconds_label(r["status"], 0), "Repair unnecessary")
+
+	def test_opening_0_two_outs_min_seconds(self):
+		sles = [
+			_row("b", "OUTB", -5, "2026-09-12 01:00:00"),
+			_row("c", "OUTC", -5, "2026-09-12 02:00:00"),
+			_row("a", "INA", 10, "2026-09-12 05:00:00"),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		self.assertEqual(r["assignment"]["INA"], 0)
+		self.assertGreaterEqual(r["assignment"]["OUTB"], 1)
+		self.assertGreaterEqual(r["assignment"]["OUTC"], 1)
+		self.assertLessEqual(r["minimum_seconds_required"], 2)
+		self.assertGreaterEqual(r["proposed"]["min_qty"], 0)
+		self.assertEqual(r["proposed"]["final_qty"], 0)
+
+	def test_opening_5_minimum_edits(self):
+		sles = [
+			_row("b", "OUTB", -5, "2026-09-12 01:00:00"),
+			_row("c", "OUTC", -5, "2026-09-12 02:00:00"),
+			_row("a", "INA", 10, "2026-09-12 05:00:00"),
+		]
+		r = optimize_group(sles=sles, opening=5, base_t=T)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		self.assertGreaterEqual(r["proposed"]["min_qty"], 0)
+		self.assertEqual(r["proposed"]["final_qty"], 5)
+		self.assertEqual(r["docs_changed"], 1)
+
+	def test_plus_1_insufficient_plus_2_works(self):
+		sles = [
+			_row("c", "OUTC", -10, "2026-09-12 01:00:00"),
+			_row("b", "OUTB", -10, "2026-09-12 02:00:00"),
+			_row("a", "INA", 20, "2026-09-12 05:00:00"),
+		]
+		edges = [("INA", "OUTB"), ("OUTB", "OUTC")]
+		r = optimize_group(sles=sles, opening=0, base_t=T, edges=edges)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		self.assertEqual(r["minimum_seconds_required"], 2)
+		self.assertEqual(r["assignment"]["INA"], 0)
+		self.assertEqual(r["assignment"]["OUTB"], 1)
+		self.assertEqual(r["assignment"]["OUTC"], 2)
+
+	def test_real_stock_shortage(self):
+		sles = [
+			_row("o", "OUT", -15, "2026-09-12 01:00:00"),
+			_row("i", "IN", 10, "2026-09-12 05:00:00"),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T)
+		self.assertEqual(r["status"], "REAL_STOCK_SHORTAGE")
+		self.assertEqual(r["moves"], [])
+
+	def test_batch_a_must_not_use_batch_b(self):
+		sles = [
+			_row("o", "OUT", -10, "1", batch_no="A", canonical_batch="A"),
+			_row("i", "IN", 10, "2", batch_no="A", canonical_batch="A"),
+		]
+		# Batch B stock is not in this group; shortage if opening 0 for A
+		r = optimize_group(sles=sles, opening=0, base_t=T)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		other = optimize_group(
+			sles=[
+				_row("o", "OUT", -10, "1", batch_no="A", canonical_batch="A"),
+			]
+			+ [
+				_row("i", "IN", 10, "2", batch_no="B", canonical_batch="B"),
+			],
+			opening=0,
+			base_t=T,
+		)
+		# mixed rows still simulate together if caller mixed them; scanner must not mix.
+		self.assertNotEqual(
+			sles[0]["canonical_batch"],
+			_row("i", "IN", 10, "2", batch_no="B", canonical_batch="B")["canonical_batch"],
+		)
+		self.assertEqual(other["proposed"]["final_qty"] if other.get("proposed") else other["current"]["final_qty"], 0)
+
+	def test_parent_voucher_multi_item_cross_conflict(self):
+		# Moving MFG later fixes RM but delays FG inbound past an existing T+1 outbound.
+		group = [
+			_row("oa", "MFG", -10, "1", item_code="RM"),
+			_row("ia", "IN_RM", 10, "2", item_code="RM"),
+		]
+		fg_rows = [
+			_row("fg", "MFG", 10, "1", item_code="FG", warehouse="FGW"),
+			_row(
+				"dn",
+				"DN",
+				-10,
+				"0",
+				item_code="FG",
+				warehouse="FGW",
+				t="2026-06-21 18:01:46",
+			),
+		]
+		cross = {("FG", "FGW", ""): {"sles": fg_rows, "opening": 0}}
+		r = optimize_group(sles=group, opening=0, base_t=T, cross_windows=cross)
+		self.assertEqual(r["status"], "CROSS_ITEM_CONFLICT")
+
+	def test_cross_item_ok_when_other_stays_non_negative(self):
+		group = [
+			_row("oa", "ISSUE", -10, "1", item_code="A"),
+			_row("ia", "IN_A", 10, "2", item_code="A"),
+		]
+		b_rows = [
+			_row("ob", "ISSUE", -10, "1", item_code="B"),
+			_row("ib", "IN_B", 10, "0", item_code="B"),
+		]
+		cross = {("B", "W", ""): {"sles": b_rows, "opening": 10}}
+		r = optimize_group(sles=group, opening=0, base_t=T, cross_windows=cross)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+
+	def test_collision_at_t_plus_1_included(self):
+		sles = [
+			_row("o", "OUT", -10, "2026-09-12 01:00:00"),
+			_row("i", "IN", 10, "2026-09-12 05:00:00"),
+		]
+		coll = [
+			_row(
+				"c",
+				"OTHER",
+				5,
+				"2026-09-12 00:00:00",
+				t="2026-06-21 18:01:46",
+			)
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T, collisions=coll)
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		self.assertEqual(r["minimum_seconds_required"], 1)
+		vouchers = {s["voucher_no"] for s in r["window"]["series"]}
+		self.assertIn("OTHER", vouchers)
+
+	def test_midnight_review(self):
+		t = "2026-06-21 23:59:59"
+		sles = [
+			_row("o", "OUT", -10, "1", t=t),
+			_row("i", "IN", 10, "2", t=t),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=t)
+		self.assertEqual(r["status"], "MIDNIGHT_REVIEW")
+		self.assertEqual(r["moves"], [])
+
+	def test_dependency_conflict(self):
+		sles = [
+			_row("o", "OUT", -10, "1"),
+			_row("i", "IN", 10, "2"),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T, edges=[("OUT", "IN")])
+		self.assertEqual(r["status"], "DEPENDENCY_CONFLICT")
+
+	def test_final_qty_unchanged(self):
+		sles = [
+			_row("o", "OUT", -10, "1"),
+			_row("i", "IN", 10, "2"),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T)
+		self.assertTrue(r["final_qty_unchanged"])
+		self.assertEqual(r["current"]["final_qty"], r["proposed"]["final_qty"])
+
+	def test_unrelated_same_time_still_stock_safe_but_not_forced(self):
+		sles = [
+			_row("o", "OUT", -10, "1"),
+			_row("i", "IN", 10, "2"),
+		]
+		r = optimize_group(sles=sles, opening=0, base_t=T, edges=[])
+		self.assertEqual(r["status"], "REPAIRABLE_SECONDS")
+		conf, _ = classify_edge(
+			{"item_code": "X", "warehouse": "W", "batch_no": ""},
+			{"item_code": "X", "warehouse": "W", "batch_no": ""},
+			same_work_order=False,
+			same_job_card=False,
+			against_stock_entry=False,
+			same_batch=False,
+			inbound_purpose="Material Receipt",
+			outbound_purpose="Material Issue",
+		)
+		self.assertEqual(conf, CONFIDENCE_AMBIGUOUS)
+
+
+class TestStockValueReplay(unittest.TestCase):
+	def test_quantity_only_replay_preserves_value(self):
+		rows = [
+			_row("o", "OUT", -10, "1", incoming_rate=0, valuation_rate=100, stock_value_difference=-1000),
+			_row("i", "IN", 10, "2", incoming_rate=100, valuation_rate=100, stock_value_difference=1000),
+		]
+		ordered = [
+			_row("i", "IN", 10, "2", incoming_rate=100, valuation_rate=100, stock_value_difference=1000),
+			_row("o", "OUT", -10, "1", incoming_rate=0, valuation_rate=100, stock_value_difference=-1000),
+		]
+		series = replay_series(ordered, 0, 0)
+		self.assertEqual(series[-1]["qty_after_transaction"], 0)
+		self.assertEqual(series[0]["stock_value_difference"], 1000)
+		self.assertEqual(series[1]["stock_value_difference"], -1000)
+		self.assertFalse(any(s["svd_changed"] for s in series))
+
+	def test_poison_sign_inverted(self):
+		row = _row("i", "IN", 10, "1", incoming_rate=100, stock_value_difference=-1000, valuation_rate=100)
+		row["qty_after_transaction"] = 10
+		row["stock_value"] = -1000
+		self.assertEqual(sle_poison_reason(row), "sign_inverted_incoming_svd")
+
+	def test_bin_matches_final_sle_math(self):
+		rows = [
+			_row("i", "IN", 10, "1", incoming_rate=50, valuation_rate=50, stock_value_difference=500),
+			_row("o", "OUT", -4, "2", incoming_rate=0, valuation_rate=50, stock_value_difference=-200),
+		]
+		series = replay_series(rows, 0, 0)
+		self.assertEqual(series[-1]["qty_after_transaction"], 6)
+		self.assertEqual(series[-1]["stock_value"], 300)
