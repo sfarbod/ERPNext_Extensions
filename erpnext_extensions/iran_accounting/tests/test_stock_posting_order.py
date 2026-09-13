@@ -630,6 +630,72 @@ class TestStockValueReplay(unittest.TestCase):
 		row["stock_value"] = -1000
 		self.assertEqual(sle_poison_reason(row), "sign_inverted_incoming_svd")
 
+	def test_leftover_at_zero_is_inversion_artifact_not_hard_poison(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import INVERSION_ARTIFACT_POISONS
+
+		row = _row("i", "IN", 1899, "2", incoming_rate=3333719, valuation_rate=3333719, stock_value_difference=6330732319)
+		row["qty_after_transaction"] = 0
+		row["stock_value"] = -8699750
+		self.assertEqual(sle_poison_reason(row), "qty_after_zero_nonzero_value")
+		self.assertIn(sle_poison_reason(row), INVERSION_ARTIFACT_POISONS)
+
+	def test_replay_after_reorder_clears_negative_and_leftover(self):
+		out = _row(
+			"o",
+			"OUT",
+			-1899,
+			"1",
+			incoming_rate=0,
+			valuation_rate=3338300,
+			stock_value_difference=-6339432069,
+		)
+		inn = _row(
+			"i",
+			"IN",
+			1899,
+			"2",
+			incoming_rate=3333719,
+			valuation_rate=3333719,
+			stock_value_difference=6330732319,
+			purpose="Manufacture",
+		)
+		inverted = replay_series([out, inn], 0, 0)
+		self.assertLess(inverted[0]["qty_after_transaction"], 0)
+		self.assertLess(inverted[1]["stock_value"], -1)
+		fixed = replay_series([inn, out], 0, 0)
+		self.assertGreaterEqual(fixed[0]["qty_after_transaction"], 0)
+		self.assertGreaterEqual(fixed[1]["qty_after_transaction"], 0)
+		self.assertEqual(fixed[1]["qty_after_transaction"], 0)
+		self.assertLess(abs(fixed[1]["stock_value"]), 1)
+		self.assertEqual(fixed[0]["stock_value_difference"], 6330732319)
+		self.assertEqual(fixed[-1]["qty_after_transaction"], inverted[-1]["qty_after_transaction"] + 0)
+
+	def test_inbound_keeps_manufacture_residual_svd(self):
+		inn = _row(
+			"i",
+			"IN",
+			1899,
+			"1",
+			incoming_rate=3333719,
+			valuation_rate=3333719,
+			stock_value_difference=6330732319,
+			purpose="Manufacture",
+		)
+		out = _row(
+			"o",
+			"OUT",
+			-1899,
+			"2",
+			incoming_rate=0,
+			valuation_rate=3333719,
+			stock_value_difference=-6339432069,
+		)
+		fixed = replay_series([inn, out], 0, 0)
+		self.assertEqual(fixed[0]["stock_value_difference"], 6330732319)
+		self.assertEqual(fixed[1]["stock_value_difference"], -6330732319)
+		self.assertEqual(fixed[1]["qty_after_transaction"], 0)
+		self.assertLess(abs(fixed[1]["stock_value"]), 1)
+
 	def test_bin_matches_final_sle_math(self):
 		rows = [
 			_row("i", "IN", 10, "1", incoming_rate=50, valuation_rate=50, stock_value_difference=500),
@@ -638,6 +704,45 @@ class TestStockValueReplay(unittest.TestCase):
 		series = replay_series(rows, 0, 0)
 		self.assertEqual(series[-1]["qty_after_transaction"], 6)
 		self.assertEqual(series[-1]["stock_value"], 300)
+
+	def test_transfer_incoming_follows_replayed_outgoing(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
+			transfer_incoming_rate_from_outgoing,
+		)
+
+		from decimal import Decimal
+
+		rate = transfer_incoming_rate_from_outgoing(-1899, -1899 * 3333719)
+		self.assertEqual(rate, Decimal("3333719"))
+
+	def test_window_poison_ignores_inversion_leftover(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import window_poison_reason
+
+		leftover = _row(
+			"i",
+			"IN",
+			1899,
+			"2",
+			incoming_rate=3333719,
+			valuation_rate=3333719,
+			stock_value_difference=6330732319,
+		)
+		leftover["qty_after_transaction"] = 0
+		leftover["stock_value"] = -8699750
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay._fetch_previous",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay._fetch_sles",
+			return_value=[leftover],
+		):
+			self.assertIsNone(
+				window_poison_reason("30300042", "Q", "2026-04-06 18:01:45", ignore_inversion_artifacts=True)
+			)
+			self.assertEqual(
+				window_poison_reason("30300042", "Q", "2026-04-06 18:01:45", ignore_inversion_artifacts=False),
+				"qty_after_zero_nonzero_value",
+			)
 
 
 class TestNegativeIntervalDetector(unittest.TestCase):

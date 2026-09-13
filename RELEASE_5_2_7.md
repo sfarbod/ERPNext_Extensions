@@ -188,9 +188,11 @@ Quarantine (Jalali **1405-01-17** = Gregorian **2026-04-06**):
 
 Same Work Order `MFG-WO-2026-00575`. Manufacture is the economic prerequisite. 5.2.7 negative-interval scanner classifies this **CROSS_TIME_REPAIRABLE / EXACT**.
 
-Proposed dry-run (not applied): keep Manufacture at 18:02:56; move Transfer **25825** to **18:02:57** (+72 seconds). Min qty −1899 → 0. Final qty unchanged.
+Proposed dry-run: keep Manufacture at 18:02:56; move Transfer **25825** to **18:02:57** (+72 seconds). Min qty −1899 → 0. Final qty unchanged.
 
 WIP: same transfer **IN +1899** at 18:01:45 — healthy other warehouse; detector is not fooled.
+
+**Applied on development.localhost** (see 11c). Timestamp-only was not sufficient; SLE qty_after / value / GL were replayed.
 
 ## 11b. Cross-time posting-order scanner (5.2.7 gap fix)
 
@@ -200,7 +202,7 @@ New detector walks each item + warehouse + canonical batch in ERPNext order (`po
 
 Search is not capped at one second. Dependency evidence outranks 60s / 5min / 30min windows. Crossing a posting date is **MIDNIGHT_REVIEW**, not auto-repair.
 
-**No operator timestamps were written.** Dry-run only.
+**Scanner is dry-run by default.** The 17 Farvardin EXACT pair was later applied (11c). Other operator rows were not bulk-written.
 
 | Count | Value |
 |-------|-------|
@@ -213,13 +215,50 @@ Search is not capped at one second. Dependency evidence outranks 60s / 5min / 30
 | LATER_INBOUND_UNRELATED | 83 |
 | AMBIGUOUS_DEPENDENCY | 24 |
 
-Old same-time scanner could not see these 10 + 8 date-boundary cases. They are dry-run only.
+Old same-time scanner could not see these 10 + 8 date-boundary cases.
+
+## 11c. Farvardin apply/replay (timestamp is not the repair)
+
+Detection found the pair. The first apply engine still failed closed:
+
+1. **Stage that failed:** `apply_repairs` poison gate / warehouse-wide value replay — not the timestamp write.
+2. **Why posting time alone is insufficient:** ERPNext orders SLE by `(posting_datetime, creation)`. Moving 25825 to 18:02:57 without rewriting `qty_after_transaction` leaves `MAT-SLE-2026-179096` at −1899 and Manufacture `MAT-SLE-2026-183138` at leftover `qty_after=0`, `stock_value=-8,699,750`.
+3. **Replay algorithm that had to change:** `replay_item_warehouse` + `apply_repairs` in `stock_posting_order/replay.py` and `repair.py`.
+   - Leftover-at-zero (`qty_after_zero_nonzero_value`) is an inversion **artifact**, not 5.2.0 patient-zero poison. Ignore it for posting-order replay.
+   - Do **not** create Transaction RIV on the outbound voucher (inbound still has poisoned `qty_after`).
+   - Replay **item+warehouse** from `min(in,out)` in ERPNext order after the timestamp write.
+   - Write only the inverted pair vouchers. Warehouse-wide value writes onto later multi-item manufactures (`25933-1`) unbalance those GLs by 1 Rial.
+   - After source OUT SVD is replayed, copy that rate onto the transfer-in SLE (`sync_transfer_incoming_rates`). Destination incoming_rate otherwise stays at the inverted outgoing rate.
+   - Keep Manufacture inbound SVD (5.2.0 FG residual 6,330,732,319). Do not reprice it as `qty * incoming_rate` (that creates a 62 Rial 621301 adjustment).
+   - When an OUT empties the identity, SVD = −running_value so leftover pennies die.
+   - Rebuild GL without `repost_gle_for_stock_vouchers` (that helper commits). Savepoint around timestamp + replay + GL.
+4. **Correct sequence:** savepoint → update SE/SLE/SABB posting datetime on 25825 → replay Quarantine pair → sync transfer incoming → replay WIP 25825 SLE → assert qty_after ≥ 0 and transfer value-neutral → rebuild GL for the pair → classify Failed RIV (no retry) → commit.
+
+### Before / after (development.localhost)
+
+| Surface | Before | After |
+|---------|--------|-------|
+| Stock Entry 25825 | 18:01:45 | **18:02:57**, `set_posting_time=1` |
+| Stock Entry 25824-1 | 18:02:56 | **unchanged** 18:02:56 |
+| Quarantine SLE order | OUT 25825 then IN 25824-1 | **IN 25824-1 then OUT 25825** |
+| 25825 Quarantine SLE | qty_after **−1899**, svd −6,339,432,069 | qty_after **0**, svd **−6,330,732,319** |
+| 25824-1 Quarantine SLE | qty_after **0**, stock_value **−8,699,750** | qty_after **1899**, stock_value **6,330,732,319** |
+| 25825 WIP SLE | +1899 at 18:01:45, svd 6,339,432,069 | +1899 at **18:02:57**, svd **6,330,732,319** (value-neutral) |
+| Batch running qty | min **−1899** | min **0** (never negative); final **0** |
+| Bin 30300042 Quarantine | 2695 / 977,990,240 | **identical** (last SLE untouched) |
+| GL 25825 | 6,339,432,069 balanced | **6,330,732,319** balanced (WIP debit / Quarantine credit) |
+| GL 25824-1 | 6,330,732,319 balanced | **unchanged 2-line 5.2.0** (no 62 Rial 621301) |
+| SABB 25825 | posting 18:01:45, outward avg_rate 0 | posting **18:02:57**, avg_rate **3,333,719** |
+| Diagnose batch | CROSS_TIME −1899 | **no negative interval** |
+| Integrity (pair) | n/a | **PASS**; Bin matches last SLE |
+
+Warehouse qty_after on **other lots** (Apr 11 `25906` −1206 etc.) is unchanged — those are separate identities, not this batch. Final warehouse qty **2695** unchanged. No new batch-level negative interval.
+
+Failed RIV `4cu72iljul` (30300042 / Quarantine) was reclassified, not retried.
 
 ## 12. Controlled real repair
 
-No leftover synthetic EXACT fixture remained after integration rollback.
-
-13 operator EXACT reconstructable rows exist (mostly same-voucher issued scrap). They were **not** written. Per policy, operator data is not bulk-repaired from this workspace.
+17 Farvardin (`MAT-STE-2026-25825` / `MAT-STE-2026-25824-1`) was repaired on **development.localhost** with SLE/Bin/GL replay (11c). Other operator EXACT reconstructable zero-rate rows were **not** written.
 
 Synthetic integration: reconstruct + idempotent dry-run/write on a new test item (rolled back). Runtime guard blocks submit when batch history is nonzero.
 
@@ -228,12 +267,12 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 | Area | Result |
 |------|--------|
 | `test_historical_stock` (unit) | PASS (25) |
-| `test_stock_posting_order` | PASS (54, incl. 13 negative-interval cases) |
-| `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin cross-time) |
+| `test_stock_posting_order` | PASS (59, incl. inversion-artifact replay + 5.2.0 residual SVD) |
+| `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
-| `test_stock_posting_order_integration` | PASS (10, incl. Farvardin dry-run + 71s fixture) |
+| `test_stock_posting_order_integration` | PASS (11, incl. Farvardin apply replay, not timestamp-only) |
 | `test_manufacture_rounding` | PASS |
-| Playwright posting-order + Farvardin + 6-tab integrity | PASS (4), no API 500 |
+| Playwright posting-order + Farvardin repaired ledger + 6-tab integrity | PASS (4), no API 500 |
 | `bench build --app erpnext_extensions` | PASS |
 | `migrate` ×2 | PASS |
 | Local `run_gate(full_stress=1)` | PASS (stress 148.29 s; RIV×2; 03516; flows) |

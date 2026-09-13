@@ -234,6 +234,10 @@ class TestHistoricalStockIntegration(unittest.TestCase):
 			for r in (diag.get("negative_intervals") or [])
 			if r.get("outbound_document") == "MAT-STE-2026-25825"
 		]
+		out_time = str(frappe.db.get_value("Stock Entry", "MAT-STE-2026-25825", "posting_time") or "")
+		if "18:02:57" in out_time:
+			self.assertFalse(cross, "repaired Farvardin must not still be a negative interval")
+			return
 		self.assertTrue(cross, "17 Farvardin must remain a cross-time posting-order candidate")
 		self.assertEqual(cross[0].get("optimizer_status"), "CROSS_TIME_REPAIRABLE")
 		self.assertEqual(cross[0].get("confidence"), "EXACT")

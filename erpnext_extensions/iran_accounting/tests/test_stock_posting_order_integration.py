@@ -400,6 +400,7 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		self.assertTrue(frappe.db.exists("Stock Entry", in_name))
 		out_before = frappe.db.get_value("Stock Entry", out_name, ["posting_time", "modified"], as_dict=True)
 
+		already = "18:02:57" in str(out_before.posting_time)
 		diag = diagnose_canonical_batch(batch)
 		self.assertTrue(diag.get("found"))
 		cross = [
@@ -407,6 +408,11 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 			for r in (diag.get("negative_intervals") or [])
 			if r.get("outbound_document") == out_name and r.get("item") == "30300042"
 		]
+		if already:
+			self.assertFalse(cross, "repaired Farvardin must not still be a negative interval")
+			out_after = frappe.db.get_value("Stock Entry", out_name, ["posting_time", "modified"], as_dict=True)
+			self.assertEqual(str(out_before.posting_time), str(out_after.posting_time))
+			return
 		self.assertTrue(cross, f"diagnose missed 17 Farvardin: {diag.get('negative_intervals')}")
 		row = cross[0]
 		self.assertEqual(row.get("detection"), "CROSS_TIME")
@@ -483,5 +489,107 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		self.assertTrue(preview["dry_run"])
 		mtfm.reload()
 		self.assertEqual(str(mtfm.posting_time), "18:01:45")
+
+	def test_farvardin_apply_replays_qty_after_not_only_timestamp(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.scanner import diagnose_canonical_batch
+
+		batch = "504135-30300042-AK264401A11"
+		out_name = "MAT-STE-2026-25825"
+		in_name = "MAT-STE-2026-25824-1"
+		if not frappe.db.exists("Stock Entry", out_name):
+			self.skipTest("17 Farvardin vouchers not on site")
+		wh = frappe.db.sql(
+			"""
+			SELECT warehouse FROM `tabStock Ledger Entry`
+			WHERE voucher_no=%s AND actual_qty<0 AND is_cancelled=0 LIMIT 1
+			""",
+			out_name,
+		)[0][0]
+		before_out = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{"voucher_no": out_name, "warehouse": wh, "actual_qty": ("<", 0)},
+			["name", "qty_after_transaction", "posting_datetime"],
+			as_dict=True,
+		)
+		rows = scan_production_posting_order_anomalies(from_date="2026-04-06", to_date="2026-04-06")
+		match = [
+			r
+			for r in rows
+			if r.get("outbound_document") == out_name and r.get("inbound_document") == in_name
+		]
+		already = str(frappe.db.get_value("Stock Entry", out_name, "posting_time")) == "18:02:57"
+		if not match and already:
+			after = frappe.db.get_value(
+				"Stock Ledger Entry",
+				before_out.name,
+				["qty_after_transaction", "posting_datetime"],
+				as_dict=True,
+			)
+			self.assertGreaterEqual(flt(after.qty_after_transaction), 0)
+			pair = frappe.db.sql(
+				"""
+				SELECT actual_qty, stock_value_difference
+				FROM `tabStock Ledger Entry`
+				WHERE voucher_no=%s AND item_code='30300042' AND is_cancelled=0
+				""",
+				out_name,
+				as_dict=True,
+			)
+			outs = [r for r in pair if flt(r.actual_qty) < 0]
+			ins = [r for r in pair if flt(r.actual_qty) > 0]
+			self.assertTrue(outs and ins)
+			self.assertLess(
+				abs(abs(flt(outs[0].stock_value_difference)) - abs(flt(ins[0].stock_value_difference))),
+				1,
+			)
+			return
+		self.assertTrue(match, "expected EXACT Farvardin candidate")
+		row = match[0]
+		self.assertEqual(row["confidence"], "EXACT")
+		result = apply_repairs([row], dry_run=False)
+		self.assertTrue(result["applied"], result)
+		se = frappe.get_doc("Stock Entry", out_name)
+		self.assertEqual(str(se.posting_time), "18:02:57")
+		sles = frappe.db.sql(
+			"""
+			SELECT voucher_no, actual_qty, qty_after_transaction, posting_datetime
+			FROM `tabStock Ledger Entry`
+			WHERE item_code='30300042' AND warehouse=%s AND is_cancelled=0
+			  AND voucher_no IN %s
+			ORDER BY posting_datetime, creation
+			""",
+			(wh, (in_name, out_name)),
+			as_dict=True,
+		)
+		self.assertEqual(sles[0].voucher_no, in_name)
+		self.assertGreaterEqual(min(flt(s.qty_after_transaction) for s in sles), 0)
+		diag = diagnose_canonical_batch(batch)
+		still = [
+			r
+			for r in (diag.get("negative_intervals") or [])
+			if r.get("outbound_document") == out_name
+		]
+		self.assertFalse(still, still)
+		gate = integrity_check([in_name, out_name], item_code="30300042", warehouse=wh)
+		self.assertTrue(gate["ok"], gate)
+		pair = frappe.db.sql(
+			"""
+			SELECT voucher_no, warehouse, actual_qty, stock_value_difference, incoming_rate
+			FROM `tabStock Ledger Entry`
+			WHERE voucher_no=%s AND item_code='30300042' AND is_cancelled=0
+			ORDER BY actual_qty
+			""",
+			out_name,
+			as_dict=True,
+		)
+		outs = [r for r in pair if flt(r.actual_qty) < 0]
+		ins = [r for r in pair if flt(r.actual_qty) > 0]
+		self.assertTrue(outs and ins)
+		self.assertLess(
+			abs(abs(flt(outs[0].stock_value_difference)) - abs(flt(ins[0].stock_value_difference))),
+			1,
+		)
+		self.assertGreaterEqual(flt(sles[0].qty_after_transaction), 0)
+		self.assertGreaterEqual(flt(sles[-1].qty_after_transaction), 0)
 
 

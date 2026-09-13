@@ -29,6 +29,7 @@ from erpnext_extensions.iran_accounting.stock_posting_order.ordering import (
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
 	replay_item_warehouse,
+	sync_transfer_incoming_rates,
 	window_poison_reason,
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.scanner import (
@@ -185,6 +186,46 @@ def _voucher_item_warehouses(se_name: str) -> list[tuple[str, str]]:
 	)
 
 
+def _ordered_identities(identities: set, row: dict) -> list[tuple[str, str]]:
+	"""Replay the inverted warehouse first so transfer-out SVD exists before dest IN."""
+	primary = (row.get("item"), row.get("warehouse"))
+	seen = set()
+	out = []
+	if primary[0] and primary[1]:
+		out.append(primary)
+		seen.add(primary)
+	for iw in sorted(identities, key=lambda x: (str(x[0]), str(x[1]))):
+		if not iw[0] or not iw[1] or iw in seen:
+			continue
+		out.append(iw)
+		seen.add(iw)
+	return out
+
+
+def _assert_transfer_value_neutral(voucher_no: str, item_code: str | None) -> None:
+	if not voucher_no or not item_code:
+		return
+	rows = frappe.db.sql(
+		"""
+		SELECT warehouse, actual_qty, stock_value_difference
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND item_code=%s
+		  AND is_cancelled=0
+		""",
+		(voucher_no, item_code),
+		as_dict=True,
+	)
+	outs = [r for r in rows if D(r.actual_qty) < 0]
+	ins = [r for r in rows if D(r.actual_qty) > 0]
+	if not outs or not ins:
+		return
+	if abs(abs(D(outs[0].stock_value_difference)) - abs(D(ins[0].stock_value_difference))) > 0.5:
+		raise frappe.ValidationError(
+			f"Replay failed: {voucher_no} transfer SVD not value-neutral "
+			f"(out {outs[0].stock_value_difference} vs in {ins[0].stock_value_difference})"
+		)
+
+
 def _maybe_riv(row: dict, vouchers: list[str]) -> str | None:
 	if row.get("valuation_impact") != "VALUATION-IMPACTING" and row.get("gl_impact") != "RIV_REQUIRED":
 		return None
@@ -233,17 +274,20 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 			if not moves:
 				raise frappe.ValidationError("No timestamp moves in preview")
 
-			# poison check before any write
+			# poison check before any write. Leftover-at-zero is an inversion
+			# artifact; posting-order replay is what clears it.
 			from_dt = get_datetime(row["current_inbound_time"])
 			out_dt = get_datetime(row["current_outbound_time"])
 			from_dt = min(from_dt, out_dt)
-			identities = set(_voucher_item_warehouses(row["inbound_document"])) | set(
-				_voucher_item_warehouses(row["outbound_document"])
-			)
-			for doc_move in moves:
+			identities = set()
+			for doc_move in _row_moves(row):
 				identities |= set(_voucher_item_warehouses(doc_move["document"]))
+			if row.get("item") and row.get("warehouse"):
+				identities.add((row["item"], row["warehouse"]))
 			for item_code, warehouse in identities:
-				poison = window_poison_reason(item_code, warehouse, from_dt)
+				poison = window_poison_reason(
+					item_code, warehouse, from_dt, ignore_inversion_artifacts=True
+				)
 				if poison:
 					raise frappe.ValidationError(
 						f"{STATUS_VALUATION_POISON}: {item_code} {warehouse} ({poison})"
@@ -279,36 +323,73 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				for vn in {row["inbound_document"], row["outbound_document"], *[m["document"] for m in moves]}
 			}
 
-			for m in moves:
-				_update_posting_datetime(m["document"], get_datetime(m["new"]))
+			savepoint = f"ppo_{frappe.generate_hash(length=8)}"
+			frappe.db.savepoint(savepoint)
+			try:
+				for m in moves:
+					_update_posting_datetime(m["document"], get_datetime(m["new"]))
 
-			replay_results = []
-			valuation_changed = False
-			for item_code, warehouse in identities:
-				rep = replay_item_warehouse(item_code, warehouse, from_dt)
-				if not rep.get("ok"):
-					raise frappe.ValidationError(
-						f"{rep.get('status')}: {item_code} {warehouse} ({rep.get('reason')})"
-					)
-				replay_results.append(rep)
-				if rep.get("valuation_changed"):
-					valuation_changed = True
+				replay_results = []
+				valuation_changed = False
+				touched = set()
+				ordered = _ordered_identities(identities, row)
+				moved_vouchers = [m["document"] for m in moves]
+				sync_targets = set(moved_vouchers) | {
+					row.get("inbound_document"),
+					row.get("outbound_document"),
+				}
+				write_vouchers = {vn for vn in sync_targets if vn}
+				# Source warehouse first, then copy transfer-in incoming_rate,
+				# then destination warehouse. A second pass picks up dest SVD.
+				# Only the inverted pair is written; later lots keep their SLE.
+				for _pass in (1, 2):
+					pass_results = []
+					for item_code, warehouse in ordered:
+						rep = replay_item_warehouse(
+							item_code,
+							warehouse,
+							from_dt,
+							ignore_inversion_artifacts=True,
+							write_vouchers=write_vouchers,
+						)
+						if not rep.get("ok"):
+							raise frappe.ValidationError(
+								f"{rep.get('status')}: {item_code} {warehouse} ({rep.get('reason')})"
+							)
+						pass_results.append(rep)
+						if rep.get("valuation_changed"):
+							valuation_changed = True
+						touched |= set(rep.get("touched_vouchers") or [])
+						for vn in list(sync_targets | touched):
+							if vn:
+								sync_transfer_incoming_rates(vn)
+					replay_results = pass_results
+
+				# Timestamp change is not the repair. qty_after on the inverted
+				# voucher must be non-negative after replay in ERPNext order.
+				_assert_ledger_repaired(row, from_dt)
+				for vn in moved_vouchers:
+					_assert_transfer_value_neutral(vn, row.get("item"))
+
+				gl_touched = []
+				if valuation_changed:
+					for vn in sorted(touched | {row["outbound_document"]}):
+						gl_touched.append(_rebuild_gl_no_commit(vn))
+
+				gl_after = {
+					vn: _gl_balanced(vn)
+					for vn in gl_before
+				}
+				if not valuation_changed:
+					for vn, after in gl_after.items():
+						if not after["balanced"]:
+							raise frappe.ValidationError(f"GL unbalanced after quantity-only repair: {vn}")
+			except Exception:
+				frappe.db.rollback(save_point=savepoint)
+				raise
 
 			riv_name = None
-			if valuation_changed:
-				row = dict(row)
-				row["valuation_impact"] = "VALUATION-IMPACTING"
-				row["gl_impact"] = "RIV_REQUIRED"
-				riv_name = _maybe_riv(row, [m["document"] for m in moves])
-
-			gl_after = {
-				vn: _gl_balanced(vn)
-				for vn in gl_before
-			}
-			if not valuation_changed:
-				for vn, after in gl_after.items():
-					if not after["balanced"]:
-						raise frappe.ValidationError(f"GL unbalanced after quantity-only repair: {vn}")
+			riv_revalidated = _revalidate_failed_riv(row.get("item"), row.get("warehouse"))
 
 			primary = moves[0]
 			entry = {
@@ -324,6 +405,8 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				"valuation_changed": valuation_changed,
 				"gl_before": gl_before,
 				"gl_after": gl_after,
+				"gl_rebuilt": gl_touched,
+				"failed_riv_revalidated": riv_revalidated,
 				"seconds_shifted": max((m.get("seconds") or 0) for m in moves),
 			}
 			_append_audit(log, entry)
@@ -342,6 +425,84 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 		"applied": applied,
 		"blocked": blocked,
 	}
+
+
+def _assert_ledger_repaired(row: dict, from_dt) -> None:
+	"""Fail closed if timestamps moved but qty_after still inverted."""
+	item = row.get("item")
+	warehouse = row.get("warehouse")
+	if not item or not warehouse:
+		return
+	sles = _identity_window(item, warehouse, row.get("batch"), from_dt)
+	if not sles:
+		raise frappe.ValidationError("Replay produced an empty SLE window")
+	out_name = row.get("outbound_document")
+	in_name = row.get("inbound_document")
+	out_dt = in_dt = None
+	for s in sles:
+		if s.voucher_no == out_name and D(s.actual_qty) < 0:
+			out_dt = get_datetime(s.posting_datetime)
+			if D(s.qty_after_transaction) < -0.0001:
+				raise frappe.ValidationError(
+					f"Replay failed: {s.name} qty_after_transaction still {s.qty_after_transaction}"
+				)
+		if s.voucher_no == in_name and D(s.actual_qty) > 0:
+			in_dt = get_datetime(s.posting_datetime)
+	if out_dt and in_dt and out_dt < in_dt:
+		raise frappe.ValidationError(
+			f"Replay failed: outbound {out_name} still before inbound {in_name}"
+		)
+	run = D(row.get("opening_qty") or 0)
+	for s in sles:
+		run += D(s.actual_qty)
+		if run < -0.0001:
+			raise frappe.ValidationError(
+				f"Replay failed: batch running qty still {run} at {s.voucher_no}"
+			)
+
+
+def _rebuild_gl_no_commit(voucher_no: str) -> dict:
+	if not voucher_no or not frappe.db.exists("Stock Entry", voucher_no):
+		return {"voucher": voucher_no, "rebuilt": False, "reason": "missing"}
+	se = frappe.get_doc("Stock Entry", voucher_no)
+	if cint(se.docstatus) != 1:
+		return {"voucher": voucher_no, "rebuilt": False, "reason": "not_submitted"}
+	from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+	from erpnext.accounts.utils import _delete_accounting_ledger_entries
+
+	inventory_account_map = se.get_inventory_account_map()
+	expected = toggle_debit_credit_if_negative(se.get_gl_entries(inventory_account_map))
+	_delete_accounting_ledger_entries("Stock Entry", voucher_no)
+	if expected:
+		se.make_gl_entries(gl_entries=expected, from_repost=True)
+	after = _gl_balanced(voucher_no)
+	if not after["balanced"]:
+		raise frappe.ValidationError(f"GL rebuild failed: {voucher_no} unbalanced")
+	return {"voucher": voucher_no, "rebuilt": True, "gl": after}
+
+
+def _revalidate_failed_riv(item_code, warehouse) -> list:
+	if not item_code or not warehouse or not frappe.db.exists("DocType", "Repost Item Valuation"):
+		return []
+	from erpnext_extensions.iran_accounting.historical_stock.failed_riv import classify_failed_riv
+
+	docs = frappe.db.sql(
+		"""
+		SELECT name, item_code, warehouse, voucher_no, voucher_type, posting_date,
+		       status, error_log, based_on, modified, company
+		FROM `tabRepost Item Valuation`
+		WHERE status='Failed' AND docstatus=1
+		  AND item_code=%s AND warehouse=%s
+		ORDER BY modified DESC
+		LIMIT 20
+		""",
+		(item_code, warehouse),
+		as_dict=True,
+	)
+	return [
+		{"name": d.name, "riv_status": classify_failed_riv(d).get("riv_status"), "error": (d.error_log or "")[:180]}
+		for d in docs
+	]
 
 
 def _identity_window(item_code, warehouse, batch_no, posting_datetime) -> list:

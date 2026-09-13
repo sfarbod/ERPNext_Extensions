@@ -11,7 +11,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_EVEN
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from erpnext_extensions.iran_accounting.stock_posting_order import STATUS_VALUATION_POISON
 from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
@@ -19,6 +19,15 @@ from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
 POISON_RATE = Decimal("1000000000000")  # 1e12
 VALUE_EPS = Decimal("0.5")
 QTY_EPS = Decimal("0.0001")
+
+# Leftover value at qty 0 is a SYMPTOM of inverted IN/OUT, not independent 5.2.0
+# poison. Posting-order replay exists to clear it after chronology is fixed.
+INVERSION_ARTIFACT_POISONS = frozenset(
+	{
+		"qty_after_zero_nonzero_value",
+		"qty_zero_nonzero_value",
+	}
+)
 
 
 def _q(x) -> Decimal:
@@ -61,16 +70,28 @@ def replay_series(rows: list, opening_qty=0, opening_value=0) -> list[dict]:
 				rate = D(_g(row, "valuation_rate"))
 			if rate == 0 and running_qty:
 				rate = running_value / running_qty
-			svd = qty * rate
+			stored_svd = D(_g(row, "stock_value_difference"))
+			purpose = str(_g(row, "purpose") or "")
+			# Manufacture/Repack inbound SVD is the 5.2.0 contract (FG residual).
+			# Transfer-in must follow the replayed source outgoing rate.
+			if stored_svd > 0 and purpose in ("Manufacture", "Repack"):
+				svd = stored_svd
+			else:
+				svd = qty * rate
 			running_qty += qty
 			running_value += svd
 		else:
-			rate = (running_value / running_qty) if running_qty else D(_g(row, "valuation_rate"))
-			svd = qty * rate
-			running_qty += qty
-			running_value += svd
-			if abs(running_qty) <= QTY_EPS:
+			if running_qty and abs(running_qty + qty) <= QTY_EPS:
+				svd = -running_value
 				running_qty = D(0)
+				running_value = D(0)
+			else:
+				rate = (running_value / running_qty) if running_qty else D(_g(row, "valuation_rate"))
+				svd = qty * rate
+				running_qty += qty
+				running_value += svd
+				if abs(running_qty) <= QTY_EPS:
+					running_qty = D(0)
 		val_rate = (running_value / running_qty) if running_qty else D(0)
 		out.append(
 			{
@@ -87,22 +108,131 @@ def replay_series(rows: list, opening_qty=0, opening_value=0) -> list[dict]:
 	return out
 
 
-def window_poison_reason(item_code, warehouse, from_dt) -> str | None:
+def window_poison_reason(item_code, warehouse, from_dt, *, ignore_inversion_artifacts: bool = False) -> str | None:
 	rows = _fetch_sles(item_code, warehouse, from_dt, before=False)
 	prev = _fetch_previous(item_code, warehouse, from_dt)
 	if prev:
 		reason = sle_poison_reason(prev)
-		if reason:
+		if reason and not (ignore_inversion_artifacts and reason in INVERSION_ARTIFACT_POISONS):
 			return reason
 	for row in rows:
 		reason = sle_poison_reason(row)
-		if reason:
-			return reason
+		if not reason:
+			continue
+		if ignore_inversion_artifacts and reason in INVERSION_ARTIFACT_POISONS:
+			continue
+		return reason
 	return None
 
 
-def replay_item_warehouse(item_code, warehouse, from_dt) -> dict:
-	poison = window_poison_reason(item_code, warehouse, from_dt)
+def transfer_incoming_rate_from_outgoing(actual_qty, stock_value_difference):
+	"""Dest transfer-in rate after the source warehouse has been replayed."""
+	qty = D(actual_qty)
+	if qty == 0:
+		return D(0)
+	return abs(D(stock_value_difference) / qty)
+
+
+def sync_transfer_incoming_rates(voucher_no: str) -> list[dict]:
+	"""Copy replayed source outgoing rate onto the same-voucher transfer-in SLE.
+
+	Warehouse replay alone cannot make a Material Transfer value-neutral: the
+	destination incoming_rate stays at the pre-repair figure until this copy.
+	"""
+	if not voucher_no:
+		return []
+	rows = frappe.db.sql(
+		"""
+		SELECT name, item_code, warehouse, actual_qty, stock_value_difference,
+		       incoming_rate, voucher_detail_no, serial_and_batch_bundle
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND is_cancelled=0
+		""",
+		voucher_no,
+		as_dict=True,
+	)
+	outs = [r for r in rows if D(r.actual_qty) < 0]
+	ins = [r for r in rows if D(r.actual_qty) > 0]
+	changed = []
+	for inn in ins:
+		src = next((o for o in outs if o.item_code == inn.item_code), None)
+		if not src:
+			continue
+		rate = transfer_incoming_rate_from_outgoing(src.actual_qty, src.stock_value_difference)
+		src_svd = abs(D(src.stock_value_difference))
+		dst_svd = abs(D(inn.stock_value_difference))
+		if abs(src_svd - dst_svd) <= VALUE_EPS and abs(rate - D(inn.incoming_rate)) <= VALUE_EPS:
+			continue
+		frappe.db.set_value(
+			"Stock Ledger Entry",
+			inn.name,
+			"incoming_rate",
+			flt(rate),
+			update_modified=False,
+		)
+		frappe.db.set_value(
+			"Stock Ledger Entry",
+			src.name,
+			"outgoing_rate",
+			flt(rate),
+			update_modified=False,
+		)
+		if inn.voucher_detail_no and frappe.db.exists("Stock Entry Detail", inn.voucher_detail_no):
+			qty = abs(flt(inn.actual_qty))
+			detail_update = {
+				"basic_rate": flt(rate),
+				"valuation_rate": flt(rate),
+				"amount": flt(rate) * qty,
+				"basic_amount": flt(rate) * qty,
+			}
+			frappe.db.set_value(
+				"Stock Entry Detail",
+				inn.voucher_detail_no,
+				detail_update,
+				update_modified=False,
+			)
+		if inn.serial_and_batch_bundle and frappe.db.exists(
+			"Serial and Batch Bundle", inn.serial_and_batch_bundle
+		):
+			frappe.db.set_value(
+				"Serial and Batch Bundle",
+				inn.serial_and_batch_bundle,
+				"avg_rate",
+				flt(rate),
+				update_modified=False,
+			)
+		if src.serial_and_batch_bundle and frappe.db.exists(
+			"Serial and Batch Bundle", src.serial_and_batch_bundle
+		):
+			frappe.db.set_value(
+				"Serial and Batch Bundle",
+				src.serial_and_batch_bundle,
+				"avg_rate",
+				flt(rate),
+				update_modified=False,
+			)
+		changed.append(
+			{
+				"voucher": voucher_no,
+				"item_code": inn.item_code,
+				"sle": inn.name,
+				"incoming_rate": flt(rate),
+			}
+		)
+	return changed
+
+
+def replay_item_warehouse(
+	item_code,
+	warehouse,
+	from_dt,
+	*,
+	ignore_inversion_artifacts: bool = True,
+	write_vouchers: set | None = None,
+) -> dict:
+	poison = window_poison_reason(
+		item_code, warehouse, from_dt, ignore_inversion_artifacts=ignore_inversion_artifacts
+	)
 	if poison:
 		return {
 			"ok": False,
@@ -118,7 +248,10 @@ def replay_item_warehouse(item_code, warehouse, from_dt) -> dict:
 	series = replay_series(rows, opening_qty, opening_value)
 	valuation_changed = False
 	touched_vouchers = set()
+	value_prec = _sle_value_precision()
 	for i, row in enumerate(rows):
+		if write_vouchers is not None and row.voucher_no not in write_vouchers:
+			continue
 		step = series[i]
 		if step["svd_changed"]:
 			valuation_changed = True
@@ -128,26 +261,25 @@ def replay_item_warehouse(item_code, warehouse, from_dt) -> dict:
 			row.name,
 			{
 				"qty_after_transaction": flt(step["qty_after_transaction"]),
-				"stock_value": flt(step["stock_value"]),
-				"stock_value_difference": flt(step["stock_value_difference"]),
+				"stock_value": flt(step["stock_value"], value_prec),
+				"stock_value_difference": flt(step["stock_value_difference"], value_prec),
 				"valuation_rate": flt(step["valuation_rate"]),
 			},
 			update_modified=False,
 		)
-	final_qty = series[-1]["qty_after_transaction"] if series else opening_qty
-	final_value = series[-1]["stock_value"] if series else opening_value
-	final_rate = series[-1]["valuation_rate"] if series else D(0)
-	_update_bin(item_code, warehouse, final_qty, final_value, final_rate)
+	_bin_from_last_sle(item_code, warehouse)
+	final = _fetch_last(item_code, warehouse)
 	return {
 		"ok": True,
 		"status": "REPLAYED",
 		"item_code": item_code,
 		"warehouse": warehouse,
-		"final_qty": final_qty,
-		"final_value": final_value,
+		"final_qty": D(final.qty_after_transaction) if final else opening_qty,
+		"final_value": D(final.stock_value) if final else opening_value,
 		"valuation_changed": valuation_changed,
 		"touched_vouchers": sorted(touched_vouchers),
 		"rows": len(series),
+		"written": len(touched_vouchers) if write_vouchers is not None else len(series),
 	}
 
 
@@ -180,8 +312,9 @@ def _fetch_sles(item_code, warehouse, from_dt, *, before=False):
 		f"""
 		SELECT name, voucher_no, voucher_type, actual_qty, qty_after_transaction,
 		       incoming_rate, valuation_rate, stock_value, stock_value_difference,
-		       posting_datetime, creation
-		FROM `tabStock Ledger Entry`
+		       posting_datetime, creation,
+		       (SELECT purpose FROM `tabStock Entry` WHERE name=sle.voucher_no) purpose
+		FROM `tabStock Ledger Entry` sle
 		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
 		  AND posting_datetime {op} %s
 		ORDER BY posting_datetime, creation
@@ -189,6 +322,37 @@ def _fetch_sles(item_code, warehouse, from_dt, *, before=False):
 		(item_code, warehouse, from_dt),
 		as_dict=True,
 	)
+
+
+def _fetch_last(item_code, warehouse):
+	rows = frappe.db.sql(
+		"""
+		SELECT qty_after_transaction, stock_value, valuation_rate
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime DESC, creation DESC
+		LIMIT 1
+		""",
+		(item_code, warehouse),
+		as_dict=True,
+	)
+	return rows[0] if rows else None
+
+
+def _sle_value_precision() -> int:
+	try:
+		from frappe.model.meta import get_field_precision
+
+		return cint(get_field_precision(frappe.get_meta("Stock Ledger Entry").get_field("stock_value")))
+	except Exception:
+		return 2
+
+
+def _bin_from_last_sle(item_code, warehouse) -> None:
+	last = _fetch_last(item_code, warehouse)
+	if not last:
+		return
+	_update_bin(item_code, warehouse, last.qty_after_transaction, last.stock_value, last.valuation_rate)
 
 
 def _update_bin(item_code, warehouse, qty, value, rate) -> None:

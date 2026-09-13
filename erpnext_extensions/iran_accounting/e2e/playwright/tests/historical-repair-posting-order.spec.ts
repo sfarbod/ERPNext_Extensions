@@ -145,7 +145,7 @@ test.describe("5.2.7 Posting Order — 17 Farvardin cross-time @release-blocking
     }
   });
 
-  test("Farvardin 1405-01-17 Quarantine -1899 is visible after Dry Run", async ({ page, loginPage }) => {
+  test("Farvardin 1405-01-17 ledger is repaired, not timestamp-only", async ({ page, loginPage }) => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(String(err)));
     page.on("response", (res) => {
@@ -155,6 +155,22 @@ test.describe("5.2.7 Posting Order — 17 Farvardin cross-time @release-blocking
     if (!process.env.FRAPPE_E2E_SID) {
       await loginPage.login(erpnextConfig.user, erpnextConfig.password);
     }
+
+    await page.goto("/app/stock-entry/MAT-STE-2026-25825");
+    await expect(page.locator("body")).toContainText("MAT-STE-2026-25825", { timeout: 60_000 });
+    await expect(page.locator("body")).toContainText(/18:02:57|02:57/, { timeout: 60_000 });
+    const seBody = await page.locator("body").innerText();
+    expect(seBody).not.toMatch(/18:01:45/);
+    await captureStep(page, "ppo_07_farvardin_stock_entry");
+
+    await page.goto(
+      "/app/query-report/Stock%20Ledger?item_code=30300042&from_date=2026-04-06&to_date=2026-04-06"
+    );
+    await expect(page.locator(".page-title")).toContainText(/Stock Ledger/i, { timeout: 60_000 });
+    await page.waitForTimeout(3000);
+    const ledger = await page.locator("body").innerText();
+    expect(ledger.toLowerCase()).not.toContain("internal server error");
+    await captureStep(page, "ppo_08_farvardin_stock_ledger");
 
     await page.goto("/app/historical-repair");
     await expect(page.locator("button.hr-tab", { hasText: "Posting Order" })).toBeVisible({ timeout: 60_000 });
@@ -166,22 +182,22 @@ test.describe("5.2.7 Posting Order — 17 Farvardin cross-time @release-blocking
 
     await page.locator("button[data-action='dry-run']").click();
     const preview = page.locator("pre[data-role='preview']");
-    await expect(preview).toContainText(/DRY_RUN|CROSS_TIME|eligible/i, { timeout: 180_000 });
+    await expect(preview).toContainText(/DRY_RUN|CROSS_TIME|eligible|Scan complete|NO_REPAIR/i, {
+      timeout: 180_000,
+    });
     const previewText = await preview.innerText();
     expect(previewText.toLowerCase()).not.toContain("internal server error");
     expect(previewText).not.toContain("Traceback");
 
     const tableText = await page.locator(".hr-table-wrap").innerText();
     const hay = `${previewText}\n${tableText}`;
-    expect(hay).toContain("504135-30300042-AK264401A11");
-    expect(hay).toContain("30300042");
-    expect(hay).toMatch(/-1899/);
-    expect(hay).toContain("18:01:45");
-    expect(hay).toContain("18:02:56");
-    expect(hay).toMatch(/18:02:57|CROSS_TIME_REPAIRABLE|ELIGIBLE/);
-    expect(hay).toContain("EXACT");
+    const stillOpen =
+      hay.includes("504135-30300042-AK264401A11") &&
+      hay.includes("-1899") &&
+      hay.includes("18:01:45");
+    expect(stillOpen).toBeFalsy();
 
-    await captureStep(page, "ppo_07_farvardin_cross_time");
+    await captureStep(page, "ppo_09_farvardin_no_interval");
 
     const unexpected = errors.filter((e) => !e.includes("favicon") && !e.includes("socket.io"));
     expect(unexpected, unexpected.join("\n")).toEqual([]);
