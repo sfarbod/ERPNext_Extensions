@@ -116,11 +116,7 @@ test.describe("5.2.1 Historical Repair — production posting order @release-blo
     await page.goto(
       "/app/query-report/Stock%20Ledger?item_code=230699&from_date=2026-09-01&to_date=2026-09-01"
     );
-    await expect(page.locator("body")).toBeVisible();
-    await page.waitForLoadState("domcontentloaded");
-    await expect(page.locator(".page-title, .report-wrapper, body")).toContainText(/Stock Ledger|230699|No Data|item/i, {
-      timeout: 60_000,
-    });
+    await expect(page.locator(".page-title")).toContainText(/Stock Ledger/i, { timeout: 60_000 });
     await captureStep(page, "ppo_06_stock_ledger");
     const body = await page.locator("body").innerText();
     expect(body.toLowerCase()).not.toContain("internal server error");
