@@ -694,6 +694,9 @@ def _patch_stock_ledger_engine():
 
 	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
 	from erpnext_extensions.iran_accounting.domain.ledger_rounding import round_sle_monetary_fields
+	from erpnext_extensions.iran_accounting.domain.negative_stock_healing import (
+		make_validate_negative_stock_wrapper,
+	)
 	from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 		assert_erpnext_riv_rate_patch_supported,
 		make_update_rate_on_stock_entry_wrapper,
@@ -749,6 +752,15 @@ def _patch_stock_ledger_engine():
 		sl.update_entries_after.process_sle = process_sle
 		sl._iran_patched_update_entries_after = True
 
+	# Incoming healing: allow receipts that reduce an already-negative running qty.
+	# Installed independently so a process_sle-only older patch still gets this wrap.
+	live_neg = sl.update_entries_after.validate_negative_stock
+	if not getattr(live_neg, "_iran_negative_stock_healing", None):
+		sl.update_entries_after._iran_original_validate_negative_stock = live_neg
+		sl.update_entries_after.validate_negative_stock = make_validate_negative_stock_wrapper(live_neg)
+
+	_patch_serial_and_batch_bundle_negative_healing()
+
 	# Idempotent install of rate-first RIV wrapper (may run after older process_sle-only patch).
 	if not getattr(sl, "_iran_patched_update_rate_on_stock_entry", None):
 		live = sl.update_entries_after.update_rate_on_stock_entry
@@ -775,6 +787,28 @@ def _patch_stock_ledger_engine():
 			_orig_recalculate
 		)
 		sl._iran_patched_recalculate_amounts = True
+
+
+def _patch_serial_and_batch_bundle_negative_healing():
+	"""Inward-only batch healing. Outward BatchNegativeStockError is unchanged."""
+	from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+		SerialandBatchBundle,
+	)
+
+	from erpnext_extensions.iran_accounting.domain.negative_stock_healing import (
+		make_validate_batch_inventory_wrapper,
+		make_validate_negative_batch_wrapper,
+	)
+
+	live = SerialandBatchBundle.validate_negative_batch
+	if not getattr(live, "_iran_negative_stock_healing", None):
+		SerialandBatchBundle._iran_original_validate_negative_batch = live
+		SerialandBatchBundle.validate_negative_batch = make_validate_negative_batch_wrapper(live)
+
+	live_inv = SerialandBatchBundle.validate_batch_inventory
+	if not getattr(live_inv, "_iran_negative_stock_healing", None):
+		SerialandBatchBundle._iran_original_validate_batch_inventory = live_inv
+		SerialandBatchBundle.validate_batch_inventory = make_validate_batch_inventory_wrapper(live_inv)
 
 
 def _patch_stock_ledger_report():
