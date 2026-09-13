@@ -222,9 +222,9 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		prev = _enable_negative_stock(True)
 		try:
 			mtfm = self._make_mtfm(rm, 5, posting_date, posting_time)
-		except Exception as exc:
+		except Exception:
 			_enable_negative_stock(bool(prev))
-			self.skipTest(f"MTfM fixture blocked by valuation integrity: {exc}")
+			raise
 		try:
 			from erpnext_extensions.iran_accounting.stock_posting_order.ordering import combine_posting
 			from erpnext_extensions.iran_accounting.stock_posting_order.prevention import (
@@ -372,24 +372,19 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 	def test_operator_batch_same_time_classified(self):
 		from erpnext_extensions.iran_accounting.stock_posting_order.scanner import scan_same_time_groups
 
-		exists = frappe.db.exists("Item", "18000007")
-		if not exists:
-			self.skipTest("operator item 18000007 not on site")
+		self.assertTrue(frappe.db.exists("Item", "18000007"), "operator item 18000007 required")
 		result = scan_same_time_groups(from_date="2026-06-21", to_date="2026-06-21", include_likely=True)
 		match = [
 			r
 			for r in result["rows"]
 			if r.get("item") == "18000007" and "18:01:20" in str(r.get("current_inbound_time") or "")
 		]
-		if not match:
-			self.skipTest("18:01:20 group not in scan rows")
+		self.assertTrue(match, "expected 18:01:20 SABB group for 18000007")
 		row = match[0]
 		self.assertTrue(row.get("batch"))
 		self.assertTrue(row.get("has_batch"))
 		self.assertEqual(row.get("confidence"), "LIKELY")
 		self.assertFalse(row.get("eligible"))
-		self.assertIn(
-			row.get("optimizer_status"),
-			("NO_REPAIR_NEEDED", "REPAIRABLE_SECONDS", "REAL_STOCK_SHORTAGE"),
-		)
+		self.assertEqual(row.get("optimizer_status"), "NO_REPAIR_NEEDED")
+		self.assertEqual(row.get("minimum_seconds_label"), "Repair unnecessary")
 

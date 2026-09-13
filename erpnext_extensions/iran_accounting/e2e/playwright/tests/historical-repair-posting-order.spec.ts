@@ -1,8 +1,6 @@
 import { test, expect } from "../src/fixtures/erpnext.fixture";
 import { erpnextConfig } from "../src/fixtures/erpnext.fixture";
 import { captureStep } from "../src/utils/screenshots";
-import { deskBaseUrlResolvable } from "../src/utils/network";
-import { config } from "../src/utils/env";
 
 test.describe("5.2.1 Historical Repair — production posting order @release-blocking", () => {
   test.beforeEach(async ({ page }) => {
@@ -32,11 +30,6 @@ test.describe("5.2.1 Historical Repair — production posting order @release-blo
   });
 
   test("open repair page, dry-run, preview, integrity, no API 500", async ({ page, loginPage }) => {
-    test.skip(
-      !process.env.FRAPPE_E2E_SID && !deskBaseUrlResolvable(config.baseUrl),
-      `Desk host not resolvable (${config.baseUrl}) and no FRAPPE_E2E_SID`
-    );
-
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(String(err)));
     page.on("response", (res) => {
@@ -86,11 +79,6 @@ test.describe("5.2.1 Historical Repair — production posting order @release-blo
     page,
     loginPage,
   }) => {
-    test.skip(
-      !process.env.FRAPPE_E2E_SID && !deskBaseUrlResolvable(config.baseUrl),
-      `Desk host not resolvable (${config.baseUrl}) and no FRAPPE_E2E_SID`
-    );
-
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(String(err)));
     page.on("response", (res) => {
@@ -128,7 +116,11 @@ test.describe("5.2.1 Historical Repair — production posting order @release-blo
     await page.goto(
       "/app/query-report/Stock%20Ledger?item_code=230699&from_date=2026-09-01&to_date=2026-09-01"
     );
-    await page.waitForTimeout(4000);
+    await expect(page.locator("body")).toBeVisible();
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator(".page-title, .report-wrapper, body")).toContainText(/Stock Ledger|230699|No Data|item/i, {
+      timeout: 60_000,
+    });
     await captureStep(page, "ppo_06_stock_ledger");
     const body = await page.locator("body").innerText();
     expect(body.toLowerCase()).not.toContain("internal server error");
