@@ -118,6 +118,11 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			row=row,
 		)
 
+	# Movement is the source of truth for SVD. stock_value is reconstructed as
+	# previous + movement. On insert, qty_after_transaction is still the default 0
+	# and stock_value/SVD are both 0, so this writes stock_value = movement. That
+	# is not a finished warehouse balance (and must not be clamped to 0 when
+	# qty_after is still uncomputed — that would hide real leftover-value I4).
 	value_after = flt(sle.stock_value)
 	value_before = value_after - flt(sle.stock_value_difference)
 	sle.stock_value_difference = movement

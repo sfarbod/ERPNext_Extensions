@@ -702,6 +702,7 @@ def _patch_stock_ledger_engine():
 		assert_sle_valuation_integrity_after_sync,
 		assert_sle_valuation_integrity_before_vanilla,
 		make_recalculate_amounts_wrapper,
+		mark_sle_running_balance_processed_after_vanilla,
 	)
 	from erpnext_extensions.iran_accounting.domain.sle_persistence import (
 		persist_processed_sle_if_possible,
@@ -735,6 +736,9 @@ def _patch_stock_ledger_engine():
 				assert_sle_valuation_integrity_before_vanilla(self, sle)
 			_orig_process_sle(self, sle)
 			if company and is_irr_company(company):
+				# I4 leftover-value is only valid after vanilla copied running qty.
+				# Early return / insert-default qty_after=0 is not a final warehouse balance.
+				mark_sle_running_balance_processed_after_vanilla(self, sle)
 				sync_irr_sle_from_stock_reconciliation_row(sle)
 				sync_irr_sle_from_stock_entry_row(sle)
 				round_sle_monetary_fields(sle, company)

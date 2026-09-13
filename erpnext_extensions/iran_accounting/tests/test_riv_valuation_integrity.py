@@ -18,7 +18,14 @@ from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 	assert_stock_entry_valuation_integrity,
 	assert_svd_direction,
 	assert_zero_qty_stock_value,
+	is_final_zero_qty_consume_state,
 	make_recalculate_amounts_wrapper,
+	mark_sle_running_balance_processed,
+	mark_sle_running_balance_processed_after_vanilla,
+	previous_running_qty,
+	sle_running_balance_is_processed,
+	should_assert_zero_qty_stock_value,
+	vanilla_process_sle_assigned_running_balance,
 )
 from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 	signed_movement_from_row_amount,
@@ -144,12 +151,18 @@ class TestValuationInvariants(unittest.TestCase):
 		assert_svd_direction(frappe._dict(actual_qty=10, stock_value_difference=1000))
 
 	def test_zero_qty_large_leftover_raises(self):
+		# Case G: final processed consume-to-zero with leftover warehouse value.
 		sle = frappe._dict(
+			actual_qty=-300,
 			qty_after_transaction=0,
-			stock_value=1_000_000,
+			stock_value=100_000,
+			stock_value_difference=-4_554_000_000,
 			company="CO",
 			voucher_type="Stock Entry",
+			valuation_method="Moving Average",
 		)
+		mark_sle_running_balance_processed(sle)
+		self.assertEqual(previous_running_qty(sle), 300)
 		with mock.patch(
 			"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.get_currency_precision",
 			return_value=0,
@@ -160,14 +173,83 @@ class TestValuationInvariants(unittest.TestCase):
 			with self.assertRaises(ValuationIntegrityError) as ctx:
 				assert_zero_qty_stock_value(sle)
 		self.assertIn("I4", str(ctx.exception))
+		self.assertIn("Stock valuation integrity (I4)", str(ctx.exception))
+
+	def test_unprocessed_zero_qty_leftover_is_not_final_i4(self):
+		# Insert-time / early-process SLE still has default qty_after=0.
+		sle = frappe._dict(
+			actual_qty=-300,
+			qty_after_transaction=0,
+			stock_value=-4_554_000_000,
+			stock_value_difference=-4_554_000_000,
+			company="CO",
+			voucher_type="Stock Entry",
+		)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.get_currency_precision",
+			return_value=0,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.get_company_currency",
+			return_value="IRR",
+		):
+			self.assertFalse(should_assert_zero_qty_stock_value(sle))
+			assert_zero_qty_stock_value(sle)
+
+	def test_incident_incoming_transient_zero_qty_is_not_i4(self):
+		# Production false-positive shape: incoming movement, insert qty_after=0,
+		# Iran sync wrote stock_value = SVD = movement.
+		sle = frappe._dict(
+			actual_qty=300,
+			qty_after_transaction=0,
+			incoming_rate=15_180_000,
+			outgoing_rate=0,
+			valuation_rate=15_180_000,
+			stock_value_difference=4_554_000_000,
+			stock_value=4_554_000_000,
+			company="CO",
+			voucher_type="Stock Entry",
+			valuation_method="Moving Average",
+		)
+		self.assertEqual(previous_running_qty(sle), -300)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.get_currency_precision",
+			return_value=0,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.get_company_currency",
+			return_value="IRR",
+		):
+			self.assertFalse(is_final_zero_qty_consume_state(sle))
+			assert_zero_qty_stock_value(sle)
+			mark_sle_running_balance_processed(sle)
+			self.assertFalse(should_assert_zero_qty_stock_value(sle))
+			assert_zero_qty_stock_value(sle)
+
+	def test_vanilla_engine_identity_marks_processed_only_on_assigned_sle(self):
+		class _Engine:
+			def __init__(self):
+				self.prev_sle_dict = {}
+
+		sle = frappe._dict(item_code="ITEM", warehouse="WH", qty_after_transaction=0)
+		engine = _Engine()
+		engine.prev_sle_dict[("ITEM", "WH")] = frappe._dict(qty_after_transaction=0)
+		self.assertFalse(vanilla_process_sle_assigned_running_balance(engine, sle))
+		mark_sle_running_balance_processed_after_vanilla(engine, sle)
+		self.assertFalse(sle_running_balance_is_processed(sle))
+		engine.prev_sle_dict[("ITEM", "WH")] = sle
+		self.assertTrue(vanilla_process_sle_assigned_running_balance(engine, sle))
+		mark_sle_running_balance_processed_after_vanilla(engine, sle)
+		self.assertTrue(sle_running_balance_is_processed(sle))
 
 	def test_zero_qty_plus_one_residue_allowed(self):
 		sle = frappe._dict(
+			actual_qty=-10,
 			qty_after_transaction=0,
 			stock_value=1,
 			company="CO",
 			voucher_type="Stock Entry",
+			valuation_method="Moving Average",
 		)
+		mark_sle_running_balance_processed(sle)
 		with mock.patch(
 			"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.get_currency_precision",
 			return_value=0,
