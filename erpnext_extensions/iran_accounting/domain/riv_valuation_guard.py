@@ -215,22 +215,120 @@ def assert_svd_direction(sle, **context) -> None:
 		)
 
 
-def assert_zero_qty_stock_value(sle, **context) -> None:
-	"""I4: qty_after==0 must not keep material leftover value (MA persist)."""
-	if _entry_get(sle, "voucher_type") == "Stock Reconciliation":
+_RUNNING_BALANCE_PROCESSED_ATTR = "_iran_running_balance_processed"
+
+
+def mark_sle_running_balance_processed(sle) -> None:
+	"""Record that vanilla ``process_sle`` copied the warehouse running balance onto this SLE."""
+	if sle is None:
 		return
+	if isinstance(sle, dict):
+		sle[_RUNNING_BALANCE_PROCESSED_ATTR] = True
+		return
+	try:
+		setattr(sle, _RUNNING_BALANCE_PROCESSED_ATTR, True)
+	except Exception:
+		if hasattr(sle, "__dict__"):
+			sle.__dict__[_RUNNING_BALANCE_PROCESSED_ATTR] = True
+
+
+def sle_running_balance_is_processed(sle) -> bool:
+	if sle is None:
+		return False
+	if _entry_get(sle, _RUNNING_BALANCE_PROCESSED_ATTR):
+		return True
+	return bool(getattr(sle, _RUNNING_BALANCE_PROCESSED_ATTR, False))
+
+
+def vanilla_process_sle_assigned_running_balance(engine, sle) -> bool:
+	"""True after ERPNext ``process_sle`` stores this SLE as the warehouse running state.
+
+	Vanilla success copies ``wh_data`` onto the SLE (qty_after, stock_value, SVD) then
+	does ``prev_sle_dict[(item, warehouse)] = sle``. Early negative-stock return mutates
+	``wh_data`` qty and returns without that assignment, leaving insert-default
+	``qty_after_transaction = 0`` on the in-memory object.
+	"""
+	if engine is None or sle is None:
+		return False
+	item_code = _entry_get(sle, "item_code")
+	warehouse = _entry_get(sle, "warehouse")
+	if not item_code or not warehouse:
+		return False
+	prev = getattr(engine, "prev_sle_dict", None) or {}
+	return prev.get((item_code, warehouse)) is sle
+
+
+def mark_sle_running_balance_processed_after_vanilla(engine, sle) -> None:
+	if vanilla_process_sle_assigned_running_balance(engine, sle):
+		mark_sle_running_balance_processed(sle)
+
+
+def previous_running_qty(sle) -> float:
+	"""Warehouse qty immediately before this SLE's ``actual_qty`` was applied.
+
+	``prev_qty = qty_after_transaction - actual_qty``. Meaningful only on a final
+	processed running-balance SLE. Insert-default ``qty_after_transaction = 0`` is
+	not a finished warehouse qty.
+	"""
+	return flt(_entry_get(sle, "qty_after_transaction")) - flt(_entry_get(sle, "actual_qty"))
+
+
+def _is_incoming_movement_value_on_uncomputed_qty(sle, company: str | None) -> bool:
+	"""Supporting evidence for the Iran-sync insert/transient incoming shape.
+
+	``sync_irr_sle_from_stock_entry_row`` can write ``stock_value = movement`` and
+	``stock_value_difference = movement`` while ``qty_after_transaction`` is still the
+	insert default 0. That is movement value, not leftover warehouse value after qty
+	became zero.
+
+	Do not treat ``stock_value == stock_value_difference`` as a global I4 exemption.
+	"""
+	if flt(_entry_get(sle, "actual_qty")) <= 0:
+		return False
+	quantum = _quantum(company)
+	stock_value = flt(_entry_get(sle, "stock_value"))
+	svd = flt(_entry_get(sle, "stock_value_difference"))
+	return abs(stock_value - svd) <= quantum
+
+
+def is_final_zero_qty_consume_state(sle, **context) -> bool:
+	"""Positive stock was consumed to a processed running qty of zero."""
+	if _entry_get(sle, "voucher_type") == "Stock Reconciliation":
+		return False
 	method = _entry_get(sle, "valuation_method")
 	if method and method != "Moving Average":
-		return
+		return False
 	qty_after_raw = _entry_get(sle, "qty_after_transaction")
 	if qty_after_raw in (None, ""):
-		return
-	qty_after = flt(qty_after_raw)
-	if qty_after != 0:
-		return
-	stock_value = flt(_entry_get(sle, "stock_value"))
+		return False
+	if flt(qty_after_raw) != 0:
+		return False
+	if not sle_running_balance_is_processed(sle) and not context.get("running_balance_processed"):
+		return False
 	company = _entry_get(sle, "company") or context.get("company")
-	if abs(stock_value) <= _quantum(company):
+	if _is_incoming_movement_value_on_uncomputed_qty(sle, company):
+		return False
+	return previous_running_qty(sle) > 0
+
+
+def should_assert_zero_qty_stock_value(sle, **context) -> bool:
+	"""I4 leftover-value rule applies only to a final processed consume-to-zero SLE."""
+	if not is_final_zero_qty_consume_state(sle, **context):
+		return False
+	company = _entry_get(sle, "company") or context.get("company")
+	return abs(flt(_entry_get(sle, "stock_value"))) > _quantum(company)
+
+
+def assert_zero_qty_stock_value(sle, **context) -> None:
+	"""I4: final MA qty_after==0 must not keep material leftover value.
+
+	Do not interpret insert-default ``qty_after_transaction = 0`` as a finished
+	warehouse balance. Iran sync can store the movement in ``stock_value`` before
+	vanilla ``process_sle`` copies running qty from ``wh_data``. That incoming
+	transient state (actual_qty > 0, qty_after still 0, stock_value == SVD) is not
+	leftover value after quantity became zero, and must not be clamped to 0.
+	"""
+	if not should_assert_zero_qty_stock_value(sle, **context):
 		return
 	throw_valuation_integrity(
 		"I4",
