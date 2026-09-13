@@ -9,5 +9,7 @@ def apply() -> None:
 
 	ensure_runtime_ready()
 	from erpnext_extensions.iran_accounting.integration.monkey_patches import apply_monkey_patches
+	from erpnext_extensions.safe_error_transport import apply_safe_error_transport
 
 	apply_monkey_patches()
+	apply_safe_error_transport()
