@@ -1,0 +1,129 @@
+{
+ "actions": [],
+ "creation": "2026-09-12 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "inbound_document",
+  "outbound_document",
+  "item",
+  "warehouse",
+  "batch_no",
+  "sabb",
+  "old_datetime",
+  "new_datetime",
+  "dependency_reason",
+  "min_qty_before",
+  "min_qty_after",
+  "valuation_impact",
+  "gl_impact",
+  "confidence",
+  "status",
+  "seconds_shifted"
+ ],
+ "fields": [
+  {
+   "fieldname": "inbound_document",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Inbound Document",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "outbound_document",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Outbound Document",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "label": "Batch"
+  },
+  {
+   "fieldname": "sabb",
+   "fieldtype": "Data",
+   "label": "SABB"
+  },
+  {
+   "fieldname": "old_datetime",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Old Datetime"
+  },
+  {
+   "fieldname": "new_datetime",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "New Datetime"
+  },
+  {
+   "fieldname": "dependency_reason",
+   "fieldtype": "Small Text",
+   "label": "Dependency Reason"
+  },
+  {
+   "fieldname": "min_qty_before",
+   "fieldtype": "Float",
+   "label": "Min Qty Before"
+  },
+  {
+   "fieldname": "min_qty_after",
+   "fieldtype": "Float",
+   "label": "Min Qty After"
+  },
+  {
+   "fieldname": "valuation_impact",
+   "fieldtype": "Data",
+   "label": "Valuation Impact"
+  },
+  {
+   "fieldname": "gl_impact",
+   "fieldtype": "Data",
+   "label": "GL Impact"
+  },
+  {
+   "fieldname": "confidence",
+   "fieldtype": "Data",
+   "label": "Confidence"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status"
+  },
+  {
+   "fieldname": "seconds_shifted",
+   "fieldtype": "Int",
+   "label": "Seconds Shifted"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-12 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Production Posting Order Repair Entry",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
