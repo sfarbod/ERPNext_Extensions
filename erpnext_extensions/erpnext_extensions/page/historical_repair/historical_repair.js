@@ -282,9 +282,16 @@ class HistoricalRepairPage {
 		}
 		if (msg.summary) {
 			lines.push(`same_time_groups: ${msg.summary.same_time_groups || 0}`);
+			lines.push(`negative_intervals: ${msg.summary.negative_intervals || 0}`);
+			lines.push(`CROSS_TIME_REPAIRABLE: ${msg.summary.CROSS_TIME_REPAIRABLE || 0}`);
 			lines.push(`NO_REPAIR_NEEDED: ${msg.summary.NO_REPAIR_NEEDED || 0}`);
 			lines.push(`REPAIRABLE_SECONDS: ${msg.summary.REPAIRABLE_SECONDS || 0}`);
 			lines.push(`REAL_STOCK_SHORTAGE: ${msg.summary.REAL_STOCK_SHORTAGE || 0}`);
+			lines.push(`LATER_INBOUND_UNRELATED: ${msg.summary.LATER_INBOUND_UNRELATED || 0}`);
+			lines.push(`AMBIGUOUS_DEPENDENCY: ${msg.summary.AMBIGUOUS_DEPENDENCY || 0}`);
+			lines.push(`cross_time_exact: ${msg.summary.cross_time_exact || 0}`);
+			lines.push(`cross_time_likely: ${msg.summary.cross_time_likely || 0}`);
+			lines.push(`cross_time_ambiguous: ${msg.summary.cross_time_ambiguous || 0}`);
 		}
 		lines.push(`count: ${msg.count ?? (msg.rows || []).length}`);
 		lines.push(`eligible: ${(msg.eligible || []).length}`);
@@ -295,27 +302,37 @@ class HistoricalRepairPage {
 				"Item",
 				"Warehouse",
 				"Batch",
-				"Patient Zero",
-				"Current Rate",
-				"Historical Rate",
-				"Proposed Rate",
-				"Source of Truth",
+				"Negative Start",
+				"Negative Voucher",
+				"Later Inbound",
+				"Current Outbound Time",
+				"Current Inbound Time",
+				"Time Gap",
+				"Proposed Time",
+				"Seconds Shifted",
+				"Minimum Qty Before",
+				"Minimum Qty After",
+				"Dependency Reason",
 				"Confidence",
 				"Status",
-				"Minimum Seconds Required",
 			].forEach((label) => {
 				const key = {
 					Item: row.item || row.item_code,
 					Warehouse: row.warehouse,
 					Batch: row.batch,
-					"Patient Zero": (row.patient_zero && row.patient_zero.voucher_no) || "",
-					"Current Rate": row.current_rate,
-					"Historical Rate": row.historical_rate,
-					"Proposed Rate": row.proposed_rate,
-					"Source of Truth": row.source_of_truth,
+					"Negative Start": row.negative_start,
+					"Negative Voucher": row.negative_voucher,
+					"Later Inbound": row.later_inbound,
+					"Current Outbound Time": row.current_outbound_time,
+					"Current Inbound Time": row.current_inbound_time,
+					"Time Gap": row.time_gap_seconds,
+					"Proposed Time": row.proposed_outbound_time,
+					"Seconds Shifted": row.minimum_seconds_label || row.seconds_shifted,
+					"Minimum Qty Before": row.min_qty_before,
+					"Minimum Qty After": row.min_qty_after,
+					"Dependency Reason": row.dependency_reason,
 					Confidence: row.confidence,
 					Status: row.status,
-					"Minimum Seconds Required": row.minimum_seconds_label,
 				}[label];
 				if (key !== undefined && key !== null && key !== "") lines.push(`${label}: ${key}`);
 			});
@@ -340,6 +357,12 @@ class HistoricalRepairPage {
 		if (row.status === "NO_REPAIR_NEEDED" || row.optimizer_status === "NO_REPAIR_NEEDED") {
 			return __("Repair unnecessary");
 		}
+		if (row.status === "ELIGIBLE" && row.optimizer_status === "CROSS_TIME_REPAIRABLE") {
+			return "CROSS_TIME_REPAIRABLE";
+		}
+		if (row.status === "ELIGIBLE" && row.optimizer_status === "SAME_TIME_REPAIRABLE") {
+			return "SAME_TIME_REPAIRABLE";
+		}
 		return row.status;
 	}
 
@@ -357,15 +380,17 @@ class HistoricalRepairPage {
 				__("Item"),
 				__("Warehouse"),
 				__("Batch/SABB"),
-				__("Opening Qty"),
-				__("Current Inbound Time"),
+				__("Negative Start"),
+				__("Negative Voucher"),
+				__("Later Inbound"),
 				__("Current Outbound Time"),
+				__("Current Inbound Time"),
+				__("Time Gap"),
 				__("Proposed Time"),
-				__("Minimum Seconds Required"),
+				__("Seconds Shifted"),
 				__("Minimum Qty Before"),
 				__("Minimum Qty After"),
-				__("Valuation Impact"),
-				__("GL Impact"),
+				__("Dependency Reason"),
 				__("Confidence"),
 				__("Status"),
 			];
@@ -400,15 +425,17 @@ class HistoricalRepairPage {
 				row.item,
 				row.warehouse,
 				row.batch || row.sabb_outbound || "",
-				row.opening_qty,
-				row.current_inbound_time,
+				row.negative_start || row.current_outbound_time,
+				row.negative_voucher || row.outbound_document,
+				row.later_inbound || row.inbound_document,
 				row.current_outbound_time,
+				row.current_inbound_time,
+				row.time_gap_seconds == null ? "" : String(row.time_gap_seconds),
 				row.proposed_outbound_time,
 				this.seconds_label(row),
 				row.min_qty_before,
 				row.min_qty_after,
-				row.valuation_impact,
-				row.gl_impact,
+				row.dependency_reason,
 				row.confidence,
 				this.status_label(row),
 			];
@@ -455,7 +482,10 @@ class HistoricalRepairPage {
 			$tr.append($("<td>").append($cb));
 			this.cells_for_row(row).forEach((val, i, arr) => {
 				const $td = $("<td>").text(val == null ? "" : String(val));
-				if (i === arr.length - 1) $td.addClass(`hr-status-${row.status}`);
+				if (i === arr.length - 1) {
+					$td.addClass(`hr-status-${row.status || ""}`);
+					if (row.optimizer_status) $td.addClass(`hr-status-${row.optimizer_status}`);
+				}
 				$tr.append($td);
 			});
 			$body.append($tr);

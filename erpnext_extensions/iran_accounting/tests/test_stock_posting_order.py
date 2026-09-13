@@ -123,6 +123,33 @@ class TestDependencyClassification(unittest.TestCase):
 		)
 		self.assertEqual(conf, CONFIDENCE_LIKELY)
 
+	def test_manufacture_then_mtfm_same_wo_batch_exact(self):
+		conf, reason = classify_edge(
+			{"item_code": "30300042", "warehouse": "Quarantine", "batch_no": "504135-30300042-AK264401A11"},
+			{"item_code": "30300042", "warehouse": "Quarantine", "batch_no": "504135-30300042-AK264401A11"},
+			same_work_order=True,
+			same_job_card=False,
+			against_stock_entry=False,
+			same_batch=True,
+			inbound_purpose="Manufacture",
+			outbound_purpose="Material Transfer for Manufacture",
+		)
+		self.assertEqual(conf, CONFIDENCE_EXACT)
+		self.assertIn("sfg_then_consume", reason)
+
+	def test_manufacture_then_mtfm_same_wo_unbatched_likely(self):
+		conf, _ = classify_edge(
+			{"item_code": "X", "warehouse": "Q", "batch_no": ""},
+			{"item_code": "X", "warehouse": "Q", "batch_no": ""},
+			same_work_order=True,
+			same_job_card=False,
+			against_stock_entry=False,
+			same_batch=False,
+			inbound_purpose="Manufacture",
+			outbound_purpose="Material Transfer for Manufacture",
+		)
+		self.assertEqual(conf, CONFIDENCE_LIKELY)
+
 
 class TestDagOffsets(unittest.TestCase):
 	def test_in_t_out_t_becomes_t_plus_1(self):
@@ -611,3 +638,280 @@ class TestStockValueReplay(unittest.TestCase):
 		series = replay_series(rows, 0, 0)
 		self.assertEqual(series[-1]["qty_after_transaction"], 6)
 		self.assertEqual(series[-1]["stock_value"], 300)
+
+
+class TestNegativeIntervalDetector(unittest.TestCase):
+	"""Cross-time posting-order detection from temporary negatives."""
+
+	def _sle(self, name, voucher, qty, dt, creation="2026-09-11 19:00:00", **kw):
+		row = _row(name, voucher, qty, creation, t=dt, **kw)
+		row["voucher_type"] = kw.get("voucher_type", "Stock Entry")
+		row["posting_date"] = str(dt)[:10]
+		row["company"] = "ESPAD"
+		return row
+
+	def _farvardin_pair(self, gap=71):
+		out_dt = "2026-04-06 18:01:45"
+		in_dt = "2026-04-06 18:02:56" if gap == 71 else f"2026-04-06 18:01:{45 + gap:02d}"
+		batch = "504135-30300042-AK264401A11"
+		common = dict(
+			item_code="30300042",
+			warehouse="Quarantine - ESPAD",
+			batch_no=batch,
+			canonical_batch=batch,
+			work_order="MFG-WO-2026-00575",
+		)
+		out = self._sle(
+			"sle-out",
+			"MAT-STE-OUT",
+			-1899,
+			out_dt,
+			creation="2026-09-11 19:22:39",
+			purpose="Material Transfer for Manufacture",
+			job_card="PO-JOB07754",
+			**common,
+		)
+		inn = self._sle(
+			"sle-in",
+			"MAT-STE-IN",
+			1899,
+			in_dt,
+			creation="2026-09-11 22:24:33",
+			purpose="Manufacture",
+			job_card="PO-JOB07751",
+			**common,
+		)
+		return out, inn
+
+	def test_same_time_out_in_repairable(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		out["posting_datetime"] = inn["posting_datetime"] = "2026-04-06 18:01:45"
+		rows = scan_series([out, inn], skip_same_second=False)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["optimizer_status"], "SAME_TIME_REPAIRABLE")
+		self.assertEqual(rows[0]["confidence"], "EXACT")
+		self.assertTrue(rows[0]["eligible"])
+
+	def test_out_then_in_plus_71s_cross_time(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair(71)
+		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(len(rows), 1)
+		row = rows[0]
+		self.assertEqual(row["detection"], "CROSS_TIME")
+		self.assertEqual(row["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(row["confidence"], "EXACT")
+		self.assertEqual(row["time_gap_seconds"], 71)
+		self.assertEqual(row["current_outbound_time"], "2026-04-06 18:01:45")
+		self.assertEqual(row["current_inbound_time"], "2026-04-06 18:02:56")
+		self.assertEqual(row["proposed_outbound_time"], "2026-04-06 18:02:57")
+		self.assertEqual(row["seconds_shifted"], 72)
+		self.assertEqual(row["min_qty_before"], "-1899")
+		self.assertEqual(row["min_qty_after"], "0")
+		self.assertEqual(row["final_qty_before"], row["final_qty_after"])
+		self.assertEqual(row["negative_amount"], "-1899")
+		self.assertEqual(row["search_window"], "5min")
+
+	def test_unrelated_later_inbound_not_repaired(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out = self._sle("o", "OUT", -10, "2026-04-06 18:01:45", purpose="Material Issue", work_order="WO-A")
+		inn = self._sle(
+			"i",
+			"IN",
+			10,
+			"2026-04-06 18:05:00",
+			purpose="Material Receipt",
+			work_order="WO-B",
+			creation="2026-09-12 02:00:00",
+		)
+		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["optimizer_status"], "LATER_INBOUND_UNRELATED")
+		self.assertFalse(rows[0]["eligible"])
+
+	def test_manufacture_in_later_than_mtfm_out_detected(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import (
+			find_negative_intervals,
+			scan_series,
+		)
+
+		out, inn = self._farvardin_pair()
+		intervals = find_negative_intervals([out, inn], 0)
+		self.assertEqual(len(intervals), 1)
+		self.assertEqual(intervals[0]["negative_amount"], -1899)
+		rows = scan_series([inn, out], skip_same_second=True)
+		self.assertEqual(rows[0]["inbound_purpose"], "Manufacture")
+		self.assertEqual(rows[0]["outbound_purpose"], "Material Transfer for Manufacture")
+		self.assertEqual(rows[0]["inbound_document"], "MAT-STE-IN")
+		self.assertEqual(rows[0]["outbound_document"], "MAT-STE-OUT")
+
+	def test_quarantine_negative_not_fooled_by_healthy_wip(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		wip_in = dict(out)
+		wip_in.update(
+			{
+				"name": "sle-wip",
+				"warehouse": "WIP - ESPAD",
+				"actual_qty": 1899,
+				"voucher_no": "MAT-STE-OUT",
+			}
+		)
+		q_key = (out["item_code"], out["warehouse"], out["canonical_batch"])
+		w_key = (wip_in["item_code"], wip_in["warehouse"], wip_in["canonical_batch"])
+		by_identity = {q_key: [out, inn], w_key: [wip_in]}
+		by_voucher = {"MAT-STE-OUT": [out, wip_in], "MAT-STE-IN": [inn]}
+		q_rows = scan_series(
+			[out, inn],
+			by_voucher_all=by_voucher,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		self.assertEqual(q_rows[0]["warehouse"], "Quarantine - ESPAD")
+		self.assertEqual(q_rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		wip_rows = scan_series([wip_in], skip_same_second=True)
+		self.assertEqual(wip_rows, [])
+
+	def test_opening_stock_sufficient_no_repair(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import (
+			find_negative_intervals,
+			scan_series,
+		)
+
+		opening = self._sle("open", "OPEN", 1899, "2026-04-06 10:00:00", purpose="Material Receipt")
+		out = self._sle("o", "OUT", -1899, "2026-04-06 18:01:45", purpose="Material Transfer for Manufacture")
+		inn = self._sle("i", "IN", 1899, "2026-04-06 18:02:56", purpose="Manufacture", creation="2")
+		self.assertEqual(find_negative_intervals([opening, out, inn], 0), [])
+		self.assertEqual(scan_series([opening, out, inn], skip_same_second=True), [])
+
+	def test_batch_sabb_identity(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		out["batch_no"] = ""
+		inn["batch_no"] = ""
+		out["serial_and_batch_bundle"] = "SABB-OUT"
+		inn["serial_and_batch_bundle"] = "SABB-IN"
+		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(rows[0]["batch"], "504135-30300042-AK264401A11")
+		self.assertTrue(rows[0]["has_batch"])
+
+	def test_multiple_later_inbound_rows_picks_related(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		noise = self._sle(
+			"noise",
+			"UNRELATED-IN",
+			10,
+			"2026-04-06 18:02:10",
+			purpose="Material Receipt",
+			work_order="OTHER-WO",
+			item_code="30300042",
+			warehouse=out["warehouse"],
+			batch_no=out["batch_no"],
+			canonical_batch=out["canonical_batch"],
+			creation="2026-09-11 20:00:00",
+		)
+		# recover still needs manufacture; noise alone is not enough
+		rows = scan_series([out, noise, inn], skip_same_second=True)
+		self.assertEqual(rows[0]["inbound_document"], "MAT-STE-IN")
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertGreaterEqual(rows[0]["inbound_count"] or 0, 2)
+
+	def test_cross_item_parent_voucher_safety(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		wip_in = dict(out)
+		wip_in.update({"name": "sle-wip", "warehouse": "WIP - ESPAD", "actual_qty": 1899})
+		wip_consume = self._sle(
+			"sle-wip-out",
+			"WIP-CONSUME",
+			-1899,
+			"2026-04-06 18:02:10",
+			purpose="Manufacture",
+			item_code=out["item_code"],
+			warehouse="WIP - ESPAD",
+			batch_no=out["batch_no"],
+			canonical_batch=out["canonical_batch"],
+			work_order=out["work_order"],
+			creation="2026-09-11 19:30:00",
+		)
+		q_key = (out["item_code"], out["warehouse"], out["canonical_batch"])
+		w_key = (out["item_code"], "WIP - ESPAD", out["canonical_batch"])
+		by_identity = {q_key: [out, inn], w_key: [wip_in, wip_consume]}
+		by_voucher = {"MAT-STE-OUT": [out, wip_in], "MAT-STE-IN": [inn], "WIP-CONSUME": [wip_consume]}
+		rows = scan_series(
+			[out, inn],
+			by_voucher_all=by_voucher,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_ITEM_CONFLICT")
+		self.assertFalse(rows[0]["eligible"])
+
+	def test_cross_date_proposal_is_midnight_review(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		out["posting_datetime"] = "2026-04-14 18:03:50"
+		out["posting_date"] = "2026-04-14"
+		inn["posting_datetime"] = "2026-04-15 18:03:41"
+		inn["posting_date"] = "2026-04-15"
+		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(rows[0]["optimizer_status"], "MIDNIGHT_REVIEW")
+		self.assertFalse(rows[0]["eligible"])
+
+	def test_valuation_poison_blocks_classify(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		rows = scan_series([out, inn], poisoned=True, skip_same_second=True)
+		self.assertEqual(rows[0]["optimizer_status"], "VALUATION_POISON_DEPENDENCY")
+		self.assertFalse(rows[0]["eligible"])
+
+	def test_final_qty_unchanged_after_proposal(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		row = scan_series([out, inn], skip_same_second=True)[0]
+		self.assertEqual(row["final_qty_before"], row["final_qty_after"])
+		self.assertEqual(row["final_qty_after"], "0")
+
+	def test_no_new_negative_in_other_warehouse_when_wip_is_idle(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		wip_in = dict(out)
+		wip_in.update({"name": "sle-wip", "warehouse": "WIP - ESPAD", "actual_qty": 1899})
+		later_wip = self._sle(
+			"sle-wip-later",
+			"WIP-LATER",
+			-10,
+			"2026-04-11 10:00:00",
+			purpose="Manufacture",
+			item_code=out["item_code"],
+			warehouse="WIP - ESPAD",
+			batch_no=out["batch_no"],
+			canonical_batch=out["canonical_batch"],
+			creation="2026-09-12 01:00:00",
+		)
+		q_key = (out["item_code"], out["warehouse"], out["canonical_batch"])
+		w_key = (out["item_code"], "WIP - ESPAD", out["canonical_batch"])
+		by_identity = {q_key: [out, inn], w_key: [wip_in, later_wip]}
+		by_voucher = {"MAT-STE-OUT": [out, wip_in], "MAT-STE-IN": [inn], "WIP-LATER": [later_wip]}
+		rows = scan_series(
+			[out, inn],
+			by_voucher_all=by_voucher,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(rows[0]["min_qty_after"], "0")
+

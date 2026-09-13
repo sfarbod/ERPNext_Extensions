@@ -37,7 +37,17 @@ from erpnext_extensions.iran_accounting.stock_posting_order.scanner import (
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
 
-SCAN_LIMIT = 400
+SCAN_LIMIT = 2000
+
+
+def _row_rank(row: dict) -> tuple:
+	elig = 0 if row.get("eligible") else 1
+	cross = 0 if row.get("detection") == "CROSS_TIME" else 1
+	try:
+		amt = abs(float(row.get("negative_amount") or row.get("min_qty_before") or 0))
+	except (TypeError, ValueError):
+		amt = 0
+	return (elig, cross, -amt, str(row.get("current_outbound_time") or ""))
 
 
 def _gl_balanced(voucher_no: str) -> dict:
@@ -63,7 +73,7 @@ def scan_production_posting_order_anomalies(
 	include_likely: bool = True,
 	include_no_repair: bool = False,
 ) -> list[dict]:
-	"""Find same-time inbound/outbound groups (SABB-aware, true opening)."""
+	"""Find same-time and cross-time posting-order anomalies (SABB-aware, true opening)."""
 	result = scan_same_time_groups(
 		company=company,
 		from_date=from_date,
@@ -72,7 +82,7 @@ def scan_production_posting_order_anomalies(
 		include_no_repair=include_no_repair,
 	)
 	rows = list(result.get("rows") or [])
-	rows.sort(key=lambda r: (0 if r.get("eligible") else 1, str(r.get("status") or "")))
+	rows.sort(key=_row_rank)
 	return rows[:SCAN_LIMIT] if len(rows) > SCAN_LIMIT else rows
 
 
@@ -87,7 +97,8 @@ def dry_run(candidates: list[dict] | None = None, **scan_kwargs) -> dict:
 		}
 	scan_kwargs.setdefault("include_no_repair", False)
 	result = run_full_history_scan(**scan_kwargs)
-	rows = result.get("rows") or []
+	rows = list(result.get("rows") or [])
+	rows.sort(key=_row_rank)
 	return {
 		"dry_run": True,
 		"status": STATUS_DRY_RUN,
@@ -211,7 +222,12 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				raise frappe.ValidationError("Midnight boundary requires manual review")
 			if opt in (STATUS_INSUFFICIENT_STOCK, STATUS_REAL_STOCK_SHORTAGE):
 				raise frappe.ValidationError("Real insufficient stock; timestamp change refused")
-			if not row.get("eligible") and row.get("status") != STATUS_ELIGIBLE:
+			if not row.get("eligible") and row.get("status") not in (
+				STATUS_ELIGIBLE,
+				"CROSS_TIME_REPAIRABLE",
+				"SAME_TIME_REPAIRABLE",
+				"REPAIRABLE_SECONDS",
+			):
 				raise frappe.ValidationError(f"Row not eligible ({row.get('status')})")
 			moves = _row_moves(row)
 			if not moves:
@@ -219,6 +235,8 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 
 			# poison check before any write
 			from_dt = get_datetime(row["current_inbound_time"])
+			out_dt = get_datetime(row["current_outbound_time"])
+			from_dt = min(from_dt, out_dt)
 			identities = set(_voucher_item_warehouses(row["inbound_document"])) | set(
 				_voucher_item_warehouses(row["outbound_document"])
 			)
@@ -331,7 +349,7 @@ def _identity_window(item_code, warehouse, batch_no, posting_datetime) -> list:
 		"item_code=%s",
 		"warehouse=%s",
 		"is_cancelled=0",
-		"posting_datetime=%s",
+		"posting_datetime>=%s",
 	]
 	args = [item_code, warehouse, posting_datetime]
 	rows = frappe.db.sql(

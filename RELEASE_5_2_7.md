@@ -179,16 +179,41 @@ Do not Repair Selected on 25741 until patient-zero 25407 (and JOB07505-1) are re
 
 ## 11. Screenshot batch `504135-30300042-AK264401A11`
 
-Item **30300042**. Not a same-second IN/OUT pair on one warehouse.
+Item **30300042**. Not a same-second IN/OUT pair on one warehouse — and that is why 5.2.1 missed it.
 
-Quarantine:
+Quarantine (Jalali **1405-01-17** = Gregorian **2026-04-06**):
 
 - `MAT-STE-2026-25825` MTfM **OUT −1899** at **2026-04-06 18:01:45** (created 2026-09-11 19:22:39)
-- `MAT-STE-2026-25824-1` Manufacture **IN +1899** at **2026-04-06 18:02:56** (created 2026-09-11 22:24:34)
+- `MAT-STE-2026-25824-1` Manufacture **IN +1899** at **2026-04-06 18:02:56** (created 2026-09-11 22:24:33)
 
-Running qty at Quarantine: 0 → **−1899** → 0. That is a **real temporary shortage** spanning **71 seconds**, not a same-time ordering bug. 5.2.1 same-time optimizer correctly returns **no same-time group**. Do **not** force +1 second on 18:01:45. A later, separate repair (move the transfer after the manufacture inbound) is out of scope for automatic same-second repair.
+Same Work Order `MFG-WO-2026-00575`. Manufacture is the economic prerequisite. 5.2.7 negative-interval scanner classifies this **CROSS_TIME_REPAIRABLE / EXACT**.
 
-WIP: same transfer **IN +1899** at 18:01:45, later manufacture consumption in April — no temporary negative.
+Proposed dry-run (not applied): keep Manufacture at 18:02:56; move Transfer **25825** to **18:02:57** (+72 seconds). Min qty −1899 → 0. Final qty unchanged.
+
+WIP: same transfer **IN +1899** at 18:01:45 — healthy other warehouse; detector is not fooled.
+
+## 11b. Cross-time posting-order scanner (5.2.7 gap fix)
+
+Same-time grouping (`posting_date` + `posting_time`) cannot see a 71-second inverted Manufacture → MTfM chain.
+
+New detector walks each item + warehouse + canonical batch in ERPNext order (`posting_datetime`, `creation`), opens a negative interval when running `actual_qty` drops below 0, then classifies the later inbound with the existing EXACT/LIKELY/AMBIGUOUS dependency proof.
+
+Search is not capped at one second. Dependency evidence outranks 60s / 5min / 30min windows. Crossing a posting date is **MIDNIGHT_REVIEW**, not auto-repair.
+
+**No operator timestamps were written.** Dry-run only.
+
+| Count | Value |
+|-------|-------|
+| Same-time groups (full history) | 302 (previous 5.2.1 report: 160; this scan includes NO_REPAIR_NEEDED) |
+| Negative intervals | 422 |
+| CROSS_TIME_REPAIRABLE | 10 (7 EXACT eligible, 3 LIKELY) |
+| MIDNIGHT_REVIEW | 8 |
+| CROSS_ITEM_CONFLICT | 3 |
+| REAL_STOCK_SHORTAGE | 305 |
+| LATER_INBOUND_UNRELATED | 83 |
+| AMBIGUOUS_DEPENDENCY | 24 |
+
+Old same-time scanner could not see these 10 + 8 date-boundary cases. They are dry-run only.
 
 ## 12. Controlled real repair
 
@@ -203,15 +228,15 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 | Area | Result |
 |------|--------|
 | `test_historical_stock` (unit) | PASS (25) |
-| `test_stock_posting_order` | PASS |
-| `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + screenshot batch) |
+| `test_stock_posting_order` | PASS (54, incl. 13 negative-interval cases) |
+| `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin cross-time) |
 | `test_scrap_absorbed_costing` | PASS |
-| `test_stock_posting_order_integration` | PASS |
+| `test_stock_posting_order_integration` | PASS (10, incl. Farvardin dry-run + 71s fixture) |
 | `test_manufacture_rounding` | PASS |
-| Playwright posting-order + 6-tab integrity | PASS (3), no API 500 |
+| Playwright posting-order + Farvardin + 6-tab integrity | PASS (4), no API 500 |
 | `bench build --app erpnext_extensions` | PASS |
 | `migrate` ×2 | PASS |
-| Local `run_gate(full_stress=1)` | PASS (stress 151.46 s; RIV×2; 03516; flows) |
+| Local `run_gate(full_stress=1)` | PASS (stress 148.29 s; RIV×2; 03516; flows) |
 
 ## 14. Deployment
 

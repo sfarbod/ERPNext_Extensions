@@ -388,3 +388,100 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		self.assertEqual(row.get("optimizer_status"), "NO_REPAIR_NEEDED")
 		self.assertEqual(row.get("minimum_seconds_label"), "Repair unnecessary")
 
+	def test_farvardin_17_cross_time_detected_no_write(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import dry_run
+		from erpnext_extensions.iran_accounting.stock_posting_order.scanner import diagnose_canonical_batch
+
+		batch = "504135-30300042-AK264401A11"
+		self.assertTrue(frappe.db.exists("Item", "30300042"), "operator item 30300042 required")
+		out_name = "MAT-STE-2026-25825"
+		in_name = "MAT-STE-2026-25824-1"
+		self.assertTrue(frappe.db.exists("Stock Entry", out_name))
+		self.assertTrue(frappe.db.exists("Stock Entry", in_name))
+		out_before = frappe.db.get_value("Stock Entry", out_name, ["posting_time", "modified"], as_dict=True)
+
+		diag = diagnose_canonical_batch(batch)
+		self.assertTrue(diag.get("found"))
+		cross = [
+			r
+			for r in (diag.get("negative_intervals") or [])
+			if r.get("outbound_document") == out_name and r.get("item") == "30300042"
+		]
+		self.assertTrue(cross, f"diagnose missed 17 Farvardin: {diag.get('negative_intervals')}")
+		row = cross[0]
+		self.assertEqual(row.get("detection"), "CROSS_TIME")
+		self.assertEqual(row.get("optimizer_status"), "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(row.get("confidence"), "EXACT")
+		self.assertEqual(row.get("time_gap_seconds"), 71)
+		self.assertIn("18:01:45", str(row.get("current_outbound_time")))
+		self.assertIn("18:02:56", str(row.get("current_inbound_time")))
+		self.assertIn("18:02:57", str(row.get("proposed_outbound_time")))
+		self.assertEqual(float(row.get("min_qty_before")), -1899)
+		self.assertGreaterEqual(float(row.get("min_qty_after") or 0), 0)
+
+		rows = scan_production_posting_order_anomalies(
+			from_date="2026-04-06", to_date="2026-04-06", include_likely=True
+		)
+		match = [
+			r
+			for r in rows
+			if r.get("outbound_document") == out_name and r.get("inbound_document") == in_name
+		]
+		self.assertTrue(match, "scan missed 17 Farvardin cross-time case")
+		preview = apply_repairs(match, dry_run=True)
+		self.assertTrue(preview["dry_run"])
+		full = dry_run(from_date="2026-04-06", to_date="2026-04-06")
+		self.assertTrue(full["dry_run"])
+		self.assertTrue(
+			any(r.get("outbound_document") == out_name for r in (full.get("rows") or [])),
+			"dry-run missed 17 Farvardin",
+		)
+		out_after = frappe.db.get_value("Stock Entry", out_name, ["posting_time", "modified"], as_dict=True)
+		self.assertEqual(str(out_before.posting_time), str(out_after.posting_time))
+		self.assertEqual(str(out_before.modified), str(out_after.modified))
+
+	def test_cross_time_71s_fixture_detected_not_applied(self):
+		rm, fg = self._new_items("CT71")
+		qty = 10
+		posting_date = "2026-04-06"
+		submit_material_receipt(self.company, rm, qty=qty + 5, rate=1000, warehouse=self.wip)
+		prev = _enable_negative_stock(True)
+		frappe.flags[PREVENTION_FLAG] = True
+		try:
+			mfg = self._make_manufacture(rm, fg, qty, posting_date, "18:02:56", submit=True)
+			mtfm = frappe.new_doc("Stock Entry")
+			mtfm.company = self.company
+			mtfm.purpose = "Material Transfer for Manufacture"
+			mtfm.stock_entry_type = "Material Transfer for Manufacture"
+			mtfm.set_posting_time = 1
+			mtfm.posting_date = posting_date
+			mtfm.posting_time = "18:01:45"
+			mtfm.append("items", _se_row(fg, qty, s_wh=self.fg_wh, t_wh=self.wip, against=mfg.name))
+			mtfm.insert(ignore_permissions=True)
+			mtfm.submit()
+		finally:
+			frappe.flags[PREVENTION_FLAG] = False
+			_enable_negative_stock(bool(prev))
+		rows = scan_production_posting_order_anomalies(
+			company=self.company, from_date=posting_date, to_date=posting_date
+		)
+		match = [
+			r
+			for r in rows
+			if r.get("inbound_document") == mfg.name
+			and r.get("outbound_document") == mtfm.name
+			and r.get("item") == fg
+		]
+		self.assertTrue(
+			match,
+			f"expected 71s cross-time chain, got {[(r.get('chain'), r.get('status'), r.get('detection')) for r in rows[:12]]}",
+		)
+		self.assertEqual(match[0]["detection"], "CROSS_TIME")
+		self.assertIn(match[0]["optimizer_status"], ("CROSS_TIME_REPAIRABLE", "ELIGIBLE"))
+		self.assertIn(match[0]["confidence"], ("EXACT", "LIKELY"))
+		preview = apply_repairs(match, dry_run=True)
+		self.assertTrue(preview["dry_run"])
+		mtfm.reload()
+		self.assertEqual(str(mtfm.posting_time), "18:01:45")
+
+

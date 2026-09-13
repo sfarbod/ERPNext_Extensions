@@ -18,6 +18,7 @@ from erpnext_extensions.iran_accounting.stock_posting_order import (
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.batch_identity import canonical_batch_no
 from erpnext_extensions.iran_accounting.stock_posting_order.dependency import classify_edge
+from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series as scan_negative_series
 from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import (
 	minimum_seconds_label,
 	optimize_group,
@@ -224,7 +225,7 @@ def scan_same_time_groups(
 			continue
 		groups[_group_key(row)].append(row)
 
-	voucher_names = sorted({r["voucher_no"] for rows in groups.values() for r in rows})
+	voucher_names = sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"})
 	against_map = _against_map(voucher_names)
 
 	by_voucher_all: dict[str, list] = defaultdict(list)
@@ -324,6 +325,77 @@ def scan_same_time_groups(
 			keep = False
 		if keep:
 			out_rows.append(_build_row(rows, result, confidence, reason, opening, base_t))
+
+	cross_rows = []
+	CROSS_KEEP = {
+		"CROSS_TIME_REPAIRABLE",
+		"SAME_TIME_REPAIRABLE",
+		"ELIGIBLE",
+		"MANUAL_APPROVAL",
+		"AMBIGUOUS_DEPENDENCY",
+		"CROSS_ITEM_CONFLICT",
+		"MIDNIGHT_REVIEW",
+		"MANUAL_REVIEW_MIDNIGHT",
+		"VALUATION_POISON_DEPENDENCY",
+	}
+	CROSS_DROP_UNLESS_FULL = {"REAL_STOCK_SHORTAGE", "LATER_INBOUND_UNRELATED"}
+	for idk, series in by_identity.items():
+		walk_series = [
+			r
+			for r in series
+			if r.get("voucher_type") != "Stock Entry" or int(r.get("se_docstatus") or 0) == 1
+		]
+		if len(walk_series) < 2:
+			continue
+		found = scan_negative_series(
+			walk_series,
+			against_map=against_map,
+			by_voucher_all=by_voucher_all,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		for row in found:
+			if from_s and str(row.get("posting_date") or "") < from_s:
+				continue
+			if to_s and str(row.get("posting_date") or "") > to_s:
+				continue
+			row["dependency_signature"] = _signature(
+				{
+					"in": row.get("inbound_document"),
+					"out": row.get("outbound_document"),
+					"item": row.get("item"),
+					"wh": row.get("warehouse"),
+					"batch": row.get("batch"),
+					"in_time": row.get("current_inbound_time"),
+					"out_time": row.get("current_outbound_time"),
+					"in_mod": row.get("inbound_modified"),
+					"out_mod": row.get("outbound_modified"),
+					"reason": row.get("dependency_reason"),
+					"status": row.get("status"),
+					"moves": row.get("moves"),
+					"detection": "CROSS_TIME",
+				}
+			)
+			summary["negative_intervals"] += 1
+			opt = row.get("optimizer_status") or row.get("status")
+			summary[opt] += 1
+			if (row.get("confidence") or "") == CONFIDENCE_EXACT:
+				summary["cross_time_exact"] += 1
+			elif (row.get("confidence") or "") == CONFIDENCE_LIKELY:
+				summary["cross_time_likely"] += 1
+			else:
+				summary["cross_time_ambiguous"] += 1
+			keep_cross = True
+			if not include_likely and row.get("confidence") == CONFIDENCE_LIKELY:
+				keep_cross = False
+			if opt in CROSS_DROP_UNLESS_FULL and not include_no_repair:
+				keep_cross = False
+			if opt not in CROSS_KEEP and opt not in CROSS_DROP_UNLESS_FULL and not include_no_repair:
+				keep_cross = bool(row.get("eligible"))
+			if keep_cross:
+				cross_rows.append(row)
+	out_rows.extend(cross_rows)
+	summary["cross_time_rows"] = len(cross_rows)
 
 	summary["seconds_distribution"] = dict(seconds_dist)
 	return {"rows": out_rows, "summary": dict(summary), "sle_scanned": len(annotated)}
@@ -429,6 +501,12 @@ def _build_row(rows, result, confidence, reason, opening, base_t) -> dict:
 		"chain": f"{inbound['voucher_no']} → {outbound['voucher_no']}",
 		"posting_date": str(inbound.get("posting_date") or ""),
 		"has_batch": bool(inbound.get("canonical_batch")),
+		"detection": "SAME_TIME",
+		"negative_start": format_datetime(get_datetime(outbound["posting_datetime"])),
+		"negative_voucher": outbound["voucher_no"],
+		"later_inbound": inbound["voucher_no"],
+		"time_gap_seconds": 0,
+		"seconds_shifted": min_sec,
 		"current_series": cur.get("series") or [],
 		"proposed_series": prop.get("series") or [],
 	}
@@ -522,7 +600,13 @@ def diagnose_canonical_batch(batch_no: str, company=None) -> dict:
 		if int(row.get("se_docstatus") or 0) != 1:
 			continue
 		groups[_group_key(row)].append(row)
-	against_map = _against_map(sorted({r["voucher_no"] for rows in groups.values() for r in rows}))
+	against_map = _against_map(
+		sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"})
+	)
+	by_voucher_all: dict[str, list] = defaultdict(list)
+	for row in annotated:
+		if row.get("voucher_type") == "Stock Entry":
+			by_voucher_all[row["voucher_no"]].append(row)
 	out_rows = []
 	for key, rows in groups.items():
 		if len(rows) < 2:
@@ -545,6 +629,23 @@ def diagnose_canonical_batch(batch_no: str, company=None) -> dict:
 			max_seconds=MAX_OFFSET_SECONDS,
 		)
 		out_rows.append(_build_row(rows, result, confidence, reason, opening, base_t))
+	cross_rows = []
+	for _idk, series in by_identity.items():
+		walk_series = [
+			r
+			for r in series
+			if r.get("voucher_type") != "Stock Entry" or int(r.get("se_docstatus") or 0) == 1
+		]
+		if len(walk_series) < 2:
+			continue
+		found = scan_negative_series(
+			walk_series,
+			against_map=against_map,
+			by_voucher_all=by_voucher_all,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		cross_rows.extend(found)
 	return {
 		"batch": batch_no,
 		"found": bool(annotated),
@@ -554,6 +655,7 @@ def diagnose_canonical_batch(batch_no: str, company=None) -> dict:
 		"stock_entries": sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"}),
 		"series": series_sim,
 		"same_time_groups": out_rows,
+		"negative_intervals": cross_rows,
 		"temporary_negative": any(s["running_qty_after"] < -0.0001 for s in series_sim),
 		"min_running_qty": min((s["running_qty_after"] for s in series_sim), default=0),
 	}

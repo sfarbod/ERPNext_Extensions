@@ -38,7 +38,9 @@
 	overflow: auto;
 }
 .historical-repair-page .hr-status-ELIGIBLE,
-.historical-repair-page .hr-status-REPAIRABLE_SECONDS {
+.historical-repair-page .hr-status-REPAIRABLE_SECONDS,
+.historical-repair-page .hr-status-SAME_TIME_REPAIRABLE,
+.historical-repair-page .hr-status-CROSS_TIME_REPAIRABLE {
 	color: var(--green-600);
 	font-weight: 600;
 }
@@ -53,7 +55,9 @@
 .historical-repair-page .hr-status-CROSS_ITEM_CONFLICT,
 .historical-repair-page .hr-status-MANUAL_REVIEW_MIDNIGHT,
 .historical-repair-page .hr-status-MIDNIGHT_REVIEW,
-.historical-repair-page .hr-status-VALUATION_POISON_DEPENDENCY {
+.historical-repair-page .hr-status-VALUATION_POISON_DEPENDENCY,
+.historical-repair-page .hr-status-LATER_INBOUND_UNRELATED,
+.historical-repair-page .hr-status-AMBIGUOUS_DEPENDENCY {
 	color: var(--red-600);
 	font-weight: 600;
 }
