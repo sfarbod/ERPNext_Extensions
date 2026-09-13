@@ -338,6 +338,39 @@ def assert_zero_qty_stock_value(sle, **context) -> None:
 	)
 
 
+def restore_vanilla_zero_qty_terminal_stock_value(sle, vanilla_stock_value, vanilla_qty_after) -> None:
+	"""Keep vanilla's empty-warehouse value after Iran Stock Entry sync.
+
+	ERPNext ``process_sle`` (stock_ledger.py) sets ``stock_value = 0`` whenever
+	``qty_after_transaction`` is 0. ``sync_irr_sle_from_stock_entry_row`` then
+	rebuilds ``stock_value = previous + row.amount``. If the previous warehouse
+	value already differed from qty×rate (historical residual), that rewrite
+	leaves a terminal leftover (MAT-STE-2026-25734: −534) and I4 fires.
+
+	Restore ``stock_value = 0`` only when vanilla already emptied the warehouse.
+	Do not touch ``stock_value_difference`` (row movement / transfer conservation).
+	Do not restore when vanilla itself left material leftover — I4 must still fire.
+	Do not apply on unprocessed / incoming-transient SLEs.
+	"""
+	if sle is None:
+		return
+	if flt(vanilla_qty_after) != 0:
+		return
+	if not is_final_zero_qty_consume_state(sle):
+		return
+	company = _entry_get(sle, "company")
+	quantum = _quantum(company)
+	if abs(flt(vanilla_stock_value)) > quantum:
+		return
+	if abs(flt(_entry_get(sle, "stock_value"))) <= quantum:
+		return
+	ccy = get_company_currency(company) if company else "IRR"
+	if isinstance(sle, dict):
+		sle["stock_value"] = float(round_currency(0, ccy))
+		return
+	sle.stock_value = float(round_currency(0, ccy))
+
+
 def _incoming_se_row(row) -> bool:
 	return bool(_entry_get(row, "t_warehouse")) and not _entry_get(row, "s_warehouse")
 
