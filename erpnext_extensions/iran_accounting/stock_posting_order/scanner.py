@@ -449,3 +449,111 @@ def _build_row(rows, result, confidence, reason, opening, base_t) -> dict:
 		}
 	)
 	return payload
+
+
+def diagnose_canonical_batch(batch_no: str, company=None) -> dict:
+	"""Read-only diagnosis of one canonical batch (screenshot / operator cases).
+
+	Does not write. Uses true opening from that item+warehouse+batch series.
+	"""
+	if not batch_no:
+		return {"batch": batch_no, "found": False, "rows": []}
+	raw = frappe.db.sql(
+		"""
+		SELECT
+			sle.name, sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time,
+			sle.posting_datetime, sle.creation, sle.actual_qty, sle.qty_after_transaction,
+			sle.batch_no, sle.serial_and_batch_bundle, sle.voucher_no, sle.voucher_type,
+			sle.voucher_detail_no, sle.incoming_rate, sle.valuation_rate, sle.stock_value,
+			sle.stock_value_difference,
+			se.purpose, se.work_order, se.job_card, se.company, se.modified,
+			se.docstatus se_docstatus,
+			sbe.batch_no sabb_batch_no, sbe.batch_count
+		FROM `tabStock Ledger Entry` sle
+		LEFT JOIN `tabStock Entry` se
+			ON se.name = sle.voucher_no AND sle.voucher_type='Stock Entry'
+		LEFT JOIN (
+			SELECT parent,
+			       MIN(batch_no) batch_no,
+			       COUNT(DISTINCT batch_no) batch_count
+			FROM `tabSerial and Batch Entry`
+			WHERE batch_no=%s
+			GROUP BY parent
+		) sbe ON sbe.parent = sle.serial_and_batch_bundle
+		WHERE sle.is_cancelled=0
+		  AND (sle.batch_no=%s OR sbe.batch_no=%s)
+		ORDER BY sle.item_code, sle.warehouse, sle.posting_datetime, sle.creation
+		""",
+		(batch_no, batch_no, batch_no),
+		as_dict=True,
+	)
+	annotated = [_annotate(r) for r in raw]
+	series_sim = []
+	running_by: dict[tuple, float] = defaultdict(float)
+	for r in annotated:
+		ikey = (r["item_code"], r["warehouse"])
+		before = running_by[ikey]
+		qty = float(r.get("actual_qty") or 0)
+		running_by[ikey] += qty
+		series_sim.append(
+			{
+				"sle": r["name"],
+				"voucher": r["voucher_no"],
+				"item": r["item_code"],
+				"warehouse": r["warehouse"],
+				"purpose": r.get("purpose"),
+				"creation": str(r.get("creation") or ""),
+				"posting_datetime": str(r.get("posting_datetime") or ""),
+				"posting_time": r.get("posting_time_norm"),
+				"actual_qty": qty,
+				"running_qty_before": before,
+				"running_qty_after": running_by[ikey],
+				"batch": r.get("canonical_batch") or r.get("batch_no"),
+			}
+		)
+	by_identity: dict[tuple, list] = defaultdict(list)
+	groups: dict[tuple, list] = defaultdict(list)
+	for row in annotated:
+		if row.get("canonical_batch") == "*MULTI*":
+			continue
+		by_identity[_identity_key(row)].append(row)
+		if row.get("voucher_type") != "Stock Entry":
+			continue
+		if int(row.get("se_docstatus") or 0) != 1:
+			continue
+		groups[_group_key(row)].append(row)
+	against_map = _against_map(sorted({r["voucher_no"] for rows in groups.values() for r in rows}))
+	out_rows = []
+	for key, rows in groups.items():
+		if len(rows) < 2:
+			continue
+		qtys = [D(r.get("actual_qty")) for r in rows]
+		if not (any(q > 0 for q in qtys) and any(q < 0 for q in qtys)):
+			continue
+		base_t = get_datetime(rows[0]["posting_datetime"])
+		min_creation = min(str(r.get("creation") or "") for r in rows)
+		series = by_identity[_identity_key(rows[0])]
+		opening = _opening_before(series, base_t, min_creation)
+		edges, confidence, reason = _voucher_edges(rows, against_map)
+		result = optimize_group(
+			sles=rows,
+			opening=opening,
+			base_t=base_t,
+			edges=edges,
+			collisions=[],
+			cross_windows=None,
+			max_seconds=MAX_OFFSET_SECONDS,
+		)
+		out_rows.append(_build_row(rows, result, confidence, reason, opening, base_t))
+	return {
+		"batch": batch_no,
+		"found": bool(annotated),
+		"sle_count": len(annotated),
+		"items": sorted({r["item_code"] for r in annotated}),
+		"warehouses": sorted({r["warehouse"] for r in annotated}),
+		"stock_entries": sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"}),
+		"series": series_sim,
+		"same_time_groups": out_rows,
+		"temporary_negative": any(s["running_qty_after"] < -0.0001 for s in series_sim),
+		"min_running_qty": min((s["running_qty_after"] for s in series_sim), default=0),
+	}

@@ -61,3 +61,12 @@
 	font-weight: 600;
 	white-space: nowrap;
 }
+.historical-repair-page .hr-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 12px;
+}
+.historical-repair-page .hr-tab {
+	border-radius: 4px;
+}

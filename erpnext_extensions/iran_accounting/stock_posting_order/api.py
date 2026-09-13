@@ -79,6 +79,14 @@ def repair_posting_order_selected(rows=None, dry_run=True, expected_signatures=N
 
 
 @frappe.whitelist()
+def diagnose_batch(batch_no=None):
+	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	from erpnext_extensions.iran_accounting.stock_posting_order.scanner import diagnose_canonical_batch
+
+	return diagnose_canonical_batch(batch_no or "")
+
+
+@frappe.whitelist()
 def posting_order_integrity_check(vouchers=None, item_code=None, warehouse=None):
 	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
 	return integrity_check(_parse(vouchers), item_code=item_code, warehouse=warehouse)

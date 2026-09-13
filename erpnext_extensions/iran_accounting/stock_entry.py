@@ -79,6 +79,11 @@ def validate_stock_entry(doc, method=None):
 	# scrap amounts produced here. Same helper as RIV L1.
 	apply_iran_manufacture_output_contract(doc)
 	align_manufacture_finished_good_residual(doc)
+	from erpnext_extensions.iran_accounting.historical_stock.runtime_guard import (
+		assert_outgoing_rates_not_silently_zeroed,
+	)
+
+	assert_outgoing_rates_not_silently_zeroed(doc)
 	assert_stock_entry_valuation_integrity(doc)
 	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 		assert_round_off_ready_if_needed,
@@ -94,7 +99,16 @@ def before_submit_stock_entry(doc, method=None):
 
 	# Re-check immediately before write so concurrent dependents cannot share T+1.
 	apply_production_posting_order(doc)
-	validate_stock_entry(doc, method)
+	frappe.flags.stock_entry_before_submit = True
+	try:
+		validate_stock_entry(doc, method)
+		from erpnext_extensions.iran_accounting.historical_stock.runtime_guard import (
+			assert_outgoing_rates_not_silently_zeroed,
+		)
+
+		assert_outgoing_rates_not_silently_zeroed(doc)
+	finally:
+		frappe.flags.stock_entry_before_submit = False
 	if not is_irr_company(doc.company):
 		return
 	if hasattr(doc, "set_total_incoming_outgoing_value"):

@@ -1,0 +1,422 @@
+# Copyright (c) 2026, ERPNext Extensions contributors
+"""Scan and reconstruct lost / unexpected zero Stock Entry rates."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+import frappe
+from frappe.utils import flt
+
+from erpnext_extensions.iran_accounting.historical_stock import (
+	CONFIDENCE_AMBIGUOUS,
+	CONFIDENCE_EXACT,
+	CONFIDENCE_LIKELY,
+	QTY_EPS,
+	RATE_EPS,
+	STATUS_DEPENDENCY_REPAIR_REQUIRED,
+	STATUS_MANUAL_REVIEW,
+	STATUS_RECONSTRUCTABLE,
+	STATUS_VALUATION_POISON_DEPENDENCY,
+	VALUE_EPS,
+	Z0_LEGITIMATE_ZERO,
+	Z1_HISTORICAL_RATE_LOST,
+	Z3_MISSING_INCOMING_VALUATION,
+	Z4_BATCH_SABB_LOOKUP_ZERO,
+	Z6_UNKNOWN,
+)
+from erpnext_extensions.iran_accounting.historical_stock.patient_zero import find_patient_zero
+from erpnext_extensions.iran_accounting.historical_stock.util import (
+	g,
+	last_nonzero_from_version,
+	parse_version_blob,
+	version_row_rates,
+)
+from erpnext_extensions.iran_accounting.scrap_costing import (
+	_issued_rate_for_component,
+	is_product_reject,
+	is_scrap_row,
+)
+from erpnext_extensions.iran_accounting.stock_posting_order.replay import sle_poison_reason
+
+TRANSFER_PURPOSES = {
+	"Material Transfer",
+	"Material Transfer for Manufacture",
+	"Send to Subcontractor",
+	"Material Issue",
+}
+
+
+def _is_incoming(row) -> bool:
+	return bool(g(row, "t_warehouse")) and not g(row, "s_warehouse")
+
+
+def scan_zero_rate_rows(company=None, voucher=None, limit=8000) -> dict:
+	conds = [
+		"se.docstatus=1",
+		"ABS(sed.qty) > %s",
+		"ABS(IFNULL(sed.basic_rate,0)) < %s",
+		"ABS(IFNULL(sed.valuation_rate,0)) < %s",
+		"IFNULL(sed.allow_zero_valuation_rate,0)=0",
+		"i.is_stock_item=1",
+	]
+	args: list = [QTY_EPS, RATE_EPS, RATE_EPS]
+	if company:
+		conds.append("se.company=%s")
+		args.append(company)
+	if voucher:
+		conds.append("se.name=%s")
+		args.append(voucher)
+	rows = frappe.db.sql(
+		f"""
+		SELECT sed.name, sed.idx, sed.parent, se.purpose, se.posting_date, se.posting_time,
+		       se.company, se.work_order, se.job_card, se.modified se_modified,
+		       sed.item_code, sed.qty, sed.transfer_qty, sed.s_warehouse, sed.t_warehouse,
+		       sed.basic_rate, sed.valuation_rate, sed.amount, sed.basic_amount,
+		       sed.batch_no, sed.serial_and_batch_bundle, sed.is_finished_item,
+		       sed.secondary_item_type, sed.is_scrap_item, sed.allow_zero_valuation_rate,
+		       sed.modified
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		JOIN `tabItem` i ON i.name = sed.item_code
+		WHERE {" AND ".join(conds)}
+		ORDER BY se.posting_date, se.creation, sed.idx
+		LIMIT {int(limit)}
+		""",
+		args,
+		as_dict=True,
+	)
+	out = []
+	cache = {}
+	for row in rows:
+		out.append(classify_zero_row(row, _cache=cache))
+	return {
+		"count": len(out),
+		"rows": out,
+		"by_class": _count(out, "zero_class"),
+		"by_confidence": _count(out, "confidence"),
+		"by_status": _count(out, "status"),
+	}
+
+
+def classify_zero_row(row, _cache=None) -> dict:
+	purpose = g(row, "purpose") or ""
+	item = g(row, "item_code")
+	qty = flt(g(row, "qty") or g(row, "transfer_qty"))
+	warehouse = g(row, "s_warehouse") or g(row, "t_warehouse")
+	batch = g(row, "batch_no")
+	parent = g(row, "parent")
+	detail = g(row, "name")
+
+	if g(row, "allow_zero_valuation_rate") or purpose == "Stock Reconciliation" or g(row, "voucher_type") == "Stock Reconciliation":
+		return {
+			"topic": "ZERO_RATE",
+			"voucher": parent,
+			"voucher_detail": detail,
+			"idx": g(row, "idx"),
+			"purpose": purpose,
+			"item": item,
+			"warehouse": warehouse,
+			"s_warehouse": g(row, "s_warehouse"),
+			"t_warehouse": g(row, "t_warehouse"),
+			"batch": batch,
+			"sabb": g(row, "serial_and_batch_bundle"),
+			"qty": qty,
+			"current_rate": flt(g(row, "basic_rate")),
+			"current_amount": flt(g(row, "amount")),
+			"historical_rate": 0.0,
+			"proposed_rate": 0.0,
+			"proposed_amount": 0.0,
+			"source_of_truth": "allow_zero_valuation_rate"
+			if g(row, "allow_zero_valuation_rate")
+			else "document_authoritative",
+			"confidence": CONFIDENCE_EXACT,
+			"zero_class": Z0_LEGITIMATE_ZERO,
+			"status": Z0_LEGITIMATE_ZERO,
+			"patient_zero": None,
+			"eligible": False,
+			"work_order": g(row, "work_order"),
+			"job_card": g(row, "job_card"),
+			"is_finished_item": g(row, "is_finished_item"),
+			"secondary_item_type": g(row, "secondary_item_type"),
+		}
+
+	version_rate, version_amount = _version_rate(parent, detail)
+	batch_rate = _batch_inward_rate(item, batch, warehouse)
+	prev_sle_rate = _previous_healthy_sle_rate(item, warehouse, g(row, "posting_date"), g(row, "posting_time"))
+	issued = 0.0
+	if purpose == "Manufacture" and (is_scrap_row(row) or g(row, "secondary_item_type") == "Scrap"):
+		doc = frappe.get_doc("Stock Entry", parent)
+		issued = flt(_issued_rate_for_component(doc, row))
+
+	zero_class = Z6_UNKNOWN
+	proposed = 0.0
+	source = None
+	confidence = CONFIDENCE_AMBIGUOUS
+	transfer_sle = _source_transfer_sle_rate(row)
+
+	if abs(version_rate) > RATE_EPS and abs(batch_rate) > RATE_EPS and abs(version_rate - batch_rate) <= 1:
+		proposed, source, confidence = version_rate, "version+batch_inward", CONFIDENCE_EXACT
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif abs(version_rate) > RATE_EPS and abs(transfer_sle) > RATE_EPS and abs(version_rate - transfer_sle) <= 1:
+		proposed, source, confidence = version_rate, "version+source_transfer_sle", CONFIDENCE_EXACT
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif abs(version_rate) > RATE_EPS and abs(prev_sle_rate) > RATE_EPS and abs(version_rate - prev_sle_rate) <= 1:
+		proposed, source, confidence = version_rate, "version+previous_healthy_sle", CONFIDENCE_EXACT
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif abs(version_rate) > RATE_EPS and abs(batch_rate) > RATE_EPS:
+		proposed, source, confidence = version_rate, "version_vs_batch_mismatch", CONFIDENCE_AMBIGUOUS
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif abs(version_rate) > RATE_EPS:
+		proposed, source, confidence = version_rate, "version", CONFIDENCE_LIKELY
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif abs(transfer_sle) > RATE_EPS:
+		proposed, source, confidence = transfer_sle, "source_transfer_sle", CONFIDENCE_EXACT
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif purpose == "Manufacture" and issued > RATE_EPS and is_scrap_row(row):
+		fg = _finished_item(parent)
+		if is_product_reject(row, fg):
+			proposed, source, confidence = 0.0, "product_reject_pool", CONFIDENCE_LIKELY
+			zero_class = Z6_UNKNOWN
+		else:
+			proposed, source, confidence = issued, "same_voucher_issued_rate", CONFIDENCE_EXACT
+			zero_class = Z1_HISTORICAL_RATE_LOST
+	elif abs(batch_rate) > RATE_EPS:
+		proposed, source, confidence = batch_rate, "batch_inward", CONFIDENCE_LIKELY
+		zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
+	elif abs(prev_sle_rate) > RATE_EPS:
+		proposed, source, confidence = prev_sle_rate, "previous_healthy_sle", CONFIDENCE_LIKELY
+		zero_class = Z3_MISSING_INCOMING_VALUATION
+	else:
+		zero_class = Z3_MISSING_INCOMING_VALUATION
+		confidence = CONFIDENCE_AMBIGUOUS
+
+	patient = _patient_for_identity(item, warehouse, batch, cache=_cache)
+	status = STATUS_MANUAL_REVIEW
+	if zero_class == Z0_LEGITIMATE_ZERO:
+		status = Z0_LEGITIMATE_ZERO
+	elif patient and patient.get("voucher_no") and patient["voucher_no"] != parent:
+		status = STATUS_DEPENDENCY_REPAIR_REQUIRED
+	elif _identity_poisoned(item, warehouse, cache=_cache):
+		status = STATUS_VALUATION_POISON_DEPENDENCY
+	elif confidence == CONFIDENCE_EXACT and proposed > RATE_EPS:
+		status = STATUS_RECONSTRUCTABLE
+	elif confidence == CONFIDENCE_LIKELY:
+		status = STATUS_MANUAL_REVIEW
+	else:
+		status = STATUS_MANUAL_REVIEW
+
+	amount = flt(proposed) * qty
+	return {
+		"topic": "ZERO_RATE",
+		"voucher": parent,
+		"voucher_detail": detail,
+		"idx": g(row, "idx"),
+		"purpose": purpose,
+		"item": item,
+		"warehouse": warehouse,
+		"s_warehouse": g(row, "s_warehouse"),
+		"t_warehouse": g(row, "t_warehouse"),
+		"batch": batch,
+		"sabb": g(row, "serial_and_batch_bundle"),
+		"qty": qty,
+		"current_rate": flt(g(row, "basic_rate")),
+		"current_amount": flt(g(row, "amount")),
+		"historical_rate": version_rate or batch_rate or prev_sle_rate,
+		"proposed_rate": proposed,
+		"proposed_amount": amount,
+		"source_of_truth": source,
+		"confidence": confidence,
+		"zero_class": zero_class,
+		"status": status,
+		"patient_zero": patient,
+		"eligible": status == STATUS_RECONSTRUCTABLE and confidence == CONFIDENCE_EXACT,
+		"work_order": g(row, "work_order"),
+		"job_card": g(row, "job_card"),
+		"is_finished_item": g(row, "is_finished_item"),
+		"secondary_item_type": g(row, "secondary_item_type"),
+	}
+
+
+def preview_zero_row(row: dict) -> dict:
+	return {**row, "dry_run": True}
+
+
+def _version_rate(voucher, detail) -> tuple[float, float]:
+	versions = frappe.db.sql(
+		"""
+		SELECT data FROM `tabVersion`
+		WHERE ref_doctype='Stock Entry' AND docname=%s
+		ORDER BY creation
+		""",
+		voucher,
+		as_dict=True,
+	)
+	best_rate = 0.0
+	best_amount = 0.0
+	for ver in versions:
+		mapped = version_row_rates(parse_version_blob(ver.data))
+		changes = mapped.get(detail) or {}
+		rate = last_nonzero_from_version(changes)
+		if rate > RATE_EPS:
+			best_rate = rate
+		amt = changes.get("amount") or changes.get("basic_amount")
+		if amt:
+			old, new = amt
+			cand = old if abs(old) > RATE_EPS else new
+			if abs(cand) > RATE_EPS:
+				best_amount = cand
+	return best_rate, best_amount
+
+
+def _batch_inward_rate(item, batch, warehouse=None) -> float:
+	if not batch:
+		return 0.0
+	rows = frappe.db.sql(
+		"""
+		SELECT sle.incoming_rate, sbe.incoming_rate sbe_rate, sle.warehouse
+		FROM `tabSerial and Batch Entry` sbe
+		JOIN `tabSerial and Batch Bundle` sabb ON sabb.name = sbe.parent
+		JOIN `tabStock Ledger Entry` sle
+			ON sle.serial_and_batch_bundle = sabb.name AND sle.is_cancelled=0
+		WHERE sbe.batch_no=%s AND sle.item_code=%s AND sle.actual_qty > 0
+		  AND ABS(IFNULL(sle.incoming_rate,0)) > %s
+		ORDER BY sle.posting_datetime, sle.creation
+		LIMIT 8
+		""",
+		(batch, item, RATE_EPS),
+		as_dict=True,
+	)
+	if not rows:
+		rows = frappe.db.sql(
+			"""
+			SELECT incoming_rate, warehouse
+			FROM `tabStock Ledger Entry`
+			WHERE item_code=%s AND batch_no=%s AND is_cancelled=0 AND actual_qty>0
+			  AND ABS(IFNULL(incoming_rate,0)) > %s
+			ORDER BY posting_datetime, creation
+			LIMIT 5
+			""",
+			(item, batch, RATE_EPS),
+			as_dict=True,
+		)
+	if not rows:
+		return 0.0
+	if warehouse:
+		for r in rows:
+			if r.warehouse == warehouse:
+				return flt(r.get("incoming_rate") or r.get("sbe_rate"))
+	return flt(rows[0].get("incoming_rate") or rows[0].get("sbe_rate"))
+
+
+def _source_transfer_sle_rate(row) -> float:
+	"""Nonzero incoming SLE on the same voucher (transfer target) or prior source SLE."""
+	purpose = g(row, "purpose") or ""
+	if purpose not in TRANSFER_PURPOSES:
+		return 0.0
+	parent = g(row, "parent")
+	item = g(row, "item_code")
+	if not parent or not item:
+		return 0.0
+	found = frappe.db.sql(
+		"""
+		SELECT incoming_rate
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND item_code=%s
+		  AND is_cancelled=0 AND actual_qty > 0 AND ABS(IFNULL(incoming_rate,0)) > %s
+		ORDER BY posting_datetime, creation
+		LIMIT 1
+		""",
+		(parent, item, RATE_EPS),
+		as_dict=True,
+	)
+	if found:
+		return flt(found[0].incoming_rate)
+	return 0.0
+
+
+def _previous_healthy_sle_rate(item, warehouse, posting_date, posting_time) -> float:
+	if not item or not warehouse or not posting_date:
+		return 0.0
+	row = frappe.db.sql(
+		"""
+		SELECT incoming_rate, valuation_rate
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND posting_datetime < TIMESTAMP(%s, %s)
+		  AND (
+		        ABS(IFNULL(incoming_rate,0)) > %s
+		     OR ABS(IFNULL(valuation_rate,0)) > %s
+		  )
+		ORDER BY posting_datetime DESC, creation DESC
+		LIMIT 1
+		""",
+		(item, warehouse, posting_date, posting_time or "00:00:00", VALUE_EPS, VALUE_EPS),
+		as_dict=True,
+	)
+	if not row:
+		return 0.0
+	return flt(row[0].incoming_rate or row[0].valuation_rate)
+
+
+def _finished_item(voucher) -> str | None:
+	return frappe.db.get_value(
+		"Stock Entry Detail",
+		{"parent": voucher, "is_finished_item": 1},
+		"item_code",
+	)
+
+
+def _patient_for_identity(item, warehouse, batch, cache=None) -> dict | None:
+	if not item or not warehouse:
+		return None
+	key = (item, warehouse, batch or "")
+	if cache is not None and key in cache:
+		return cache[key]
+	rows = frappe.db.sql(
+		"""
+		SELECT name, voucher_no, item_code, warehouse, actual_qty, incoming_rate,
+		       valuation_rate, stock_value, stock_value_difference, qty_after_transaction,
+		       posting_datetime, batch_no
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime, creation
+		""",
+		(item, warehouse),
+		as_dict=True,
+	)
+	found = find_patient_zero(rows, batch=batch)
+	if cache is not None:
+		cache[key] = found
+	return found
+
+
+def _identity_poisoned(item, warehouse, cache=None) -> bool:
+	if not item or not warehouse:
+		return False
+	key = ("poison", item, warehouse)
+	if cache is not None and key in cache:
+		return cache[key]
+	rows = frappe.db.sql(
+		"""
+		SELECT actual_qty, incoming_rate, valuation_rate, stock_value,
+		       stock_value_difference, qty_after_transaction
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime DESC, creation DESC
+		LIMIT 12
+		""",
+		(item, warehouse),
+		as_dict=True,
+	)
+	found = any(sle_poison_reason(r) for r in rows)
+	if cache is not None:
+		cache[key] = found
+	return found
+
+
+def _count(rows, key):
+	out = defaultdict(int)
+	for row in rows:
+		out[str(row.get(key) or "")] += 1
+	return dict(out)
