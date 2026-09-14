@@ -114,26 +114,19 @@ def _allocation_child_row(
 			"reference_name": snm,
 		}
 	if sdt == "Payment Request":
-		pr = frappe.db.get_value(
-			"Payment Request",
-			snm,
-			["reference_doctype", "reference_name"],
-			as_dict=True,
-		)
-		if (
-			not pr
-			or (pr.get("reference_doctype") or "").strip() not in ("Purchase Invoice", "Sales Invoice")
-			or not (pr.get("reference_name") or "").strip()
-		):
-			raise ValueError(
-				"payment_request_must_reference_invoice: Payment Request must reference a Purchase or Sales Invoice for PDC allocation."
-			)
+		# Payment Request is the settlement capacity key and traceability document.
+		# Allocate directly to the PR (never fabricate an invoice). Underlying PI/SI, when
+		# present on the PR, is resolved later by payable/receivable JE slice helpers.
+		# PO/SO-based Payment Requests are valid: JE posts without invoice refs until allocated.
+		if not snm or not frappe.db.exists("Payment Request", snm):
+			raise ValueError("payment_request_not_found: Payment Request was not found.")
 		return {
 			**base,
-			"reference_doctype": (pr.get("reference_doctype") or "").strip(),
-			"reference_name": (pr.get("reference_name") or "").strip(),
-			"source_doctype": "Payment Request",
-			"source_name": snm,
+			"reference_doctype": "Payment Request",
+			"reference_name": snm,
+			# Reference *is* the Payment Request — no separate source trace needed.
+			"source_doctype": None,
+			"source_name": None,
 		}
 	raise ValueError(sdt)
 
@@ -347,8 +340,12 @@ def prepare_post_dated_cheque_prefill_from_source(
 			party_type=party["party_type"],
 			party=party["party"],
 		)
-	except ValueError:
-		out["message"] = _("Payment Request must reference a Purchase or Sales Invoice for PDC allocation.")
+	except ValueError as exc:
+		msg = str(exc or "")
+		if msg.startswith("payment_request_not_found:"):
+			out["message"] = _("Source Payment Request was not found.")
+		else:
+			out["message"] = _("Could not build a Post Dated Cheque allocation from this document.")
 		return out
 	if flt(child.get("amount")) <= 0:
 		# Debug/assertion-level safeguard: never allow a zero allocation row to be created from source prefill.

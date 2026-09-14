@@ -45,6 +45,7 @@ def payable_purchase_invoice_settlement_slices(doc) -> list[tuple[str, float]] |
 		return None
 
 	slices: list[tuple[str, float]] = []
+	unresolved: list[str] = []
 	for row in allocations:
 		amt = flt(getattr(row, "amount", None) or getattr(row, "allocated_amount", None) or 0)
 		if amt <= _EPS:
@@ -76,12 +77,10 @@ def payable_purchase_invoice_settlement_slices(doc) -> list[tuple[str, float]] |
 			if pr_rdt == "Purchase Invoice" and pr_rnm:
 				slices.append((pr_rnm, amt))
 				continue
-			frappe.throw(
-				_(
-					"Payable PDC allocation via Payment Request {0} must reference a Purchase Invoice for supplier settlement (found {1})."
-				).format(rnm, pr_rdt or _("(empty)")),
-				title=_("PDC Payable Issue"),
-			)
+			# PO/SO/empty-based Payment Request: no invoice to mark paid yet.
+			# Treat as non-invoice settlement (caller posts JE without PI refs).
+			unresolved.append(rnm)
+			continue
 		frappe.throw(
 			_(
 				"Payable PDC allocation references {0} — use Purchase Invoice or Payment Request linked to a Purchase Invoice when allocating against invoices."
@@ -89,8 +88,18 @@ def payable_purchase_invoice_settlement_slices(doc) -> list[tuple[str, float]] |
 			title=_("PDC Payable Issue"),
 		)
 
+	# Docstring contract: none resolve to PI → legacy JE lines (no invoice refs).
 	if not slices:
 		return None
+	# Mixed invoice + non-invoice rows are unsafe (partial PI outstanding update).
+	if unresolved:
+		frappe.throw(
+			_(
+				"Payable PDC mixes invoice-linked allocations with Payment Request(s) that do not "
+				"reference a Purchase Invoice ({0}). Use a consistent allocation set."
+			).format(", ".join(unresolved)),
+			title=_("PDC Payable Issue"),
+		)
 
 	merged: dict[str, float] = {}
 	for pinv, amt in slices:

@@ -319,6 +319,7 @@ doc_events = {
 			"erpnext_extensions.consignment_stock.material_loan.journal_entry_hooks.on_cancel",
 		],
 		"on_trash": [
+			"erpnext_extensions.petty_management.journal_entry_hooks.on_journal_entry_on_trash",
 			"erpnext_extensions.consignment_stock.journal_entry_hooks.on_trash",
 			"erpnext_extensions.consignment_stock.material_loan.journal_entry_hooks.on_trash",
 		],

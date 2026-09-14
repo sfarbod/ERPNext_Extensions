@@ -27,8 +27,12 @@ def receivable_sales_invoice_settlement_slices(doc) -> list[tuple[str, float]] |
 
 	Rules:
 	- Only **Receivable** cheques are considered.
-	- If there are no allocation rows, or none reference a Sales Invoice, returns ``None``.
-	- Otherwise every non-zero allocation row must reference **Sales Invoice**.
+	- If there are no allocation rows, or none resolve to a Sales Invoice, returns ``None``.
+	- Otherwise every non-zero allocation row must be either:
+
+	  - **Sales Invoice** directly, or
+	  - **Payment Request** whose ``reference_doctype`` / ``reference_name`` point to a **Sales Invoice**.
+
 	- Amounts must sum to ``doc.cheque_amount`` (company currency precision).
 	"""
 	if (getattr(doc, "cheque_direction", None) or "").strip() != CHEQUE_DIRECTION_RECEIVABLE:
@@ -39,6 +43,7 @@ def receivable_sales_invoice_settlement_slices(doc) -> list[tuple[str, float]] |
 		return None
 
 	slices: list[tuple[str, float]] = []
+	unresolved: list[str] = []
 	for row in allocations:
 		amt = flt(getattr(row, "amount", None) or getattr(row, "allocated_amount", None) or 0)
 		if amt <= _EPS:
@@ -50,17 +55,46 @@ def receivable_sales_invoice_settlement_slices(doc) -> list[tuple[str, float]] |
 				_("Receivable PDC allocation row is missing Reference DocType or Reference Name."),
 				title=_("PDC Receivable Register"),
 			)
-		if rdt != "Sales Invoice":
-			frappe.throw(
-				_(
-					"Receivable PDC allocation references {0} — use Sales Invoice allocations when allocating against invoices."
-				).format(rdt),
-				title=_("PDC Receivable Register"),
+		if rdt == "Sales Invoice":
+			slices.append((rnm, amt))
+			continue
+		if rdt == "Payment Request":
+			pr = frappe.db.get_value(
+				"Payment Request",
+				rnm,
+				["reference_doctype", "reference_name"],
+				as_dict=True,
 			)
-		slices.append((rnm, amt))
+			if not pr:
+				frappe.throw(
+					_("Payment Request {0} was not found.").format(rnm),
+					title=_("PDC Receivable Register"),
+				)
+			pr_rdt = (pr.get("reference_doctype") or "").strip()
+			pr_rnm = (pr.get("reference_name") or "").strip()
+			if pr_rdt == "Sales Invoice" and pr_rnm:
+				slices.append((pr_rnm, amt))
+				continue
+			# SO/empty-based Payment Request: no invoice refs yet.
+			unresolved.append(rnm)
+			continue
+		frappe.throw(
+			_(
+				"Receivable PDC allocation references {0} — use Sales Invoice or Payment Request linked to a Sales Invoice when allocating against invoices."
+			).format(rdt),
+			title=_("PDC Receivable Register"),
+		)
 
 	if not slices:
 		return None
+	if unresolved:
+		frappe.throw(
+			_(
+				"Receivable PDC mixes invoice-linked allocations with Payment Request(s) that do not "
+				"reference a Sales Invoice ({0}). Use a consistent allocation set."
+			).format(", ".join(unresolved)),
+			title=_("PDC Receivable Register"),
+		)
 
 	merged: dict[str, float] = {}
 	for sinv, amt in slices:
