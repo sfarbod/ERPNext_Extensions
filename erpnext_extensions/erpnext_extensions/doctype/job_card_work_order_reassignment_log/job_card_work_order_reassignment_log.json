@@ -1,0 +1,177 @@
+{
+ "actions": [],
+ "allow_copy": 0,
+ "allow_import": 0,
+ "autoname": "hash",
+ "creation": "2026-09-14 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "source_work_order",
+  "target_work_order",
+  "result",
+  "column_break_meta",
+  "reassigned_by",
+  "reassigned_on",
+  "preview_token",
+  "source_empty_after",
+  "section_reason",
+  "reason",
+  "error_message",
+  "section_payload",
+  "job_cards_json",
+  "stock_entries_json",
+  "operation_mapping_json",
+  "section_counters",
+  "counters_before",
+  "counters_after"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Source Work Order",
+   "options": "Work Order",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "target_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Target Work Order",
+   "options": "Work Order",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "Success",
+   "fieldname": "result",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Result",
+   "options": "Success\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "reassigned_by",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reassigned_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Timestamp",
+   "read_only": 1
+  },
+  {
+   "fieldname": "preview_token",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Preview Token",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "source_empty_after",
+   "fieldtype": "Check",
+   "label": "Source Work Order has no remaining Job Cards",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_reason",
+   "fieldtype": "Section Break",
+   "label": "Reason"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_payload",
+   "fieldtype": "Section Break",
+   "label": "Payload"
+  },
+  {
+   "fieldname": "job_cards_json",
+   "fieldtype": "Long Text",
+   "label": "Job Cards",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_entries_json",
+   "fieldtype": "Long Text",
+   "label": "Stock Entries",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operation_mapping_json",
+   "fieldtype": "Long Text",
+   "label": "Operation Mapping",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_counters",
+   "fieldtype": "Section Break",
+   "label": "Manufacturing Counters"
+  },
+  {
+   "fieldname": "counters_before",
+   "fieldtype": "Long Text",
+   "label": "Before",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counters_after",
+   "fieldtype": "Long Text",
+   "label": "After",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "links": [],
+ "modified": "2026-09-14 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Job Card Work Order Reassignment Log",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "source_work_order",
+ "track_changes": 1
+}

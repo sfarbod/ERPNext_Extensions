@@ -1,0 +1,84 @@
+.reassign-jc-page {
+	padding-bottom: 32px;
+}
+.reassign-jc-page .rjc-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: flex-end;
+	margin-bottom: 12px;
+}
+.reassign-jc-page .rjc-toolbar .frappe-control {
+	min-width: 220px;
+	max-width: 280px;
+	margin-bottom: 0;
+}
+.reassign-jc-page .rjc-reason .frappe-control {
+	min-width: 320px;
+	max-width: 480px;
+}
+.reassign-jc-page .rjc-actions {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+.reassign-jc-page .rjc-help {
+	color: var(--text-muted);
+	margin: 0 0 12px;
+}
+.reassign-jc-page .rjc-table {
+	width: 100%;
+	border-collapse: collapse;
+	margin-bottom: 16px;
+}
+.reassign-jc-page .rjc-table th,
+.reassign-jc-page .rjc-table td {
+	border-bottom: 1px solid var(--border-color);
+	padding: 6px 8px;
+	text-align: left;
+	font-size: 12px;
+}
+.reassign-jc-page .rjc-badge {
+	display: inline-block;
+	padding: 1px 8px;
+	border-radius: 10px;
+	font-weight: 600;
+	font-size: 11px;
+}
+.reassign-jc-page .rjc-badge.move {
+	background: var(--bg-green);
+	color: var(--green-700, #05603a);
+}
+.reassign-jc-page .rjc-badge.keep {
+	background: var(--bg-gray);
+}
+.reassign-jc-page .rjc-badge.block {
+	background: var(--bg-red);
+	color: var(--red-700, #912018);
+}
+.reassign-jc-page .rjc-badge.create {
+	background: var(--bg-blue);
+	color: var(--blue-700, #175cd3);
+}
+.reassign-jc-page .rjc-badge.reuse {
+	background: var(--bg-green);
+	color: var(--green-700, #05603a);
+}
+.reassign-jc-page .rjc-alert {
+	padding: 8px 12px;
+	border-radius: 6px;
+	margin-bottom: 8px;
+}
+.reassign-jc-page .rjc-alert.blocker {
+	background: var(--bg-red);
+}
+.reassign-jc-page .rjc-alert.warning {
+	background: var(--bg-yellow);
+}
+.reassign-jc-page .rjc-section-title {
+	margin: 16px 0 8px;
+}
+.reassign-jc-page .rjc-empty {
+	color: var(--text-muted);
+	margin: 8px 0 16px;
+}
