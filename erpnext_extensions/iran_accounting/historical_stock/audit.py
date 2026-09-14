@@ -63,3 +63,51 @@ def last_open_run(topic=None):
 		filters["topic"] = topic
 	name = frappe.db.get_value("Historical Stock Repair Log", filters, "name", order_by="creation desc")
 	return frappe.get_doc("Historical Stock Repair Log", name) if name else None
+
+
+def list_runs(limit=30) -> list[dict]:
+	if not frappe.db.exists("DocType", "Historical Stock Repair Log"):
+		return []
+	return frappe.db.sql(
+		"""
+		SELECT name, repair_run_id, topic, status, repaired_by, started_on, ended_on, resume_cursor, summary
+		FROM `tabHistorical Stock Repair Log`
+		ORDER BY creation DESC
+		LIMIT %s
+		""",
+		int(limit),
+		as_dict=True,
+	)
+
+
+def rollback_run(repair_run_id: str, *, dry_run=True) -> dict:
+	"""Restore SE/SLE rate fields from audit payload snapshots. Identity-only."""
+	if not repair_run_id:
+		frappe.throw("repair_run_id is required")
+	name = frappe.db.get_value("Historical Stock Repair Log", {"repair_run_id": repair_run_id}, "name")
+	if not name:
+		frappe.throw("Repair log not found")
+	log = frappe.get_doc("Historical Stock Repair Log", name)
+	restored = []
+	for entry in log.get("entries") or []:
+		try:
+			payload = json.loads(entry.payload or "{}")
+		except json.JSONDecodeError:
+			continue
+		detail = payload.get("voucher_detail")
+		current = payload.get("current_rate")
+		if not detail or current in (None, ""):
+			continue
+		restored.append({"voucher_detail": detail, "restore_rate": current, "voucher": payload.get("voucher")})
+		if dry_run:
+			continue
+		frappe.db.set_value(
+			"Stock Entry Detail",
+			detail,
+			{"basic_rate": current, "valuation_rate": current},
+			update_modified=False,
+		)
+	if not dry_run:
+		log.status = "Rolled Back"
+		log.save(ignore_permissions=True)
+	return {"dry_run": dry_run, "repair_run_id": repair_run_id, "restored": restored, "count": len(restored)}

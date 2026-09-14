@@ -3,30 +3,85 @@
 	flex-wrap: wrap;
 	gap: 12px;
 	align-items: flex-end;
-	margin-bottom: 16px;
+	margin-bottom: 12px;
 }
 .historical-repair-page .hr-toolbar .frappe-control {
-	min-width: 180px;
+	min-width: 160px;
 	margin-bottom: 0;
 }
 .historical-repair-page .hr-actions {
 	display: flex;
-	gap: 8px;
+	flex-wrap: wrap;
+	gap: 6px;
 }
 .historical-repair-page .hr-section-title {
 	font-weight: 600;
 	margin: 8px 0 12px;
 }
+.historical-repair-page .hr-dashboard {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+.historical-repair-page .hr-chip {
+	border: 1px solid var(--border-color);
+	border-radius: 16px;
+	padding: 4px 10px;
+	font-size: 12px;
+	cursor: pointer;
+	background: var(--fg-color);
+}
+.historical-repair-page .hr-chip b {
+	margin-left: 6px;
+}
+.historical-repair-page .hr-grid-tools {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin-bottom: 8px;
+}
+.historical-repair-page .hr-search {
+	min-width: 220px;
+}
+.historical-repair-page .hr-table-wrap {
+	max-height: 520px;
+	overflow: auto;
+	border: 1px solid var(--border-color);
+	position: relative;
+}
 .historical-repair-page table.hr-table {
-	width: 100%;
-	border-collapse: collapse;
+	width: max-content;
+	min-width: 100%;
+	border-collapse: separate;
+	border-spacing: 0;
 	font-size: 12px;
 }
 .historical-repair-page table.hr-table th,
 .historical-repair-page table.hr-table td {
-	border: 1px solid var(--border-color);
+	border-bottom: 1px solid var(--border-color);
+	border-right: 1px solid var(--border-color);
 	padding: 6px 8px;
 	vertical-align: top;
+	white-space: nowrap;
+	background: var(--fg-color);
+}
+.historical-repair-page table.hr-table thead th {
+	position: sticky;
+	top: 0;
+	z-index: 3;
+	background: var(--subtle-fg);
+}
+.historical-repair-page table.hr-table th:first-child,
+.historical-repair-page table.hr-table td:first-child {
+	position: sticky;
+	left: 0;
+	z-index: 2;
+	background: var(--fg-color);
+}
+.historical-repair-page table.hr-table thead th:first-child {
+	z-index: 4;
 }
 .historical-repair-page .hr-preview {
 	white-space: pre-wrap;
@@ -34,13 +89,42 @@
 	padding: 12px;
 	border-radius: 6px;
 	margin-top: 16px;
-	max-height: 480px;
+	max-height: 360px;
 	overflow: auto;
+}
+.historical-repair-page .hr-graph {
+	font-family: var(--font-stack);
+	font-size: 12px;
+	margin-top: 12px;
+}
+.historical-repair-page .hr-graph a {
+	margin-right: 4px;
+}
+.historical-repair-page .hr-progress {
+	height: 8px;
+	background: var(--bg-light-gray);
+	border-radius: 4px;
+	margin: 8px 0;
+	display: none;
+}
+.historical-repair-page .hr-progress-bar {
+	height: 8px;
+	width: 0;
+	background: var(--primary);
+	border-radius: 4px;
+}
+.historical-repair-page .hr-link {
+	color: var(--primary);
+	cursor: pointer;
+	text-decoration: underline;
 }
 .historical-repair-page .hr-status-ELIGIBLE,
 .historical-repair-page .hr-status-REPAIRABLE_SECONDS,
 .historical-repair-page .hr-status-SAME_TIME_REPAIRABLE,
-.historical-repair-page .hr-status-CROSS_TIME_REPAIRABLE {
+.historical-repair-page .hr-status-CROSS_TIME_REPAIRABLE,
+.historical-repair-page .hr-status-RECONSTRUCTABLE,
+.historical-repair-page .hr-status-DOWNSTREAM_COMPLETE,
+.historical-repair-page .hr-status-INTEGRITY_COMPLETE {
 	color: var(--green-600);
 	font-weight: 600;
 }
@@ -57,7 +141,9 @@
 .historical-repair-page .hr-status-MIDNIGHT_REVIEW,
 .historical-repair-page .hr-status-VALUATION_POISON_DEPENDENCY,
 .historical-repair-page .hr-status-LATER_INBOUND_UNRELATED,
-.historical-repair-page .hr-status-AMBIGUOUS_DEPENDENCY {
+.historical-repair-page .hr-status-AMBIGUOUS_DEPENDENCY,
+.historical-repair-page .hr-status-WRONG_OUTGOING_RATE,
+.historical-repair-page .hr-status-WRONG_INCOMING_RATE {
 	color: var(--red-600);
 	font-weight: 600;
 }

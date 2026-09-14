@@ -522,5 +522,51 @@ class TestRepairRefusesAmbiguous(unittest.TestCase):
 			self.assertEqual(out["applied"], [])
 
 
+class TestWrongRateContract(unittest.TestCase):
+	def test_outgoing_zero_with_svd_is_wrong(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import classify_rate_flags
+
+		flags = classify_rate_flags(qty=-1899, outgoing_rate=0, svd=-6330732319)
+		self.assertIn("WRONG_OUTGOING_RATE", flags)
+
+	def test_incoming_differs_from_source(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import classify_rate_flags
+
+		flags = classify_rate_flags(qty=1899, incoming_rate=3338300, svd=6330732319, expected=3333718.97)
+		self.assertIn("WRONG_VS_RECONSTRUCTED_SOURCE", flags)
+
+	def test_basic_vs_zero_valuation(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import classify_rate_flags
+
+		flags = classify_rate_flags(qty=1, basic_rate=118700, valuation_rate=0, amount=118700)
+		self.assertIn("WRONG_VALUATION_RATE", flags)
+
+	def test_reconstruction_never_uses_bin(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import pick_reconstruction
+
+		picked = pick_reconstruction({"bin": 1, "transfer_source": 3333719, "version": 3333719})
+		self.assertEqual(picked["confidence"], "EXACT")
+		self.assertNotIn("bin", picked["sources_tried"])
+		self.assertIn("transfer_source", picked["source"])
+
+	def test_version_alone_is_likely(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import pick_reconstruction
+
+		picked = pick_reconstruction({"version": 40378})
+		self.assertEqual(picked["confidence"], "LIKELY")
+
+	def test_manual_when_empty(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import pick_reconstruction
+
+		picked = pick_reconstruction({})
+		self.assertEqual(picked["confidence"], "MANUAL")
+
+	def test_selective_requires_scope(self):
+		from erpnext_extensions.iran_accounting.historical_stock.selective import require_scope
+
+		with self.assertRaises(Exception):
+			require_scope({})
+
+
 if __name__ == "__main__":
 	unittest.main()

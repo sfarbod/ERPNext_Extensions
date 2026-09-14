@@ -75,6 +75,33 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 	}
 
 
+def repair_wrong_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
+	"""Repair EXACT wrong/zero rates. SLE-only implied SVD uses SABB/SLE writers."""
+	se_rows = [r for r in rows or [] if r.get("voucher_detail") or r.get("surface") != "SLE"]
+	sle_rows = [r for r in rows or [] if r.get("surface") == "SLE"]
+	result = (
+		repair_zero_rate_selected(se_rows, dry_run=dry_run)
+		if se_rows
+		else {"dry_run": dry_run, "applied": [], "blocked": []}
+	)
+	if dry_run:
+		result["sle_preview"] = sle_rows
+		return result
+	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+		sync_sabb_from_sle,
+		write_sle_transaction_rates,
+	)
+
+	for r in sle_rows:
+		if r.get("confidence") != CONFIDENCE_EXACT or not r.get("eligible"):
+			result.setdefault("blocked", []).append({"row": r, "error": "not EXACT", "status": STATUS_BLOCKED})
+			continue
+		write_sle_transaction_rates(r.get("voucher"), r.get("item"))
+		sync_sabb_from_sle(r.get("voucher"), r.get("item"))
+		result.setdefault("applied", []).append({**r, "written": True, "status": STATUS_REPAIRED})
+	return result
+
+
 def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 	applied = []
 	blocked = []

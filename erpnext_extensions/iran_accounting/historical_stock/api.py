@@ -18,6 +18,7 @@ from erpnext_extensions.iran_accounting.historical_stock.integrity import chain_
 from erpnext_extensions.iran_accounting.historical_stock.manufacture import scan_manufacture_anomalies
 from erpnext_extensions.iran_accounting.historical_stock.reconstruct import (
 	repair_manufacture_selected,
+	repair_wrong_rate_selected,
 	repair_zero_rate_selected,
 )
 from erpnext_extensions.iran_accounting.historical_stock.repost import preview_repost_selected, repost_selected
@@ -93,6 +94,31 @@ def repair_zero_rates_selected(rows=None, dry_run=True):
 	if not parsed:
 		frappe.throw("Exact document rows are required")
 	return repair_zero_rate_selected(parsed, dry_run=_dry(dry_run, True))
+
+
+@frappe.whitelist()
+def scan_wrong_rates_api(company=None, voucher=None, item_code=None, warehouse=None, batch=None, from_date=None, to_date=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+
+	return scan_wrong_rates(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		batch=batch or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+	)
+
+
+@frappe.whitelist()
+def repair_wrong_rates_selected(rows=None, dry_run=True):
+	_guard()
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact document rows are required")
+	return repair_wrong_rate_selected(parsed, dry_run=_dry(dry_run, True))
 
 
 @frappe.whitelist()
@@ -224,6 +250,41 @@ def replay_downstream_api(rows=None, dry_run=True):
 	if not parsed:
 		frappe.throw("Exact item/batch chain rows are required")
 	return replay_downstream_for_rows(parsed, dry_run=_dry(dry_run, True))
+
+
+@frappe.whitelist()
+def selective_repair_api(scope=None, op="replay", dry_run=True):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.selective import selective_pipeline
+
+	parsed = scope if isinstance(scope, dict) else _parse(scope)
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	return selective_pipeline(parsed or {}, op=op or "replay", dry_run=_dry(dry_run, True))
+
+
+@frappe.whitelist()
+def repair_graph_api(item=None, batch=None, work_order=None, voucher=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.graph import repair_graph
+
+	return repair_graph(item=item or None, batch=batch or None, work_order=work_order or None, voucher=voucher or None, warehouse=warehouse or None)
+
+
+@frappe.whitelist()
+def repair_history_api():
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.audit import list_runs
+
+	return {"rows": list_runs()}
+
+
+@frappe.whitelist()
+def rollback_run_api(repair_run_id=None, dry_run=True):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.audit import rollback_run
+
+	return rollback_run(repair_run_id, dry_run=_dry(dry_run, True))
 
 
 # Re-export posting-order APIs so the page can use one namespace.

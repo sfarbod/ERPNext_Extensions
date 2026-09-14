@@ -311,7 +311,7 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 
 | Area | Result |
 |------|--------|
-| `test_historical_stock` (unit) | PASS (25) |
+| `test_historical_stock` (unit) | PASS (32, incl. wrong-rate / reconstruction priority) |
 | `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
@@ -321,6 +321,45 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 | `bench build --app erpnext_extensions` | PASS |
 | `migrate` ×2 | PASS |
 | Local `run_gate(full_stress=1)` | PASS (stress 148.29 s; RIV×2; 03516; flows) |
+
+## 15. Maintenance tool (wrong-rate + selective + UI)
+
+Historical Repair is the official 5.2.7 maintenance surface. Accounting policy is unchanged. Writes never run from Scan or Dry Run.
+
+### Architecture
+
+```
+Scan / Dry Run / Preview (default)
+        ↓ EXACT only
+Stock Entry → SLE → SABB/SBE → identity forward replay → Bin → selective GL → Failed RIV class → optional Item+Warehouse RIV
+```
+
+Never: global RIV, global Bin, global GL. Scope requires item, warehouse, batch, work order, or voucher.
+
+| Engine | Module |
+|--------|--------|
+| Wrong / lost rate | `historical_stock/wrong_rate.py` |
+| Reconstruction priority | version → previous healthy SLE → batch inward → transfer source → manufacture pool → PR → SRE → moving average → manual. **Never Bin.** |
+| Selective replay/rebuild/RIV | `historical_stock/selective.py` |
+| Dependency graph | `historical_stock/graph.py` |
+| Downstream batch replay | `historical_stock/downstream_replay.py` |
+| Audit / rollback snapshot | `historical_stock/audit.py` |
+| Global dashboard | `scan.run_full_integrity_scan` → `dashboard` chips |
+
+Confidence: EXACT / LIKELY / AMBIGUOUS / MANUAL. Only EXACT auto-repairs.
+
+### Workflow
+
+1. Scan All → dashboard counts (click through to the topic).
+2. Topic Scan → grid (frozen header + first column, search, sort, filters, export).
+3. Dry Run / Preview (Repair Selected stays disabled until Dry Run).
+4. Repair Selected / Replay Downstream / Rebuild Affected Documents (each dry-runs first).
+5. Integrity Check. Selective RIV only if identity is healthy.
+6. Repair History / Rollback (snapshot restore of SE rates). Resume open run.
+
+### Farvardin re-validation (this phase)
+
+Batch `504135-30300042-AK264401A11`: 25824-1 / 25825 / 25912 / 25911-1 — posting order intact, outgoing/incoming/SABB at reconstructed **3,333,718.97**, SVD value-neutral on transfer, FG residual preserved, pair+downstream integrity PASS. Graph nodes include that chain (plus earlier Reject `25827`).
 
 ## 14. Deployment
 

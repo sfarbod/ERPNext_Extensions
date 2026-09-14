@@ -10,6 +10,7 @@ from erpnext_extensions.iran_accounting.historical_stock.failed_riv import scan_
 from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import scan_gl_integrity
 from erpnext_extensions.iran_accounting.historical_stock.manufacture import scan_manufacture_anomalies
 from erpnext_extensions.iran_accounting.historical_stock.sle_bin import scan_sle_bin
+from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
 from erpnext_extensions.iran_accounting.historical_stock.zero_rate import scan_zero_rate_rows
 from erpnext_extensions.iran_accounting.stock_posting_order.scanner import run_full_history_scan
 
@@ -27,6 +28,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 
 	posting = _mark("posting_order", lambda: run_full_history_scan(company=company))
 	zero = _mark("zero_rate", lambda: scan_zero_rate_rows(company=company))
+	wrong = _mark("wrong_rate", lambda: scan_wrong_rates(company=company, limit=2000))
 	mfg = {"count": 0, "rows": [], "scanned": 0}
 	if include_manufacture:
 		mfg = _mark("manufacture", lambda: scan_manufacture_anomalies(company=company, limit=5000))
@@ -62,6 +64,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 			"likely": likely,
 			"ambiguous": ambiguous,
 		},
+		"wrong_rate": {
+			"count": wrong.get("count"),
+			"by_flag": wrong.get("by_flag"),
+			"exact": wrong.get("exact"),
+			"likely": wrong.get("likely"),
+			"ambiguous": wrong.get("ambiguous"),
+			"repairable": wrong.get("repairable"),
+		},
 		"manufacture": {"count": mfg.get("count"), "scanned": mfg.get("scanned")},
 		"sle_bin": {
 			"count": sle.get("count"),
@@ -72,4 +82,22 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"failed_riv": {"count": riv.get("count"), "by_status": riv.get("by_status")},
 		"patient_zero_vouchers": patients,
 		"patient_zero_count": len(patients),
+		"dashboard": {
+			"Posting Order": len(posting.get("rows") or []),
+			"Zero Rate": zero.get("count") or 0,
+			"Wrong Rate": wrong.get("count") or 0,
+			"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
+			"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
+			"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
+			"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
+			"Wrong Avg Rate": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+			"Broken SABB": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+			"Broken Bin": len(sle.get("bin_mismatches") or []),
+			"Broken GL": gl.get("count") or 0,
+			"Failed RIV": riv.get("count") or 0,
+			"Patient Zero": len(patients),
+			"Repairable": (wrong.get("repairable") or 0) + exact,
+			"Manual": (wrong.get("manual") or 0) + likely,
+			"Ambiguous": (wrong.get("ambiguous") or 0) + ambiguous,
+		},
 	}

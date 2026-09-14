@@ -27,6 +27,9 @@ class HistoricalRepairPage {
 		this.topic = "posting";
 		this.rows = [];
 		this.dry_run_done = false;
+		this.visible_rows = [];
+		this.sort_keys = [];
+		this.cancelled = false;
 		this.$body = $(page.body);
 		this.render();
 	}
@@ -44,6 +47,7 @@ class HistoricalRepairPage {
 			$b.on("click", () => this.switch_topic(t.id));
 		});
 		this.$title = $('<h4 class="hr-section-title">').appendTo(this.$body);
+		this.$dashboard = $('<div class="hr-dashboard" data-role="dashboard">').appendTo(this.$body);
 		this.$toolbar = $('<div class="hr-toolbar">').appendTo(this.$body);
 		this.company = frappe.ui.form.make_control({
 			parent: this.$toolbar,
@@ -62,6 +66,7 @@ class HistoricalRepairPage {
 		});
 		const $actions = $('<div class="hr-actions">').appendTo(this.$toolbar);
 		this.btn_scan = this._btn($actions, "scan", __("Scan"), () => this.scan());
+		this.btn_scan_all = this._btn($actions, "scan-all", __("Scan All"), () => this.scan_all());
 		this.btn_dry = this._btn($actions, "dry-run", __("Dry Run"), () => this.dry_run(), "btn-primary");
 		this.btn_repair = this._btn($actions, "repair", __("Repair Selected"), () => this.repair_selected(), "btn-danger");
 		this.btn_repost = this._btn($actions, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning");
@@ -80,9 +85,25 @@ class HistoricalRepairPage {
 			() => this.replay_downstream(),
 			"btn-info"
 		);
+		this.btn_graph = this._btn($actions, "graph", __("Graph"), () => this.show_graph());
+		this.btn_history = this._btn($actions, "history", __("Repair History"), () => this.show_history());
+		this.btn_rollback = this._btn($actions, "rollback", __("Rollback"), () => this.rollback_last());
 		this.btn_resume = this._btn($actions, "resume", __("Resume"), () => this.resume());
+		this.btn_cancel = this._btn($actions, "cancel", __("Cancel"), () => { this.cancelled = true; });
 		this.btn_repair.prop("disabled", true);
+		this.$tools = $('<div class="hr-grid-tools">').appendTo(this.$body);
+		this.$search = $('<input class="form-control input-sm hr-search" data-role="search" placeholder="Search">').appendTo(this.$tools);
+		this.$search.on("input", () => this.render_table());
+		["Select All", "Unselect All", "Select EXACT", "Select Repairable", "Select Visible Rows"].forEach((label) => {
+			this._btn(this.$tools, label.toLowerCase().replace(/\s+/g, "-"), __(label), () => this.select_by(label));
+		});
+		this._btn(this.$tools, "export-csv", __("Export CSV"), () => this.export_grid("csv"));
+		this._btn(this.$tools, "export-excel", __("Export Excel"), () => this.export_grid("excel"));
+		this._btn(this.$tools, "copy-selected", __("Copy selected"), () => this.copy_selected());
+		this.$progress = $('<div class="hr-progress"><div class="hr-progress-bar"></div></div>').appendTo(this.$body);
+		this.$eta = $('<div class="text-muted" data-role="eta">').appendTo(this.$body);
 		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$body);
+		this.$graph = $('<div class="hr-graph" data-role="graph">').appendTo(this.$body);
 		this.$preview = $('<pre class="hr-preview" data-role="preview">').appendTo(this.$body);
 		this.switch_topic(this.topic);
 	}
@@ -195,7 +216,7 @@ class HistoricalRepairPage {
 			method = `${this.ppo}.repair_posting_order_selected`;
 			args = { rows, dry_run: 0, expected_signatures: rows.map((r) => r.dependency_signature) };
 		} else if (this.topic === "zero") {
-			method = `${this.api}.repair_zero_rates_selected`;
+			method = `${this.api}.repair_wrong_rates_selected`;
 			args = { rows, dry_run: 0 };
 		} else if (this.topic === "manufacture") {
 			method = `${this.api}.repair_manufacture_selected_api`;
@@ -268,9 +289,19 @@ class HistoricalRepairPage {
 		}
 		frappe.call({
 			method: `${this.ppo}.rebuild_affected_documents`,
-			args: { rows, dry_run: 0 },
+			args: { rows, dry_run: 1 },
 			freeze: true,
-			callback: (r) => this.$preview.text(this.format_preview(r.message || {})),
+			callback: (r) => {
+				this.$preview.text(this.format_preview(r.message || {}));
+				frappe.confirm(__("Apply identity-scoped rebuild? Database backup recommended."), () => {
+					frappe.call({
+						method: `${this.ppo}.rebuild_affected_documents`,
+						args: { rows, dry_run: 0 },
+						freeze: true,
+						callback: (rr) => this.$preview.text(this.format_preview(rr.message || {})),
+					});
+				});
+			},
 		});
 	}
 
@@ -323,6 +354,145 @@ class HistoricalRepairPage {
 			method: `${this.api}.resume_last_run`,
 			callback: (r) => this.$preview.text(JSON.stringify(r.message || {}, null, 2)),
 		});
+	}
+
+	scan_all() {
+		frappe.call({
+			method: `${this.api}.scan_all`,
+			args: { company: this.company.get_value() },
+			freeze: true,
+			callback: (r) => {
+				const msg = r.message || {};
+				this.render_dashboard(msg.dashboard || {});
+				this.$preview.text(this.format_preview(msg));
+			},
+		});
+	}
+
+	render_dashboard(dash) {
+		this.$dashboard.empty();
+		Object.entries(dash).forEach(([label, n]) => {
+			const $chip = $('<button type="button" class="hr-chip">').text(label).append($("<b>").text(n));
+			$chip.on("click", () => {
+				if (/Posting/i.test(label)) this.switch_topic("posting");
+				else if (/Zero|Wrong|Rate|Amount|Incoming|Outgoing|Avg/i.test(label)) this.switch_topic("zero");
+				else if (/Bin|SABB/i.test(label)) this.switch_topic("sle");
+				else if (/GL/i.test(label)) this.switch_topic("gl");
+				else if (/RIV/i.test(label)) this.switch_topic("riv");
+				this.scan();
+			});
+			this.$dashboard.append($chip);
+		});
+	}
+
+	select_by(mode) {
+		this.$table.find("input[type=checkbox][data-idx]").each((_, el) => {
+			const idx = parseInt(el.getAttribute("data-idx"), 10);
+			const row = this.rows[idx] || {};
+			let on = false;
+			if (mode === "Select All") on = true;
+			else if (mode === "Unselect All") on = false;
+			else if (mode === "Select EXACT") on = row.confidence === "EXACT";
+			else if (mode === "Select Repairable") on = !!row.eligible;
+			else if (mode === "Select Visible Rows") on = true;
+			el.checked = on;
+		});
+	}
+
+	export_grid(kind) {
+		const cols = this.columns_for_topic();
+		const lines = [cols.slice(1).join(",")];
+		(this.rows || []).forEach((row) => {
+			lines.push(
+				this.cells_for_row(row)
+					.map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`)
+					.join(",")
+			);
+		});
+		const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+		const a = document.createElement("a");
+		a.href = URL.createObjectURL(blob);
+		a.download = `historical-repair-${this.topic}.${kind === "excel" ? "csv" : "csv"}`;
+		a.click();
+	}
+
+	copy_selected() {
+		const text = this.selected_rows()
+			.map((r) => this.cells_for_row(r).join("\t"))
+			.join("\n");
+		if (navigator.clipboard) navigator.clipboard.writeText(text);
+		else frappe.msgprint(text);
+	}
+
+	show_graph() {
+		const row = this.selected_rows()[0] || this.rows[0] || {};
+		frappe.call({
+			method: `${this.api}.repair_graph_api`,
+			args: {
+				item: row.item || row.item_code,
+				batch: row.batch,
+				work_order: row.work_order,
+				voucher: row.voucher || row.outbound_document || row.inbound_document,
+				warehouse: row.warehouse,
+			},
+			callback: (r) => {
+				const g = r.message || {};
+				const $box = this.$graph.empty();
+				(g.nodes || []).forEach((n, i) => {
+					if (i) $box.append(document.createTextNode(" → "));
+					const $a = $('<a class="hr-link">').text(n.voucher).attr("title", `${n.purpose || ""} ${n.item || ""}`);
+					$a.on("click", () => frappe.set_route("Form", "Stock Entry", n.voucher));
+					$box.append($a);
+				});
+				this.$preview.text(JSON.stringify(g, null, 2));
+			},
+		});
+	}
+
+	show_history() {
+		frappe.call({
+			method: `${this.api}.repair_history_api`,
+			callback: (r) => this.$preview.text(JSON.stringify(r.message || {}, null, 2)),
+		});
+	}
+
+	rollback_last() {
+		frappe.call({
+			method: `${this.api}.repair_history_api`,
+			callback: (r) => {
+				const run = ((r.message || {}).rows || [])[0];
+				if (!run) {
+					frappe.msgprint(__("No repair history."));
+					return;
+				}
+				frappe.confirm(__("Dry-run rollback of {0}?", [run.repair_run_id]), () => {
+					frappe.call({
+						method: `${this.api}.rollback_run_api`,
+						args: { repair_run_id: run.repair_run_id, dry_run: 1 },
+						callback: (rr) => {
+							this.$preview.text(JSON.stringify(rr.message || {}, null, 2));
+							frappe.confirm(__("Apply rollback snapshot?"), () => {
+								frappe.call({
+									method: `${this.api}.rollback_run_api`,
+									args: { repair_run_id: run.repair_run_id, dry_run: 0 },
+									callback: (x) => this.$preview.text(JSON.stringify(x.message || {}, null, 2)),
+								});
+							});
+						},
+					});
+				});
+			},
+		});
+	}
+
+	link_cell(val, doctype) {
+		if (!val) return $("<span>");
+		const $a = $('<a class="hr-link">').text(String(val));
+		$a.on("click", (e) => {
+			e.preventDefault();
+			frappe.set_route("Form", doctype, String(val));
+		});
+		return $a;
 	}
 
 	format_preview(msg) {
@@ -518,6 +688,10 @@ class HistoricalRepairPage {
 				__("Historical Rate"),
 				__("Proposed Rate"),
 				__("Source of Truth"),
+				__("Flags"),
+				__("Current"),
+				__("Expected"),
+				__("Difference"),
 				__("Confidence"),
 				__("Patient Zero"),
 				__("Status"),
@@ -566,6 +740,10 @@ class HistoricalRepairPage {
 				row.historical_rate,
 				row.proposed_rate,
 				row.source_of_truth,
+				(row.flags || []).join(",") || row.mismatch_class || "",
+				row.current ?? row.current_rate,
+				row.expected ?? row.proposed_rate,
+				row.difference,
 				row.confidence,
 				(row.patient_zero && row.patient_zero.voucher_no) || "",
 				row.status,
@@ -582,20 +760,48 @@ class HistoricalRepairPage {
 
 	render_table() {
 		const cols = this.columns_for_topic();
+		const q = (this.$search && this.$search.val() ? this.$search.val() : "").toLowerCase();
 		const $table = $('<table class="hr-table" data-role="posting-order-table">');
 		const $head = $("<tr>");
-		cols.forEach((c) => $head.append($("<th>").text(c.trim())));
+		cols.forEach((c, i) => {
+			const $th = $("<th>").text(c.trim());
+			if (i > 0) {
+				$th.css("cursor", "pointer").on("click", () => {
+					this.sort_keys = [{ i, dir: (this.sort_keys[0] && this.sort_keys[0].i === i && this.sort_keys[0].dir === 1) ? -1 : 1 }];
+					this.render_table();
+				});
+			}
+			$head.append($th);
+		});
 		$table.append($("<thead>").append($head));
 		const $body = $("<tbody>");
-		(this.rows || []).forEach((row, idx) => {
-			const $tr = $("<tr>");
+		let rows = (this.rows || []).map((row, idx) => ({ row, idx }));
+		if (q) {
+			rows = rows.filter(({ row }) => JSON.stringify(row).toLowerCase().includes(q));
+		}
+		if (this.sort_keys && this.sort_keys[0]) {
+			const { i, dir } = this.sort_keys[0];
+			rows.sort((a, b) => {
+				const av = String(this.cells_for_row(a.row)[i - 1] || "");
+				const bv = String(this.cells_for_row(b.row)[i - 1] || "");
+				return av.localeCompare(bv, undefined, { numeric: true }) * dir;
+			});
+		}
+		rows.forEach(({ row, idx }) => {
+			const $tr = $("<tr>").attr("title", row.reason || row.dependency_reason || (row.flags || []).join(", ") || row.status || "");
 			const $cb = $('<input type="checkbox">')
 				.attr("data-idx", idx)
 				.attr("data-eligible", row.eligible ? "1" : "0");
 			if (row.eligible) $cb.prop("checked", true);
 			$tr.append($("<td>").append($cb));
 			this.cells_for_row(row).forEach((val, i, arr) => {
-				const $td = $("<td>").text(val == null ? "" : String(val));
+				const $td = $("<td>");
+				const s = val == null ? "" : String(val);
+				if (/^MAT-STE-/.test(s) || (i < 3 && this.topic === "posting" && s && i <= 2)) {
+					$td.append(this.link_cell(s, "Stock Entry"));
+				} else {
+					$td.text(s);
+				}
 				if (i === arr.length - 1) {
 					$td.addClass(`hr-status-${row.status || ""}`);
 					if (row.optimizer_status) $td.addClass(`hr-status-${row.optimizer_status}`);
