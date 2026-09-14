@@ -53,7 +53,23 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	bin_n = len(sle.get("bin_mismatches") or [])
 	riv_n = riv.get("count") or 0
 	sabb_n = _broken_sabb()
-	repairable = (wrong.get("repairable") or 0) + exact
+
+	def _ready_n(result):
+		return sum(
+			1
+			for r in (result.get("rows") or [])
+			if r.get("planner_status") == "READY" and (r.get("sql_updates") or 0) > 0
+		)
+
+	repairable = (
+		_ready_n(posting)
+		+ _ready_n(zero)
+		+ _ready_n(wrong)
+		+ _ready_n(mfg)
+		+ _ready_n(sle)
+		+ _ready_n(gl)
+		+ _ready_n(riv)
+	)
 	penalty = posting_n * 0.25 + zero_n * 0.5 + wrong_n + sabb_n + bin_n + gl_n * 1.5 + riv_n * 1.5
 	from math import log10
 

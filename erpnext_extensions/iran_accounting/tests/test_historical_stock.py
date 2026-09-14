@@ -440,7 +440,8 @@ class TestGLClasses(unittest.TestCase):
 		):
 			out = rebuild_gl_for_voucher("SE", dry_run=False)
 			self.assertFalse(out["written"])
-			self.assertEqual(out["reason"], "G0 preserved")
+			self.assertTrue(out["blocked"])
+			self.assertIn("G0", out.get("reason") or "")
 
 
 class TestFailedRIVPolicy(unittest.TestCase):
@@ -647,6 +648,60 @@ class TestImpactAndRollback(unittest.TestCase):
 		self.assertIn("51 SLE", text)
 		self.assertIn("Nothing executes before operator confirmation", text)
 
+	def test_zero_sql_updates_disables_repair_in_impact_text(self):
+		from erpnext_extensions.iran_accounting.historical_stock.impact import format_impact
+
+		text = format_impact(
+			{
+				"repairing": ["MAT-STE-2026-26156"],
+				"stock_entries": 2,
+				"sle": 5,
+				"sabb": 5,
+				"sbe": 5,
+				"bin": 1,
+				"gl": 4,
+				"failed_riv": 7,
+				"estimated_replay_seconds": 1,
+				"estimated_sql_updates": 0,
+				"estimated_replay_depth": 0,
+				"replay_chain": ["MAT-STE-2026-26135-1"],
+				"aborted": True,
+				"abort_reasons": [
+					{"voucher": "MAT-STE-2026-26156", "reason": "VALUATION_POISON_DEPENDENCY: 30300014 (negative_incoming_rate)"}
+				],
+				"skip_reason": "VALUATION_POISON_DEPENDENCY: 30300014 (negative_incoming_rate)",
+				"full_rollback_possible": True,
+			}
+		)
+		self.assertIn("SQL updates planned: 0. Repair Selected is disabled.", text)
+		self.assertIn("VALUATION_POISON_DEPENDENCY", text)
+		self.assertIn("ABORTED", text)
+
+	def test_wrong_rate_abort_does_not_write_sle(self):
+		from erpnext_extensions.iran_accounting.historical_stock import reconstruct as rec
+
+		row = {
+			"surface": "SLE",
+			"voucher_detail": "detail-1",
+			"voucher": "MAT-STE-2026-03129",
+			"item": "16700278",
+			"eligible": True,
+			"confidence": "EXACT",
+		}
+		aborted = {
+			"aborted": True,
+			"applied": [],
+			"blocked": [{"error": "DEPENDENCY_REPAIR_REQUIRED: patient-zero is MAT-RECO-2026-02761"}],
+			"sql_updates_executed": 0,
+			"skip_reason": "DEPENDENCY_REPAIR_REQUIRED: patient-zero is MAT-RECO-2026-02761",
+		}
+		with mock.patch.object(rec, "repair_zero_rate_selected", return_value=aborted):
+			with mock.patch.object(rec, "write_sle_transaction_rates", create=True) as write:
+				out = rec.repair_wrong_rate_selected([row], dry_run=False)
+		self.assertTrue(out["aborted"])
+		self.assertEqual(out["sql_updates_executed"], 0)
+		write.assert_not_called()
+
 	def test_truncated_snapshot_refuses_write_rollback(self):
 		from erpnext_extensions.iran_accounting.historical_stock.snapshot import restore_snapshot
 
@@ -775,6 +830,176 @@ class TestPermissionsAndExport(unittest.TestCase):
 		graph.assert_called_once()
 		self.assertEqual(graph.call_args.kwargs["voucher"], "MAT-STE-2026-27531")
 		self.assertEqual(chain, ["MAT-STE-2026-27531"])
+
+
+class TestRepairPlanner(unittest.TestCase):
+	"""Scan, Impact, and Apply must share one eligibility evaluator."""
+
+	def _poison_pair(self):
+		return {
+			"inbound_document": "MAT-STE-2026-26135-1",
+			"outbound_document": "MAT-STE-2026-26156",
+			"item": "30300014",
+			"warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+			"confidence": CONFIDENCE_EXACT,
+			"eligible": True,
+			"status": "ELIGIBLE",
+			"optimizer_status": "CROSS_TIME_REPAIRABLE",
+			"current_inbound_time": "2026-09-01 10:00:00",
+			"current_outbound_time": "2026-09-01 09:00:00",
+			"proposed_outbound_time": "2026-09-01 10:00:01",
+			"min_qty_before": -10,
+			"min_qty_after": 0,
+			"moves": [
+				{
+					"document": "MAT-STE-2026-26156",
+					"old": "2026-09-01 09:00:00",
+					"new": "2026-09-01 10:00:01",
+					"seconds": 1,
+				}
+			],
+		}
+
+	def test_poison_scan_impact_apply_never_diverge(self):
+		from erpnext_extensions.iran_accounting.historical_stock.impact import plan_repair_impact
+		from erpnext_extensions.iran_accounting.historical_stock.planner import (
+			PLAN_BLOCKED,
+			assert_ready,
+			attach_plan,
+			evaluate_row,
+			plan_selection,
+		)
+
+		row = self._poison_pair()
+		hit = {
+			"reason": "negative_incoming_rate",
+			"voucher": "MAT-STE-2026-25469",
+			"sle": "MAT-SLE-2026-166217",
+			"incoming_rate": -9997892,
+			"inversion_artifact": False,
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay.window_poison_hit",
+			return_value=hit,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair._voucher_item_warehouses",
+			return_value={(row["item"], row["warehouse"])},
+		):
+			decision = evaluate_row(row)
+			stamped = attach_plan(row)
+			impact = plan_selection([row])
+			via_impact_api = plan_repair_impact([row])
+
+		self.assertFalse(decision["eligible"])
+		self.assertTrue(decision["blocked"])
+		self.assertEqual(decision["planner_status"], PLAN_BLOCKED)
+		self.assertEqual(decision["sql_updates"], 0)
+		self.assertIn("negative_incoming_rate", decision["reason"])
+		self.assertIn("MAT-STE-2026-25469", decision["reason"])
+		self.assertIn("unrelated voucher", decision["reason"])
+		self.assertFalse(stamped["eligible"])
+		self.assertEqual(stamped["planner_status"], PLAN_BLOCKED)
+		self.assertEqual(stamped["sql_updates"], 0)
+		self.assertFalse(impact["executable"])
+		self.assertEqual(impact["estimated_sql_updates"], 0)
+		self.assertIn("MAT-STE-2026-25469", impact["skip_reason"] or "")
+		self.assertEqual(via_impact_api["estimated_sql_updates"], 0)
+		self.assertFalse(via_impact_api["executable"])
+
+		def _throw(msg, *args, **kwargs):
+			raise RuntimeError(msg)
+
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay.window_poison_hit",
+			return_value=hit,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair._voucher_item_warehouses",
+			return_value={(row["item"], row["warehouse"])},
+		), mock.patch("frappe.throw", side_effect=_throw):
+			with self.assertRaises(RuntimeError) as ctx:
+				assert_ready(row)
+		self.assertIn("MAT-STE-2026-25469", str(ctx.exception))
+		self.assertIn("negative_incoming_rate", str(ctx.exception))
+
+	def test_wrong_rate_sle_waits_on_patient_zero(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import (
+			PLAN_WAITING_PATIENT_ZERO,
+			evaluate_row,
+			plan_selection,
+		)
+
+		row = {
+			"topic": "WRONG_RATE",
+			"surface": "SLE",
+			"voucher": "MAT-STE-2026-03129",
+			"item": "16700278",
+			"warehouse": "Stores",
+			"eligible": True,
+			"confidence": CONFIDENCE_EXACT,
+			"status": "RECONSTRUCTABLE",
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._lookup_patient",
+			return_value="MAT-RECO-2026-02761",
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._rate_poison_reason",
+			return_value=None,
+		):
+			decision = evaluate_row(row)
+			impact = plan_selection([row])
+		self.assertEqual(decision["planner_status"], PLAN_WAITING_PATIENT_ZERO)
+		self.assertFalse(decision["eligible"])
+		self.assertEqual(decision["sql_updates"], 0)
+		self.assertEqual(decision["patient_zero"], "MAT-RECO-2026-02761")
+		self.assertEqual(decision["required_prerequisite"], "MAT-RECO-2026-02761")
+		self.assertFalse(impact["executable"])
+		self.assertEqual(impact["estimated_sql_updates"], 0)
+
+	def test_gl_g1_is_ready_not_manual(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, evaluate_row
+
+		row = {
+			"topic": "GL",
+			"gl_class": G1_ECONOMICALLY_WRONG,
+			"voucher": "MAT-STE-1",
+			"confidence": "LIKELY",
+			"status": G1_ECONOMICALLY_WRONG,
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._gl_has_poison",
+			return_value=False,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._gl_row_count",
+			return_value=4,
+		):
+			decision = evaluate_row(row)
+		self.assertEqual(decision["planner_status"], PLAN_READY)
+		self.assertTrue(decision["eligible"])
+		self.assertEqual(decision["sql_updates"], 4)
+
+	def test_ready_posting_reports_sql(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, evaluate_row
+
+		row = self._poison_pair()
+		counts = {"se": 2, "sle": 10, "sabb": 4, "sbe": 4, "bin": 1, "sql": 21}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay.window_poison_hit",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair._voucher_item_warehouses",
+			return_value={(row["item"], row["warehouse"])},
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._posting_revalidate",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._write_counts",
+			return_value=counts,
+		):
+			decision = evaluate_row(row)
+		self.assertEqual(decision["planner_status"], PLAN_READY)
+		self.assertTrue(decision["eligible"])
+		self.assertEqual(decision["sql_updates"], 21)
+		self.assertEqual(decision["replay_count"], 1)
 
 
 if __name__ == "__main__":

@@ -9,15 +9,9 @@ import frappe
 from frappe.utils import cint, flt, get_datetime, now_datetime
 
 from erpnext_extensions.iran_accounting.stock_posting_order import (
-	CONFIDENCE_EXACT,
 	STATUS_BLOCKED,
 	STATUS_DRAFT,
 	STATUS_DRY_RUN,
-	STATUS_ELIGIBLE,
-	STATUS_INSUFFICIENT_STOCK,
-	STATUS_MIDNIGHT,
-	STATUS_MIDNIGHT_REVIEW,
-	STATUS_REAL_STOCK_SHORTAGE,
 	STATUS_REPAIRED,
 	STATUS_STALE,
 	STATUS_VALUATION_POISON,
@@ -34,7 +28,6 @@ from erpnext_extensions.iran_accounting.stock_posting_order.ordering import (
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
 	replay_item_warehouse,
 	sync_transfer_incoming_rates,
-	window_poison_reason,
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.scanner import (
 	run_full_history_scan,
@@ -97,21 +90,27 @@ def scan_production_posting_order_anomalies(
 			rows.append(extra)
 			have.add(key)
 	rows.sort(key=_row_rank)
-	return rows[:SCAN_LIMIT] if len(rows) > SCAN_LIMIT else rows
+	trimmed = rows[:SCAN_LIMIT] if len(rows) > SCAN_LIMIT else rows
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan_many
+
+	return attach_plan_many(trimmed)
 
 
 def dry_run(candidates: list[dict] | None = None, **scan_kwargs) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan_many
+
 	if candidates is not None:
+		rows = attach_plan_many(list(candidates))
 		return {
 			"dry_run": True,
 			"status": STATUS_DRY_RUN,
-			"count": len(candidates),
-			"eligible": [r for r in candidates if r.get("eligible")],
-			"rows": candidates,
+			"count": len(rows),
+			"eligible": [r for r in rows if r.get("eligible")],
+			"rows": rows,
 		}
 	scan_kwargs.setdefault("include_no_repair", False)
 	result = run_full_history_scan(**scan_kwargs)
-	rows = list(result.get("rows") or [])
+	rows = attach_plan_many(list(result.get("rows") or []))
 	rows.sort(key=_row_rank)
 	return {
 		"dry_run": True,
@@ -269,44 +268,19 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 	for row in rows:
 		try:
 			_assert_preview_fresh(row)
-			if row.get("confidence") != CONFIDENCE_EXACT:
-				raise frappe.ValidationError("Auto-repair requires EXACT confidence")
-			opt = row.get("optimizer_status") or row.get("status")
-			if opt in (STATUS_MIDNIGHT, STATUS_MIDNIGHT_REVIEW):
-				raise frappe.ValidationError("Midnight boundary requires manual review")
-			if opt in (STATUS_INSUFFICIENT_STOCK, STATUS_REAL_STOCK_SHORTAGE):
-				raise frappe.ValidationError("Real insufficient stock; timestamp change refused")
-			if not row.get("eligible") and row.get("status") not in (
-				STATUS_ELIGIBLE,
-				"CROSS_TIME_REPAIRABLE",
-				"SAME_TIME_REPAIRABLE",
-				"REPAIRABLE_SECONDS",
-			):
-				raise frappe.ValidationError(f"Row not eligible ({row.get('status')})")
-			moves = _row_moves(row)
-			if not moves:
-				raise frappe.ValidationError("No timestamp moves in preview")
+			from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
 
-			# poison check before any write. Leftover-at-zero is an inversion
-			# artifact; posting-order replay is what clears it.
+			assert_ready(row)
+			moves = _row_moves(row)
 			from_dt = get_datetime(row["current_inbound_time"])
 			out_dt = get_datetime(row["current_outbound_time"])
 			from_dt = min(from_dt, out_dt)
 			identities = set()
-			for doc_move in _row_moves(row):
+			for doc_move in moves:
 				identities |= set(_voucher_item_warehouses(doc_move["document"]))
 			if row.get("item") and row.get("warehouse"):
 				identities.add((row["item"], row["warehouse"]))
-			for item_code, warehouse in identities:
-				poison = window_poison_reason(
-					item_code, warehouse, from_dt, ignore_inversion_artifacts=True
-				)
-				if poison:
-					raise frappe.ValidationError(
-						f"{STATUS_VALUATION_POISON}: {item_code} {warehouse} ({poison})"
-					)
 
-			# revalidate quantity simulation on current ledger rows of this identity
 			sles = _identity_window(
 				row["item"],
 				row["warehouse"],
@@ -322,12 +296,6 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				times.setdefault(row["outbound_document"], get_datetime(row["proposed_outbound_time"]))
 				current = simulate_running(sles, opening)
 				proposed = simulate_running(sles, opening, times)
-				if current["min_qty"] >= 0:
-					raise frappe.ValidationError("Revalidation failed: repair no longer needed")
-				if proposed["min_qty"] < 0:
-					raise frappe.ValidationError("Revalidation failed: proposed order still negative")
-				if proposed["final_qty"] != current["final_qty"]:
-					raise frappe.ValidationError("Revalidation failed: final qty would change")
 			else:
 				current = proposed = {"min_qty": row.get("min_qty_before"), "final_qty": row.get("final_qty_before")}
 
@@ -462,13 +430,36 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 			if STATUS_VALUATION_POISON in msg:
 				status = STATUS_VALUATION_POISON
 			blocked.append({"row": row, "error": msg, "status": status})
+			_append_audit(
+				log,
+				{
+					**row,
+					"status": status,
+					"dependency_reason": msg,
+					"old_outbound_time": row.get("current_outbound_time"),
+					"new_outbound_time": row.get("proposed_outbound_time"),
+				},
+			)
 	if log:
 		log.save(ignore_permissions=True)
+	sql_executed = 0
+	for entry in applied:
+		sql_executed += len(entry.get("replay") or []) + 1
+	skip_reason = None
+	if not applied:
+		skip_reason = (blocked[0].get("error") if blocked else None) or "No SQL updates. Nothing was written."
 	return {
 		"dry_run": False,
 		"repair_run_id": run_id,
 		"applied": applied,
 		"blocked": blocked,
+		"aborted": bool(blocked) and not applied,
+		"reason": skip_reason,
+		"skip_reason": skip_reason,
+		"sql_updates_planned": None,
+		"sql_updates_executed": 0 if not applied else sql_executed,
+		"savepoint_created": bool(applied),
+		"transaction_committed": bool(applied),
 	}
 
 

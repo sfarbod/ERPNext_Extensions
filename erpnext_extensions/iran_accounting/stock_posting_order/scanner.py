@@ -421,6 +421,9 @@ def run_full_history_scan(**kwargs) -> dict:
 	elapsed = (end - start).total_seconds()
 	sle_n = int(result.get("sle_scanned") or 0)
 	grp_n = int((result.get("summary") or {}).get("same_time_groups") or 0)
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	result = stamp_scan_result(result)
 	result["timing"] = {
 		"start_local": start.strftime("%Y-%m-%d %H:%M:%S"),
 		"end_local": end.strftime("%Y-%m-%d %H:%M:%S"),

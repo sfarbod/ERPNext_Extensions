@@ -88,6 +88,30 @@ def repair_graph(item=None, batch=None, work_order=None, voucher=None, warehouse
 		node["replay_order"] = i + 1
 		node["replay_depth"] = depth - i
 		node["estimated_replay_count"] = depth - i
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+
+	cache = {}
+	for node in nodes:
+		planned = attach_plan(
+			{
+				"voucher": node.get("voucher"),
+				"item": node.get("item"),
+				"warehouse": node.get("warehouse"),
+				"batch": node.get("batch") or batch,
+			},
+			cache=cache,
+		)
+		node["planner_status"] = planned.get("planner_status")
+		node["eligible"] = planned.get("eligible")
+		node["blocked"] = planned.get("blocked")
+		node["blocker"] = planned.get("blocker")
+		node["reason"] = planned.get("reason")
+		node["sql_updates"] = planned.get("sql_updates")
+		node["replay_count"] = planned.get("replay_count")
+		node["rebuild_count"] = planned.get("rebuild_count")
+		node["patient_zero"] = planned.get("patient_zero")
+		node["required_prerequisite"] = planned.get("required_prerequisite")
+		node["dependency"] = planned.get("planner", {}).get("dependency")
 	return {
 		"nodes": nodes,
 		"edges": edges,

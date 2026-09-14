@@ -102,12 +102,16 @@ def scan_sle_bin(company=None, item_code=None, warehouse=None, limit=500) -> dic
 				"sle_value": b.get("sle_value"),
 			}
 		)
-	return {
-		"count": len(rows),
-		"rows": rows,
-		"bin_mismatches": bin_rows,
-		"by_status": _count(rows, "status"),
-	}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	return stamp_scan_result(
+		{
+			"count": len(rows),
+			"rows": rows,
+			"bin_mismatches": bin_rows,
+			"by_status": _count(rows, "status"),
+		}
+	)
 
 
 def scan_bin_mismatches(company=None, limit=200) -> list[dict]:

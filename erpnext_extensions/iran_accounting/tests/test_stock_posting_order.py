@@ -744,6 +744,82 @@ class TestStockValueReplay(unittest.TestCase):
 				"qty_after_zero_nonzero_value",
 			)
 
+	def test_negative_incoming_is_not_inversion_artifact(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
+			INVERSION_ARTIFACT_POISONS,
+			sle_poison_reason,
+			window_poison_hit,
+			window_poison_reason,
+		)
+
+		poisoned = _row(
+			"MAT-SLE-2026-166217",
+			"MAT-STE-2026-25469",
+			2015,
+			"9",
+			incoming_rate=-9997892,
+			valuation_rate=-9997892,
+			stock_value_difference=20145752478,
+			purpose="Manufacture",
+		)
+		poisoned["qty_after_transaction"] = 2015
+		poisoned["stock_value"] = 19964042054
+		self.assertEqual(sle_poison_reason(poisoned), "negative_incoming_rate")
+		self.assertNotIn("negative_incoming_rate", INVERSION_ARTIFACT_POISONS)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay._fetch_previous",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay._fetch_sles",
+			return_value=[poisoned],
+		):
+			self.assertEqual(
+				window_poison_reason("30300014", "Q", "2026-04-15 18:01:10", ignore_inversion_artifacts=True),
+				"negative_incoming_rate",
+			)
+			hit = window_poison_hit("30300014", "Q", "2026-04-15 18:01:10", ignore_inversion_artifacts=True)
+		self.assertEqual(hit["voucher"], "MAT-STE-2026-25469")
+		self.assertEqual(hit["sle"], "MAT-SLE-2026-166217")
+		self.assertFalse(hit["inversion_artifact"])
+
+	def test_pair_reorder_clears_temp_negative_without_fixing_unrelated_poison(self):
+		out = _row("o", "OUT", -1961, "1", incoming_rate=0, valuation_rate=276584, stock_value_difference=-542380988)
+		inn = _row(
+			"i",
+			"IN",
+			1961,
+			"2",
+			incoming_rate=276584,
+			valuation_rate=276584,
+			stock_value_difference=542380988,
+			purpose="Manufacture",
+		)
+		inverted = replay_series([out, inn], 0, 0)
+		self.assertLess(inverted[0]["qty_after_transaction"], 0)
+		fixed = replay_series([inn, out], 0, 0)
+		self.assertGreaterEqual(fixed[0]["qty_after_transaction"], 0)
+		self.assertEqual(fixed[1]["qty_after_transaction"], 0)
+		self.assertLess(abs(fixed[1]["stock_value"]), 1)
+		later = _row(
+			"later",
+			"IN",
+			2015,
+			"9",
+			incoming_rate=-9997892,
+			valuation_rate=-9997892,
+			stock_value_difference=20145752478,
+			purpose="Manufacture",
+		)
+		later["qty_after_transaction"] = 2015
+		self.assertEqual(sle_poison_reason(later), "negative_incoming_rate")
+		replayed = replay_series([inn, out, later], 0, 0)
+		probe = dict(later)
+		probe["qty_after_transaction"] = replayed[-1]["qty_after_transaction"]
+		probe["stock_value"] = replayed[-1]["stock_value"]
+		probe["stock_value_difference"] = replayed[-1]["stock_value_difference"]
+		probe["valuation_rate"] = replayed[-1]["valuation_rate"]
+		self.assertEqual(sle_poison_reason(probe), "negative_incoming_rate")
+
 
 class TestNegativeIntervalDetector(unittest.TestCase):
 	"""Cross-time posting-order detection from temporary negatives."""

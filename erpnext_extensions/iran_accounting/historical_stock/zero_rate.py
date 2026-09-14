@@ -90,13 +90,17 @@ def scan_zero_rate_rows(company=None, voucher=None, limit=8000) -> dict:
 	cache = {}
 	for row in rows:
 		out.append(classify_zero_row(row, _cache=cache))
-	return {
-		"count": len(out),
-		"rows": out,
-		"by_class": _count(out, "zero_class"),
-		"by_confidence": _count(out, "confidence"),
-		"by_status": _count(out, "status"),
-	}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	return stamp_scan_result(
+		{
+			"count": len(out),
+			"rows": out,
+			"by_class": _count(out, "zero_class"),
+			"by_confidence": _count(out, "confidence"),
+			"by_status": _count(out, "status"),
+		}
+	)
 
 
 def classify_zero_row(row, _cache=None) -> dict:

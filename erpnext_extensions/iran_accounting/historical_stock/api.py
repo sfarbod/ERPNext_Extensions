@@ -108,7 +108,9 @@ def dry_run_zero_rates(rows=None, company=None, voucher=None):
 				out.append(classify_zero_row(_load_detail(raw)))
 			except Exception as exc:
 				out.append({**raw, "status": "BLOCKED", "error": str(exc)})
-		return {"dry_run": True, "count": len(out), "rows": out, "eligible": [r for r in out if r.get("eligible")]}
+		from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+		return stamp_scan_result({"dry_run": True, "count": len(out), "rows": out})
 	return scan_zero_rate_rows(company=company or None, voucher=voucher or None)
 
 
@@ -162,7 +164,9 @@ def dry_run_manufacture(rows=None, company=None):
 		from erpnext_extensions.iran_accounting.historical_stock.manufacture import preview_manufacture_voucher
 
 		out = [preview_manufacture_voucher(r.get("voucher") or r.get("voucher_no") or r) for r in parsed]
-		return {"dry_run": True, "rows": out, "count": len(out)}
+		from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+		return stamp_scan_result({"dry_run": True, "rows": out, "count": len(out)})
 	return scan_manufacture_anomalies(company=company or None)
 
 
@@ -362,9 +366,17 @@ def rollback_run_api(repair_run_id=None, dry_run=True):
 @frappe.whitelist()
 def impact_analysis_api(rows=None):
 	_guard()
-	from erpnext_extensions.iran_accounting.historical_stock.impact import plan_repair_impact
+	from erpnext_extensions.iran_accounting.historical_stock.planner import plan_selection
 
-	return plan_repair_impact(_parse(rows))
+	return plan_selection(_parse(rows))
+
+
+@frappe.whitelist()
+def repair_planner_api(rows=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.planner import plan_selection
+
+	return plan_selection(_parse(rows))
 
 
 @frappe.whitelist()

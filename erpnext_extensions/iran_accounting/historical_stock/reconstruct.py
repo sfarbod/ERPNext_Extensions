@@ -7,12 +7,9 @@ import frappe
 from frappe.utils import flt, now_datetime
 
 from erpnext_extensions.iran_accounting.historical_stock import (
-	CONFIDENCE_EXACT,
 	HISTORICAL_REPAIR_FLAG,
 	STATUS_BLOCKED,
-	STATUS_DEPENDENCY_REPAIR_REQUIRED,
 	STATUS_REPAIRED,
-	STATUS_VALUATION_POISON_DEPENDENCY,
 )
 from erpnext_extensions.iran_accounting.historical_stock.audit import append_entry, finish_run, start_run
 from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
@@ -36,27 +33,26 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 			try:
 				classified = classify_zero_row(_load_detail(raw))
 				merged = {**classified, **{k: v for k, v in raw.items() if v not in (None, "")}}
-				if merged.get("status") == STATUS_VALUATION_POISON_DEPENDENCY:
-					raise frappe.ValidationError("abort on poison dependency")
-				if merged.get("confidence") != CONFIDENCE_EXACT:
-					raise frappe.ValidationError("AMBIGUOUS/LIKELY rows cannot auto-write")
-				if not merged.get("eligible"):
-					raise frappe.ValidationError(merged.get("status") or STATUS_BLOCKED)
+				from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+
+				assert_ready(merged)
 				patient = merged.get("patient_zero") or {}
-				if patient.get("voucher_no") and patient["voucher_no"] != merged["voucher"]:
-					raise frappe.ValidationError(
-						f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {patient['voucher_no']}"
-					)
 				classified_rows.append((raw, merged, patient))
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
 		if blocked and not dry_run:
 			finish_run(log, applied=0, blocked=len(blocked), error="aborted: no partial commits")
 			closed = True
+			reason = blocked[0].get("error") or "ambiguity, poison, or ineligible row in selection"
 			return {
 				"dry_run": False,
 				"aborted": True,
-				"reason": "ambiguity, poison, or ineligible row in selection",
+				"reason": reason,
+				"skip_reason": reason,
+				"sql_updates_planned": 0,
+				"sql_updates_executed": 0,
+				"savepoint_created": False,
+				"transaction_committed": False,
 				"database_backup_recommended": True,
 				"applied": [],
 				"blocked": blocked,
@@ -100,6 +96,7 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = False
 		if not closed:
 			finish_run(log, applied=len(applied), blocked=len(blocked))
+	written = [a for a in applied if a.get("written")]
 	return {
 		"dry_run": dry_run,
 		"repair_run_id": getattr(log, "repair_run_id", None),
@@ -107,6 +104,10 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 		"blocked": blocked,
 		"database_backup_recommended": True,
 		"aborted": False,
+		"sql_updates_executed": 0 if dry_run else len(written),
+		"savepoint_created": bool(savepoint) and not dry_run,
+		"transaction_committed": bool(written) and not dry_run,
+		"skip_reason": None if written or dry_run else "No SQL updates. Nothing was written.",
 	}
 
 
@@ -122,14 +123,19 @@ def repair_wrong_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 	if dry_run:
 		result["sle_preview"] = sle_rows
 		return result
+	if result.get("aborted"):
+		return result
+	from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
 	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
 		sync_sabb_from_sle,
 		write_sle_transaction_rates,
 	)
 
 	for r in sle_rows:
-		if r.get("confidence") != CONFIDENCE_EXACT or not r.get("eligible"):
-			result.setdefault("blocked", []).append({"row": r, "error": "not EXACT", "status": STATUS_BLOCKED})
+		try:
+			assert_ready(r)
+		except Exception as exc:
+			result.setdefault("blocked", []).append({"row": r, "error": str(exc), "status": STATUS_BLOCKED})
 			continue
 		write_sle_transaction_rates(r.get("voucher"), r.get("item"))
 		sync_sabb_from_sle(r.get("voucher"), r.get("item"))
@@ -147,8 +153,9 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 			vn = raw.get("voucher") or raw.get("voucher_no")
 			try:
 				preview = preview_manufacture_voucher(vn)
-				if not preview.get("eligible"):
-					raise frappe.ValidationError(preview.get("status") or STATUS_BLOCKED)
+				from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+
+				assert_ready(preview)
 				if dry_run:
 					applied.append({**preview, "written": False})
 					append_entry(log, preview, written=False)

@@ -6,13 +6,6 @@ from __future__ import annotations
 import frappe
 from frappe.utils import cint
 
-from erpnext_extensions.iran_accounting.historical_stock import (
-	CONFIDENCE_AMBIGUOUS,
-	CONFIDENCE_EXACT,
-	CONFIDENCE_MANUAL,
-	STATUS_VALUATION_POISON_DEPENDENCY,
-)
-
 MS_PER_SLE = 50
 DATABASE_BACKUP_REQUIRED = "DATABASE BACKUP REQUIRED"
 
@@ -38,77 +31,10 @@ def collect_vouchers(rows: list[dict]) -> list[str]:
 
 
 def plan_repair_impact(rows: list[dict]) -> dict:
-	"""Count identity-scoped documents that Repair Selected would touch. Read-only."""
-	rows = rows or []
-	vouchers = collect_vouchers(rows)
-	blocked = []
-	for row in rows:
-		conf = row.get("confidence")
-		status = row.get("status")
-		if status == STATUS_VALUATION_POISON_DEPENDENCY:
-			blocked.append({"voucher": row.get("voucher"), "reason": "poison dependency"})
-		elif conf in (CONFIDENCE_AMBIGUOUS, CONFIDENCE_MANUAL):
-			blocked.append({"voucher": row.get("voucher"), "reason": f"abort on {conf}"})
-		elif conf and conf != CONFIDENCE_EXACT and row.get("eligible"):
-			blocked.append({"voucher": row.get("voucher"), "reason": f"abort on {conf}"})
-	items = sorted({(r.get("item") or r.get("item_code")) for r in rows if r.get("item") or r.get("item_code")})
-	warehouses = sorted({r.get("warehouse") for r in rows if r.get("warehouse")})
-	batches = sorted({r.get("batch") for r in rows if r.get("batch")})
+	"""Impact is the Repair Planner. No independent eligibility."""
+	from erpnext_extensions.iran_accounting.historical_stock.planner import plan_selection
 
-	sle = _count_sle(vouchers, items, warehouses)
-	sabb = _count_sabb(vouchers)
-	sbe = _count_sbe(vouchers)
-	bins = _count_bins(items, warehouses)
-	gl = _count_gl(vouchers)
-	riv = _count_failed_riv(items, warehouses)
-	chain = _chain_for(rows)
-	depth = max(0, len(chain) - 1)
-	sql_updates = (
-		len(vouchers)
-		+ sle
-		+ sabb
-		+ sbe
-		+ bins
-		+ (gl if False else 0)  # GL not auto-written by rate repair
-	)
-	# Rate repair writes SE + SLE + SABB + SBE + Bin. GL/RIV only if those ops are chosen.
-	estimated_s = max(1.0, (sle * MS_PER_SLE) / 1000.0)
-	gl_or_riv = bool(
-		rows
-		and any(
-			(r.get("topic") in ("GL", "FAILED_RIV") or r.get("gl_class") or r.get("riv_name")) for r in rows
-		)
-	)
-	full_rollback_possible = not gl_or_riv
-	abort = bool(blocked)
-	plan = {
-		"dry_run": True,
-		"repairing": vouchers,
-		"stock_entries": len(vouchers),
-		"sle": int(sle),
-		"sabb": int(sabb),
-		"sbe": int(sbe),
-		"bin": int(bins),
-		"gl": int(gl),
-		"failed_riv": int(riv),
-		"items": items,
-		"warehouses": warehouses,
-		"batches": batches,
-		"estimated_replay_seconds": round(estimated_s, 2),
-		"estimated_sql_updates": int(sql_updates),
-		"estimated_replay_depth": depth,
-		"replay_chain": chain,
-		"replay_order": chain,
-		"aborted": abort,
-		"abort_reasons": blocked,
-		"database_backup_recommended": True,
-		"database_backup_required": True,
-		"full_rollback_possible": full_rollback_possible and not abort,
-		"warning": DATABASE_BACKUP_REQUIRED,
-		"global_riv": False,
-	}
-	plan["preview_text"] = format_impact(plan)
-	return plan
+	return plan_selection(rows)
 
 
 def format_impact(plan: dict) -> str:
@@ -131,6 +57,17 @@ def format_impact(plan: dict) -> str:
 		f"Estimated SQL updates: {plan.get('estimated_sql_updates')} rows",
 		f"Estimated replay depth: {plan.get('estimated_replay_depth')}",
 		"",
+		f"Planner status: {plan.get('planner_status') or ''}",
+		f"Eligible: {bool(plan.get('executable'))}",
+		f"Blocked: {bool(plan.get('aborted'))}",
+		f"Reason: {plan.get('reason') or plan.get('skip_reason') or ''}",
+		f"SQL updates: {plan.get('sql_updates') if plan.get('sql_updates') is not None else plan.get('estimated_sql_updates')}",
+		f"Replay count: {plan.get('replay_count') or 0}",
+		f"Rebuild count: {plan.get('rebuild_count') or 0}",
+		f"Dependency: {plan.get('dependency') or ''}",
+		f"Patient Zero: {plan.get('patient_zero') or ''}",
+		f"Required prerequisite: {plan.get('required_prerequisite') or ''}",
+		"",
 		"Estimated replay chain:",
 		chain_txt,
 		"",
@@ -138,6 +75,12 @@ def format_impact(plan: dict) -> str:
 	]
 	if plan.get("aborted"):
 		lines.append("ABORTED — ambiguity or poison dependency. Nothing will execute.")
+		for b in plan.get("abort_reasons") or []:
+			lines.append(f"  {b.get('voucher') or ''}: {b.get('reason')}")
+	if plan.get("skip_reason") and not plan.get("aborted"):
+		lines.append(f"SKIPPED — {plan.get('skip_reason')}")
+	if (plan.get("estimated_sql_updates") or 0) <= 0:
+		lines.append("SQL updates planned: 0. Repair Selected is disabled.")
 	if not plan.get("full_rollback_possible"):
 		lines.append("Full in-app rollback is not possible for this plan. Restore from database backup if needed.")
 	lines.append("Nothing executes before operator confirmation.")

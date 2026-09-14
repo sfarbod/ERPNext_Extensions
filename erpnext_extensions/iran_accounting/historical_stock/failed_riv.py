@@ -42,7 +42,9 @@ def scan_failed_riv(limit=400) -> dict:
 	)
 	cache = {}
 	rows = [classify_failed_riv(d, _cache=cache) for d in docs]
-	return {"count": len(rows), "rows": rows, "by_status": _count(rows, "riv_status")}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	return stamp_scan_result({"count": len(rows), "rows": rows, "by_status": _count(rows, "riv_status")})
 
 
 def classify_failed_riv(doc, _cache=None) -> dict:
@@ -104,10 +106,13 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 
 def retry_failed_riv(riv_name: str, *, dry_run=True) -> dict:
 	preview = classify_failed_riv(frappe.get_doc("Repost Item Valuation", riv_name))
-	if preview["riv_status"] != RIV_SAFE_TO_RETRY:
-		return {**preview, "written": False, "blocked": True}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+
+	planned = attach_plan(preview)
+	if planned["planner_status"] != "READY":
+		return {**planned, "dry_run": dry_run, "written": False, "blocked": True}
 	if dry_run:
-		return {**preview, "dry_run": True, "written": False}
+		return {**planned, "dry_run": True, "written": False}
 	doc = frappe.get_doc("Repost Item Valuation", riv_name)
 	if cint(doc.docstatus) != 1:
 		frappe.throw(f"RIV {riv_name} is not submitted")

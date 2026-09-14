@@ -322,22 +322,39 @@ class HistoricalRepairPage {
 
 	_complete_impact(scan_msg) {
 		const rows = this.selected_rows();
-		const payload = rows.length ? rows : (this.rows || []).filter((r) => r.eligible).slice(0, 25);
+		const payload = rows.length ? rows : (this.rows || []).filter((r) => this._is_ready(r)).slice(0, 25);
 		if (!payload.length) {
-			this.impact_done = true;
-			if (this.btn_repair && this.access.can_repair) this._lock_writes(false);
+			this.impact_done = false;
+			this.last_impact = {
+				aborted: true,
+				estimated_sql_updates: 0,
+				planner_status: "BLOCKED",
+				skip_reason: __("No READY rows. Repair Selected will not write."),
+				executable: false,
+			};
+			this.$preview.text(__("No READY rows. Repair Selected is disabled."));
+			if (this.btn_repair) this._lock_writes(true);
 			return;
 		}
 		frappe.call({
-			method: `${this.api}.impact_analysis_api`,
+			method: `${this.api}.repair_planner_api`,
 			args: { rows: payload },
 			callback: (ir) => {
 				const impact = ir.message || {};
 				this.last_impact = impact;
-				this.impact_done = !impact.aborted;
+				const executable = this._impact_executable(impact);
+				this.impact_done = executable;
 				this.$preview.text((this.format_preview(scan_msg || {}) + "\n\n" + (impact.preview_text || "")).trim());
-				if (this.btn_repair && this.access.can_repair && this.dry_run_done && this.impact_done) {
+				if (this.btn_repair && this.access.can_repair && this.dry_run_done && executable) {
 					this._lock_writes(false);
+				} else if (this.btn_repair) {
+					this._lock_writes(true);
+				}
+				if (!executable) {
+					frappe.show_alert({
+						message: impact.skip_reason || impact.reason || __("Repair Selected disabled: status is not READY or SQL updates = 0."),
+						indicator: "orange",
+					});
 				}
 			},
 			error: () => {
@@ -345,6 +362,20 @@ class HistoricalRepairPage {
 				if (this.btn_repair) this._lock_writes(true);
 			},
 		});
+	}
+
+	_is_ready(row) {
+		return !!(row && row.planner_status === "READY" && Number(row.sql_updates || 0) > 0);
+	}
+
+	_impact_executable(impact) {
+		return (
+			!!impact &&
+			impact.executable !== false &&
+			!impact.aborted &&
+			(impact.estimated_sql_updates || impact.sql_updates || 0) > 0 &&
+			impact.planner_status === "READY"
+		);
 	}
 
 	repair_bulk(kind) {
@@ -356,21 +387,28 @@ class HistoricalRepairPage {
 		if (kind === "filter" || kind === "page") rows = this.visible_rows || [];
 		else if (kind === "scope") rows = this.rows || [];
 		else rows = this.selected_rows();
-		rows = (rows || []).filter((r) => r.eligible && r.confidence === "EXACT");
+		rows = (rows || []).filter((r) => this._is_ready(r));
 		if (!rows.length && this.topic !== "gl" && this.topic !== "riv") {
-			frappe.msgprint(__("No eligible EXACT rows in this {0}. Nothing executed.", [kind || "selection"]));
+			frappe.msgprint(__("No READY rows in this {0}. Nothing executed.", [kind || "selection"]));
 			return;
 		}
 		frappe.call({
-			method: `${this.api}.impact_analysis_api`,
+			method: `${this.api}.repair_planner_api`,
 			args: { rows: rows.length ? rows : this.selected_rows() },
 			freeze: true,
 			callback: (ir) => {
 				const impact = ir.message || {};
 				this.last_impact = impact;
 				this.$preview.text(impact.preview_text || JSON.stringify(impact, null, 2));
-				if (impact.aborted) {
-					frappe.msgprint(__("Repair aborted: ambiguity or poison dependency. Nothing executed."));
+				if (!this._impact_executable(impact)) {
+					const reason =
+						impact.skip_reason ||
+						impact.reason ||
+						(impact.abort_reasons && impact.abort_reasons[0] && impact.abort_reasons[0].reason) ||
+						__("SQL updates planned: 0 or status is not READY. Repair Selected is disabled. Nothing executed.");
+					frappe.msgprint({ title: __("Repair skipped"), message: reason, indicator: "orange" });
+					if (this.btn_repair) this._lock_writes(true);
+					this.impact_done = false;
 					return;
 				}
 				const warn = __("DATABASE BACKUP REQUIRED. Apply this identity-scoped repair?");
@@ -410,16 +448,45 @@ class HistoricalRepairPage {
 			args,
 			freeze: true,
 			callback: (r) => {
-				this.$preview.text(JSON.stringify(r.message || {}, null, 2));
+				this._show_repair_result(r.message || {});
 				this.dry_run_done = false;
 				this.impact_done = false;
 				if (this.btn_repair) this._lock_writes(true);
 				this.integrity();
-				frappe.show_alert({
-					message: __("Repair written. Run Integrity Check if the preview is stale. Optional: Repost Selected for this identity (never global)."),
-					indicator: "blue",
-				});
 			},
+		});
+	}
+
+	_show_repair_result(msg) {
+		this.$preview.text(JSON.stringify(msg, null, 2));
+		const applied = (msg.applied || []).filter((a) => a.written !== false && a.status !== "DRY_RUN");
+		const blocked = msg.blocked || [];
+		const executed = msg.sql_updates_executed;
+		const wrote = applied.length > 0 && executed !== 0 && !msg.aborted;
+		if (!wrote) {
+			const reason =
+				msg.skip_reason ||
+				msg.reason ||
+				(blocked[0] && blocked[0].error) ||
+				__("No SQL updates. Nothing was written.");
+			frappe.msgprint({
+				title: __("Repair skipped"),
+				message: __("{0}<br><br>SQL updates executed: {1}. Savepoint created: {2}. Transaction committed: {3}.", [
+					reason,
+					executed == null ? 0 : executed,
+					msg.savepoint_created ? __("Yes") : __("No"),
+					msg.transaction_committed ? __("Yes") : __("No"),
+				]),
+				indicator: "orange",
+			});
+			return;
+		}
+		frappe.show_alert({
+			message: __("Repair written ({0} row(s), {1} SQL updates). Run Integrity Check. Optional: Repost Selected for this identity (never global).", [
+				applied.length,
+				executed == null ? applied.length : executed,
+			]),
+			indicator: "green",
 		});
 	}
 
@@ -585,8 +652,8 @@ class HistoricalRepairPage {
 			let on = false;
 			if (mode === "Select All") on = true;
 			else if (mode === "Unselect All") on = false;
-			else if (mode === "Select EXACT") on = row.confidence === "EXACT";
-			else if (mode === "Select Repairable") on = !!row.eligible;
+			else if (mode === "Select EXACT") on = this._is_ready(row);
+			else if (mode === "Select Repairable") on = this._is_ready(row);
 			else if (mode === "Select Visible Rows" || mode === "Select Current Page") on = true;
 			el.checked = on;
 		});
@@ -668,14 +735,15 @@ class HistoricalRepairPage {
 							`rate ${n.rate}`,
 							`order ${n.replay_order}`,
 							`depth ${n.replay_depth}`,
-							n.repair_status,
+							n.planner_status || n.repair_status,
+							n.blocker || n.reason,
 						]
 							.filter(Boolean)
 							.join(" · ")
 					);
 					$a.on("click", () => frappe.set_route("Form", "Stock Entry", n.voucher));
 					const $meta = $("<div class='hr-graph-meta'>").text(
-						`${n.purpose || ""} · ${n.item || ""} · ${n.warehouse || ""} · ${n.batch || ""} · qty ${n.qty ?? ""} · rate ${n.rate ?? ""} · #${n.replay_order ?? ""} · depth ${n.replay_depth ?? ""} · ${n.repair_status || n.status || ""}`
+						`${n.purpose || ""} · ${n.item || ""} · ${n.warehouse || ""} · ${n.batch || ""} · qty ${n.qty ?? ""} · rate ${n.rate ?? ""} · #${n.replay_order ?? ""} · depth ${n.replay_depth ?? ""} · ${n.planner_status || n.repair_status || n.status || ""} · ${n.blocker || n.reason || ""}`
 					);
 					$box.append($("<div>").append($a).append($meta));
 				});
@@ -756,6 +824,7 @@ class HistoricalRepairPage {
 		}
 		lines.push(`count: ${msg.count ?? (msg.rows || msg.applied || []).length}`);
 		lines.push(`eligible: ${(msg.eligible || []).length}`);
+		lines.push(`ready: ${(msg.rows || []).filter((r) => r.planner_status === "READY" && Number(r.sql_updates || 0) > 0).length}`);
 		if (msg.elapsed_seconds != null) lines.push(`elapsed_seconds: ${msg.elapsed_seconds}`);
 		(msg.rows || msg.applied || []).slice(0, 40).forEach((row, i) => {
 			lines.push("");
@@ -850,6 +919,12 @@ class HistoricalRepairPage {
 	}
 
 	status_label(row) {
+		if (row.planner_status && row.planner_status !== "READY") {
+			return row.planner_status;
+		}
+		if (row.planner_status === "READY") {
+			return "READY";
+		}
 		if (row.status === "NO_REPAIR_NEEDED" || row.optimizer_status === "NO_REPAIR_NEEDED") {
 			return __("Repair unnecessary");
 		}
@@ -910,6 +985,9 @@ class HistoricalRepairPage {
 				__("Dependent Count"),
 				__("Replay Scope"),
 				__("Dependency Reason"),
+				__("Planner Status"),
+				__("SQL Updates"),
+				__("Blocker"),
 				__("Confidence"),
 				__("Status"),
 			];
@@ -938,10 +1016,13 @@ class HistoricalRepairPage {
 				__("Confidence"),
 				__("Repair Required"),
 				__("Patient Zero"),
+				__("Planner Status"),
+				__("SQL Updates"),
+				__("Blocker"),
 				__("Status"),
 			];
 		}
-		return ["", __("Voucher"), __("Item"), __("Warehouse"), __("Confidence"), __("Status")];
+		return ["", __("Voucher"), __("Item"), __("Warehouse"), __("Confidence"), __("Planner Status"), __("Blocker"), __("Status")];
 	}
 
 	cells_for_row(row) {
@@ -968,6 +1049,9 @@ class HistoricalRepairPage {
 				row.dependent_count == null ? "" : String(row.dependent_count),
 				row.replay_scope || "",
 				row.dependency_reason,
+				row.planner_status || this.status_label(row),
+				row.sql_updates == null ? "" : String(row.sql_updates),
+				row.blocker || row.reason || row.skip_reason || "",
 				row.confidence,
 				this.status_label(row),
 			];
@@ -995,7 +1079,10 @@ class HistoricalRepairPage {
 				row.confidence,
 				row.repair_required ? "YES" : "NO",
 				(row.patient_zero && row.patient_zero.voucher_no) || "",
-				row.status,
+				row.planner_status || this.status_label(row),
+				row.sql_updates == null ? "" : String(row.sql_updates),
+				row.blocker || row.reason || row.skip_reason || "",
+				this.status_label(row),
 			];
 		}
 		return [
@@ -1003,6 +1090,8 @@ class HistoricalRepairPage {
 			row.item || row.item_code,
 			row.warehouse,
 			row.confidence,
+			row.planner_status || "",
+			row.blocker || row.reason || row.skip_reason || "",
 			row.status || row.gl_class || row.riv_status,
 		];
 	}
@@ -1058,13 +1147,13 @@ class HistoricalRepairPage {
 			});
 		}
 		rows.forEach(({ row, idx }) => {
-			const $tr = $("<tr>").attr("title", row.reason || row.dependency_reason || (row.flags || []).join(", ") || row.rate_source || row.status || "");
-			if (row.eligible) $tr.addClass("hr-row-exact");
+			const $tr = $("<tr>").attr("title", row.blocker || row.reason || row.skip_reason || row.dependency_reason || (row.flags || []).join(", ") || row.rate_source || row.status || "");
+			if (this._is_ready(row)) $tr.addClass("hr-row-exact");
 			else if (row.confidence === "LIKELY") $tr.addClass("hr-row-likely");
-			else if (/POISON|AMBIGUOUS|BLOCKED|MANUAL/i.test(String(row.status || ""))) $tr.addClass("hr-row-blocked");
+			else if (/POISON|AMBIGUOUS|BLOCKED|MANUAL|WAITING_/i.test(String(row.planner_status || row.status || ""))) $tr.addClass("hr-row-blocked");
 			const $cb = $('<input type="checkbox">')
 				.attr("data-idx", idx)
-				.attr("data-eligible", row.eligible ? "1" : "0");
+				.attr("data-eligible", this._is_ready(row) ? "1" : "0");
 			$tr.append($("<td>").append($cb));
 			this.cells_for_row(row).forEach((val, i, arr) => {
 				if (this.hidden_cols.has(i + 1)) return;
@@ -1073,7 +1162,7 @@ class HistoricalRepairPage {
 				if (i === arr.length - 1) {
 					$td.addClass(`hr-status-${row.status || ""}`);
 					if (row.optimizer_status) $td.addClass(`hr-status-${row.optimizer_status}`);
-					const sev = row.eligible ? "ok" : /POISON|AMBIGUOUS|BLOCKED/i.test(String(row.status || row.confidence || "")) ? "bad" : "warn";
+					const sev = this._is_ready(row) ? "ok" : /POISON|AMBIGUOUS|BLOCKED|WAITING_|MANUAL/i.test(String(row.planner_status || row.status || row.confidence || "")) ? "bad" : "warn";
 					$td.empty().append($('<span class="hr-badge">').addClass("hr-badge-" + sev).text(String(val == null ? "" : val)));
 				}
 				$tr.append($td);

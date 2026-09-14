@@ -43,7 +43,9 @@ def scan_manufacture_anomalies(company=None, voucher=None, limit=400) -> dict:
 		preview = preview_manufacture_voucher(name)
 		if preview.get("needs_repair"):
 			rows.append(preview)
-	return {"count": len(rows), "rows": rows, "scanned": len(names)}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	return stamp_scan_result({"count": len(rows), "rows": rows, "scanned": len(names)})
 
 
 def preview_manufacture_voucher(voucher_no: str) -> dict:

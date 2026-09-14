@@ -108,21 +108,44 @@ def replay_series(rows: list, opening_qty=0, opening_value=0) -> list[dict]:
 	return out
 
 
-def window_poison_reason(item_code, warehouse, from_dt, *, ignore_inversion_artifacts: bool = False) -> str | None:
+def window_poison_hit(item_code, warehouse, from_dt, *, ignore_inversion_artifacts: bool = False) -> dict | None:
+	"""First hard poison in the warehouse window, with voucher identity.
+
+	``ignore_inversion_artifacts`` skips leftover-at-zero (inverted IN/OUT
+	symptom). It does **not** skip ``negative_incoming_rate``: that is stored
+	economic poison unless proven otherwise by a pair-local simulation.
+	"""
 	rows = _fetch_sles(item_code, warehouse, from_dt, before=False)
 	prev = _fetch_previous(item_code, warehouse, from_dt)
-	if prev:
-		reason = sle_poison_reason(prev)
-		if reason and not (ignore_inversion_artifacts and reason in INVERSION_ARTIFACT_POISONS):
-			return reason
-	for row in rows:
+	candidates = ([prev] if prev else []) + list(rows)
+	for row in candidates:
 		reason = sle_poison_reason(row)
 		if not reason:
 			continue
 		if ignore_inversion_artifacts and reason in INVERSION_ARTIFACT_POISONS:
 			continue
-		return reason
+		return {
+			"reason": reason,
+			"voucher": _g(row, "voucher_no"),
+			"sle": _g(row, "name"),
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"actual_qty": _g(row, "actual_qty"),
+			"incoming_rate": _g(row, "incoming_rate"),
+			"stock_value_difference": _g(row, "stock_value_difference"),
+			"stock_value": _g(row, "stock_value"),
+			"qty_after_transaction": _g(row, "qty_after_transaction"),
+			"posting_datetime": str(_g(row, "posting_datetime") or ""),
+			"inversion_artifact": reason in INVERSION_ARTIFACT_POISONS,
+		}
 	return None
+
+
+def window_poison_reason(item_code, warehouse, from_dt, *, ignore_inversion_artifacts: bool = False) -> str | None:
+	hit = window_poison_hit(
+		item_code, warehouse, from_dt, ignore_inversion_artifacts=ignore_inversion_artifacts
+	)
+	return hit["reason"] if hit else None
 
 
 def transfer_incoming_rate_from_outgoing(actual_qty, stock_value_difference):
@@ -297,12 +320,14 @@ def _g(row, key, default=None):
 def _fetch_previous(item_code, warehouse, from_dt):
 	rows = frappe.db.sql(
 		"""
-		SELECT name, qty_after_transaction, stock_value, stock_value_difference,
-		       valuation_rate, incoming_rate, actual_qty, voucher_no
-		FROM `tabStock Ledger Entry`
-		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
-		  AND posting_datetime < %s
-		ORDER BY posting_datetime DESC, creation DESC
+		SELECT name, voucher_no, voucher_type, actual_qty, qty_after_transaction,
+		       incoming_rate, valuation_rate, stock_value, stock_value_difference,
+		       posting_datetime, creation,
+		       (SELECT purpose FROM `tabStock Entry` WHERE name=sle.voucher_no) purpose
+		FROM `tabStock Ledger Entry` sle
+		WHERE sle.item_code=%s AND sle.warehouse=%s AND sle.is_cancelled=0
+		  AND sle.posting_datetime < %s
+		ORDER BY sle.posting_datetime DESC, sle.creation DESC
 		LIMIT 1
 		""",
 		(item_code, warehouse, from_dt),

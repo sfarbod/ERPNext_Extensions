@@ -163,18 +163,22 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 		for f in r.get("flags") or [r.get("mismatch_class")]:
 			if f:
 				by_flag[str(f)] += 1
-	return {
-		"count": len(classified),
-		"rows": classified,
-		"by_flag": dict(by_flag),
-		"by_confidence": _count(classified, "confidence"),
-		"by_status": _count(classified, "status"),
-		"exact": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_EXACT),
-		"likely": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_LIKELY),
-		"ambiguous": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_AMBIGUOUS),
-		"manual": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_MANUAL),
-		"repairable": sum(1 for r in classified if r.get("eligible")),
-	}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	stamped = stamp_scan_result(
+		{
+			"count": len(classified),
+			"rows": classified,
+			"by_flag": dict(by_flag),
+			"by_confidence": _count(classified, "confidence"),
+			"by_status": _count(classified, "status"),
+			"exact": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_EXACT),
+			"likely": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_LIKELY),
+			"ambiguous": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_AMBIGUOUS),
+			"manual": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_MANUAL),
+		}
+	)
+	return stamped
 
 
 def _scan_se_flags(company, voucher, item_code, warehouse, from_date, to_date, limit):

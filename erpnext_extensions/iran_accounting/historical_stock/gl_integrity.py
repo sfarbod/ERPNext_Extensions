@@ -115,19 +115,20 @@ def scan_gl_integrity(company=None, limit=200) -> dict:
 			rows.append(klass)
 		if len(rows) >= limit:
 			break
-	return {"count": len(rows), "rows": rows, "by_class": _count(rows, "gl_class")}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	return stamp_scan_result({"count": len(rows), "rows": rows, "by_class": _count(rows, "gl_class")})
 
 
 def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 	preview = classify_stock_entry_gl(voucher_no)
-	if preview["gl_class"] == G0_HEALTHY:
-		return {**preview, "status": G0_HEALTHY, "written": False, "reason": "G0 preserved"}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+
+	planned = attach_plan(preview)
+	if planned["planner_status"] != "READY":
+		return {**planned, "dry_run": dry_run, "written": False, "blocked": True}
 	if dry_run:
-		return {**preview, "dry_run": True, "written": False}
-	if _voucher_has_poison_sle(voucher_no):
-		frappe.throw(
-			f"GL rebuild blocked: voucher {voucher_no} still has poisoned SLE. Repair SLE first."
-		)
+		return {**planned, "dry_run": True, "written": False}
 	se = frappe.get_doc("Stock Entry", voucher_no)
 	from erpnext.accounts.utils import repost_gle_for_stock_vouchers
 
