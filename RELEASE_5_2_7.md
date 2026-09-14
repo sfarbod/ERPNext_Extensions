@@ -1,0 +1,539 @@
+# v5.2.7 — Historical Stock Integrity & Repair
+
+## Title
+
+Unified Historical Stock Integrity & Repair: lost rates, posting order, manufacture contract replay, SLE/Bin/GL, Failed RIV — selected only, never global repost
+
+## Baseline
+
+- Frappe **16.33.1**
+- ERPNext **16.34.2**
+- Previous erpnext_extensions **5.2.6**
+- `erpnext_extensions.__version__` = **5.2.7**
+- Site used for validation: **development.localhost**
+
+---
+
+## 1. Problem
+
+Historical stock on this site is internally consistent in several places and still economically wrong.
+
+Typical chain:
+
+1. A patient-zero voucher writes `incoming_rate = 0` / `SVD = 0` onto a previously valued batch.
+2. Later transfers and MTfM rows resolve outgoing rate 0.
+3. For IRR, `update_rate_on_stock_entry` is skipped, so submitted Stock Entry zeros are **preserved**, not overwritten by a later RIV.
+4. Same-second posting order can still invert IN/OUT when creation order disagrees with economic order.
+5. Failed RIV rows accumulate (negative stock, GL imbalance, I1/I4) and must not be retried blindly.
+
+5.2.1 Historical Repair covered posting-order only. It cannot reconstruct lost Stock Entry rates. Global RIV / global repost would spread poison.
+
+## 2. Architecture
+
+Package: `erpnext_extensions.iran_accounting.historical_stock`
+
+Canonical repair direction:
+
+```
+Stock Entry economic truth
+→ SLE
+→ forward item + warehouse + batch/SABB valuation
+→ Bin from last healthy SLE
+→ selective GL (G1–G4 only)
+→ Failed RIV retry only when the chain is healthy
+```
+
+Never: GL first, Bin first, global RIV, live Bin as rate truth, `abs()` to hide invalid valuation, bulk apply of AMBIGUOUS/LIKELY.
+
+Desk page **Historical Stock Integrity & Repair** (`historical-repair`) has six topics:
+
+| Tab | Scan / Dry Run / Repair Selected |
+|-----|----------------------------------|
+| A Posting Order | 5.2.1 same-time optimizer (unchanged policy) |
+| B Zero / Lost Rate | Version + batch + source SLE + issued scrap rate |
+| C Manufacture Valuation | Historical 5.2.0 output contract preview |
+| D SLE / Bin Integrity | poison / leftover value / Bin vs last SLE |
+| E GL Integrity | G0–G4; rebuild G1–G4 only |
+| F Failed RIV | dependency map; retry only `SAFE_TO_RETRY` |
+
+Actions: **Scan**, **Dry Run**, **Preview**, **Repair Selected**, **Repost Selected** (one Item+Warehouse RIV after integrity), **Integrity Check**, **Resume** (audit log cursor).
+
+There is **no** Repost All Stock, **no** global RIV, **no** bulk apply.
+
+Audit: `Historical Stock Repair Log` + child `Historical Stock Repair Entry` (resumable).
+
+## 3. Zero / lost rate policy
+
+Suspicious submitted Stock Entry Detail rows: `qty ≠ 0`, rates/amount 0, `allow_zero_valuation_rate = 0`.
+
+| Class | Meaning |
+|-------|---------|
+| Z0 | Legitimate zero (`allow_zero` or Stock Reconciliation is authoritative) |
+| Z1 | Historical rate lost (Version / source SLE / issued scrap) |
+| Z3 | Missing incoming valuation |
+| Z4 | Batch/SABB inward is the only remaining nonzero |
+| Z6 | Unknown |
+
+Confidence:
+
+- **EXACT** — Repair Selected allowed when this voucher **is** the patient-zero (or has no upstream patient-zero)
+- **LIKELY** — preview only
+- **AMBIGUOUS** — no automatic write
+
+EXACT examples: Version + matching batch inward (±1 Rial); Version + matching previous healthy SLE; source transfer SLE; same-voucher issued component scrap rate.
+
+Version **alone** is LIKELY. Version vs batch mismatch is AMBIGUOUS (25741 item `13200114`).
+
+Never use current Bin as automatic truth.
+
+## 4. Patient-zero engine
+
+For each item + warehouse (+ batch), find the first invalid SLE transition:
+
+- nonzero → zero incoming
+- negative incoming / sign-inverted SVD
+- exploded valuation
+- qty-after ≈ 0 with leftover stock_value
+
+Repair must start there. Downstream zeros (including **MAT-STE-2026-25741**) are `DEPENDENCY_REPAIR_REQUIRED`.
+
+## 5. Manufacture policy
+
+Historical preview applies the **existing 5.2.0** contract in memory, then restores the document. No policy change: component scrap issued-rate fallback, FG residual, independent by-product pool limit, Additional Cost, integer align. Scan does not persist. Repair Selected persists only EXACT reconstructable manufacture vouchers, then replays that identity.
+
+## 6. SLE replay / Bin / GL / RIV
+
+After an EXACT rate write:
+
+1. Set SLE `incoming_rate` / SVD (and `outgoing_rate` on outbound legs)
+2. Forward-replay **only** that item + warehouse from the patient-zero datetime
+3. Rebuild Bin from the last SLE
+4. GL rebuild only if classified G1–G4 **and** SLE is no longer poisoned; G0 is preserved
+5. Failed RIV retry only for deadlock/timeout-class errors on a healthy chain with no zero-rate dependency
+
+Replay still aborts on 5.2.0 sign/exploded poison.
+
+## 7. Runtime lost-rate guard
+
+On Stock Entry **submit** (`before_submit` + `validate` after the 5.2.0 contract):
+
+If an outgoing row has `allow_zero_valuation_rate = 0`, qty ≠ 0, `basic_rate` resolved to 0, and batch/SABB or previous healthy SLE proves a nonzero historical rate:
+
+```
+Stock valuation integrity — outgoing rate unexpectedly resolved to zero
+```
+
+Draft save is allowed. RIV / historical repair flags skip the guard. No evidence → no block (true zeros remain possible). IRR still skips vanilla `update_rate_on_stock_entry` overwrite of submitted rates.
+
+## 8. Explicit non-goals
+
+- No global Stock Entry / SLE / RIV repost
+- No change to 5.2.0 Manufacture accounting policy
+- No change to Transfer value-neutral policy
+- No generic GL residual absorb
+- No automatic repair of AMBIGUOUS or LIKELY rows
+- No automatic repair of 25741 (downstream of 25407; `13200114` AMBIGUOUS)
+
+## 9. Real-data scan (development.localhost, 2026-09-13, read-only)
+
+START LOCAL `2026-09-13T18:23:30`  
+END LOCAL `2026-09-13T18:23:43`  
+DURATION **12.566 s** (92,334 SLE)
+
+| Topic | Count |
+|-------|-------|
+| Same-time posting-order groups | 160 (147 NO_REPAIR_NEEDED, 11 REAL_STOCK_SHORTAGE, 2 REPAIRABLE_SECONDS +1s) |
+| Unexpected zero SE rows | 616 (EXACT 95, LIKELY 360, AMBIGUOUS 161) |
+| Zero status | DEPENDENCY 531, MANUAL_REVIEW 61, POISON 11, RECONSTRUCTABLE 13 |
+| Manufacture contract deltas | 254 of 2481 scanned |
+| SLE anomalies (incl. Bin mismatch rows) | 1575 (PATIENT_ZERO 1197, REPLAY 378); Bin mismatches 66 |
+| GL G1–G4 (sample/unbalanced) | 69 (G2 60, G4 7, G3 1, G1 1) |
+| Failed RIV | 1636 |
+| Patient-zero vouchers | 97 (largest: 28696=104, 28596=64, 28111=47, **25407=24**) |
+
+Failed RIV after conservative retry policy (not the first scan):
+
+| Status | Count |
+|--------|-------|
+| UNSAFE | 713 |
+| WAITING_FOR_SLE_REPAIR | 520 |
+| WAITING_FOR_RATE_REPAIR | 281 |
+| WAITING_FOR_GL_REPAIR | 122 |
+| SAFE_TO_RETRY | **0** |
+
+Production estimate for a similar SLE volume: BEST ≈ 13 s, EXPECTED 1.5× ≈ 19 s, WORST 2× ≈ 25 s. Manufacture preview and Failed RIV classification dominate if limits are raised.
+
+## 10. 25741
+
+Voucher **MAT-STE-2026-25741** (MTfM). Five zero rows. None eligible.
+
+| idx | Item | Historical | Source | Confidence | Patient zero |
+|-----|------|------------|--------|------------|--------------|
+| 3 | 13200475 | 21,900 | batch_inward | LIKELY | MAT-STE-2026-25407 |
+| 5 | 13200473 | 40,378 | version+batch_inward | EXACT | MAT-STE-2026-25407 |
+| 6 | 13200254 | 118,700 | version+batch_inward | EXACT | MAT-STE-2026-25407 |
+| 7 | 13200256 | 246,100 | version+batch_inward | EXACT | PO-JOB07505-1 |
+| 9 | 13200114 | Version 1,905,895 vs batch mismatch | version_vs_batch_mismatch | AMBIGUOUS | MAT-STE-2026-25407 |
+
+Do not Repair Selected on 25741 until patient-zero 25407 (and JOB07505-1) are repaired.
+
+## 11. Screenshot batch `504135-30300042-AK264401A11`
+
+Item **30300042**. Not a same-second IN/OUT pair on one warehouse — and that is why 5.2.1 missed it.
+
+Quarantine (Jalali **1405-01-17** = Gregorian **2026-04-06**):
+
+- `MAT-STE-2026-25825` MTfM **OUT −1899** at **2026-04-06 18:01:45** (created 2026-09-11 19:22:39)
+- `MAT-STE-2026-25824-1` Manufacture **IN +1899** at **2026-04-06 18:02:56** (created 2026-09-11 22:24:33)
+
+Same Work Order `MFG-WO-2026-00575`. Manufacture is the economic prerequisite. 5.2.7 negative-interval scanner classifies this **CROSS_TIME_REPAIRABLE / EXACT**.
+
+Proposed dry-run: keep Manufacture at 18:02:56; move Transfer **25825** to **18:02:57** (+72 seconds). Min qty −1899 → 0. Final qty unchanged.
+
+WIP: same transfer **IN +1899** at 18:01:45 — healthy other warehouse; detector is not fooled.
+
+**Applied on development.localhost** (see 11c). Timestamp-only was not sufficient; SLE qty_after / value / GL were replayed.
+
+## 11b. Cross-time posting-order scanner (5.2.7 gap fix)
+
+Same-time grouping (`posting_date` + `posting_time`) cannot see a 71-second inverted Manufacture → MTfM chain.
+
+New detector walks each item + warehouse + canonical batch in ERPNext order (`posting_datetime`, `creation`), opens a negative interval when running `actual_qty` drops below 0, then classifies the later inbound with the existing EXACT/LIKELY/AMBIGUOUS dependency proof.
+
+Search is not capped at one second. Dependency evidence outranks 60s / 5min / 30min windows. Crossing a posting date is **MIDNIGHT_REVIEW**, not auto-repair.
+
+**Scanner is dry-run by default.** The 17 Farvardin EXACT pair was later applied (11c). Other operator rows were not bulk-written.
+
+| Count | Value |
+|-------|-------|
+| Same-time groups (full history) | 302 (previous 5.2.1 report: 160; this scan includes NO_REPAIR_NEEDED) |
+| Negative intervals | 422 |
+| CROSS_TIME_REPAIRABLE | 10 (7 EXACT eligible, 3 LIKELY) |
+| MIDNIGHT_REVIEW | 8 |
+| CROSS_ITEM_CONFLICT | 3 |
+| REAL_STOCK_SHORTAGE | 305 |
+| LATER_INBOUND_UNRELATED | 83 |
+| AMBIGUOUS_DEPENDENCY | 24 |
+
+Old same-time scanner could not see these 10 + 8 date-boundary cases.
+
+## 11c. Farvardin apply/replay (timestamp is not the repair)
+
+Detection found the pair. The first apply engine still failed closed:
+
+1. **Stage that failed:** `apply_repairs` poison gate / warehouse-wide value replay — not the timestamp write.
+2. **Why posting time alone is insufficient:** ERPNext orders SLE by `(posting_datetime, creation)`. Moving 25825 to 18:02:57 without rewriting `qty_after_transaction` leaves `MAT-SLE-2026-179096` at −1899 and Manufacture `MAT-SLE-2026-183138` at leftover `qty_after=0`, `stock_value=-8,699,750`.
+3. **Replay algorithm that had to change:** `replay_item_warehouse` + `apply_repairs` in `stock_posting_order/replay.py` and `repair.py`.
+   - Leftover-at-zero (`qty_after_zero_nonzero_value`) is an inversion **artifact**, not 5.2.0 patient-zero poison. Ignore it for posting-order replay.
+   - Do **not** create Transaction RIV on the outbound voucher (inbound still has poisoned `qty_after`).
+   - Replay **item+warehouse** from `min(in,out)` in ERPNext order after the timestamp write.
+   - Write only the inverted pair vouchers. Warehouse-wide value writes onto later multi-item manufactures (`25933-1`) unbalance those GLs by 1 Rial.
+   - After source OUT SVD is replayed, copy that rate onto the transfer-in SLE (`sync_transfer_incoming_rates`). Destination incoming_rate otherwise stays at the inverted outgoing rate.
+   - Keep Manufacture inbound SVD (5.2.0 FG residual 6,330,732,319). Do not reprice it as `qty * incoming_rate` (that creates a 62 Rial 621301 adjustment).
+   - When an OUT empties the identity, SVD = −running_value so leftover pennies die.
+   - Rebuild GL without `repost_gle_for_stock_vouchers` (that helper commits). Savepoint around timestamp + replay + GL.
+4. **Correct sequence:** savepoint → update SE/SLE/SABB posting datetime on 25825 → replay Quarantine pair → sync transfer incoming → replay WIP 25825 SLE → assert qty_after ≥ 0 and transfer value-neutral → rebuild GL for the pair → classify Failed RIV (no retry) → commit.
+
+### Before / after (development.localhost)
+
+| Surface | Before | After |
+|---------|--------|-------|
+| Stock Entry 25825 | 18:01:45 | **18:02:57**, `set_posting_time=1` |
+| Stock Entry 25824-1 | 18:02:56 | **unchanged** 18:02:56 |
+| Quarantine SLE order | OUT 25825 then IN 25824-1 | **IN 25824-1 then OUT 25825** |
+| 25825 Quarantine SLE | qty_after **−1899**, svd −6,339,432,069 | qty_after **0**, svd **−6,330,732,319** |
+| 25824-1 Quarantine SLE | qty_after **0**, stock_value **−8,699,750** | qty_after **1899**, stock_value **6,330,732,319** |
+| 25825 WIP SLE | +1899 at 18:01:45, svd 6,339,432,069 | +1899 at **18:02:57**, svd **6,330,732,319** (value-neutral) |
+| Batch running qty | min **−1899** | min **0** (never negative); final **0** |
+| Bin 30300042 Quarantine | 2695 / 977,990,240 | **identical** (last SLE untouched) |
+| GL 25825 | 6,339,432,069 balanced | **6,330,732,319** balanced (WIP debit / Quarantine credit) |
+| GL 25824-1 | 6,330,732,319 balanced | **unchanged 2-line 5.2.0** (no 62 Rial 621301) |
+| SABB 25825 | posting 18:01:45, outward avg_rate 0 | posting **18:02:57**, avg_rate **3,333,719** |
+| Diagnose batch | CROSS_TIME −1899 | **no negative interval** |
+| Integrity (pair) | n/a | **PASS**; Bin matches last SLE |
+
+Warehouse qty_after on **other lots** (Apr 11 `25906` −1206 etc.) is unchanged — those are separate identities, not this batch. Final warehouse qty **2695** unchanged. No new batch-level negative interval.
+
+Failed RIV `4cu72iljul` (30300042 / Quarantine) was reclassified, not retried.
+
+## 11d. Post-order rate reconstruction (SABB / Stock Ledger)
+
+Quantity repair left **Serial and Batch Entry** on 25825 at inverted/zero rates. ERPNext Stock Ledger with SABB segregation reads **SBE**, not SLE:
+
+| Report column | Before 11d (segregate) | After 11d |
+|---------------|------------------------|-----------|
+| Manufacture Incoming Rate | 3,333,719 | **3,333,718.97** (SVD 6,330,732,319) |
+| Transfer OUT Incoming Rate | 0 (ERPNext zeros inbound on OUT) | **0** (same by design) |
+| Transfer OUT Outgoing Rate | **−0** (SBE SVD 0) | **3,333,718.97** |
+| Transfer IN Incoming Rate | **3,338,300** (inverted leftover) | **3,333,718.97** |
+| Transfer OUT SABB total_amount | **0** | **−6,330,732,319** |
+| Transfer IN SABB total_amount | 6,339,432,069 | **6,330,732,319** |
+
+Unified engine: `historical_stock/valuation_rebuild.py` (SE → SLE txn rates → SABB/SBE → Bin → selective GL). Shared with Zero / Lost Rate. RIV never auto-invoked. Status `INTEGRITY_COMPLETE` only when quantity **and** rates are clean.
+
+Desk action: **Rebuild Affected Documents** (selected chain only).
+
+Downstream WIP consumes of this batch (Apr 11 `25912` / `25911-1`) still carry pre-repair outgoing 3,338,300 on mixed-lot warehouse MA. They are listed as `DOWNSTREAM_VALUE_REPLAY_REQUIRED` (40 later dest-warehouse vouchers) and were **not** auto-GL-rebuilt (multi-item Manufacture). The named Farvardin pair is rate-complete.
+
+## 11e. Downstream value replay (identity-scoped)
+
+Post-order + SABB rebuild left later **same-batch** consumes at the old 3,338,300 rate. New engine `historical_stock/downstream_replay.py` walks item + batch/SABB forward, classifies DIRECT / INDIRECT / UNRELATED / STOP_CHAIN, and replays only the repaired identity.
+
+Farvardin graph:
+
+```
+25824-1 Manufacture IN
+→ 25825 Transfer (value-neutral, already repaired)
+→ 25912 Manufacture consume −47  DIRECT
+→ 25911-1 Manufacture consume −1852 DIRECT (empties batch)
+```
+
+Other WIP lots (`25906` / `25916` / `25919`, batch `504143-…`) are UNRELATED and were not written.
+
+| Voucher | Consume SVD before | Consume SVD after | Outgoing rate after | FG residual |
+|---------|--------------------|-------------------|---------------------|-------------|
+| 25912 | −156,900,109 at 3,338,300 | **−156,684,791.47** | **3,333,718.97** | **unchanged** 173,757,558.13 |
+| 25911-1 | −6,182,531,600 at 3,338,300 | **−6,174,047,527.53** | **3,333,718.97** | **unchanged** 6,842,048,667 |
+
+SABB/SBE outgoing rates rebuilt; inverted SBE incoming-on-OUT cleared. Manufacture GL left as 2-line FG amount (not rebuilt). RIV not invoked. Pair 25824-1 / 25825 unchanged. Batch remaining qty/value after 25911-1: **0**.
+
+Desk: **Replay Downstream** (dry-run preview, then confirm apply). Statuses: `DOWNSTREAM_PENDING`, `DOWNSTREAM_REPLAY_REQUIRED`, `DOWNSTREAM_REPLAYING`, `DOWNSTREAM_COMPLETE`, `DOWNSTREAM_SKIPPED`.
+
+Backup taken first: `20260914_075728-development_localhost-database.sql.gz`.
+
+## 12. Controlled real repair
+
+17 Farvardin (`MAT-STE-2026-25825` / `MAT-STE-2026-25824-1`) was repaired on **development.localhost** with SLE/Bin/GL replay (11c). Other operator EXACT reconstructable zero-rate rows were **not** written.
+
+Synthetic integration: reconstruct + idempotent dry-run/write on a new test item (rolled back). Runtime guard blocks submit when batch history is nonzero.
+
+## 13. Tests
+
+| Area | Result |
+|------|--------|
+| `test_historical_stock` (unit) | PASS (49, incl. unprivileged PermissionError, L1/L2/L3, xlsx zip, snapshot jsonable, non-global repost) |
+| `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
+| Combined unit (`test_historical_stock` + `test_stock_posting_order`) | **121 PASS**, 0 skipped |
+| `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
+| `test_stock_posting_order_integration` | PASS (13, incl. Farvardin apply + SABB rate rebuild + downstream 25912/25911-1) |
+| Playwright Historical Repair | **6 PASS**, 0 skipped, no API 500: navigation (direct URL / Stock Tools sidebar / workspace / Awesome Bar), hardening dashboard, 6-tab integrity, posting-order, Farvardin ledger |
+| `bench build --app erpnext_extensions` | PASS |
+| `migrate` (navigation v1–v3 applied) | PASS |
+| Local `run_gate(full_stress=0)` | PASS (stress_scale 0.2) |
+
+Farvardin re-check (read-only, 2026-09-14): 25824-1 / 25825 / 25912 / 25911-1 integrity **PASS**. Graph `25827 → 25824-1 → 25825 → 25912 → 25911-1`. Identity outgoing **3,333,718.97**. 25741 and 25407 voucher integrity **PASS** (25741 remains a downstream dependency of 25407; do not Repair Selected in isolation).
+
+## 15. Maintenance tool (wrong-rate + selective + UI)
+
+Historical Repair is the official 5.2.7 maintenance surface. Accounting policy is unchanged. Writes never run from Scan or Dry Run.
+
+### Architecture
+
+```
+Scan / Dry Run / Preview (default)
+        ↓ EXACT only
+Stock Entry → SLE → SABB/SBE → identity forward replay → Bin → selective GL → Failed RIV class → optional Item+Warehouse RIV
+```
+
+Never: global RIV, global Bin, global GL. Scope requires item, warehouse, batch, work order, or voucher.
+
+| Engine | Module |
+|--------|--------|
+| Wrong / lost rate | `historical_stock/wrong_rate.py` |
+| Reconstruction priority | version → previous healthy SLE → batch inward → transfer source → manufacture pool → PR → SRE → moving average → manual. **Never Bin.** |
+| Selective replay/rebuild/RIV | `historical_stock/selective.py` |
+| Dependency graph | `historical_stock/graph.py` |
+| Downstream batch replay | `historical_stock/downstream_replay.py` |
+| Audit / rollback snapshot | `historical_stock/audit.py` |
+| Global dashboard | `scan.run_full_integrity_scan` → `dashboard` chips |
+
+Confidence: EXACT / LIKELY / AMBIGUOUS / MANUAL. Only EXACT auto-repairs.
+
+### Workflow
+
+1. Scan All → dashboard counts (click through to the topic).
+2. Topic Scan → grid (frozen header + first column, search, sort, filters, export).
+3. Dry Run / Preview (Repair Selected stays disabled until Dry Run).
+4. Repair Selected / Replay Downstream / Rebuild Affected Documents (each dry-runs first).
+5. Integrity Check. Selective RIV only if identity is healthy.
+6. Repair History / Rollback (SE/SLE/SABB/SBE/Bin/GL snapshots when captured; otherwise DATABASE BACKUP REQUIRED). Resume open run.
+
+### Farvardin re-validation (this phase)
+
+Batch `504135-30300042-AK264401A11`: 25824-1 / 25825 / 25912 / 25911-1 — posting order intact, outgoing/incoming/SABB at reconstructed **3,333,718.97**, SVD value-neutral on transfer, FG residual preserved, pair+downstream integrity PASS. Graph nodes include that chain (plus earlier Reject `25827`).
+
+## 16. Production hardening (expected rates, impact, rollback, KPI)
+
+This phase does not change accounting policy. It makes Historical Repair operator-safe.
+
+| Gap | Implementation |
+|-----|----------------|
+| Expected Rate Analysis | Scan rows carry current/expected basic, valuation, incoming, outgoing, amount, difference, source, confidence, repair required. Reconstruction never uses Bin. |
+| Impact Analysis | `impact.plan_repair_impact` runs before Repair Selected. Operator must confirm. Always shows DATABASE BACKUP REQUIRED. |
+| Rollback | `snapshot.capture_identity_snapshot` stores SE/SLE/SABB/SBE/Bin/GL before write. Incomplete snapshots abort in-app rollback. |
+| Dashboard | Integrity Score + Wrong Rate family + SABB/Bin/GL/RIV + Replay Pending/Complete + Average Replay Time. |
+| Reconstruction preview | Selected row shows Current → Expected → Difference → chosen source → alternatives. Disagreeing sources are LIKELY/AMBIGUOUS, never silent EXACT. |
+| Safety | Write batches abort on AMBIGUOUS/poison (no partial commits). Savepoint per apply. Default Dry Run. |
+
+### Benchmark (development.localhost, read-only)
+
+| Operation | Elapsed | Rows | Rows/s | CPU user | MariaDB questions |
+|-----------|---------|------|--------|----------|-------------------|
+| Full Scan (Scan All, no manufacture loop) | 13.384 s | — | — | — | — |
+| Wrong Rate Scan | 3.818 s | 2001 | 522 | 0.63 s | 8844 |
+| Posting Order Scan | 2.452 s | 918 | 366 | 1.21 s | 249 |
+| Zero Rate Scan | 1.685 s | 616 | 348 | 0.24 s | 3283 |
+| Replay Planner | 0.135 s | 3 | 22 | 0.00 s | 7 |
+| Identity Replay (dry) | 0.003 s | 1 | 351 | 0.00 s | 4 |
+| Bin Rebuild (scan) | 0.973 s | 566 | 582 | 0.17 s | 503 |
+| GL Rebuild (scan) | 0.204 s | 3 | 15 | 0.01 s | 249 |
+| Selective RIV (preview) | 0.031 s | — | — | 0.01 s | 159 |
+| Dry Run | 3.232 s | 72 | 22 | 0.94 s | 29 |
+| Integrity (Farvardin×4) | 0.005 s | 4 | 740 | 0.00 s | 25 |
+
+Peak RSS ~435 MB. No writes. No global RIV.
+
+### Remaining limitations
+
+- Scan All (dashboard, `include_manufacture=False`) was **13.4 s** on the MVR dataset (target 15 s). After additional local gate vouchers on this site it measured **16.6 s**. No further SQL change without reducing correctness. Treat Scan All as **site-volume dependent**; document as a Known Limitation when SLE volume grows.
+- Wrong Rate Scan is **3.8–4.0 s** (target 3 s) because each row still runs the existing reconstruction lookups. No algorithm change.
+- Zero Rate Scan is **1.7–2.0 s** (target 2 s). Borderline on a busy site; keep the current engine.
+- Progress remaining time is wall-clock around one RPC, not a queued job ETA.
+- GL rebuild / RIV cannot be fully rolled back in-app — DATABASE BACKUP REQUIRED.
+- Consume SLE `valuation_rate` on 25912 / 25911-1 can still show warehouse moving-average **3,338,300** while identity outgoing is **3,333,718.97** (SABB/SBE is the identity truth).
+- Reconstruction preview can still pick an earlier Reject inward as LIKELY (`3,333,711` vs reconstructed `3,333,718.97`).
+
+## 17. MVR publish hardening
+
+No new repair engines. Accounting policy is unchanged. Writes stay identity-scoped.
+
+### Feature matrix
+
+| Class | Features | Who |
+|-------|----------|-----|
+| **A Production Ready** | Scan, Scan All, Dashboard, Dry Run, Expected Rate Preview, Impact Analysis, Graph, Integrity Check, Repair History, Search, column filters, multi-sort, frozen header/first column, column resize, horizontal/vertical scroll, column chooser, save layout, CSV/XLSX export, hyperlinks, KPI cards, copy selected, Select All / None / Visible / Repairable / EXACT | Stock Manager (read), System Manager, Administrator |
+| **B Operational** | Repair Selected, Repair Current Filter, Repair Current Page, Repair Current Scope, Repair Dependency Chain, Replay Downstream, Rebuild Affected Documents, Repost Selected | System Manager, Administrator |
+| **C Experimental** | Advanced Mode, Resume, Cancel, Rollback, Benchmark, snapshots, diagnose APIs, developer tools | Administrator only. Hidden for everyone else. Incomplete tools are omitted, not disabled. |
+
+### Permission matrix
+
+| | Stock Manager / Manufacturing Manager / Accounts Manager | System Manager | Administrator |
+|---|---|---|---|
+| A read surface | Yes | Yes | Yes |
+| B writes | Hidden | Yes, after Dry Run → Impact → confirm → DATABASE BACKUP REQUIRED → Repair → Integrity → optional selective RIV | Yes, same workflow |
+| C experimental | Hidden | Hidden | Advanced Mode |
+
+Unauthorized users receive Frappe **PermissionError** (`Not permitted to use Historical Repair` on APIs; `No read permission for Page Historical Repair` on the Desk page). Never 404, blank page, or a hidden broken route.
+
+Administrator is detected before System Manager so Admin always has full access.
+
+### Workflow
+
+```
+Open page → Scan All → Dashboard → choose KPI
+        → topic Scan → Dry Run → Impact
+        → Repair (Selected / Filter / Page / Scope)
+        → Integrity → optional Repost Selected
+```
+
+B writes never skip: Dry Run → Impact Analysis → Confirmation → DATABASE BACKUP REQUIRED → Repair → Integrity → optional selective Item+Warehouse RIV.
+
+Repost scope: Company + Warehouse + Item + Batch + Work Order + Voucher + date range. Company/date alone is rejected. Never global RIV.
+
+### UI
+
+Sticky toolbar, grouped actions, status badges, severity KPI colors, tooltips, keyboard shortcuts (`/` search, `S` scan, `A` scan all, `D` dry run, `G` graph, `I` integrity), indeterminate progress, empty states, better scan errors. Repair buttons stay disabled until Dry Run + Impact. Impact Analysis that is not READY with SQL updates > 0 cannot unlock Repair (fail closed). Dependency Resolution shows Current Scope, Required Scope, Reason, Effect, estimated affected vouchers / replay count / SQL updates.
+
+### Accessibility (release blocker)
+
+Historical Repair must be reachable after `bench build`, `migrate`, `clear-cache`, `clear-website-cache`, and `bench restart`.
+
+| Path | Status (development.localhost) |
+|------|--------------------------------|
+| Direct URL `/app/historical-repair` | PASS |
+| Stock workspace Tools card + Maintenance card + shortcut chip | PASS |
+| Stock sidebar Tools → Historical Repair | PASS |
+| Warehouse Control / Production Control sidebar | PASS (Page link) |
+| Awesome Bar (`Ctrl+K`, title **Historical Repair**) | PASS |
+| Page roles | Stock Manager, Manufacturing Manager, Accounts Manager, System Manager, Administrator |
+| Desk | Stock desktop icon → Stock sidebar Tools |
+| JS / CSS bundles | Loaded with the page; Playwright recorded no console errors and no HTTP 500 |
+
+Patches (idempotent): `ensure_historical_repair_navigation` + `_v2` + `_v3`.
+
+Screenshots: `docs/release_5_2_7/`.
+
+![Direct URL](docs/release_5_2_7/hsr_nav_direct_url.png)
+![Stock sidebar](docs/release_5_2_7/hsr_nav_sidebar.png)
+![Stock workspace](docs/release_5_2_7/hsr_nav_workspace.png)
+![Awesome Bar](docs/release_5_2_7/hsr_nav_awesome_bar.png)
+![Dashboard](docs/release_5_2_7/hsr_dashboard.png)
+
+### Known limitations
+
+See §16 remaining limitations. Wrong Rate Scan still misses the 3 s target. Scan All can exceed 15 s as SLE volume grows.
+
+### Production checklist
+
+1. Do not push/tag/publish from this workspace until an operator publishes.
+2. `bench build --app erpnext_extensions` then `migrate` twice, `clear-cache`, `clear-website-cache`, `bench restart`.
+3. Confirm Historical Repair opens from Stock workspace, Stock Tools sidebar, Awesome Bar, and `/app/historical-repair`.
+4. Production dry-run all six tabs. Review EXACT vs AMBIGUOUS.
+5. Database backup before any B write.
+6. Repair patient-zero first. Never 25741 in isolation.
+7. Repost Selected is one Item+Warehouse identity after Integrity PASS.
+
+## 14. Deployment
+
+1. Do not push/tag/publish from this workspace.
+2. `bench build --app erpnext_extensions`
+3. `bench --site <site> migrate` twice (applies Historical Repair navigation patches)
+4. `bench --site <site> clear-cache` and `clear-website-cache`, then `bench restart`
+5. Open Historical Repair from Stock workspace, sidebar Tools, Awesome Bar, and the direct URL
+6. Production **dry-run only** first (all six tabs). Review EXACT vs DEPENDENCY vs AMBIGUOUS.
+7. Backup the database before any Repair Selected.
+8. Repair **patient-zero first**, never 25741 in isolation.
+9. Repost Selected is one Item+Warehouse RIV after Integrity PASS — never all stock.
+
+## 5.2.7 Dependency Resolution (Patient Zero Repair Order)
+
+Blocked rows no longer stop at generic `BLOCKED`. Scan, Dashboard, Graph, Impact, Planner, and Repair share one walker (`historical_stock/dependency.py`) on top of `evaluate_row`.
+
+### Minimal Scope Evaluator (`historical_stock/scope.py`)
+
+Repair order is smallest-safe-scope first. A Batch/SABB posting inversion is simulated on the pair + same-batch downstream **before** any warehouse-wide walk.
+
+| Scope | Meaning |
+|-------|---------|
+| `LOCAL_VOUCHER` | Timestamp/rate on this voucher only |
+| `BATCH_SCOPED` | Prerequisite inbound, dependent outbound, same Batch/SABB downstream |
+| `WORK_ORDER_SCOPED` | Same WO/JC chain |
+| `IDENTITY_SCOPED` | Item + Warehouse + Batch |
+| `WAREHOUSE_VALUATION_SCOPED` | Item + Warehouse moving average / qty_after |
+| `UNSAFE_GLOBAL_DEPENDENCY` | Graph still cyclic after minimal-scope analysis |
+
+Poison is split:
+
+- `LOCAL_POISON` — same Batch/SABB or the selected pair. Blocks until repaired.
+- `UNRELATED_WAREHOUSE_POISON` — different lot / WO. Listed with `effect NONE` or the exact SLE fields that would change. Does **not** automatically become a wait-for edge.
+
+Graph edges are typed: `DOCUMENT_DEPENDENCY`, `BATCH_DEPENDENCY`, `WORK_ORDER_DEPENDENCY`, `VALUATION_DEPENDENCY`, `WAREHOUSE_MA_DEPENDENCY`, `GL_DEPENDENCY`, `PATIENT_ZERO_DEPENDENCY`.
+
+Planner statuses: `READY_LOCAL_REPAIR`, `READY_BATCH_SCOPED_REPAIR`, `READY_WORK_ORDER_REPAIR`, `READY_IDENTITY_REPAIR`, `WAITING_RATE_REPAIR`, `WAITING_SLE_REPAIR`, `WAITING_GL_REPAIR`, `WAITING_PATIENT_ZERO`, `WAREHOUSE_ESCALATION_REQUIRED`, `INVALID_DEPENDENCY_GRAPH`, `AMBIGUOUS`, `MANUAL`, `NO_REPAIR_PATH`.
+
+`MAT-STE-2026-26156` (batch `5861-30300014-SO262014T321`) is **`WAREHOUSE_ESCALATION_REQUIRED`**, not `READY_BATCH_SCOPED_REPAIR`. Batch qty is recoverable in isolation, but SLE `qty_after` / `stock_value` / `valuation_rate` are item+warehouse. In the 157s inversion window, **MAT-STE-2026-26176** (batch 5862) and **MAT-STE-2026-26129-1** (batch 5860) sit between 26156 and 26135-1 and must be rewritten. That is a proven `WAREHOUSE_MA_DEPENDENCY`.
+
+`MAT-STE-2026-25469` / `25475` / `25534-1` (batches 9312 / 9313 / 9350) are **unrelated warehouse poison**, effect **NONE**. They are **not** required first. The old 25469 ↔ 25791 cycle was warehouse-wide overreach, not a real wait-for edge on 26156.
+
+Intended sequence if/when warehouse scope is repairable: `26135-1 → 26156 → 26186 → 26178-1 → Integrity`. Repair Selected stays disabled until that warehouse replay is a READY root. Repair Dependency Chain still executes only a proven READY root, never every Stock Entry in the warehouse.
+
+Desk: **Dependency Resolution** panel shows Smallest Safe Scope, Dependency Type, Escalation Reason, Unrelated poison (effect on selected chain), Repair Sequence. **Go To Root Cause**, **Repair Dependency Chain** (READY root only).
+
+## Rollback
+
+Restore the pre-repair database backup. Do not reverse rates/timestamps by hand without SLE replay. App rollback: previous version **5.2.6**. In-app Rollback is experimental (Administrator Advanced Mode) and cannot reverse GL/RIV without a database backup.
+
+## Version
+
+- `erpnext_extensions.__version__` = `5.2.7`
+- Recommended git tag (not applied in this workspace): **`v5.2.7`**

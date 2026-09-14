@@ -117,8 +117,10 @@ def classify_edge(
 		"Material Consumption for Manufacture",
 	):
 		return CONFIDENCE_EXACT, reason or "wo_mtfm_consume"
-	if same_work_order and in_p == "Manufacture" and out_p in PRODUCTION_CONSUME_PURPOSES and same_batch:
-		return CONFIDENCE_EXACT, reason or "wo_sfg_consume"
+	if same_work_order and in_p == "Manufacture" and out_p in PRODUCTION_CONSUME_PURPOSES:
+		if same_batch:
+			return CONFIDENCE_EXACT, reason or "wo_sfg_consume"
+		return CONFIDENCE_LIKELY, reason or "wo_sfg_consume_unbatched"
 
 	if same_work_order and in_p in PREREQUISITE_PURPOSES and out_p in DEPENDENT_PURPOSES:
 		return CONFIDENCE_LIKELY, reason or "same_work_order_unbatched"

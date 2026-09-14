@@ -18,6 +18,7 @@ from erpnext_extensions.iran_accounting.stock_posting_order import (
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.batch_identity import canonical_batch_no
 from erpnext_extensions.iran_accounting.stock_posting_order.dependency import classify_edge
+from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series as scan_negative_series
 from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import (
 	minimum_seconds_label,
 	optimize_group,
@@ -59,25 +60,38 @@ def fetch_ledger_rows(company=None) -> list:
 			sle.voucher_detail_no, sle.incoming_rate, sle.valuation_rate, sle.stock_value,
 			sle.stock_value_difference,
 			se.purpose, se.work_order, se.job_card, se.company, se.modified,
-			se.docstatus se_docstatus,
-			sbe.batch_no sabb_batch_no, sbe.batch_count
+			se.docstatus se_docstatus
 		FROM `tabStock Ledger Entry` sle
 		LEFT JOIN `tabStock Entry` se
 			ON se.name = sle.voucher_no AND sle.voucher_type='Stock Entry'
-		LEFT JOIN (
+		WHERE {" AND ".join(conds)}
+		ORDER BY sle.item_code, sle.warehouse, sle.posting_datetime, sle.creation
+		"""
+	rows = frappe.db.sql(sql, params, as_dict=True) if params else frappe.db.sql(sql, as_dict=True)
+	bundles = sorted({r.serial_and_batch_bundle for r in rows if r.get("serial_and_batch_bundle")})
+	sabb = {}
+	for i in range(0, len(bundles), 400):
+		chunk = tuple(bundles[i : i + 400])
+		if not chunk:
+			continue
+		for info in frappe.db.sql(
+			"""
 			SELECT parent,
 			       MIN(batch_no) batch_no,
 			       COUNT(DISTINCT batch_no) batch_count
 			FROM `tabSerial and Batch Entry`
-			WHERE IFNULL(batch_no,'') != ''
+			WHERE parent IN %(p)s AND IFNULL(batch_no,'') != ''
 			GROUP BY parent
-		) sbe ON sbe.parent = sle.serial_and_batch_bundle
-		WHERE {" AND ".join(conds)}
-		ORDER BY sle.item_code, sle.warehouse, sle.posting_datetime, sle.creation
-		"""
-	if params:
-		return frappe.db.sql(sql, params, as_dict=True)
-	return frappe.db.sql(sql, as_dict=True)
+			""",
+			{"p": chunk},
+			as_dict=True,
+		):
+			sabb[info.parent] = info
+	for row in rows:
+		info = sabb.get(row.serial_and_batch_bundle) or {}
+		row["sabb_batch_no"] = info.get("batch_no")
+		row["batch_count"] = info.get("batch_count") or 0
+	return rows
 
 
 def _annotate(row) -> dict:
@@ -224,7 +238,7 @@ def scan_same_time_groups(
 			continue
 		groups[_group_key(row)].append(row)
 
-	voucher_names = sorted({r["voucher_no"] for rows in groups.values() for r in rows})
+	voucher_names = sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"})
 	against_map = _against_map(voucher_names)
 
 	by_voucher_all: dict[str, list] = defaultdict(list)
@@ -325,6 +339,77 @@ def scan_same_time_groups(
 		if keep:
 			out_rows.append(_build_row(rows, result, confidence, reason, opening, base_t))
 
+	cross_rows = []
+	CROSS_KEEP = {
+		"CROSS_TIME_REPAIRABLE",
+		"SAME_TIME_REPAIRABLE",
+		"ELIGIBLE",
+		"MANUAL_APPROVAL",
+		"AMBIGUOUS_DEPENDENCY",
+		"CROSS_ITEM_CONFLICT",
+		"MIDNIGHT_REVIEW",
+		"MANUAL_REVIEW_MIDNIGHT",
+		"VALUATION_POISON_DEPENDENCY",
+	}
+	CROSS_DROP_UNLESS_FULL = {"REAL_STOCK_SHORTAGE", "LATER_INBOUND_UNRELATED"}
+	for idk, series in by_identity.items():
+		walk_series = [
+			r
+			for r in series
+			if r.get("voucher_type") != "Stock Entry" or int(r.get("se_docstatus") or 0) == 1
+		]
+		if len(walk_series) < 2:
+			continue
+		found = scan_negative_series(
+			walk_series,
+			against_map=against_map,
+			by_voucher_all=by_voucher_all,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		for row in found:
+			if from_s and str(row.get("posting_date") or "") < from_s:
+				continue
+			if to_s and str(row.get("posting_date") or "") > to_s:
+				continue
+			row["dependency_signature"] = _signature(
+				{
+					"in": row.get("inbound_document"),
+					"out": row.get("outbound_document"),
+					"item": row.get("item"),
+					"wh": row.get("warehouse"),
+					"batch": row.get("batch"),
+					"in_time": row.get("current_inbound_time"),
+					"out_time": row.get("current_outbound_time"),
+					"in_mod": row.get("inbound_modified"),
+					"out_mod": row.get("outbound_modified"),
+					"reason": row.get("dependency_reason"),
+					"status": row.get("status"),
+					"moves": row.get("moves"),
+					"detection": "CROSS_TIME",
+				}
+			)
+			summary["negative_intervals"] += 1
+			opt = row.get("optimizer_status") or row.get("status")
+			summary[opt] += 1
+			if (row.get("confidence") or "") == CONFIDENCE_EXACT:
+				summary["cross_time_exact"] += 1
+			elif (row.get("confidence") or "") == CONFIDENCE_LIKELY:
+				summary["cross_time_likely"] += 1
+			else:
+				summary["cross_time_ambiguous"] += 1
+			keep_cross = True
+			if not include_likely and row.get("confidence") == CONFIDENCE_LIKELY:
+				keep_cross = False
+			if opt in CROSS_DROP_UNLESS_FULL and not include_no_repair:
+				keep_cross = False
+			if opt not in CROSS_KEEP and opt not in CROSS_DROP_UNLESS_FULL and not include_no_repair:
+				keep_cross = bool(row.get("eligible"))
+			if keep_cross:
+				cross_rows.append(row)
+	out_rows.extend(cross_rows)
+	summary["cross_time_rows"] = len(cross_rows)
+
 	summary["seconds_distribution"] = dict(seconds_dist)
 	return {"rows": out_rows, "summary": dict(summary), "sle_scanned": len(annotated)}
 
@@ -336,6 +421,9 @@ def run_full_history_scan(**kwargs) -> dict:
 	elapsed = (end - start).total_seconds()
 	sle_n = int(result.get("sle_scanned") or 0)
 	grp_n = int((result.get("summary") or {}).get("same_time_groups") or 0)
+	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+	result = stamp_scan_result(result)
 	result["timing"] = {
 		"start_local": start.strftime("%Y-%m-%d %H:%M:%S"),
 		"end_local": end.strftime("%Y-%m-%d %H:%M:%S"),
@@ -429,6 +517,12 @@ def _build_row(rows, result, confidence, reason, opening, base_t) -> dict:
 		"chain": f"{inbound['voucher_no']} → {outbound['voucher_no']}",
 		"posting_date": str(inbound.get("posting_date") or ""),
 		"has_batch": bool(inbound.get("canonical_batch")),
+		"detection": "SAME_TIME",
+		"negative_start": format_datetime(get_datetime(outbound["posting_datetime"])),
+		"negative_voucher": outbound["voucher_no"],
+		"later_inbound": inbound["voucher_no"],
+		"time_gap_seconds": 0,
+		"seconds_shifted": min_sec,
 		"current_series": cur.get("series") or [],
 		"proposed_series": prop.get("series") or [],
 	}
@@ -449,3 +543,135 @@ def _build_row(rows, result, confidence, reason, opening, base_t) -> dict:
 		}
 	)
 	return payload
+
+
+def diagnose_canonical_batch(batch_no: str, company=None) -> dict:
+	"""Read-only diagnosis of one canonical batch (screenshot / operator cases).
+
+	Does not write. Uses true opening from that item+warehouse+batch series.
+	"""
+	if not batch_no:
+		return {"batch": batch_no, "found": False, "rows": []}
+	raw = frappe.db.sql(
+		"""
+		SELECT
+			sle.name, sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time,
+			sle.posting_datetime, sle.creation, sle.actual_qty, sle.qty_after_transaction,
+			sle.batch_no, sle.serial_and_batch_bundle, sle.voucher_no, sle.voucher_type,
+			sle.voucher_detail_no, sle.incoming_rate, sle.valuation_rate, sle.stock_value,
+			sle.stock_value_difference,
+			se.purpose, se.work_order, se.job_card, se.company, se.modified,
+			se.docstatus se_docstatus,
+			sbe.batch_no sabb_batch_no, sbe.batch_count
+		FROM `tabStock Ledger Entry` sle
+		LEFT JOIN `tabStock Entry` se
+			ON se.name = sle.voucher_no AND sle.voucher_type='Stock Entry'
+		LEFT JOIN (
+			SELECT parent,
+			       MIN(batch_no) batch_no,
+			       COUNT(DISTINCT batch_no) batch_count
+			FROM `tabSerial and Batch Entry`
+			WHERE batch_no=%s
+			GROUP BY parent
+		) sbe ON sbe.parent = sle.serial_and_batch_bundle
+		WHERE sle.is_cancelled=0
+		  AND (sle.batch_no=%s OR sbe.batch_no=%s)
+		ORDER BY sle.item_code, sle.warehouse, sle.posting_datetime, sle.creation
+		""",
+		(batch_no, batch_no, batch_no),
+		as_dict=True,
+	)
+	annotated = [_annotate(r) for r in raw]
+	series_sim = []
+	running_by: dict[tuple, float] = defaultdict(float)
+	for r in annotated:
+		ikey = (r["item_code"], r["warehouse"])
+		before = running_by[ikey]
+		qty = float(r.get("actual_qty") or 0)
+		running_by[ikey] += qty
+		series_sim.append(
+			{
+				"sle": r["name"],
+				"voucher": r["voucher_no"],
+				"item": r["item_code"],
+				"warehouse": r["warehouse"],
+				"purpose": r.get("purpose"),
+				"creation": str(r.get("creation") or ""),
+				"posting_datetime": str(r.get("posting_datetime") or ""),
+				"posting_time": r.get("posting_time_norm"),
+				"actual_qty": qty,
+				"running_qty_before": before,
+				"running_qty_after": running_by[ikey],
+				"batch": r.get("canonical_batch") or r.get("batch_no"),
+			}
+		)
+	by_identity: dict[tuple, list] = defaultdict(list)
+	groups: dict[tuple, list] = defaultdict(list)
+	for row in annotated:
+		if row.get("canonical_batch") == "*MULTI*":
+			continue
+		by_identity[_identity_key(row)].append(row)
+		if row.get("voucher_type") != "Stock Entry":
+			continue
+		if int(row.get("se_docstatus") or 0) != 1:
+			continue
+		groups[_group_key(row)].append(row)
+	against_map = _against_map(
+		sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"})
+	)
+	by_voucher_all: dict[str, list] = defaultdict(list)
+	for row in annotated:
+		if row.get("voucher_type") == "Stock Entry":
+			by_voucher_all[row["voucher_no"]].append(row)
+	out_rows = []
+	for key, rows in groups.items():
+		if len(rows) < 2:
+			continue
+		qtys = [D(r.get("actual_qty")) for r in rows]
+		if not (any(q > 0 for q in qtys) and any(q < 0 for q in qtys)):
+			continue
+		base_t = get_datetime(rows[0]["posting_datetime"])
+		min_creation = min(str(r.get("creation") or "") for r in rows)
+		series = by_identity[_identity_key(rows[0])]
+		opening = _opening_before(series, base_t, min_creation)
+		edges, confidence, reason = _voucher_edges(rows, against_map)
+		result = optimize_group(
+			sles=rows,
+			opening=opening,
+			base_t=base_t,
+			edges=edges,
+			collisions=[],
+			cross_windows=None,
+			max_seconds=MAX_OFFSET_SECONDS,
+		)
+		out_rows.append(_build_row(rows, result, confidence, reason, opening, base_t))
+	cross_rows = []
+	for _idk, series in by_identity.items():
+		walk_series = [
+			r
+			for r in series
+			if r.get("voucher_type") != "Stock Entry" or int(r.get("se_docstatus") or 0) == 1
+		]
+		if len(walk_series) < 2:
+			continue
+		found = scan_negative_series(
+			walk_series,
+			against_map=against_map,
+			by_voucher_all=by_voucher_all,
+			by_identity=by_identity,
+			skip_same_second=True,
+		)
+		cross_rows.extend(found)
+	return {
+		"batch": batch_no,
+		"found": bool(annotated),
+		"sle_count": len(annotated),
+		"items": sorted({r["item_code"] for r in annotated}),
+		"warehouses": sorted({r["warehouse"] for r in annotated}),
+		"stock_entries": sorted({r["voucher_no"] for r in annotated if r.get("voucher_type") == "Stock Entry"}),
+		"series": series_sim,
+		"same_time_groups": out_rows,
+		"negative_intervals": cross_rows,
+		"temporary_negative": any(s["running_qty_after"] < -0.0001 for s in series_sim),
+		"min_running_qty": min((s["running_qty_after"] for s in series_sim), default=0),
+	}

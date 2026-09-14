@@ -19,6 +19,12 @@
   },
   {
    "role": "Accounts Manager"
+  },
+  {
+   "role": "Manufacturing Manager"
+  },
+  {
+   "role": "Administrator"
   }
  ],
  "script": null,
