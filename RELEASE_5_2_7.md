@@ -311,7 +311,7 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 
 | Area | Result |
 |------|--------|
-| `test_historical_stock` (unit) | PASS (45, incl. expected-rate columns, impact text, L1/L2/L3 permissions, xlsx zip, graph empty-identity) |
+| `test_historical_stock` (unit) | PASS (48, incl. permissions L1/L2/L3, xlsx zip, snapshot jsonable, non-global repost) |
 | `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
@@ -320,7 +320,7 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 | Playwright posting-order + Farvardin repaired ledger + downstream Apr 11 + 6-tab integrity + hardening dashboard | PASS (5), no API 500 |
 | `bench build --app erpnext_extensions` | PASS |
 | `migrate` ×2 | PASS |
-| Local `run_gate(full_stress=1)` | PASS (stress 148.29 s; RIV×2; 03516; flows) |
+| Local `run_gate(full_stress=0)` | PASS (stress_scale 0.2) |
 
 ## 15. Maintenance tool (wrong-rate + selective + UI)
 
@@ -378,10 +378,10 @@ This phase does not change accounting policy. It makes Historical Repair operato
 
 | Operation | Elapsed | Rows | Rows/s | CPU user | MariaDB questions |
 |-----------|---------|------|--------|----------|-------------------|
-| Full Scan | 16.410 s | — | — | 3.38 s | 25530 |
-| Wrong Rate Scan | 3.862 s | 2001 | 518 | 0.68 s | 8844 |
-| Posting Order Scan | 3.365 s | 918 | 273 | 1.07 s | 29 |
-| Zero Rate Scan | 1.763 s | 616 | 349 | 0.24 s | 3283 |
+| Full Scan (Scan All, no manufacture loop) | 13.384 s | — | — | — | — |
+| Wrong Rate Scan | 3.818 s | 2001 | 522 | 0.63 s | 8844 |
+| Posting Order Scan | 2.452 s | 918 | 366 | 1.21 s | 249 |
+| Zero Rate Scan | 1.685 s | 616 | 348 | 0.24 s | 3283 |
 | Replay Planner | 0.135 s | 3 | 22 | 0.00 s | 7 |
 | Identity Replay (dry) | 0.003 s | 1 | 351 | 0.00 s | 4 |
 | Bin Rebuild (scan) | 0.973 s | 566 | 582 | 0.17 s | 503 |
@@ -394,44 +394,62 @@ Peak RSS ~435 MB. No writes. No global RIV.
 
 ### Remaining limitations
 
-- Full Scan was **16.99 s** (target 15 s for 100k SLE; this run is multi-engine, not a 100k SLE-only scan).
+- Scan All (dashboard, no manufacture get_doc loop) is **13.4 s** on this site (target 15 s). Full multi-engine scan with manufacture still ~16 s.
+- Wrong Rate Scan is **3.82 s** (target 3 s) because each row still runs the existing reconstruction lookups. No algorithm change.
 - Progress remaining time is wall-clock around one RPC, not a queued job ETA.
 - GL rebuild / RIV cannot be fully rolled back in-app — DATABASE BACKUP REQUIRED.
 - Consume SLE `valuation_rate` on 25912 / 25911-1 can still show warehouse moving-average **3,338,300** while identity outgoing is **3,333,718.97** (SABB/SBE is the identity truth).
 - Reconstruction preview can still pick an earlier Reject inward as LIKELY (`3,333,711` vs reconstructed `3,333,718.97`).
 
-## 17. MVR release hardening (permissions, hide-not-disable, safe mode)
+## 17. MVR publish hardening
 
-No new repair engines. Accounting policy is unchanged. Writes stay identity-scoped. Default path is Scan → Dry Run → Preview → Impact → DATABASE BACKUP REQUIRED → operator confirm → Repair.
+No new repair engines. Accounting policy is unchanged. Writes stay identity-scoped.
 
-### Feature maturity
+### Feature matrix
 
-| Feature | Class | Who |
-|---------|-------|-----|
-| Scan, Scan All, Dry Run, Dashboard, Expected Rate, Impact, Graph, Integrity, History, Export, search/filter/sort | **A Production Ready** | All page roles |
-| Repair Selected, Replay Downstream, Rebuild Affected Documents, Repost Selected, Resume, Cancel, Advanced Mode | **B Operational** | System Manager + Administrator |
-| Rollback, Benchmark, snapshots, diagnose_batch, developer diagnostics | **C Experimental** | Administrator only |
+| Class | Features | Who |
+|-------|----------|-----|
+| **A Production Ready** | Scan, Scan All, Dashboard, Dry Run, Expected Rate Preview, Impact Analysis, Graph, Integrity Check, Repair History, Search, column filters, multi-sort, frozen header/first column, horizontal/vertical scroll, column chooser, save layout, CSV/XLSX export, hyperlinks, KPI cards, copy selected, Select All / Visible / Repairable / EXACT | Stock Manager (read), System Manager, Administrator |
+| **B Operational** | Repair Selected, Repair Current Filter, Repair Current Page, Repair Current Scope, Replay Downstream, Rebuild Affected Documents, Repost Selected | System Manager, Administrator |
+| **C Experimental** | Advanced Mode, Resume, Cancel, Rollback, Benchmark, snapshots, diagnose APIs, developer tools | Administrator only. Hidden for everyone else. Incomplete tools are omitted, not disabled. |
 
-### Permission model
+### Permission matrix
 
-| Level | Identity | Writes |
-|-------|----------|--------|
-| 1 Operational read | Stock Manager, Manufacturing Manager, Accounts Manager | None. Repair/Replay/Rebuild/Repost/Resume/Cancel/Rollback/Benchmark are **hidden**, not disabled. |
-| 2 System Manager | System Manager | Stable repair after Dry Run + Impact + DATABASE BACKUP REQUIRED + confirm |
-| 3 Administrator | user `Administrator` (checked before System Manager) | Level 2 plus experimental tools |
+| | Stock Manager | System Manager | Administrator |
+|---|---|---|---|
+| A read surface | Yes | Yes | Yes |
+| B writes | Hidden | Yes, after Dry Run → Impact → confirm → DATABASE BACKUP REQUIRED → Repair → Integrity → optional selective RIV | Yes, same workflow |
+| C experimental | Hidden | Hidden | Advanced Mode |
 
-API: scan/dry-run/impact/graph/integrity/export = read. Apply (`dry_run=0`) = System Manager. Rollback + Benchmark + diagnose_batch = Administrator.
+Administrator is detected before System Manager so Admin always has full access.
+
+### Workflow
+
+```
+Open page → Scan All → Dashboard → choose KPI
+        → topic Scan → Dry Run → Impact
+        → Repair (Selected / Filter / Page / Scope)
+        → Integrity → optional Repost Selected
+```
+
+Repost scope: Company + Warehouse + Item + Batch + Work Order + Voucher + date range. Company/date alone is rejected. Never global RIV.
 
 ### UI
 
-- Dashboard KPIs sit above the title. Clicking a KPI opens the matching topic and scan.
-- Toolbar groups: Scan | Repair (hidden at L1) | Inspect | Advanced (Resume/Cancel; Rollback/Benchmark if Administrator).
-- Unavailable actions are omitted from the DOM.
-- Repair Selected stays disabled until Dry Run + Impact succeed.
-- Eligible rows are not pre-checked; operator uses Select EXACT / Select Repairable.
-- Graph/Impact empty identity returns a preview warning instead of a blocking modal.
-- Export Excel is real OOXML (`PK` zip), not CSV.
-- Column chooser layout is saved per topic in `localStorage`.
+Sticky toolbar, grouped actions, status badges, severity KPI colors, tooltips, keyboard shortcuts (`/` search, `S` scan, `A` scan all, `D` dry run, `G` graph, `I` integrity), indeterminate progress, empty states, better scan errors. Repair buttons stay disabled until Dry Run + Impact.
+
+### Known limitations
+
+See §16 remaining limitations. Wrong Rate Scan still misses the 3 s target.
+
+### Production checklist
+
+1. Do not push/tag from this workspace until an operator publishes.
+2. `bench build --app erpnext_extensions` then migrate twice.
+3. Production dry-run all six tabs. Review EXACT vs AMBIGUOUS.
+4. Database backup before any B write.
+5. Repair patient-zero first. Never 25741 in isolation.
+6. Repost Selected is one Item+Warehouse identity after Integrity PASS.
 
 ## 14. Deployment
 

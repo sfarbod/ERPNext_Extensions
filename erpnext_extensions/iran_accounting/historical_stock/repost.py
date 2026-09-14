@@ -15,9 +15,84 @@ from erpnext_extensions.iran_accounting.historical_stock.sle_bin import classify
 from erpnext_extensions.iran_accounting.historical_stock import SLE_HEALTHY
 
 
-def preview_repost_selected(item_code, warehouse, *, batch=None, from_date=None) -> dict:
+def _resolve_repost_identity(
+	item_code=None,
+	warehouse=None,
+	*,
+	batch=None,
+	work_order=None,
+	voucher=None,
+	company=None,
+	from_date=None,
+	to_date=None,
+) -> tuple:
+	"""Map a selective scope to one item+warehouse. Company/date alone is not enough."""
+	if item_code and warehouse:
+		return item_code, warehouse, {"identity_count": 1, "resolved_from": "item_warehouse"}
+	scope = {
+		"item": item_code,
+		"item_code": item_code,
+		"warehouse": warehouse,
+		"batch": batch,
+		"work_order": work_order,
+		"voucher": voucher,
+		"from_date": from_date,
+		"to_date": to_date,
+	}
+	if not any(scope.get(k) for k in ("item", "item_code", "warehouse", "batch", "work_order", "voucher")):
+		return None, None, {"identity_count": 0, "resolved_from": None, "global_riv": False}
+	from erpnext_extensions.iran_accounting.historical_stock.selective import resolve_identities
+
+	rows = resolve_identities(scope)
+	pairs = sorted({(r.item, r.warehouse) for r in rows if r.get("item") and r.get("warehouse")})
+	if len(pairs) != 1:
+		return None, None, {
+			"identity_count": len(pairs),
+			"resolved_from": "scope",
+			"global_riv": False,
+			"identities": [{"item": a, "warehouse": b} for a, b in pairs[:20]],
+		}
+	item, wh = pairs[0]
+	return item, wh, {"identity_count": 1, "resolved_from": "scope"}
+
+
+def preview_repost_selected(
+	item_code=None,
+	warehouse=None,
+	*,
+	batch=None,
+	from_date=None,
+	to_date=None,
+	work_order=None,
+	voucher=None,
+	company=None,
+) -> dict:
+	item_code, warehouse, resolved = _resolve_repost_identity(
+		item_code,
+		warehouse,
+		batch=batch,
+		work_order=work_order,
+		voucher=voucher,
+		company=company,
+		from_date=from_date,
+		to_date=to_date,
+	)
 	if not item_code or not warehouse:
-		frappe.throw("item and warehouse are required")
+		return {
+			"item": item_code,
+			"warehouse": warehouse,
+			"batch": batch,
+			"from_date": from_date,
+			"to_date": to_date,
+			"work_order": work_order,
+			"voucher": voucher,
+			"company": company,
+			"eligible": False,
+			"global_riv": False,
+			"status": STATUS_UNSAFE_TO_REPOST,
+			"reason": "Repost requires a single item + warehouse identity (optionally via batch, work order, or voucher). Never global.",
+			**resolved,
+		}
 	state = classify_identity(item_code, warehouse)
 	sle_n = frappe.db.count(
 		"Stock Ledger Entry",
@@ -48,6 +123,11 @@ def preview_repost_selected(item_code, warehouse, *, batch=None, from_date=None)
 		"warehouse": warehouse,
 		"batch": batch,
 		"from_date": from_date,
+		"to_date": to_date,
+		"work_order": work_order,
+		"voucher": voucher,
+		"company": company,
+		"global_riv": False,
 		"sle_state": state,
 		"affected_sle_count": sle_n,
 		"affected_vouchers": vouchers,
@@ -60,8 +140,30 @@ def preview_repost_selected(item_code, warehouse, *, batch=None, from_date=None)
 	}
 
 
-def repost_selected(item_code, warehouse, *, from_date=None, dry_run=True) -> dict:
-	preview = preview_repost_selected(item_code, warehouse, from_date=from_date)
+def repost_selected(
+	item_code=None,
+	warehouse=None,
+	*,
+	from_date=None,
+	to_date=None,
+	batch=None,
+	work_order=None,
+	voucher=None,
+	company=None,
+	dry_run=True,
+) -> dict:
+	preview = preview_repost_selected(
+		item_code,
+		warehouse,
+		batch=batch,
+		from_date=from_date,
+		to_date=to_date,
+		work_order=work_order,
+		voucher=voucher,
+		company=company,
+	)
+	item_code = preview.get("item")
+	warehouse = preview.get("warehouse")
 	if not preview["eligible"]:
 		return {**preview, "written": False, "blocked": True}
 	if dry_run:

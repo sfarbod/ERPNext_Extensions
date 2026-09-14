@@ -61,6 +61,8 @@ class HistoricalRepairPage {
 		this.access = this._access_from_boot();
 		this.$body = $(page.body);
 		this.render();
+		this._bind_keys();
+		this.scan_all({ auto: true });
 	}
 
 	_access_from_boot() {
@@ -74,25 +76,29 @@ class HistoricalRepairPage {
 
 	render() {
 		this.$body.empty();
-		this.$tabs = $('<div class="hr-tabs">').appendTo(this.$body);
+		this.$shell = $('<div class="hr-shell">').appendTo(this.$body);
+		this.$sticky = $('<div class="hr-sticky">').appendTo(this.$shell);
+		this.$tabs = $('<div class="hr-tabs">').appendTo(this.$sticky);
 		TOPICS.forEach((t) => {
 			const $b = $('<button type="button" class="btn btn-xs hr-tab">')
 				.attr("data-topic", t.id)
+				.attr("title", t.section || t.title)
 				.text(t.title)
 				.appendTo(this.$tabs);
 			if (t.id === this.topic) $b.addClass("btn-primary");
 			else $b.addClass("btn-default");
 			$b.on("click", () => this.switch_topic(t.id));
 		});
-		this.$dashboard = $('<div class="hr-dashboard" data-role="dashboard">').appendTo(this.$body);
+		this.$dashboard = $('<div class="hr-dashboard" data-role="dashboard">').appendTo(this.$sticky);
 		this.render_dashboard({});
-		this.$title = $('<h4 class="hr-section-title">').appendTo(this.$body);
-		this.$toolbar = $('<div class="hr-toolbar">').appendTo(this.$body);
-		this.company = frappe.ui.form.make_control({
-			parent: this.$toolbar,
-			df: { fieldtype: "Link", options: "Company", label: __("Company") },
-			render_input: true,
-		});
+		this.$title = $('<h4 class="hr-section-title">').appendTo(this.$sticky);
+		this.$toolbar = $('<div class="hr-toolbar">').appendTo(this.$sticky);
+		this._scope_control("company", "Link", "Company", "Company");
+		this._scope_control("item", "Link", "Item", "Item");
+		this._scope_control("warehouse", "Link", "Warehouse", "Warehouse");
+		this._scope_control("batch", "Link", "Batch", "Batch");
+		this._scope_control("work_order", "Link", "Work Order", "Work Order");
+		this._scope_control("voucher", "Link", "Stock Entry", "Voucher");
 		this.from_date = frappe.ui.form.make_control({
 			parent: this.$toolbar,
 			df: { fieldtype: "Date", label: __("From Date") },
@@ -105,42 +111,42 @@ class HistoricalRepairPage {
 		});
 		const $actions = $('<div class="hr-actions">').appendTo(this.$toolbar);
 		const g1 = $('<div class="hr-action-group" data-group="scan">').appendTo($actions);
-		this.btn_scan = this._btn(g1, "scan", __("Scan"), () => this.scan());
-		this.btn_scan_all = this._btn(g1, "scan-all", __("Scan All"), () => this.scan_all());
-		this.btn_dry = this._btn(g1, "dry-run", __("Dry Run"), () => this.dry_run(), "btn-primary");
+		this.btn_scan = this._btn(g1, "scan", __("Scan"), () => this.scan(), "btn-default", __("Scan this topic (S)"));
+		this.btn_scan_all = this._btn(g1, "scan-all", __("Scan All"), () => this.scan_all(), "btn-default", __("Scan every topic into the dashboard (Shift+A)"));
+		this.btn_dry = this._btn(g1, "dry-run", __("Dry Run"), () => this.dry_run(), "btn-primary", __("Preview writes. Never executes (D)"));
 		if (this.access.can_repair) {
 			const g2 = $('<div class="hr-action-group" data-group="repair">').appendTo($actions);
-			this.btn_repair = this._btn(g2, "repair", __("Repair Selected"), () => this.repair_selected(), "btn-danger");
-			this.btn_replay_ds = this._btn(g2, "replay-downstream", __("Replay Downstream"), () => this.replay_downstream(), "btn-info");
-			this.btn_rebuild_docs = this._btn(g2, "rebuild-docs", __("Rebuild Affected Documents"), () => this.rebuild_affected_documents(), "btn-info");
-			this.btn_repost = this._btn(g2, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning");
-			this.btn_repair.prop("disabled", true);
+			this.btn_repair = this._btn(g2, "repair", __("Repair Selected"), () => this.repair_bulk("selected"), "btn-danger", __("Repair checked EXACT rows"));
+			this.btn_repair_filter = this._btn(g2, "repair-filter", __("Repair Current Filter"), () => this.repair_bulk("filter"), "btn-danger", __("Repair EXACT rows matching search and column filters"));
+			this.btn_repair_page = this._btn(g2, "repair-page", __("Repair Current Page"), () => this.repair_bulk("page"), "btn-danger", __("Repair visible EXACT rows"));
+			this.btn_repair_scope = this._btn(g2, "repair-scope", __("Repair Current Scope"), () => this.repair_bulk("scope"), "btn-danger", __("Repair every EXACT row in this topic scan"));
+			this.btn_replay_ds = this._btn(g2, "replay-downstream", __("Replay Downstream"), () => this.replay_downstream(), "btn-info", __("Identity-scoped downstream replay"));
+			this.btn_rebuild_docs = this._btn(g2, "rebuild-docs", __("Rebuild Affected Documents"), () => this.rebuild_affected_documents(), "btn-info", __("Identity-scoped rebuild"));
+			this.btn_repost = this._btn(g2, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning", __("One Item+Warehouse RIV. Never global"));
+			this._lock_writes(true);
 		}
 		const g3 = $('<div class="hr-action-group" data-group="inspect">').appendTo($actions);
-		this.btn_integrity = this._btn(g3, "integrity", __("Integrity Check"), () => this.integrity());
-		this.btn_graph = this._btn(g3, "graph", __("Graph"), () => this.show_graph());
-		this.btn_history = this._btn(g3, "history", __("Repair History"), () => this.show_history());
-		if (this.access.can_repair) {
+		this.btn_integrity = this._btn(g3, "integrity", __("Integrity Check"), () => this.integrity(), "btn-default", __("Read-only chain check (I)"));
+		this.btn_graph = this._btn(g3, "graph", __("Graph"), () => this.show_graph(), "btn-default", __("Dependency graph (G)"));
+		this.btn_history = this._btn(g3, "history", __("Repair History"), () => this.show_history(), "btn-default", __("Previous repair runs"));
+		if (this.access.can_admin) {
 			const $adv = $('<label class="hr-advanced">').appendTo(g3);
 			this.$advanced = $('<input type="checkbox" data-role="advanced">').appendTo($adv);
 			$adv.append(document.createTextNode(" " + __("Advanced Mode")));
+			$adv.attr("title", __("Administrator experimental tools"));
 			this.$advanced.on("change", () => {
 				this.advanced = this.$advanced.prop("checked");
 				this.$admin_group && this.$admin_group.toggle(this.advanced);
 			});
-		}
-		if (this.access.can_repair) {
 			this.$admin_group = $('<div class="hr-action-group" data-group="admin">').appendTo($actions);
 			this.btn_resume = this._btn(this.$admin_group, "resume", __("Resume"), () => this.resume());
 			this.btn_cancel = this._btn(this.$admin_group, "cancel", __("Cancel"), () => { this.cancelled = true; });
-			if (this.access.can_admin) {
-				this.btn_rollback = this._btn(this.$admin_group, "rollback", __("Rollback"), () => this.rollback_last());
-				this.btn_benchmark = this._btn(this.$admin_group, "benchmark", __("Benchmark"), () => this.run_benchmark());
-			}
+			this.btn_rollback = this._btn(this.$admin_group, "rollback", __("Rollback"), () => this.rollback_last());
+			this.btn_benchmark = this._btn(this.$admin_group, "benchmark", __("Benchmark"), () => this.run_benchmark());
 			this.$admin_group.toggle(false);
 		}
-		this.$tools = $('<div class="hr-grid-tools">').appendTo(this.$body);
-		this.$search = $('<input class="form-control input-sm hr-search" data-role="search" placeholder="Search">').appendTo(this.$tools);
+		this.$tools = $('<div class="hr-grid-tools">').appendTo(this.$shell);
+		this.$search = $('<input class="form-control input-sm hr-search" data-role="search" placeholder="Search all columns  (/ )">').appendTo(this.$tools);
 		this.$search.on("input", () => this.render_table());
 		["Select All", "Unselect All", "Select EXACT", "Select Repairable", "Select Visible Rows", "Select Current Page"].forEach((label) => {
 			this._btn(this.$tools, label.toLowerCase().replace(/\s+/g, "-"), __(label), () => this.select_by(label));
@@ -149,19 +155,52 @@ class HistoricalRepairPage {
 		this._btn(this.$tools, "export-csv", __("Export CSV"), () => this.export_grid("csv"));
 		this._btn(this.$tools, "export-excel", __("Export Excel"), () => this.export_grid("xlsx"));
 		this._btn(this.$tools, "copy-selected", __("Copy selected"), () => this.copy_selected());
-		this.$columns = $('<div class="hr-columns" data-role="columns" style="display:none">').appendTo(this.$body);
-		this.$progress = $('<div class="hr-progress"><div class="hr-progress-bar"></div></div>').appendTo(this.$body);
-		this.$eta = $('<div class="text-muted" data-role="eta">').appendTo(this.$body);
-		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$body);
-		this.$recon = $('<div class="hr-recon" data-role="reconstruction">').appendTo(this.$body);
-		this.$graph = $('<div class="hr-graph" data-role="graph">').appendTo(this.$body);
-		this.$preview = $('<pre class="hr-preview" data-role="preview">').appendTo(this.$body);
+		this.$columns = $('<div class="hr-columns" data-role="columns" style="display:none">').appendTo(this.$shell);
+		this.$progress = $('<div class="hr-progress"><div class="hr-progress-bar"></div></div>').appendTo(this.$shell);
+		this.$eta = $('<div class="text-muted hr-eta" data-role="eta">').appendTo(this.$shell);
+		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$shell);
+		this.$recon = $('<div class="hr-recon" data-role="reconstruction">').appendTo(this.$shell);
+		this.$graph = $('<div class="hr-graph" data-role="graph">').appendTo(this.$shell);
+		this.$preview = $('<pre class="hr-preview" data-role="preview">').appendTo(this.$shell);
 		this.switch_topic(this.topic);
 	}
 
-	_btn($parent, action, label, fn, extra = "btn-default") {
+	_scope_control(name, fieldtype, options, label) {
+		this[name] = frappe.ui.form.make_control({
+			parent: this.$toolbar,
+			df: { fieldtype, options, label: __(label) },
+			render_input: true,
+		});
+	}
+
+	_lock_writes(lock) {
+		["btn_repair", "btn_repair_filter", "btn_repair_page", "btn_repair_scope"].forEach((k) => {
+			this[k] && this[k].prop("disabled", !!lock);
+		});
+	}
+
+	_bind_keys() {
+		$(document).off("keydown.hr-mvr").on("keydown.hr-mvr", (e) => {
+			const typing = $(e.target).is("input, textarea, select, [contenteditable=true]");
+			if (typing) {
+				if (e.key === "Escape") e.target.blur();
+				return;
+			}
+			if (e.key === "/") {
+				e.preventDefault();
+				this.$search.trigger("focus");
+			} else if (e.key === "s" || e.key === "S") this.scan();
+			else if (e.key === "a" || e.key === "A") this.scan_all();
+			else if (e.key === "d" || e.key === "D") this.dry_run();
+			else if (e.key === "g" || e.key === "G") this.show_graph();
+			else if (e.key === "i" || e.key === "I") this.integrity();
+		});
+	}
+
+	_btn($parent, action, label, fn, extra = "btn-default", title) {
 		return $(`<button type="button" class="btn ${extra} btn-sm" data-action="${action}">`)
 			.text(label)
+			.attr("title", title || label)
 			.appendTo($parent)
 			.on("click", fn);
 	}
@@ -172,23 +211,43 @@ class HistoricalRepairPage {
 		this.dry_run_done = false;
 		this.impact_done = false;
 		this.load_layout();
-		if (this.btn_repair) this.btn_repair.prop("disabled", true);
+		if (this.btn_repair) this._lock_writes(true);
 		this.$tabs.find(".hr-tab").each((_, el) => {
 			const on = el.getAttribute("data-topic") === id;
 			$(el).toggleClass("btn-primary", on).toggleClass("btn-default", !on);
 		});
 		const meta = TOPICS.find((t) => t.id === id);
 		this.$title.text(meta.section || meta.title);
-		this.$preview.text(__("Click Scan or Dry Run. No writes until Repair Selected after Dry Run."));
+		this.$preview.text(__("Scan All fills the dashboard. Choose a problem, then Dry Run. No writes until Repair after Dry Run, Impact, and DATABASE BACKUP REQUIRED."));
 		this.render_table();
 	}
 
 	filters() {
 		return {
 			company: this.company.get_value(),
+			item_code: this.item && this.item.get_value(),
+			warehouse: this.warehouse && this.warehouse.get_value(),
+			batch: this.batch && this.batch.get_value(),
+			work_order: this.work_order && this.work_order.get_value(),
+			voucher: this.voucher && this.voucher.get_value(),
 			from_date: this.from_date.get_value(),
 			to_date: this.to_date.get_value(),
 			include_likely: 1,
+		};
+	}
+
+	scope_identity() {
+		const f = this.filters();
+		const row = this.selected_rows()[0] || {};
+		return {
+			item_code: f.item_code || row.item || row.item_code,
+			warehouse: f.warehouse || row.warehouse,
+			batch: f.batch || row.batch,
+			work_order: f.work_order || row.work_order,
+			voucher: f.voucher || row.voucher || row.outbound_document || row.inbound_document,
+			from_date: f.from_date || row.posting_date,
+			to_date: f.to_date,
+			company: f.company,
 		};
 	}
 
@@ -224,11 +283,14 @@ class HistoricalRepairPage {
 				if (!Array.isArray(this.rows)) this.rows = [];
 				this.dry_run_done = false;
 				this.impact_done = false;
-				if (this.btn_repair) this.btn_repair.prop("disabled", true);
+				if (this.btn_repair) this._lock_writes(true);
 				this.render_table();
 				this.$preview.text(__("Scan complete. Run Dry Run before repairing."));
 			},
-			error: () => this.end_progress(),
+			error: (err) => {
+				this.end_progress();
+				this.$preview.text(__("Scan failed: {0}", [(err && err.message) || __("Request error")]));
+			},
 		});
 	}
 
@@ -263,7 +325,7 @@ class HistoricalRepairPage {
 		const payload = rows.length ? rows : (this.rows || []).filter((r) => r.eligible).slice(0, 25);
 		if (!payload.length) {
 			this.impact_done = true;
-			if (this.btn_repair && this.access.can_repair) this.btn_repair.prop("disabled", false);
+			if (this.btn_repair && this.access.can_repair) this._lock_writes(false);
 			return;
 		}
 		frappe.call({
@@ -275,24 +337,28 @@ class HistoricalRepairPage {
 				this.impact_done = !impact.aborted;
 				this.$preview.text((this.format_preview(scan_msg || {}) + "\n\n" + (impact.preview_text || "")).trim());
 				if (this.btn_repair && this.access.can_repair && this.dry_run_done && this.impact_done) {
-					this.btn_repair.prop("disabled", false);
+					this._lock_writes(false);
 				}
 			},
 			error: () => {
 				this.impact_done = false;
-				if (this.btn_repair) this.btn_repair.prop("disabled", true);
+				if (this.btn_repair) this._lock_writes(true);
 			},
 		});
 	}
 
-	repair_selected() {
+	repair_bulk(kind) {
 		if (!this.dry_run_done || !this.impact_done) {
 			frappe.msgprint(__("No repair without Dry Run and Impact Analysis."));
 			return;
 		}
-		const rows = this.selected_rows().filter((r) => r.eligible);
+		let rows;
+		if (kind === "filter" || kind === "page") rows = this.visible_rows || [];
+		else if (kind === "scope") rows = this.rows || [];
+		else rows = this.selected_rows();
+		rows = (rows || []).filter((r) => r.eligible && r.confidence === "EXACT");
 		if (!rows.length && this.topic !== "gl" && this.topic !== "riv") {
-			frappe.msgprint(__("Select at least one eligible EXACT row."));
+			frappe.msgprint(__("No eligible EXACT rows in this {0}. Nothing executed.", [kind || "selection"]));
 			return;
 		}
 		frappe.call({
@@ -311,6 +377,10 @@ class HistoricalRepairPage {
 				frappe.confirm(warn + "\n\n" + (impact.preview_text || ""), () => this._execute_repair(rows));
 			},
 		});
+	}
+
+	repair_selected() {
+		this.repair_bulk("selected");
 	}
 
 	_execute_repair(rows) {
@@ -343,42 +413,36 @@ class HistoricalRepairPage {
 				this.$preview.text(JSON.stringify(r.message || {}, null, 2));
 				this.dry_run_done = false;
 				this.impact_done = false;
-				if (this.btn_repair) this.btn_repair.prop("disabled", true);
-				this.scan();
+				if (this.btn_repair) this._lock_writes(true);
+				this.integrity();
+				frappe.show_alert({
+					message: __("Repair written. Run Integrity Check if the preview is stale. Optional: Repost Selected for this identity (never global)."),
+					indicator: "blue",
+				});
 			},
 		});
 	}
 
 	repost_selected() {
-		const row = this.selected_rows()[0] || {};
-		if (!row.item && !row.item_code) {
-			frappe.msgprint(__("Select an item + warehouse row. This is not a global repost."));
+		const scope = this.scope_identity();
+		if (!scope.item_code && !scope.warehouse && !scope.batch && !scope.work_order && !scope.voucher) {
+			frappe.msgprint(__("Repost needs Item+Warehouse, Batch, Work Order, or Voucher. Company/date alone is a global repost and is blocked."));
 			return;
 		}
 		frappe.call({
 			method: `${this.api}.preview_repost`,
-			args: {
-				item_code: row.item || row.item_code,
-				warehouse: row.warehouse,
-				batch: row.batch,
-				from_date: row.posting_date,
-			},
+			args: scope,
 			callback: (r) => {
 				const preview = r.message || {};
 				this.$preview.text(JSON.stringify(preview, null, 2));
 				if (!preview.eligible) {
-					frappe.msgprint(__("Repost Selected blocked until the chain passes Integrity."));
+					frappe.msgprint(preview.reason || __("Repost Selected blocked until the chain passes Integrity. Never global."));
 					return;
 				}
 				frappe.confirm(__("DATABASE BACKUP REQUIRED. Queue Item+Warehouse RIV for this identity only?"), () => {
 					frappe.call({
 						method: `${this.api}.repost_selected_api`,
-						args: {
-							item_code: row.item || row.item_code,
-							warehouse: row.warehouse,
-							from_date: row.posting_date,
-							dry_run: 0,
-						},
+						args: { ...scope, dry_run: 0 },
 						callback: (rr) => this.$preview.text(JSON.stringify(rr.message || {}, null, 2)),
 					});
 				});
@@ -461,15 +525,26 @@ class HistoricalRepairPage {
 		});
 	}
 
-	scan_all() {
+	scan_all(opts) {
+		const auto = !!(opts && opts.auto);
+		this.start_progress();
+		if (auto) this.$eta.text(__("Scan All… filling dashboard"));
 		frappe.call({
 			method: `${this.api}.scan_all`,
 			args: { company: this.company.get_value() },
-			freeze: true,
+			freeze: !auto,
 			callback: (r) => {
+				this.end_progress();
 				const msg = r.message || {};
+				this.dry_run_done = false;
+				this.impact_done = false;
+				this._lock_writes(true);
 				this.render_dashboard(msg.dashboard || {});
 				this.$preview.text(this.format_preview(msg));
+			},
+			error: () => {
+				this.end_progress();
+				this.$preview.text(__("Scan All failed. Retry Scan All. No writes were attempted."));
 			},
 		});
 	}
@@ -479,9 +554,11 @@ class HistoricalRepairPage {
 		KPI_ORDER.forEach((label) => {
 			const n = dash && dash[label] != null ? dash[label] : "—";
 			const $chip = $('<button type="button" class="hr-kpi">')
+				.attr("title", __("Open this problem in the grid"))
 				.append($('<span class="hr-kpi-label">').text(label))
 				.append($('<b class="hr-kpi-value">').text(n));
 			if (label === "Integrity Score") $chip.addClass("hr-kpi-score");
+			else if (typeof n === "number" && n > 0) $chip.addClass("hr-kpi-alert");
 			$chip.on("click", () => this._open_kpi(label));
 			this.$dashboard.append($chip);
 		});
@@ -996,6 +1073,8 @@ class HistoricalRepairPage {
 				if (i === arr.length - 1) {
 					$td.addClass(`hr-status-${row.status || ""}`);
 					if (row.optimizer_status) $td.addClass(`hr-status-${row.optimizer_status}`);
+					const sev = row.eligible ? "ok" : /POISON|AMBIGUOUS|BLOCKED/i.test(String(row.status || row.confidence || "")) ? "bad" : "warn";
+					$td.empty().append($('<span class="hr-badge">').addClass("hr-badge-" + sev).text(String(val == null ? "" : val)));
 				}
 				$tr.append($td);
 			});
@@ -1006,9 +1085,20 @@ class HistoricalRepairPage {
 			$body.append($tr);
 		});
 		$table.append($body);
+		this.visible_rows = rows.map((x) => x.row);
 		this.$table.empty().append($table);
 		if (!this.rows.length) {
-			this.$table.append($("<p>").text(__("No anomalies in this topic.")));
+			this.$table.append(
+				$('<div class="hr-empty">').html(
+					"<strong>" +
+						__("No anomalies in this topic.") +
+						"</strong><div>" +
+						__("Run Scan All, pick a dashboard card, then Scan this tab.") +
+						"</div>"
+				)
+			);
+		} else if (!rows.length) {
+			this.$table.append($('<div class="hr-empty">').text(__("No rows match the current search or column filters.")));
 		}
 	}
 
@@ -1071,15 +1161,13 @@ class HistoricalRepairPage {
 		this.cancelled = false;
 		this._progress_t0 = Date.now();
 		this.$progress.show();
-		this.$progress.find(".hr-progress-bar").css("width", "15%");
 		this.$eta.text(__("Working…"));
 	}
 
 	end_progress() {
-		this.$progress.find(".hr-progress-bar").css("width", "100%");
 		const elapsed = this._progress_t0 ? ((Date.now() - this._progress_t0) / 1000).toFixed(1) : "";
 		this.$eta.text(elapsed ? __("Elapsed {0}s", [elapsed]) : "");
-		setTimeout(() => this.$progress.hide().find(".hr-progress-bar").css("width", "0"), 400);
+		setTimeout(() => this.$progress.hide(), 400);
 	}
 
 	fill_cell($td, val, i, row) {

@@ -654,6 +654,17 @@ class TestImpactAndRollback(unittest.TestCase):
 		self.assertFalse(out["full_rollback_possible"])
 		self.assertIn("DATABASE BACKUP REQUIRED", out["warning"])
 
+	def test_jsonable_accepts_attr_dict_rows(self):
+		from erpnext_extensions.iran_accounting.historical_stock.snapshot import _jsonable
+
+		class AttrDict(dict):
+			def __getattr__(self, key):
+				return self.get(key)
+
+		rows = _jsonable([AttrDict({"name": "sed-1", "basic_rate": 1.5})])
+		self.assertEqual(rows[0]["name"], "sed-1")
+		self.assertEqual(rows[0]["basic_rate"], 1.5)
+
 
 class TestPermissionsAndExport(unittest.TestCase):
 	def test_stock_manager_is_read_only(self):
@@ -706,8 +717,31 @@ class TestPermissionsAndExport(unittest.TestCase):
 
 		self.assertEqual(FEATURE_MATURITY["scan"], "A")
 		self.assertEqual(FEATURE_MATURITY["repair_selected"], "B")
+		self.assertEqual(FEATURE_MATURITY["resume"], "C")
+		self.assertEqual(FEATURE_MATURITY["advanced_mode"], "C")
 		self.assertEqual(FEATURE_MATURITY["rollback"], "C")
 		self.assertEqual(FEATURE_MATURITY["benchmark"], "C")
+
+	def test_system_manager_session_hides_experimental(self):
+		from erpnext_extensions.iran_accounting.historical_stock import permissions as perm
+
+		fake = mock.Mock()
+		fake.session.user = "sm@x"
+		fake.get_roles.return_value = ["System Manager"]
+		with mock.patch("erpnext_extensions.iran_accounting.historical_stock.permissions.frappe", fake):
+			info = perm.session_info()
+		self.assertTrue(info["visible"]["repair"])
+		self.assertFalse(info["visible"]["resume"])
+		self.assertFalse(info["visible"]["advanced"])
+		self.assertFalse(info["visible"]["rollback"])
+
+	def test_repost_without_identity_is_not_global(self):
+		from erpnext_extensions.iran_accounting.historical_stock.repost import _resolve_repost_identity
+
+		item, warehouse, meta = _resolve_repost_identity(company="X", from_date="2026-01-01")
+		self.assertIsNone(item)
+		self.assertIsNone(warehouse)
+		self.assertEqual(meta["identity_count"], 0)
 
 	def test_graph_without_identity_does_not_throw(self):
 		from erpnext_extensions.iran_accounting.historical_stock.graph import repair_graph

@@ -60,25 +60,38 @@ def fetch_ledger_rows(company=None) -> list:
 			sle.voucher_detail_no, sle.incoming_rate, sle.valuation_rate, sle.stock_value,
 			sle.stock_value_difference,
 			se.purpose, se.work_order, se.job_card, se.company, se.modified,
-			se.docstatus se_docstatus,
-			sbe.batch_no sabb_batch_no, sbe.batch_count
+			se.docstatus se_docstatus
 		FROM `tabStock Ledger Entry` sle
 		LEFT JOIN `tabStock Entry` se
 			ON se.name = sle.voucher_no AND sle.voucher_type='Stock Entry'
-		LEFT JOIN (
+		WHERE {" AND ".join(conds)}
+		ORDER BY sle.item_code, sle.warehouse, sle.posting_datetime, sle.creation
+		"""
+	rows = frappe.db.sql(sql, params, as_dict=True) if params else frappe.db.sql(sql, as_dict=True)
+	bundles = sorted({r.serial_and_batch_bundle for r in rows if r.get("serial_and_batch_bundle")})
+	sabb = {}
+	for i in range(0, len(bundles), 400):
+		chunk = tuple(bundles[i : i + 400])
+		if not chunk:
+			continue
+		for info in frappe.db.sql(
+			"""
 			SELECT parent,
 			       MIN(batch_no) batch_no,
 			       COUNT(DISTINCT batch_no) batch_count
 			FROM `tabSerial and Batch Entry`
-			WHERE IFNULL(batch_no,'') != ''
+			WHERE parent IN %(p)s AND IFNULL(batch_no,'') != ''
 			GROUP BY parent
-		) sbe ON sbe.parent = sle.serial_and_batch_bundle
-		WHERE {" AND ".join(conds)}
-		ORDER BY sle.item_code, sle.warehouse, sle.posting_datetime, sle.creation
-		"""
-	if params:
-		return frappe.db.sql(sql, params, as_dict=True)
-	return frappe.db.sql(sql, as_dict=True)
+			""",
+			{"p": chunk},
+			as_dict=True,
+		):
+			sabb[info.parent] = info
+	for row in rows:
+		info = sabb.get(row.serial_and_batch_bundle) or {}
+		row["sabb_batch_no"] = info.get("batch_no")
+		row["batch_count"] = info.get("batch_count") or 0
+	return rows
 
 
 def _annotate(row) -> dict:

@@ -185,7 +185,11 @@ def _restore_doctype(doctype, rows, fields, dry_run) -> list[dict]:
 def _jsonable(rows):
 	out = []
 	for r in rows or []:
-		if hasattr(r, "as_dict"):
-			r = r.as_dict()
-		out.append({k: (flt(v) if isinstance(v, float) else v) for k, v in dict(r).items()})
+		if isinstance(r, dict):
+			payload = dict(r)
+		elif callable(getattr(r, "as_dict", None)):
+			payload = r.as_dict()
+		else:
+			payload = dict(r)
+		out.append({k: (flt(v) if isinstance(v, float) else v) for k, v in payload.items()})
 	return out

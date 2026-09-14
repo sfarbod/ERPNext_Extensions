@@ -84,7 +84,8 @@ def session_info_api():
 @frappe.whitelist()
 def scan_all(company=None):
 	_guard()
-	return run_full_integrity_scan(company=company or None)
+	# Dashboard Scan All skips manufacture get_doc loops; Manufacture tab still scans itself.
+	return run_full_integrity_scan(company=company or None, include_manufacture=False)
 
 
 @frappe.whitelist()
@@ -225,16 +226,54 @@ def retry_failed_riv_selected(names=None, dry_run=True):
 
 
 @frappe.whitelist()
-def preview_repost(item_code=None, warehouse=None, batch=None, from_date=None):
+def preview_repost(
+	item_code=None,
+	warehouse=None,
+	batch=None,
+	from_date=None,
+	to_date=None,
+	work_order=None,
+	voucher=None,
+	company=None,
+):
 	_guard()
-	return preview_repost_selected(item_code, warehouse, batch=batch or None, from_date=from_date or None)
+	return preview_repost_selected(
+		item_code,
+		warehouse,
+		batch=batch or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+		work_order=work_order or None,
+		voucher=voucher or None,
+		company=company or None,
+	)
 
 
 @frappe.whitelist()
-def repost_selected_api(item_code=None, warehouse=None, from_date=None, dry_run=True):
+def repost_selected_api(
+	item_code=None,
+	warehouse=None,
+	from_date=None,
+	to_date=None,
+	batch=None,
+	work_order=None,
+	voucher=None,
+	company=None,
+	dry_run=True,
+):
 	is_dry = _dry(dry_run, True)
 	require_write_if_applying(is_dry)
-	return repost_selected(item_code, warehouse, from_date=from_date or None, dry_run=is_dry)
+	return repost_selected(
+		item_code,
+		warehouse,
+		from_date=from_date or None,
+		to_date=to_date or None,
+		batch=batch or None,
+		work_order=work_order or None,
+		voucher=voucher or None,
+		company=company or None,
+		dry_run=is_dry,
+	)
 
 
 @frappe.whitelist()
@@ -249,7 +288,7 @@ def integrity_api(vouchers=None, item_code=None, warehouse=None):
 
 @frappe.whitelist()
 def resume_last_run(topic=None):
-	_guard_repair()
+	_guard_admin()
 	from erpnext_extensions.iran_accounting.historical_stock.audit import last_open_run
 
 	log = last_open_run(topic)

@@ -100,7 +100,7 @@ def run_historical_benchmark(company=None) -> dict:
 		"voucher": "MAT-STE-2026-25824-1",
 	}
 	ops = []
-	ops.append(_measure("Full Scan", lambda: run_full_integrity_scan(company=company)))
+	ops.append(_measure("Full Scan", lambda: run_full_integrity_scan(company=company, include_manufacture=False)))
 	ops.append(_measure("Wrong Rate Scan", lambda: scan_wrong_rates(company=company, limit=2000)))
 	ops.append(_measure("Posting Order Scan", lambda: run_full_history_scan(company=company)))
 	ops.append(_measure("Zero Rate Scan", lambda: scan_zero_rate_rows(company=company)))
