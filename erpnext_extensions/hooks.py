@@ -98,6 +98,7 @@ doctype_js = {
 	# a finished_good, which is every card under semi-finished goods tracking.
 	"Job Card": [
 		"stock_extensions/public/js/job_card_corrective_operation.js",
+		"stock_extensions/public/js/job_card_reassign.js",
 	],
 	"Stock Entry Type": [
 		"consignment_stock/public/js/stock_entry_type_consignment.js",
@@ -165,6 +166,7 @@ after_migrate = [
 	"erpnext_extensions.consignment_stock.install.after_migrate",
 	"erpnext_extensions.asset_usage_depreciation.install.after_migrate",
 	"erpnext_extensions.decimal_precision_after_migrate.after_migrate",
+	"erpnext_extensions.patches.post_model_sync.ensure_reassign_job_cards_navigation.execute",
 ]
 
 # ERPNext injects Accounting Dimension custom fields onto these DocTypes (see Accounting Dimension on_update).
