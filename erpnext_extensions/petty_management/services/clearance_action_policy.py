@@ -31,19 +31,98 @@ def journal_entry_docstatus(journal_entry: str | None) -> int | None:
 	return cint(frappe.db.get_value("Journal Entry", journal_entry, "docstatus"))
 
 
+def find_active_settlement_je(doc: Document | str) -> str | None:
+	"""Return the active (draft/submitted) settlement JE for a clearance, if any.
+
+	Active means docstatus in (0, 1). Cancelled or missing JEs are inactive.
+	Checks ``journal_entry`` first, then ``Journal Entry.custom_pm_clearance``.
+	"""
+	if isinstance(doc, str):
+		name = doc
+		je_field = (frappe.db.get_value("PM Clearance", name, "journal_entry") or "").strip()
+	else:
+		name = (getattr(doc, "name", None) or "").strip()
+		je_field = (getattr(doc, "journal_entry", None) or "").strip()
+
+	if je_field:
+		ds = journal_entry_docstatus(je_field)
+		if ds in (0, 1):
+			return je_field
+
+	if not name:
+		return None
+	meta = frappe.get_meta("Journal Entry")
+	if not meta.has_field("custom_pm_clearance"):
+		return None
+	for je_name in frappe.get_all(
+		"Journal Entry",
+		filters={"custom_pm_clearance": name, "docstatus": ("in", (0, 1))},
+		pluck="name",
+		limit=1,
+	):
+		return je_name
+	return None
+
+
 def is_accounting_locked(doc: Document | str) -> bool:
 	"""Submitted settlement JE exists — workflow reject/rollback and clearance cancel are blocked."""
-	if isinstance(doc, str):
-		doc = frappe.get_doc("PM Clearance", doc)
-	je = (getattr(doc, "journal_entry", None) or "").strip()
+	je = find_active_settlement_je(doc)
 	return journal_entry_docstatus(je) == 1
 
 
-def has_active_settlement_je(doc: Document) -> bool:
-	"""Any linked JE that is not cancelled (draft or submitted)."""
+def has_active_settlement_je(doc: Document | str) -> bool:
+	"""True when a draft or submitted settlement JE is linked to this clearance."""
+	return bool(find_active_settlement_je(doc))
+
+
+def heal_inactive_settlement_reference(doc: Document, *, persist: bool = True) -> bool:
+	"""Clear stale ``journal_entry`` when the linked JE is cancelled/missing.
+
+	Does **not** cancel the PM Clearance. Restores business status from approval workflow
+	when there is no active settlement JE (CASE B: JE cancelled/deleted only).
+	"""
+	if not doc or cint(getattr(doc, "docstatus", 0)) == 2:
+		return False
 	je = (getattr(doc, "journal_entry", None) or "").strip()
+	if not je:
+		# Still sync if status is stale Pending JE / Settled with no link.
+		st = (getattr(doc, "status", None) or "").strip()
+		if st in (LIFECYCLE_PENDING_JE, LIFECYCLE_SETTLED) and not find_active_settlement_je(doc):
+			sync_clearance_lifecycle(doc, persist=persist)
+			return True
+		return False
+
 	ds = journal_entry_docstatus(je)
-	return ds is not None and ds in (0, 1)
+	if ds in (0, 1):
+		return False
+
+	# Cancelled or missing JE — unlink; never cancel the clearance.
+	if getattr(doc, "name", None):
+		frappe.db.set_value(
+			"PM Clearance",
+			doc.name,
+			{"journal_entry": None},
+			update_modified=False,
+		)
+		for row_name in frappe.get_all(
+			"PM Clearance Detail",
+			filters={
+				"parent": doc.name,
+				"generated_doctype": "Journal Entry",
+				"generated_document": je,
+			},
+			pluck="name",
+		):
+			frappe.db.set_value(
+				"PM Clearance Detail",
+				row_name,
+				{"generated_doctype": None, "generated_document": None},
+				update_modified=False,
+			)
+	doc.journal_entry = None
+	sync_clearance_lifecycle(doc, persist=persist)
+	return True
+
 
 
 def ensure_workflow_state_record(lifecycle: str) -> str | None:
@@ -161,29 +240,33 @@ def get_pm_clearance_action_flags(pm_clearance: str | Document) -> dict:
 	if not frappe.has_permission("PM Clearance", "read", doc=doc):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
 
+	# CASE B: cancelled/missing JE must not leave the form stuck without Settle.
+	heal_inactive_settlement_reference(doc, persist=True)
+	if getattr(doc, "name", None):
+		doc.reload()
+
 	lifecycle = compute_lifecycle_status(doc)
 	locked = is_accounting_locked(doc)
-	je = (doc.journal_entry or "").strip()
-	je_ds = journal_entry_docstatus(je)
+	active_je = find_active_settlement_je(doc)
+	je = active_je or ""
+	je_ds = journal_entry_docstatus(je) if je else None
 
 	terminal = lifecycle in TERMINAL_LIFECYCLE or cint(doc.docstatus) == 2
 	approved = lifecycle == LIFECYCLE_APPROVED or clearance_is_approved_for_actions(doc, lifecycle)
 	submitted_doc = cint(doc.docstatus) == 1
+	# Workflow-approved + submitted + no active JE ⇒ may recreate settlement (even if status
+	# briefly lagged as Pending JE before heal).
+	ws_approved = workflow_state_title(getattr(doc, "workflow_state", None)) == "Approved"
+	settle_approved = approved or (submitted_doc and ws_approved and not active_je and not terminal)
 
 	can_preview = bool(doc.name) and cint(doc.docstatus) in (0, 1) and not terminal
-	can_settle = (
-		submitted_doc
-		and approved
-		and not je
-		and not terminal
-		and lifecycle not in (LIFECYCLE_SETTLED, LIFECYCLE_PENDING_JE)
-	)
+	can_settle = submitted_doc and settle_approved and not active_je and not terminal
 	can_open_je = bool(je and frappe.db.exists("Journal Entry", je))
 	# v4.7.2: Return/Reject available while Pending* at docstatus 0
 	can_reject = (
 		cint(doc.docstatus) in (0, 1)
 		and not locked
-		and not has_active_settlement_je(doc)
+		and not active_je
 		and lifecycle
 		not in (LIFECYCLE_SETTLED, LIFECYCLE_PENDING_JE, LIFECYCLE_REJECTED, LIFECYCLE_CANCELLED)
 	)
@@ -221,7 +304,7 @@ def get_pm_clearance_action_flags(pm_clearance: str | Document) -> dict:
 		"can_open_je": can_open_je,
 		"accounting_locked": locked,
 		"lifecycle_state": lifecycle,
-		"journal_entry": je,
+		"journal_entry": je or (doc.journal_entry or ""),
 		"journal_entry_docstatus": je_ds,
 		"workflow_state": doc.workflow_state,
 		"workflow_state_title": workflow_state_title(getattr(doc, "workflow_state", None)),

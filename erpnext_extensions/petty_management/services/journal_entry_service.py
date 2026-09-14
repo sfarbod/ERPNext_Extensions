@@ -3,7 +3,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, flt, getdate, today
+from frappe.utils import flt, getdate, today
 
 from erpnext_extensions.petty_management.services.accounting_party import (
 	journal_entry_party_for_petty_cash_credit,
@@ -153,22 +153,24 @@ def settle_petty_cash(pm_clearance: str) -> dict[str, str]:
 	if (getattr(doc, "status", None) or "").strip() in ("Rejected", "Cancelled"):
 		frappe.throw(_("A rejected or cancelled clearance cannot be settled."), title=_("Not allowed"))
 
-	existing_je = frappe.db.get_value("PM Clearance", pm_clearance, "journal_entry")
-	if existing_je:
-		je_ds = None
-		if frappe.db.exists("Journal Entry", existing_je):
-			je_ds = cint(frappe.db.get_value("Journal Entry", existing_je, "docstatus"))
-		# Active (draft or submitted) JE: idempotent return. Cancelled/missing: clear stale link.
-		if je_ds in (0, 1):
-			st = frappe.db.get_value("PM Clearance", pm_clearance, "status") or ""
-			return {"journal_entry": existing_je, "status": st}
-		frappe.db.set_value(
-			"PM Clearance",
-			pm_clearance,
-			{"journal_entry": None},
-			update_modified=False,
-		)
-		doc.journal_entry = None
+	from erpnext_extensions.petty_management.services.clearance_action_policy import (
+		find_active_settlement_je,
+		heal_inactive_settlement_reference,
+		sync_clearance_lifecycle,
+	)
+
+	# CASE B heal: cancelled/missing JE name must not block recreation.
+	heal_inactive_settlement_reference(doc, persist=True)
+	doc.reload()
+
+	active_je = find_active_settlement_je(doc)
+	if active_je:
+		# Relink field if discovery was via custom_pm_clearance only.
+		if (doc.journal_entry or "").strip() != active_je:
+			doc.db_set("journal_entry", active_je, update_modified=False)
+			doc.journal_entry = active_je
+		st = sync_clearance_lifecycle(doc, persist=True)
+		return {"journal_entry": active_je, "status": st}
 
 	if not clearance_is_approved(doc):
 		frappe.throw(_("Settle is only allowed when PM Clearance is Approved."), title=_("Approval required"))
@@ -187,9 +189,6 @@ def settle_petty_cash(pm_clearance: str) -> dict[str, str]:
 		je = create_clearance_journal_entry(doc)
 		doc.db_set("journal_entry", je.name, update_modified=False)
 		je.reload()
-		from erpnext_extensions.petty_management.services.clearance_action_policy import (
-			sync_clearance_lifecycle,
-		)
 
 		doc.reload()
 		next_status = sync_clearance_lifecycle(doc, persist=True)

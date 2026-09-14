@@ -2406,8 +2406,8 @@ class TestPMClearanceLifecyclePolicy(unittest.TestCase):
 		# Allocations from cancelled predecessor must not consume availability.
 		self.assertGreaterEqual(flt(get_pm_request_available_amount(req_name, amended.name)), 2_500.0 - 1e-3)
 
-	def test_je_cancel_on_submitted_clearance_allows_settle_again(self):
-		"""Submitted clearance with cancelled JE must allow JE recreation (no duplicate while active)."""
+	def test_je_cancel_does_not_cascade_cancel_clearance(self):
+		"""CASE B: cancelling settlement JE must keep clearance docstatus=1 / Approved."""
 		mod = _pm()
 		approved = _workflow_state_for("PM Clearance", "Approved")
 		if not approved:
@@ -2416,15 +2416,15 @@ class TestPMClearanceLifecyclePolicy(unittest.TestCase):
 		emp = _make_employee()
 		self._track("Employee", emp)
 		_make_holder(emp)
-		req_name, _pe = _fund_pm_request(emp, 7_000.0)
+		req_name, _pe = _fund_pm_request(emp, 9_000.0)
 		self._track("PM Request", req_name)
-		pi = _make_pi_outstanding(1_500)
+		pi = _make_pi_outstanding(2_000)
 		pi.insert()
 		pi.submit()
 		self._track("Purchase Invoice", pi.name)
 
-		cl = _lifecycle_base_clearance(emp, pi, 1_500)
-		cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 1_500})
+		cl = _lifecycle_base_clearance(emp, pi, 2_000)
+		cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 2_000})
 		cl.insert()
 		cl.submit()
 		self._track("PM Clearance", cl.name)
@@ -2432,28 +2432,120 @@ class TestPMClearanceLifecyclePolicy(unittest.TestCase):
 		frappe.db.set_value("PM Clearance", cl.name, "workflow_state", approved, update_modified=False)
 
 		first = mod.settle_petty_cash(cl.name)
-		je1 = first["journal_entry"]
-		self._track("Journal Entry", je1)
-		je = frappe.get_doc("Journal Entry", je1)
+		je_name = first["journal_entry"]
+		self._track("Journal Entry", je_name)
+		je = frappe.get_doc("Journal Entry", je_name)
 		if je.docstatus == 0:
 			je.submit()
+
+		ws_before = frappe.db.get_value("PM Clearance", cl.name, "workflow_state")
 		je.cancel()
 
 		cl.reload()
+		self.assertEqual(cint(cl.docstatus), 1)
+		self.assertNotEqual((cl.status or "").strip(), "Cancelled")
+		self.assertEqual(
+			frappe.db.get_value("Workflow State", cl.workflow_state, "workflow_state_name")
+			or cl.workflow_state,
+			frappe.db.get_value("Workflow State", ws_before, "workflow_state_name") or ws_before,
+		)
 		self.assertFalse((cl.journal_entry or "").strip())
-		self.assertNotEqual(cl.status, "Settled")
+
 		from erpnext_extensions.petty_management.services.clearance_action_policy import (
 			get_pm_clearance_action_flags,
 		)
 
 		flags = get_pm_clearance_action_flags(cl.name)
+		self.assertEqual(flags["docstatus"], 1)
+		self.assertNotEqual(flags["lifecycle_state"], "Cancelled")
 		self.assertTrue(flags.get("can_settle"))
 
 		second = mod.settle_petty_cash(cl.name)
 		je2 = second["journal_entry"]
 		self._track("Journal Entry", je2)
-		self.assertNotEqual(je1, je2)
+		self.assertNotEqual(je_name, je2)
 		self.assertTrue(frappe.db.exists("Journal Entry", je2))
+
+		# Explicit CASE A still works.
+		je2_doc = frappe.get_doc("Journal Entry", je2)
+		if je2_doc.docstatus == 1:
+			je2_doc.cancel()
+		elif je2_doc.docstatus == 0:
+			frappe.delete_doc("Journal Entry", je2, force=1, ignore_permissions=True)
+		cl = frappe.get_doc("PM Clearance", cl.name)
+		cl.cancel()
+		self.assertEqual(cint(frappe.db.get_value("PM Clearance", cl.name, "docstatus")), 2)
+		self.assertEqual(
+			(frappe.db.get_value("PM Clearance", cl.name, "status") or "").strip(), "Cancelled"
+		)
+
+	def test_draft_je_delete_heals_clearance_and_allows_settle(self):
+		"""Deleting a draft settlement JE (no cancel) must not strand the clearance."""
+		mod = _pm()
+		approved = _workflow_state_for("PM Clearance", "Approved")
+		if not approved:
+			self.skipTest("Active PM Clearance workflow with Approved state not found.")
+
+		from erpnext_extensions.petty_management.utils import get_pm_settings
+
+		settings = get_pm_settings()
+		prev_auto = None
+		if settings and hasattr(settings, "auto_submit_journal_entry"):
+			prev_auto = settings.auto_submit_journal_entry
+			settings.db_set("auto_submit_journal_entry", 0, update_modified=False)
+
+		try:
+			emp = _make_employee()
+			self._track("Employee", emp)
+			_make_holder(emp)
+			req_name, _pe = _fund_pm_request(emp, 6_000.0)
+			self._track("PM Request", req_name)
+			pi = _make_pi_outstanding(1_200)
+			pi.insert()
+			pi.submit()
+			self._track("Purchase Invoice", pi.name)
+
+			cl = _lifecycle_base_clearance(emp, pi, 1_200)
+			cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 1_200})
+			cl.insert()
+			cl.submit()
+			self._track("PM Clearance", cl.name)
+			_approve_pm_clearance_for_reservation(cl.name)
+			frappe.db.set_value("PM Clearance", cl.name, "workflow_state", approved, update_modified=False)
+
+			out = mod.settle_petty_cash(cl.name)
+			je_name = out["journal_entry"]
+			self.assertEqual(cint(frappe.db.get_value("Journal Entry", je_name, "docstatus")), 0)
+
+			frappe.delete_doc("Journal Entry", je_name, force=1, ignore_permissions=True)
+			self.assertFalse(
+				frappe.db.exists("Journal Entry", je_name),
+				msg="draft settlement JE must be fully deleted",
+			)
+
+			cl.reload()
+			self.assertEqual(cint(cl.docstatus), 1)
+			self.assertNotEqual((cl.status or "").strip(), "Cancelled")
+			self.assertFalse((cl.journal_entry or "").strip())
+
+			from erpnext_extensions.petty_management.services.clearance_action_policy import (
+				get_pm_clearance_action_flags,
+			)
+
+			flags = get_pm_clearance_action_flags(cl.name)
+			self.assertTrue(flags.get("can_settle"))
+
+			again = mod.settle_petty_cash(cl.name)
+			self._track("Journal Entry", again["journal_entry"])
+			self.assertTrue(frappe.db.exists("Journal Entry", again["journal_entry"]))
+			self.assertEqual(cint(frappe.db.get_value("PM Clearance", cl.name, "docstatus")), 1)
+			self.assertNotEqual(
+				(frappe.db.get_value("PM Clearance", cl.name, "status") or "").strip(),
+				"Cancelled",
+			)
+		finally:
+			if prev_auto is not None:
+				settings.db_set("auto_submit_journal_entry", prev_auto, update_modified=False)
 
 	def test_preview_remains_balanced(self):
 		mod = _pm()

@@ -430,19 +430,40 @@ def sync_clearance_status_from_workflow(doc: Document) -> None:
 
 
 def clearance_is_approved(doc: Document) -> bool:
-	"""True when clearance is finance-approved for Settle (business ``status == Approved``)."""
+	"""True when clearance is finance-approved for Settle (business ``status == Approved``).
+
+	CASE B: after settlement JE cancel/delete, status may briefly remain
+	``Pending Journal Entry Submission`` while workflow is still Approved and no active JE
+	exists — that must still allow Settle recreation.
+	"""
+	from erpnext_extensions.petty_management.services.clearance_action_policy import (
+		find_active_settlement_je,
+		heal_inactive_settlement_reference,
+		workflow_state_title,
+	)
+
+	if cint(getattr(doc, "docstatus", 0)) == 2:
+		return False
+
+	heal_inactive_settlement_reference(doc, persist=True)
+
 	st = (getattr(doc, "status", None) or "").strip()
-	if st in ("Rejected", "Cancelled", "Settled", "Pending Journal Entry Submission"):
+	if st in ("Rejected", "Cancelled"):
 		return False
 	if st == "Approved":
 		return True
-	# Legacy: status still Pending Finance Review but workflow already Approved and no JE
-	ws = (getattr(doc, "workflow_state", None) or "").strip()
-	ws_title = (
-		frappe.db.get_value("Workflow State", ws, "workflow_state_name") if ws else ""
-	) or ws
-	je = (getattr(doc, "journal_entry", None) or "").strip()
-	if ws_title == "Approved" and not je and st in ("", "Pending Finance Review", "Pending Approval"):
+
+	ws_title = workflow_state_title(getattr(doc, "workflow_state", None))
+	active_je = find_active_settlement_je(doc)
+
+	# Ready to (re)create settlement JE.
+	if ws_title == "Approved" and not active_je and st in (
+		"",
+		"Pending Finance Review",
+		"Pending Approval",
+		"Pending Journal Entry Submission",
+		"Settled",
+	):
 		return True
 	return False
 

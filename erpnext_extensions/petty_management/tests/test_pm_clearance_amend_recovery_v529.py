@@ -61,7 +61,7 @@ class TestSettleStaleJournalEntryV529(unittest.TestCase):
 		fake_doc = MagicMock()
 		fake_doc.docstatus = 1
 		fake_doc.status = "Approved"
-		fake_doc.journal_entry = "JE-CANCELLED"
+		fake_doc.journal_entry = None
 		fake_doc.details = []
 		fake_doc.name = "CLR-1"
 		fake_doc.holder = None
@@ -75,21 +75,17 @@ class TestSettleStaleJournalEntryV529(unittest.TestCase):
 		fake_je.name = "JE-NEW"
 		fake_je.docstatus = 0
 
-		def _get_value(dt, nm, field=None, **kw):
-			if dt == "PM Clearance" and field == "journal_entry":
-				return "JE-CANCELLED"
-			if dt == "Journal Entry" and field == "docstatus":
-				return 2
-			if dt == "PM Clearance" and field == "status":
-				return "Approved"
-			return None
-
 		with (
 			patch("frappe.get_doc", return_value=fake_doc),
 			patch("frappe.has_permission", return_value=True),
-			patch("frappe.db.get_value", side_effect=_get_value),
-			patch("frappe.db.exists", return_value=True),
-			patch("frappe.db.set_value"),
+			patch(
+				"erpnext_extensions.petty_management.services.clearance_action_policy.heal_inactive_settlement_reference",
+				return_value=True,
+			),
+			patch(
+				"erpnext_extensions.petty_management.services.clearance_action_policy.find_active_settlement_je",
+				return_value=None,
+			),
 			patch(
 				"erpnext_extensions.petty_management.services.journal_entry_service.clearance_is_approved",
 				return_value=True,
@@ -119,22 +115,26 @@ class TestSettleStaleJournalEntryV529(unittest.TestCase):
 		fake_doc.docstatus = 1
 		fake_doc.status = "Pending Journal Entry Submission"
 		fake_doc.journal_entry = "JE-DRAFT"
+		fake_doc.name = "CLR-1"
 		fake_doc.check_permission = MagicMock()
-
-		def _get_value(dt, nm, field=None, **kw):
-			if dt == "PM Clearance" and field == "journal_entry":
-				return "JE-DRAFT"
-			if dt == "Journal Entry" and field == "docstatus":
-				return 0
-			if dt == "PM Clearance" and field == "status":
-				return "Pending Journal Entry Submission"
-			return None
+		fake_doc.db_set = MagicMock()
+		fake_doc.reload = MagicMock()
 
 		with (
 			patch("frappe.get_doc", return_value=fake_doc),
 			patch("frappe.has_permission", return_value=True),
-			patch("frappe.db.get_value", side_effect=_get_value),
-			patch("frappe.db.exists", return_value=True),
+			patch(
+				"erpnext_extensions.petty_management.services.clearance_action_policy.heal_inactive_settlement_reference",
+				return_value=False,
+			),
+			patch(
+				"erpnext_extensions.petty_management.services.clearance_action_policy.find_active_settlement_je",
+				return_value="JE-DRAFT",
+			),
+			patch(
+				"erpnext_extensions.petty_management.services.clearance_action_policy.sync_clearance_lifecycle",
+				return_value="Pending Journal Entry Submission",
+			),
 			patch(
 				"erpnext_extensions.petty_management.services.journal_entry_service.create_clearance_journal_entry"
 			) as create_je,
