@@ -822,14 +822,8 @@ class TestPermissionsAndExport(unittest.TestCase):
 	def test_impact_chain_uses_voucher_when_item_missing(self):
 		from erpnext_extensions.iran_accounting.historical_stock.impact import _chain_for
 
-		with mock.patch(
-			"erpnext_extensions.iran_accounting.historical_stock.graph.repair_graph",
-			return_value={"nodes": [{"voucher": "MAT-STE-2026-27531"}]},
-		) as graph:
-			chain = _chain_for([{"voucher": "MAT-STE-2026-27531", "eligible": True, "confidence": "EXACT"}])
-		graph.assert_called_once()
-		self.assertEqual(graph.call_args.kwargs["voucher"], "MAT-STE-2026-27531")
-		self.assertEqual(chain, ["MAT-STE-2026-27531"])
+		chain = _chain_for([{"voucher": "MAT-STE-2026-27531", "eligible": True, "confidence": "EXACT"}])
+		self.assertIn("MAT-STE-2026-27531", chain)
 
 
 class TestRepairPlanner(unittest.TestCase):
@@ -863,7 +857,7 @@ class TestRepairPlanner(unittest.TestCase):
 	def test_poison_scan_impact_apply_never_diverge(self):
 		from erpnext_extensions.iran_accounting.historical_stock.impact import plan_repair_impact
 		from erpnext_extensions.iran_accounting.historical_stock.planner import (
-			PLAN_BLOCKED,
+			PLAN_WAITING_RATE_REPAIR,
 			assert_ready,
 			attach_plan,
 			evaluate_row,
@@ -878,12 +872,26 @@ class TestRepairPlanner(unittest.TestCase):
 			"incoming_rate": -9997892,
 			"inversion_artifact": False,
 		}
+
+		def _load(voucher, cache=None, hint=None):
+			return {
+				"voucher": voucher,
+				"item": row["item"],
+				"warehouse": row["warehouse"],
+				"status": "MANUAL_REVIEW",
+				"confidence": "LIKELY",
+				"topic": "WRONG_RATE",
+			}
+
 		with mock.patch(
 			"erpnext_extensions.iran_accounting.stock_posting_order.replay.window_poison_hit",
 			return_value=hit,
 		), mock.patch(
 			"erpnext_extensions.iran_accounting.stock_posting_order.repair._voucher_item_warehouses",
 			return_value={(row["item"], row["warehouse"])},
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=_load,
 		):
 			decision = evaluate_row(row)
 			stamped = attach_plan(row)
@@ -892,17 +900,20 @@ class TestRepairPlanner(unittest.TestCase):
 
 		self.assertFalse(decision["eligible"])
 		self.assertTrue(decision["blocked"])
-		self.assertEqual(decision["planner_status"], PLAN_BLOCKED)
+		self.assertEqual(decision["planner_status"], PLAN_WAITING_RATE_REPAIR)
 		self.assertEqual(decision["sql_updates"], 0)
 		self.assertIn("negative_incoming_rate", decision["reason"])
 		self.assertIn("MAT-STE-2026-25469", decision["reason"])
 		self.assertIn("unrelated voucher", decision["reason"])
 		self.assertFalse(stamped["eligible"])
-		self.assertEqual(stamped["planner_status"], PLAN_BLOCKED)
+		self.assertEqual(stamped["planner_status"], PLAN_WAITING_RATE_REPAIR)
+		self.assertEqual(stamped["immediate_blocker"], "MAT-STE-2026-25469")
+		self.assertNotEqual(stamped["required_action"], "BLOCKED")
 		self.assertEqual(stamped["sql_updates"], 0)
 		self.assertFalse(impact["executable"])
 		self.assertEqual(impact["estimated_sql_updates"], 0)
 		self.assertIn("MAT-STE-2026-25469", impact["skip_reason"] or "")
+		self.assertEqual(impact["immediate_blocker"], "MAT-STE-2026-25469")
 		self.assertEqual(via_impact_api["estimated_sql_updates"], 0)
 		self.assertFalse(via_impact_api["executable"])
 
@@ -1000,6 +1011,386 @@ class TestRepairPlanner(unittest.TestCase):
 		self.assertTrue(decision["eligible"])
 		self.assertEqual(decision["sql_updates"], 21)
 		self.assertEqual(decision["replay_count"], 1)
+
+
+class TestDependencyResolution(unittest.TestCase):
+	"""One walker. Scan / Impact / Planner / Repair must share the tree."""
+
+	def _pair(self):
+		return {
+			"outbound_document": "MAT-STE-2026-26156",
+			"inbound_document": "MAT-STE-2026-26135-1",
+			"item": "30300014",
+			"warehouse": "Q",
+			"batch": "5861-30300014-SO262014T321",
+			"work_order": "MFG-WO-2026-00578",
+			"current_inbound_time": "2026-04-15 18:03:46",
+			"current_outbound_time": "2026-04-15 18:01:10",
+		}
+
+	def _decision(self, status, **kw):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import empty_decision
+
+		d = empty_decision(planner_status=status)
+		d.update(kw)
+		return d
+
+	def _eval(self, mapping):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import voucher_of
+
+		def fake(row, cache=None):
+			return dict(mapping[voucher_of(row)])
+
+		return fake
+
+	def _load(self, mapping):
+		def fake(voucher, cache=None, hint=None):
+			return dict(mapping[voucher])
+
+		return fake
+
+	def test_single_dependency(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, PLAN_WAITING_RATE_REPAIR
+
+		row = self._pair()
+		evals = {
+			"MAT-STE-2026-26156": self._decision(
+				PLAN_WAITING_RATE_REPAIR,
+				required_prerequisite="MAT-STE-2026-25469",
+				dependency="negative_incoming_rate",
+				reason="negative_incoming_rate on MAT-STE-2026-25469",
+			),
+			"MAT-STE-2026-25469": self._decision(PLAN_READY, eligible=True, blocked=False, sql_updates=4, reason="READY"),
+		}
+		loads = {"MAT-STE-2026-25469": {"voucher": "MAT-STE-2026-25469"}}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load(loads),
+		):
+			res = resolve_dependencies(row)
+		self.assertEqual(res["immediate_blocker"], "MAT-STE-2026-25469")
+		self.assertEqual(res["root_blocker"], "MAT-STE-2026-25469")
+		self.assertEqual(res["root_status"], PLAN_READY)
+		self.assertEqual(res["repair_order"], ["MAT-STE-2026-25469", "MAT-STE-2026-26156"])
+		self.assertEqual(res["dependency_depth"], 1)
+		self.assertFalse(res["no_repair_path"])
+		self.assertEqual(res["required_action"], "Repair MAT-STE-2026-25469 first")
+
+	def test_multi_level_dependency(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
+		from erpnext_extensions.iran_accounting.historical_stock.planner import (
+			PLAN_READY,
+			PLAN_WAITING_PATIENT_ZERO,
+			PLAN_WAITING_RATE_REPAIR,
+		)
+
+		row = self._pair()
+		evals = {
+			"MAT-STE-2026-26156": self._decision(
+				PLAN_WAITING_RATE_REPAIR,
+				required_prerequisite="MAT-STE-2026-25469",
+				dependency="negative_incoming_rate",
+				reason="negative_incoming_rate on MAT-STE-2026-25469",
+			),
+			"MAT-STE-2026-25469": self._decision(
+				PLAN_WAITING_PATIENT_ZERO,
+				required_prerequisite="MAT-STE-2026-25791",
+				patient_zero="MAT-STE-2026-25791",
+				dependency="qty_after_zero_nonzero_value",
+			),
+			"MAT-STE-2026-25791": self._decision(PLAN_READY, eligible=True, blocked=False, sql_updates=3),
+		}
+		loads = {
+			"MAT-STE-2026-25469": {"voucher": "MAT-STE-2026-25469"},
+			"MAT-STE-2026-25791": {"voucher": "MAT-STE-2026-25791"},
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load(loads),
+		):
+			res = resolve_dependencies(row)
+		self.assertEqual(res["repair_order"], ["MAT-STE-2026-25791", "MAT-STE-2026-25469", "MAT-STE-2026-26156"])
+		self.assertEqual(res["root_blocker"], "MAT-STE-2026-25791")
+		self.assertEqual(res["dependency_depth"], 2)
+		self.assertIn("waits for MAT-STE-2026-25469", res["tree_text"])
+		self.assertIn("waits for MAT-STE-2026-25791", res["tree_text"])
+
+	def test_patient_zero_detection(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_WAITING_PATIENT_ZERO, PLAN_READY
+
+		row = {"voucher": "MAT-STE-2026-25469", "item": "30300014", "warehouse": "Q"}
+		evals = {
+			"MAT-STE-2026-25469": self._decision(
+				PLAN_WAITING_PATIENT_ZERO,
+				required_prerequisite="MAT-STE-2026-25791",
+				patient_zero="MAT-STE-2026-25791",
+			),
+			"MAT-STE-2026-25791": self._decision(PLAN_READY, eligible=True, blocked=False, sql_updates=2),
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load({"MAT-STE-2026-25791": {"voucher": "MAT-STE-2026-25791"}}),
+		):
+			res = resolve_dependencies(row)
+		self.assertEqual(res["root_blocker"], "MAT-STE-2026-25791")
+		self.assertEqual(res["required_action"], "Repair MAT-STE-2026-25791 first")
+
+	def test_circular_dependency_detection(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import PLAN_NO_REPAIR_PATH, resolve_dependencies
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_WAITING_RATE_REPAIR
+
+		row = {"voucher": "A"}
+		evals = {
+			"A": self._decision(PLAN_WAITING_RATE_REPAIR, required_prerequisite="B", reason="waits B"),
+			"B": self._decision(PLAN_WAITING_RATE_REPAIR, required_prerequisite="A", reason="waits A"),
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load({"B": {"voucher": "B"}, "A": {"voucher": "A"}}),
+		):
+			res = resolve_dependencies(row)
+		self.assertTrue(res["circular"])
+		self.assertTrue(res["no_repair_path"])
+		self.assertIn("circular", res["required_action"].lower())
+		self.assertEqual(res["stop_reason"], "Circular dependency")
+
+	def test_dependency_tree_rendering(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import format_tree
+
+		tree = {
+			"voucher": "MAT-STE-2026-26156",
+			"status": "WAITING_RATE_REPAIR",
+			"children": [
+				{
+					"voucher": "MAT-STE-2026-25469",
+					"status": "READY",
+					"blocked_because": "negative_incoming_rate",
+					"children": [],
+				}
+			],
+		}
+		text = format_tree(tree, 2)
+		self.assertIn("MAT-STE-2026-26156", text)
+		self.assertIn("waits for MAT-STE-2026-25469", text)
+		self.assertIn("estimated chain:", text)
+		self.assertIn("2 vouchers", text)
+
+	def test_go_to_root_cause_fields(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, PLAN_WAITING_RATE_REPAIR, attach_plan
+
+		row = self._pair()
+		evals = {
+			"MAT-STE-2026-26156": self._decision(
+				PLAN_WAITING_RATE_REPAIR, required_prerequisite="MAT-STE-2026-25469", sql_updates=0
+			),
+			"MAT-STE-2026-25469": self._decision(PLAN_READY, eligible=True, blocked=False, sql_updates=4),
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load({"MAT-STE-2026-25469": {"voucher": "MAT-STE-2026-25469"}}),
+		):
+			stamped = attach_plan(row)
+		self.assertEqual(stamped["root_blocker"], "MAT-STE-2026-25469")
+		self.assertEqual(stamped["root_patient_zero"], "MAT-STE-2026-25469")
+		self.assertTrue(stamped["repair_order_list"])
+		self.assertEqual(stamped["repair_order_list"][0], "MAT-STE-2026-25469")
+
+	def test_repair_dependency_chain_root_only(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import apply_dependency_chain
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, PLAN_WAITING_RATE_REPAIR
+
+		row = self._pair()
+		evals = {
+			"MAT-STE-2026-26156": self._decision(
+				PLAN_WAITING_RATE_REPAIR, required_prerequisite="MAT-STE-2026-25469", sql_updates=0
+			),
+			"MAT-STE-2026-25469": self._decision(PLAN_READY, eligible=True, blocked=False, sql_updates=4, reason="READY"),
+		}
+		root_row = {"voucher": "MAT-STE-2026-25469", "planner_status": PLAN_READY, "sql_updates": 4, "eligible": True}
+
+		def fake_attach(r, cache=None):
+			return {**r, "planner_status": PLAN_READY, "sql_updates": 4, "eligible": True, "reason": "READY"}
+
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load({"MAT-STE-2026-25469": root_row}),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.attach_plan",
+			side_effect=fake_attach,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency._dispatch_root_repair",
+			return_value={"applied": [{"voucher": "MAT-STE-2026-25469"}], "sql_updates_executed": 4},
+		) as dispatch:
+			dry = apply_dependency_chain(row, dry_run=True)
+			wrote = apply_dependency_chain(row, dry_run=False)
+		self.assertTrue(dry["executable"])
+		self.assertEqual(dry["repairing"], ["MAT-STE-2026-25469"])
+		self.assertEqual(dispatch.call_count, 1)
+		self.assertEqual(wrote["repaired_root"], "MAT-STE-2026-25469")
+		self.assertIn("MAT-STE-2026-26156", wrote["skipped_descendants"])
+
+	def test_batch_scoped_repair_candidate_is_not_proven(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import (
+			PLAN_READY_BATCH_SCOPED,
+			analyze_batch_isolation,
+		)
+
+		row = self._pair()
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency._window_batches",
+			return_value=[row["batch"]],
+		):
+			out = analyze_batch_isolation(row)
+		self.assertFalse(out["can_isolate_batch"])
+		self.assertTrue(out["would_affect_unrelated_batches"])
+		self.assertTrue(out["would_corrupt_gl_or_ma"])
+		self.assertEqual(out["classification"], "WAREHOUSE_WIDE_POISON")
+		self.assertNotEqual(out["classification"], PLAN_READY_BATCH_SCOPED)
+
+	def test_warehouse_wide_poison(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import analyze_batch_isolation
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_WAITING_RATE_REPAIR, attach_plan
+
+		row = self._pair()
+		hit = {
+			"reason": "negative_incoming_rate",
+			"voucher": "MAT-STE-2026-25469",
+			"sle": "X",
+			"incoming_rate": -1,
+			"inversion_artifact": False,
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency._window_batches",
+			return_value=[row["batch"], "9312-other"],
+		):
+			iso = analyze_batch_isolation(row)
+		self.assertEqual(iso["classification"], "WAREHOUSE_WIDE_POISON")
+		self.assertIn("unrelated", iso["detail"].lower())
+
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.replay.window_poison_hit",
+			return_value=hit,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair._voucher_item_warehouses",
+			return_value={(row["item"], row["warehouse"])},
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			return_value={"voucher": "MAT-STE-2026-25469", "confidence": "MANUAL", "status": "MANUAL_REVIEW"},
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency._window_batches",
+			return_value=[row["batch"], "9312-other"],
+		):
+			stamped = attach_plan(
+				{
+					**row,
+					"confidence": "EXACT",
+					"eligible": True,
+					"status": "ELIGIBLE",
+					"optimizer_status": "CROSS_TIME_REPAIRABLE",
+					"proposed_outbound_time": "2026-04-15 18:03:47",
+					"min_qty_before": -10,
+					"min_qty_after": 0,
+					"moves": [{"document": "MAT-STE-2026-26156", "old": "a", "new": "b", "seconds": 1}],
+				}
+			)
+		self.assertEqual(stamped["planner_status"], PLAN_WAITING_RATE_REPAIR)
+		self.assertNotEqual(stamped["planner_status"], "READY_BATCH_SCOPED_REPAIR")
+		self.assertEqual(stamped["batch_isolation"]["classification"], "WAREHOUSE_WIDE_POISON")
+
+	def test_no_repair_path(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_AMBIGUOUS, PLAN_WAITING_RATE_REPAIR
+
+		row = {"voucher": "MAT-STE-2026-26156"}
+		evals = {
+			"MAT-STE-2026-26156": self._decision(
+				PLAN_WAITING_RATE_REPAIR, required_prerequisite="MAT-STE-2026-25469"
+			),
+			"MAT-STE-2026-25469": self._decision(PLAN_AMBIGUOUS, reason="AMBIGUOUS"),
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load({"MAT-STE-2026-25469": {"voucher": "MAT-STE-2026-25469"}}),
+		):
+			res = resolve_dependencies(row)
+		self.assertTrue(res["no_repair_path"])
+		self.assertEqual(res["stop_reason"], "Ambiguous")
+		self.assertIn("NO REPAIR PATH", res["required_action"])
+		self.assertNotEqual(res["required_action"], "BLOCKED")
+
+	def test_scan_impact_share_tree(self):
+		from erpnext_extensions.iran_accounting.historical_stock.impact import plan_repair_impact
+		from erpnext_extensions.iran_accounting.historical_stock.planner import (
+			PLAN_READY,
+			PLAN_WAITING_RATE_REPAIR,
+			attach_plan,
+			plan_selection,
+		)
+
+		row = self._pair()
+		evals = {
+			"MAT-STE-2026-26156": self._decision(
+				PLAN_WAITING_RATE_REPAIR, required_prerequisite="MAT-STE-2026-25469", sql_updates=0
+			),
+			"MAT-STE-2026-25469": self._decision(PLAN_READY, eligible=True, blocked=False, sql_updates=4),
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=self._eval(evals),
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			side_effect=self._load({"MAT-STE-2026-25469": {"voucher": "MAT-STE-2026-25469"}}),
+		):
+			scan = attach_plan(row)
+			impact = plan_selection([row])
+			via = plan_repair_impact([row])
+		self.assertEqual(scan["repair_order_list"], impact["repair_order"])
+		self.assertEqual(impact["repair_order"], via["repair_order"])
+		self.assertEqual(scan["tree_text"], impact["tree_text"])
+		self.assertEqual(impact["tree_text"], via["tree_text"])
+
+	def test_farvardin_regression_leftover_is_inversion_artifact(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
+			INVERSION_ARTIFACT_POISONS,
+			sle_poison_reason,
+		)
+
+		reason = sle_poison_reason(
+			{
+				"actual_qty": -10,
+				"qty_after_transaction": 0,
+				"stock_value": 5000,
+				"stock_value_difference": -5000,
+				"incoming_rate": 0,
+				"valuation_rate": 0,
+			}
+		)
+		self.assertEqual(reason, "qty_after_zero_nonzero_value")
+		self.assertIn(reason, INVERSION_ARTIFACT_POISONS)
+		self.assertNotIn("negative_incoming_rate", INVERSION_ARTIFACT_POISONS)
 
 
 if __name__ == "__main__":

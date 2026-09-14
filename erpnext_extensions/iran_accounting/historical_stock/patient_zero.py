@@ -41,6 +41,37 @@ def transition_is_invalid(prev, row) -> str | None:
 	return None
 
 
+def find_patient_zero_identity(item, warehouse, batch: str | None = None) -> dict | None:
+	"""First invalid SLE on an item+warehouse identity. Batch is optional."""
+	if not item or not warehouse:
+		return None
+	import frappe
+
+	rows = frappe.db.sql(
+		"""
+		SELECT sle.name, sle.voucher_no, sle.item_code, sle.warehouse, sle.actual_qty,
+		       sle.incoming_rate, sle.outgoing_rate, sle.stock_value_difference,
+		       sle.stock_value, sle.valuation_rate, sle.qty_after_transaction,
+		       sle.posting_datetime, sle.creation, sle.batch_no
+		FROM `tabStock Ledger Entry` sle
+		WHERE sle.item_code=%s AND sle.warehouse=%s AND sle.is_cancelled=0
+		  AND sle.voucher_type='Stock Entry'
+		ORDER BY sle.posting_datetime, sle.creation
+		LIMIT 8000
+		""",
+		(item, warehouse),
+		as_dict=True,
+	)
+	# Warehouse patient-zero first. A later poisoned lot often depends on an
+	# earlier leftover on a different batch of the same identity.
+	found = find_patient_zero(rows, batch=None)
+	if batch and found:
+		same = find_patient_zero(rows, batch=batch)
+		if same:
+			return same
+	return found
+
+
 def find_patient_zero(rows: list, *, batch: str | None = None) -> dict | None:
 	"""``rows`` must already be ordered posting_datetime ASC, creation ASC."""
 	prev = None

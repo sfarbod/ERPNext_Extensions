@@ -42,6 +42,8 @@ PLAN_WAITING_GL_REPAIR = "WAITING_GL_REPAIR"
 PLAN_WAITING_RIV = "WAITING_RIV"
 PLAN_AMBIGUOUS = "AMBIGUOUS"
 PLAN_MANUAL = "MANUAL"
+PLAN_NO_REPAIR_PATH = "NO_REPAIR_PATH"
+PLAN_READY_BATCH_SCOPED = "READY_BATCH_SCOPED_REPAIR"
 
 PLAN_STATUSES = (
 	PLAN_READY,
@@ -53,6 +55,8 @@ PLAN_STATUSES = (
 	PLAN_WAITING_RIV,
 	PLAN_AMBIGUOUS,
 	PLAN_MANUAL,
+	PLAN_NO_REPAIR_PATH,
+	PLAN_READY_BATCH_SCOPED,
 )
 
 DATABASE_BACKUP_REQUIRED = "DATABASE BACKUP REQUIRED"
@@ -117,7 +121,9 @@ def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
 	out["required_prerequisite"] = decision["required_prerequisite"]
 	if decision["patient_zero"] and not out.get("patient_zero"):
 		out["patient_zero"] = {"voucher_no": decision["patient_zero"]}
-	return out
+	from erpnext_extensions.iran_accounting.historical_stock.dependency import stamp_dependency
+
+	return stamp_dependency(out, cache=cache, decision=decision)
 
 
 def attach_plan_many(rows: list | None, *, cache: dict | None = None) -> list:
@@ -210,6 +216,21 @@ def plan_selection(rows: list | None) -> dict:
 		"patient_zero": decisions[0]["patient_zero"] if len(decisions) == 1 else None,
 		"required_prerequisite": decisions[0]["required_prerequisite"] if len(decisions) == 1 else None,
 		"dependency": decisions[0]["dependency"] if len(decisions) == 1 else None,
+		"immediate_blocker": (planned_rows[0].get("immediate_blocker") if planned_rows else None),
+		"root_blocker": (planned_rows[0].get("root_blocker") if planned_rows else None),
+		"root_status": (planned_rows[0].get("root_status") if planned_rows else None),
+		"dependency_depth": (planned_rows[0].get("dependency_depth") if planned_rows else 0),
+		"repair_order": (planned_rows[0].get("repair_order_list") if planned_rows else []),
+		"repair_sequence": (planned_rows[0].get("repair_order") if planned_rows else ""),
+		"required_action": (planned_rows[0].get("required_action") if planned_rows else None),
+		"dependency_tree": (planned_rows[0].get("dependency_tree") if planned_rows else None),
+		"tree_text": (planned_rows[0].get("tree_text") if planned_rows else ""),
+		"chain_preview": (planned_rows[0].get("chain_preview") if planned_rows else []),
+		"no_repair_path": (planned_rows[0].get("no_repair_path") if planned_rows else False),
+		"stop_reason": (planned_rows[0].get("stop_reason") if planned_rows else None),
+		"estimated_repair_count": (planned_rows[0].get("estimated_repair_count") if planned_rows else 0),
+		"blocked_because": (planned_rows[0].get("blocked_because") if planned_rows else None),
+		"batch_isolation": (planned_rows[0].get("batch_isolation") if planned_rows else None),
 	}
 	if all_ready and ready:
 		plan["sle"] = sum(cint(d.get("sle_count")) for d in ready)
@@ -222,6 +243,9 @@ def plan_selection(rows: list | None) -> dict:
 	else:
 		plan["estimated_replay_seconds"] = 0
 		plan["stock_entries"] = 0
+		if planned_rows and planned_rows[0].get("repair_order_list"):
+			plan["replay_chain"] = list(planned_rows[0]["repair_order_list"]) + ["Replay downstream", "Integrity"]
+			plan["estimated_replay_seconds"] = planned_rows[0].get("estimated_runtime_seconds") or 0
 	from erpnext_extensions.iran_accounting.historical_stock.impact import format_impact
 
 	plan["preview_text"] = format_impact(plan)
@@ -350,12 +374,13 @@ def _evaluate_posting(row, decision, cache) -> dict:
 				f"{hit['reason']} on {hit.get('voucher') or ''} {hit.get('sle') or ''} "
 				f"incoming_rate={hit.get('incoming_rate')} ({scope})"
 			).strip()
+			prereq = hit.get("voucher") if not on_pair else None
 			return _not_ready(
 				decision,
-				PLAN_BLOCKED,
+				PLAN_WAITING_RATE_REPAIR if prereq else PLAN_WAITING_RATE_REPAIR,
 				f"{STATUS_VALUATION_POISON}: {item_code} {warehouse} ({detail})",
 				dependency=hit["reason"],
-				prerequisite=hit.get("voucher") if not on_pair else None,
+				prerequisite=prereq or hit.get("voucher"),
 			)
 	rev = _posting_revalidate(row, moves, from_dt, cache)
 	if rev:
@@ -384,17 +409,20 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	confidence = row.get("confidence")
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
 		return _not_ready(decision, PLAN_AMBIGUOUS, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
-	if confidence == CONFIDENCE_MANUAL or status in (STATUS_MANUAL_REVIEW, Z0_LEGITIMATE_ZERO):
+	if status in (STATUS_MANUAL_REVIEW, Z0_LEGITIMATE_ZERO) and confidence == CONFIDENCE_MANUAL:
 		return _not_ready(decision, PLAN_MANUAL, f"MANUAL — {status or 'operator review required'}")
-	if confidence == CONFIDENCE_LIKELY:
-		return _not_ready(decision, PLAN_MANUAL, "LIKELY — preview only; Repair Selected requires EXACT")
-	poison = _rate_poison_reason(row, cache)
-	if poison or status == STATUS_VALUATION_POISON_DEPENDENCY:
+	if confidence == CONFIDENCE_MANUAL or status == Z0_LEGITIMATE_ZERO:
+		return _not_ready(decision, PLAN_MANUAL, f"MANUAL — {status or 'operator review required'}")
+	hit = _rate_poison_hit(row, cache)
+	poison = (hit or {}).get("reason") or _rate_poison_reason(row, cache)
+	poison_voucher = (hit or {}).get("voucher")
+	if (poison or status == STATUS_VALUATION_POISON_DEPENDENCY) and poison_voucher and voucher and poison_voucher != voucher:
 		return _not_ready(
 			decision,
-			PLAN_BLOCKED,
-			f"{STATUS_VALUATION_POISON_DEPENDENCY}: {row.get('item') or row.get('item_code')} {row.get('warehouse') or ''} ({poison or 'poisoned SLE'})".strip(),
+			PLAN_WAITING_RATE_REPAIR,
+			f"{STATUS_VALUATION_POISON_DEPENDENCY}: {row.get('item') or row.get('item_code')} {row.get('warehouse') or ''} ({poison} on {poison_voucher})".strip(),
 			patient=patient,
+			prerequisite=poison_voucher,
 			dependency=poison or status,
 		)
 	if status == Z0_LEGITIMATE_ZERO:
@@ -406,7 +434,7 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {patient or 'unknown'}",
 			patient=patient,
 			prerequisite=patient,
-			dependency=patient,
+			dependency=poison or patient,
 		)
 	if row.get("surface") == "SLE" and patient and voucher and patient != voucher:
 		return _not_ready(
@@ -427,6 +455,8 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 				patient=patient,
 				prerequisite=patient,
 			)
+	if confidence == CONFIDENCE_LIKELY:
+		return _not_ready(decision, PLAN_MANUAL, "LIKELY — preview only; Repair Selected requires EXACT")
 	if row.get("confidence") != CONFIDENCE_EXACT:
 		return _not_ready(decision, PLAN_MANUAL, f"{row.get('confidence') or 'unknown'} — Repair Selected requires EXACT")
 	if status not in (STATUS_RECONSTRUCTABLE, "") and not row.get("eligible"):
@@ -552,7 +582,28 @@ def _posting_revalidate(row, moves, from_dt, cache) -> str | None:
 	return reason
 
 
+def _rate_poison_hit(row, cache) -> dict | None:
+	item = row.get("item") or row.get("item_code")
+	warehouse = row.get("warehouse") or row.get("s_warehouse") or row.get("t_warehouse")
+	from_dt = row.get("posting_datetime") or row.get("posting_date")
+	if not item or not warehouse or not from_dt:
+		return None
+	key = ("poison_hit", item, warehouse, str(from_dt))
+	if key in cache:
+		return cache[key]
+	try:
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import window_poison_hit
+
+		cache[key] = window_poison_hit(item, warehouse, from_dt, ignore_inversion_artifacts=True)
+	except Exception:
+		cache[key] = None
+	return cache[key]
+
+
 def _rate_poison_reason(row, cache) -> str | None:
+	hit = _rate_poison_hit(row, cache)
+	if hit:
+		return hit.get("reason")
 	item = row.get("item") or row.get("item_code")
 	warehouse = row.get("warehouse") or row.get("s_warehouse") or row.get("t_warehouse")
 	from_dt = row.get("posting_datetime") or row.get("posting_date")
@@ -580,9 +631,9 @@ def _lookup_patient(row, cache) -> str | None:
 	if key in cache:
 		return cache[key]
 	try:
-		from erpnext_extensions.iran_accounting.historical_stock.patient_zero import find_patient_zero
+		from erpnext_extensions.iran_accounting.historical_stock.patient_zero import find_patient_zero_identity
 
-		found = find_patient_zero(item, warehouse, batch)
+		found = find_patient_zero_identity(item, warehouse, batch)
 		name = None
 		if isinstance(found, dict):
 			name = found.get("voucher_no") or found.get("voucher")

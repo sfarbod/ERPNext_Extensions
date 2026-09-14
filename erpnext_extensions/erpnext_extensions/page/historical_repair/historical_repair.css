@@ -279,6 +279,29 @@
 .historical-repair-page .hr-tab {
 	border-radius: 4px;
 }
+.historical-repair-page .hr-deps {
+	background: var(--bg-light-gray);
+	padding: 12px;
+	border-radius: 6px;
+	margin-top: 12px;
+	font-size: 12px;
+}
+.historical-repair-page .hr-deps-tree,
+.historical-repair-page .hr-deps-node {
+	font-family: var(--font-stack);
+	white-space: pre-wrap;
+}
+.historical-repair-page .hr-deps-meta {
+	margin-bottom: 10px;
+}
+.historical-repair-page .hr-deps-preview-title {
+	font-weight: 600;
+	margin-top: 10px;
+}
+.historical-repair-page button[data-action="repair-chain"]:disabled {
+	opacity: 0.45;
+	pointer-events: none;
+}
 .historical-repair-page .hr-recon {
 	white-space: pre-wrap;
 	background: var(--bg-light-gray);

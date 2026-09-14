@@ -120,6 +120,7 @@ class HistoricalRepairPage {
 			this.btn_repair_filter = this._btn(g2, "repair-filter", __("Repair Current Filter"), () => this.repair_bulk("filter"), "btn-danger", __("Repair EXACT rows matching search and column filters"));
 			this.btn_repair_page = this._btn(g2, "repair-page", __("Repair Current Page"), () => this.repair_bulk("page"), "btn-danger", __("Repair visible EXACT rows"));
 			this.btn_repair_scope = this._btn(g2, "repair-scope", __("Repair Current Scope"), () => this.repair_bulk("scope"), "btn-danger", __("Repair every EXACT row in this topic scan"));
+			this.btn_repair_chain = this._btn(g2, "repair-chain", __("Repair Dependency Chain"), () => this.repair_dependency_chain(), "btn-danger", __("Repair only the READY root. Never warehouse/item/company-wide"));
 			this.btn_replay_ds = this._btn(g2, "replay-downstream", __("Replay Downstream"), () => this.replay_downstream(), "btn-info", __("Identity-scoped downstream replay"));
 			this.btn_rebuild_docs = this._btn(g2, "rebuild-docs", __("Rebuild Affected Documents"), () => this.rebuild_affected_documents(), "btn-info", __("Identity-scoped rebuild"));
 			this.btn_repost = this._btn(g2, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning", __("One Item+Warehouse RIV. Never global"));
@@ -128,6 +129,7 @@ class HistoricalRepairPage {
 		const g3 = $('<div class="hr-action-group" data-group="inspect">').appendTo($actions);
 		this.btn_integrity = this._btn(g3, "integrity", __("Integrity Check"), () => this.integrity(), "btn-default", __("Read-only chain check (I)"));
 		this.btn_graph = this._btn(g3, "graph", __("Graph"), () => this.show_graph(), "btn-default", __("Dependency graph (G)"));
+		this.btn_goto_root = this._btn(g3, "goto-root", __("Go To Root Cause"), () => this.go_to_root_cause(), "btn-primary", __("Filter, select, and show the patient-zero repair plan"));
 		this.btn_history = this._btn(g3, "history", __("Repair History"), () => this.show_history(), "btn-default", __("Previous repair runs"));
 		if (this.access.can_admin) {
 			const $adv = $('<label class="hr-advanced">').appendTo(g3);
@@ -160,6 +162,7 @@ class HistoricalRepairPage {
 		this.$eta = $('<div class="text-muted hr-eta" data-role="eta">').appendTo(this.$shell);
 		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$shell);
 		this.$recon = $('<div class="hr-recon" data-role="reconstruction">').appendTo(this.$shell);
+		this.$deps = $('<div class="hr-deps" data-role="dependency-resolution">').appendTo(this.$shell);
 		this.$graph = $('<div class="hr-graph" data-role="graph">').appendTo(this.$shell);
 		this.$preview = $('<pre class="hr-preview" data-role="preview">').appendTo(this.$shell);
 		this.switch_topic(this.topic);
@@ -177,6 +180,7 @@ class HistoricalRepairPage {
 		["btn_repair", "btn_repair_filter", "btn_repair_page", "btn_repair_scope"].forEach((k) => {
 			this[k] && this[k].prop("disabled", !!lock);
 		});
+		if (this.btn_repair_chain && lock) this.btn_repair_chain.prop("disabled", true);
 	}
 
 	_bind_keys() {
@@ -260,7 +264,7 @@ class HistoricalRepairPage {
 		return selected;
 	}
 
-	scan() {
+	scan(opts) {
 		const map = {
 			posting: [`${this.ppo}.scan_posting_order_anomalies`, this.filters()],
 			zero: [`${this.api}.scan_zero_rates`, { company: this.company.get_value() }],
@@ -286,6 +290,7 @@ class HistoricalRepairPage {
 				if (this.btn_repair) this._lock_writes(true);
 				this.render_table();
 				this.$preview.text(__("Scan complete. Run Dry Run before repairing."));
+				if (opts && opts.select_voucher) this._select_and_show(opts.select_voucher);
 			},
 			error: (err) => {
 				this.end_progress();
@@ -322,17 +327,17 @@ class HistoricalRepairPage {
 
 	_complete_impact(scan_msg) {
 		const rows = this.selected_rows();
-		const payload = rows.length ? rows : (this.rows || []).filter((r) => this._is_ready(r)).slice(0, 25);
+		const payload = rows.length ? rows : (this.rows || []).slice(0, 1);
 		if (!payload.length) {
 			this.impact_done = false;
 			this.last_impact = {
 				aborted: true,
 				estimated_sql_updates: 0,
-				planner_status: "BLOCKED",
-				skip_reason: __("No READY rows. Repair Selected will not write."),
+				planner_status: "NO_REPAIR_PATH",
+				skip_reason: __("No rows. Repair Selected will not write."),
 				executable: false,
 			};
-			this.$preview.text(__("No READY rows. Repair Selected is disabled."));
+			this.$preview.text(__("No rows. Repair Selected is disabled."));
 			if (this.btn_repair) this._lock_writes(true);
 			return;
 		}
@@ -345,14 +350,16 @@ class HistoricalRepairPage {
 				const executable = this._impact_executable(impact);
 				this.impact_done = executable;
 				this.$preview.text((this.format_preview(scan_msg || {}) + "\n\n" + (impact.preview_text || "")).trim());
+				this.render_deps(payload[0], impact);
 				if (this.btn_repair && this.access.can_repair && this.dry_run_done && executable) {
 					this._lock_writes(false);
 				} else if (this.btn_repair) {
 					this._lock_writes(true);
 				}
+				this._toggle_chain_button(payload[0], impact);
 				if (!executable) {
 					frappe.show_alert({
-						message: impact.skip_reason || impact.reason || __("Repair Selected disabled: status is not READY or SQL updates = 0."),
+						message: impact.required_action || impact.skip_reason || impact.reason || __("Repair Selected disabled: status is not READY or SQL updates = 0."),
 						indicator: "orange",
 					});
 				}
@@ -412,7 +419,8 @@ class HistoricalRepairPage {
 					return;
 				}
 				const warn = __("DATABASE BACKUP REQUIRED. Apply this identity-scoped repair?");
-				frappe.confirm(warn + "\n\n" + (impact.preview_text || ""), () => this._execute_repair(rows));
+				const chain = (impact.chain_preview || []).join("\n↓\n");
+				frappe.confirm(warn + "\n\n" + (chain ? chain + "\n\n" : "") + (impact.preview_text || ""), () => this._execute_repair(rows));
 			},
 		});
 	}
@@ -717,6 +725,7 @@ class HistoricalRepairPage {
 				work_order: row.work_order,
 				voucher: row.voucher || row.outbound_document || row.inbound_document,
 				warehouse: row.warehouse,
+				row,
 			},
 			callback: (r) => {
 				const g = r.message || {};
@@ -748,6 +757,7 @@ class HistoricalRepairPage {
 					$box.append($("<div>").append($a).append($meta));
 				});
 				this.$preview.text(JSON.stringify(g, null, 2));
+				this.render_deps(row, g);
 			},
 		});
 	}
@@ -987,6 +997,11 @@ class HistoricalRepairPage {
 				__("Dependency Reason"),
 				__("Planner Status"),
 				__("SQL Updates"),
+				__("Immediate Dependency"),
+				__("Root Patient Zero"),
+				__("Dependency Depth"),
+				__("Repair Order"),
+				__("Required Action"),
 				__("Blocker"),
 				__("Confidence"),
 				__("Status"),
@@ -1018,11 +1033,16 @@ class HistoricalRepairPage {
 				__("Patient Zero"),
 				__("Planner Status"),
 				__("SQL Updates"),
+				__("Immediate Dependency"),
+				__("Root Patient Zero"),
+				__("Dependency Depth"),
+				__("Repair Order"),
+				__("Required Action"),
 				__("Blocker"),
 				__("Status"),
 			];
 		}
-		return ["", __("Voucher"), __("Item"), __("Warehouse"), __("Confidence"), __("Planner Status"), __("Blocker"), __("Status")];
+		return ["", __("Voucher"), __("Item"), __("Warehouse"), __("Confidence"), __("Planner Status"), __("Immediate Dependency"), __("Root Patient Zero"), __("Required Action"), __("Blocker"), __("Status")];
 	}
 
 	cells_for_row(row) {
@@ -1051,6 +1071,11 @@ class HistoricalRepairPage {
 				row.dependency_reason,
 				row.planner_status || this.status_label(row),
 				row.sql_updates == null ? "" : String(row.sql_updates),
+				row.immediate_blocker || "",
+				row.root_patient_zero || row.root_blocker || (row.patient_zero && row.patient_zero.voucher_no) || "",
+				row.dependency_depth == null ? "" : String(row.dependency_depth),
+				row.repair_order || "",
+				row.required_action || "",
 				row.blocker || row.reason || row.skip_reason || "",
 				row.confidence,
 				this.status_label(row),
@@ -1081,6 +1106,11 @@ class HistoricalRepairPage {
 				(row.patient_zero && row.patient_zero.voucher_no) || "",
 				row.planner_status || this.status_label(row),
 				row.sql_updates == null ? "" : String(row.sql_updates),
+				row.immediate_blocker || "",
+				row.root_patient_zero || row.root_blocker || (row.patient_zero && row.patient_zero.voucher_no) || "",
+				row.dependency_depth == null ? "" : String(row.dependency_depth),
+				row.repair_order || "",
+				row.required_action || "",
 				row.blocker || row.reason || row.skip_reason || "",
 				this.status_label(row),
 			];
@@ -1091,6 +1121,9 @@ class HistoricalRepairPage {
 			row.warehouse,
 			row.confidence,
 			row.planner_status || "",
+			row.immediate_blocker || "",
+			row.root_patient_zero || row.root_blocker || "",
+			row.required_action || "",
 			row.blocker || row.reason || row.skip_reason || "",
 			row.status || row.gl_class || row.riv_status,
 		];
@@ -1150,7 +1183,7 @@ class HistoricalRepairPage {
 			const $tr = $("<tr>").attr("title", row.blocker || row.reason || row.skip_reason || row.dependency_reason || (row.flags || []).join(", ") || row.rate_source || row.status || "");
 			if (this._is_ready(row)) $tr.addClass("hr-row-exact");
 			else if (row.confidence === "LIKELY") $tr.addClass("hr-row-likely");
-			else if (/POISON|AMBIGUOUS|BLOCKED|MANUAL|WAITING_/i.test(String(row.planner_status || row.status || ""))) $tr.addClass("hr-row-blocked");
+			else if (/POISON|AMBIGUOUS|BLOCKED|MANUAL|WAITING_|NO_REPAIR/i.test(String(row.planner_status || row.status || ""))) $tr.addClass("hr-row-blocked");
 			const $cb = $('<input type="checkbox">')
 				.attr("data-idx", idx)
 				.attr("data-eligible", this._is_ready(row) ? "1" : "0");
@@ -1170,6 +1203,7 @@ class HistoricalRepairPage {
 			$tr.on("click", (e) => {
 				if (e.target && e.target.type === "checkbox") return;
 				this.show_reconstruction(row);
+				this.render_deps(row);
 			});
 			$body.append($tr);
 		});
@@ -1265,26 +1299,216 @@ class HistoricalRepairPage {
 			$td.text("");
 			return;
 		}
-		if (/^MAT-STE-/.test(s) || /^MFG-WO-/.test(s)) {
-			$td.append(this.link_cell(s, /^MFG-WO-/.test(s) ? "Work Order" : "Stock Entry"));
+		const cols = this.columns_for_topic();
+		const colName = cols[i + 1] || "";
+		const isRootCol = /Root Patient Zero/i.test(colName);
+		const tokens = s.split(/\s*(?:→|->|↓)\s*/).filter(Boolean);
+		if (tokens.length > 1 && tokens.every((t) => /^MAT-STE-|^MFG-WO-/.test(t))) {
+			tokens.forEach((tok, idx) => {
+				if (idx) $td.append(document.createTextNode(" → "));
+				$td.append(this._dep_link(tok, isRootCol));
+			});
 			return;
 		}
-		const item_i = this.topic === "posting" || this.topic === "zero" ? 3 : 1;
-		const wh_i = this.topic === "posting" || this.topic === "zero" ? 4 : 2;
-		const batch_i = this.topic === "posting" || this.topic === "zero" ? 5 : -1;
-		if (i === item_i) {
+		if (/^MAT-STE-/.test(s) || /^MFG-WO-/.test(s)) {
+			if (/^MFG-WO-/.test(s)) $td.append(this.link_cell(s, "Work Order"));
+			else $td.append(this._dep_link(s, isRootCol));
+			return;
+		}
+		if (/Item/i.test(colName) && !/Warehouse|Immediate|Root|Repair|Required/i.test(colName)) {
 			$td.append(this.link_cell(s, "Item"));
 			return;
 		}
-		if (i === wh_i) {
+		if (/^Warehouse$/i.test(colName) || colName === __("Warehouse")) {
 			$td.append(this.link_cell(s, "Warehouse"));
 			return;
 		}
-		if (i === batch_i && row.batch) {
+		if ((/Batch/i.test(colName) || colName === __("Batch/SABB")) && row.batch) {
 			$td.append(this.link_cell(row.batch, "Batch"));
 			return;
 		}
 		$td.text(s);
+	}
+
+	_dep_link(val, filterRepair) {
+		if (filterRepair && /^MAT-STE-/.test(String(val))) {
+			const $a = $('<a class="hr-link">').text(String(val));
+			$a.attr("title", __("Open Historical Repair on this patient zero"));
+			$a.on("click", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				this.go_to_root_cause(String(val));
+			});
+			return $a;
+		}
+		return this.link_cell(val, "Stock Entry");
+	}
+
+	render_deps(row, impact) {
+		if (!this.$deps) return;
+		const src = row || {};
+		const tree = src.dependency_tree || (impact && impact.dependency_tree);
+		const text = src.tree_text || (impact && impact.tree_text) || "";
+		this.$deps.empty();
+		this.$deps.append($('<h5 class="hr-section-title">').text(__("Dependency Resolution")));
+		const meta = $('<div class="hr-deps-meta">');
+		[
+			[__("Current Voucher"), src.outbound_document || src.voucher || src.inbound_document],
+			[__("Status"), src.planner_status || (impact && impact.planner_status)],
+			[__("Immediate blocker"), src.immediate_blocker || (impact && impact.immediate_blocker)],
+			[__("Root blocker"), src.root_blocker || (impact && impact.root_blocker)],
+			[__("Root status"), src.root_status || (impact && impact.root_status)],
+			[__("Dependency depth"), src.dependency_depth != null ? src.dependency_depth : impact && impact.dependency_depth],
+			[__("Repair sequence"), src.repair_order || (impact && impact.repair_sequence)],
+			[__("Estimated repair count"), src.estimated_repair_count || (impact && impact.estimated_repair_count)],
+			[__("Estimated runtime"), src.estimated_runtime || (impact && impact.estimated_replay_seconds)],
+			[__("Required action"), src.required_action || (impact && impact.required_action)],
+			[__("Blocked because"), src.blocked_because],
+		].forEach(([label, val]) => {
+			if (val == null || val === "") return;
+			const $line = $("<div>");
+			$line.append($("<strong>").text(label + ": "));
+			if (/^MAT-STE-/.test(String(val)) && label === __("Root blocker")) $line.append(this._dep_link(val, true));
+			else if (/^MAT-STE-/.test(String(val))) $line.append(this.link_cell(val, "Stock Entry"));
+			else $line.append(document.createTextNode(String(val)));
+			meta.append($line);
+		});
+		this.$deps.append(meta);
+		if (tree) this.$deps.append(this._tree_el(tree));
+		else if (text) this.$deps.append($("<pre class='hr-deps-tree'>").text(text));
+		const preview = src.chain_preview || (impact && impact.chain_preview) || [];
+		if (preview.length) {
+			this.$deps.append($('<div class="hr-deps-preview-title">').text(__("Repair Order")));
+			preview.forEach((step, i) => {
+				if (i) this.$deps.append($('<div class="hr-graph-edge">').text("↓"));
+				this.$deps.append($("<div>").text(step));
+			});
+		}
+		this._toggle_chain_button(src, impact);
+	}
+
+	_tree_el(node, depth) {
+		depth = depth || 0;
+		const $box = $('<div class="hr-deps-node">').css("margin-left", depth ? 18 : 0);
+		const voucher = node.voucher || "";
+		const $row = $("<div>");
+		if (depth) $row.append($("<span class='text-muted'>").text("├── waits for "));
+		if (voucher) $row.append(depth ? this.link_cell(voucher, "Stock Entry") : $("<strong>").text(voucher));
+		if (node.status) $row.append($("<span class='text-muted'>").text("  " + node.status));
+		if (node.blocked_because) $row.append($("<span class='text-muted'>").text("  (" + node.blocked_because + ")"));
+		$box.append($row);
+		(node.children || []).forEach((child) => $box.append(this._tree_el(child, depth + 1)));
+		if (!depth) {
+			const count = node.estimated_count || (node.children || []).length + 1;
+			$box.append($("<div class='text-muted'>").text("└── estimated chain: " + count + " vouchers"));
+		}
+		return $box;
+	}
+
+	_toggle_chain_button(row, impact) {
+		if (!this.btn_repair_chain) return;
+		const rootReady = (row && row.root_status === "READY") || (impact && impact.root_status === "READY");
+		const noPath = (row && row.no_repair_path) || (impact && impact.no_repair_path);
+		this.btn_repair_chain.prop("disabled", !(this.access.can_repair && rootReady && !noPath));
+	}
+
+	go_to_root_cause(explicit) {
+		const row = this.selected_rows()[0] || this.rows[0] || {};
+		const root = explicit || row.root_blocker || row.root_patient_zero || row.first_actionable;
+		if (!root) {
+			frappe.msgprint(__("No root cause voucher on this row."));
+			return;
+		}
+		if (this.voucher) this.voucher.set_value(root);
+		this.$search && this.$search.val(root);
+		const topic = row.root_topic === "POSTING_ORDER" ? "posting" : "zero";
+		if (this.topic !== topic) this.switch_topic(topic);
+		if (this.voucher) this.voucher.set_value(root);
+		if (topic === "zero") {
+			frappe.call({
+				method: `${this.api}.scan_wrong_rates_api`,
+				args: { voucher: root, company: this.company.get_value() },
+				freeze: true,
+				callback: (r) => {
+					const rows = (r.message && r.message.rows) || [];
+					if (rows.length) {
+						this.rows = rows;
+						this.dry_run_done = false;
+						this.impact_done = false;
+						this.render_table();
+						this._select_and_show(root);
+						return;
+					}
+					this.scan({ select_voucher: root });
+				},
+			});
+			return;
+		}
+		this.scan({ select_voucher: root });
+	}
+
+	_select_and_show(voucher) {
+		const needle = String(voucher);
+		let match = (this.rows || []).find((r) => {
+			return [r.voucher, r.outbound_document, r.inbound_document, r.root_blocker, r.immediate_blocker].indexOf(needle) >= 0;
+		});
+		if (!match) match = (this.rows || []).find((r) => JSON.stringify(r).indexOf(needle) >= 0);
+		if (!match) {
+			this.$preview.text(__("Filtered on {0}. No grid row matched; the Stock Entry is still openable from the tree.", [needle]));
+			this.render_deps({ voucher: needle, root_blocker: needle, required_action: __("Scan this voucher") });
+			return;
+		}
+		const idx = this.rows.indexOf(match);
+		this.$table.find("input[type=checkbox][data-idx]").prop("checked", false);
+		const $cb = this.$table.find(`input[type=checkbox][data-idx="${idx}"]`);
+		$cb.prop("checked", true);
+		const el = $cb.closest("tr").get(0);
+		if (el && el.scrollIntoView) el.scrollIntoView({ block: "center" });
+		this.show_reconstruction(match);
+		this.render_deps(match);
+		this.dry_run_done = false;
+		this._complete_impact({ rows: [match] });
+	}
+
+	repair_dependency_chain() {
+		const row = this.selected_rows()[0] || this.rows[0];
+		if (!row) {
+			frappe.msgprint(__("Select a row first."));
+			return;
+		}
+		frappe.call({
+			method: `${this.api}.repair_dependency_chain_api`,
+			args: { row, dry_run: 1 },
+			freeze: true,
+			callback: (r) => {
+				const msg = r.message || {};
+				this.$preview.text(JSON.stringify(msg, null, 2));
+				this.render_deps(row, msg);
+				if (!msg.executable) {
+					frappe.msgprint({
+						title: __("NO REPAIR PATH"),
+						message: msg.required_action || msg.reason || __("Root is not READY. Nothing executed."),
+						indicator: "orange",
+					});
+					return;
+				}
+				const chain = (msg.chain_preview || []).join("\n↓\n");
+				frappe.confirm(__("DATABASE BACKUP REQUIRED. Repair only the root of this chain?") + "\n\n" + chain, () => {
+					frappe.call({
+						method: `${this.api}.repair_dependency_chain_api`,
+						args: { row, dry_run: 0 },
+						freeze: true,
+						callback: (rr) => {
+							this._show_repair_result(rr.message || {});
+							this.dry_run_done = false;
+							this.impact_done = false;
+							this._lock_writes(true);
+							this.integrity();
+						},
+					});
+				});
+			},
+		});
 	}
 
 	load_layout() {

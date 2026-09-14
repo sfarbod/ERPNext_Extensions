@@ -495,6 +495,21 @@ See §16 remaining limitations. Wrong Rate Scan still misses the 3 s target. Sca
 8. Repair **patient-zero first**, never 25741 in isolation.
 9. Repost Selected is one Item+Warehouse RIV after Integrity PASS — never all stock.
 
+## 5.2.7 Dependency Resolution (Patient Zero Repair Order)
+
+Blocked rows no longer stop at generic `BLOCKED`. Scan, Dashboard, Graph, Impact, Planner, and Repair share one walker (`historical_stock/dependency.py`) on top of `evaluate_row`.
+
+| Field | Meaning |
+|-------|---------|
+| Immediate Dependency | Voucher this row waits on |
+| Root Patient Zero | Deepest unique voucher in the walk |
+| Repair Order | Root → … → selected → Replay downstream → Integrity |
+| Required Action | `Repair {voucher} first` / `Repair Wrong Rate first` / `NO REPAIR PATH: Manual\|Ambiguous\|Circular\|…` |
+
+Desk: **Dependency Resolution** panel, **Go To Root Cause**, **Repair Dependency Chain** (READY root only; never warehouse/item/company-wide).
+
+`MAT-STE-2026-26156` stays **WAITING_RATE_REPAIR**, not `READY_BATCH_SCOPED_REPAIR`. Warehouse identity (item+warehouse qty_after / moving average) plus later negative incoming on **MAT-STE-2026-25469** is real poison. Repair sequence: 25791 leftover patient-zero and 25469 rates are circular until 25469 is reconstructed EXACT; then re-scan 26156. Do not apply 26156 while 25469 poison remains.
+
 ## Rollback
 
 Restore the pre-repair database backup. Do not reverse rates/timestamps by hand without SLE replay. App rollback: previous version **5.2.6**. In-app Rollback is experimental (Administrator Advanced Mode) and cannot reverse GL/RIV without a database backup.

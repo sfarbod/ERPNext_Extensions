@@ -61,18 +61,39 @@ def format_impact(plan: dict) -> str:
 		f"Eligible: {bool(plan.get('executable'))}",
 		f"Blocked: {bool(plan.get('aborted'))}",
 		f"Reason: {plan.get('reason') or plan.get('skip_reason') or ''}",
+		f"Required action: {plan.get('required_action') or ''}",
+		f"Immediate blocker: {plan.get('immediate_blocker') or ''}",
+		f"Root blocker: {plan.get('root_blocker') or ''}",
+		f"Root status: {plan.get('root_status') or ''}",
+		f"Dependency depth: {plan.get('dependency_depth') if plan.get('dependency_depth') is not None else ''}",
+		f"Repair sequence: {plan.get('repair_sequence') or ''}",
+		f"Estimated repair count: {plan.get('estimated_repair_count') or 0}",
 		f"SQL updates: {plan.get('sql_updates') if plan.get('sql_updates') is not None else plan.get('estimated_sql_updates')}",
 		f"Replay count: {plan.get('replay_count') or 0}",
 		f"Rebuild count: {plan.get('rebuild_count') or 0}",
-		f"Dependency: {plan.get('dependency') or ''}",
-		f"Patient Zero: {plan.get('patient_zero') or ''}",
-		f"Required prerequisite: {plan.get('required_prerequisite') or ''}",
+		f"Dependency: {plan.get('dependency') or plan.get('blocked_because') or ''}",
+		f"Patient Zero: {plan.get('patient_zero') or plan.get('root_blocker') or ''}",
+		f"Required prerequisite: {plan.get('required_prerequisite') or plan.get('immediate_blocker') or ''}",
 		"",
-		"Estimated replay chain:",
-		chain_txt,
-		"",
-		DATABASE_BACKUP_REQUIRED,
+		"Repair order:",
 	]
+	preview_steps = plan.get("chain_preview") or []
+	if preview_steps:
+		lines.extend(preview_steps)
+	else:
+		lines.append(chain_txt)
+	lines.extend(
+		[
+			"",
+			"Dependency tree:",
+			plan.get("tree_text") or "(none)",
+			"",
+			"Estimated replay chain:",
+			chain_txt,
+			"",
+			DATABASE_BACKUP_REQUIRED,
+		]
+	)
 	if plan.get("aborted"):
 		lines.append("ABORTED — ambiguity or poison dependency. Nothing will execute.")
 		for b in plan.get("abort_reasons") or []:
@@ -176,7 +197,7 @@ def _count_failed_riv(items, warehouses) -> int:
 
 
 def _chain_for(rows) -> list[str]:
-	from erpnext_extensions.iran_accounting.historical_stock.graph import repair_graph
+	from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
 
 	row = next(
 		(
@@ -194,22 +215,10 @@ def _chain_for(rows) -> list[str]:
 	)
 	if not row:
 		return collect_vouchers(rows)
-	item = row.get("item") or row.get("item_code")
-	voucher = (
-		row.get("voucher")
-		or row.get("voucher_no")
-		or row.get("inbound_document")
-		or row.get("outbound_document")
-	)
-	if not any((item, row.get("batch"), row.get("work_order"), voucher)):
+	if row.get("repair_order_list"):
+		return list(row["repair_order_list"])
+	try:
+		res = resolve_dependencies(row)
+		return res.get("repair_order") or collect_vouchers(rows)
+	except Exception:
 		return collect_vouchers(rows)
-	g = repair_graph(
-		item=item,
-		batch=row.get("batch"),
-		work_order=row.get("work_order"),
-		voucher=voucher,
-		warehouse=row.get("warehouse"),
-		limit=40,
-	)
-	nodes = [n.get("voucher") for n in (g.get("nodes") or []) if n.get("voucher")]
-	return nodes or collect_vouchers(rows)

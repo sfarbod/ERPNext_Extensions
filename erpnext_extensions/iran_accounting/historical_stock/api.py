@@ -340,11 +340,21 @@ def selective_repair_api(scope=None, op="replay", dry_run=True):
 
 
 @frappe.whitelist()
-def repair_graph_api(item=None, batch=None, work_order=None, voucher=None, warehouse=None):
+def repair_graph_api(item=None, batch=None, work_order=None, voucher=None, warehouse=None, row=None):
 	_guard()
 	from erpnext_extensions.iran_accounting.historical_stock.graph import repair_graph
 
-	return repair_graph(item=item or None, batch=batch or None, work_order=work_order or None, voucher=voucher or None, warehouse=warehouse or None)
+	parsed = row if isinstance(row, dict) else (_parse(row) or None)
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else None
+	return repair_graph(
+		item=item or None,
+		batch=batch or None,
+		work_order=work_order or None,
+		voucher=voucher or None,
+		warehouse=warehouse or None,
+		row=parsed,
+	)
 
 
 @frappe.whitelist()
@@ -377,6 +387,31 @@ def repair_planner_api(rows=None):
 	from erpnext_extensions.iran_accounting.historical_stock.planner import plan_selection
 
 	return plan_selection(_parse(rows))
+
+
+@frappe.whitelist()
+def resolve_dependencies_api(row=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
+
+	parsed = row if isinstance(row, dict) else (_parse(row) or {})
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	return resolve_dependencies(parsed or {})
+
+
+@frappe.whitelist()
+def repair_dependency_chain_api(row=None, dry_run=True):
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	from erpnext_extensions.iran_accounting.historical_stock.dependency import apply_dependency_chain
+
+	parsed = row if isinstance(row, dict) else (_parse(row) or {})
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	if not parsed:
+		frappe.throw("A dependency row is required")
+	return apply_dependency_chain(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()

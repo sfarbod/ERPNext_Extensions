@@ -7,7 +7,18 @@ import frappe
 from frappe.utils import flt
 
 
-def repair_graph(item=None, batch=None, work_order=None, voucher=None, warehouse=None, limit=80) -> dict:
+def repair_graph(item=None, batch=None, work_order=None, voucher=None, warehouse=None, limit=80, row=None) -> dict:
+	if row:
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies, tree_as_graph
+
+		resolution = resolve_dependencies(row if isinstance(row, dict) else {})
+		out = tree_as_graph(resolution)
+		out["item"] = item or (row or {}).get("item") or (row or {}).get("item_code")
+		out["batch"] = batch or (row or {}).get("batch")
+		out["work_order"] = work_order or (row or {}).get("work_order")
+		out["warehouse"] = warehouse or (row or {}).get("warehouse")
+		out["warning"] = None
+		return out
 	if not any((item, batch, work_order, voucher)):
 		return {
 			"nodes": [],
@@ -112,6 +123,13 @@ def repair_graph(item=None, batch=None, work_order=None, voucher=None, warehouse
 		node["patient_zero"] = planned.get("patient_zero")
 		node["required_prerequisite"] = planned.get("required_prerequisite")
 		node["dependency"] = planned.get("planner", {}).get("dependency")
+		node["immediate_blocker"] = planned.get("immediate_blocker")
+		node["root_blocker"] = planned.get("root_blocker")
+		node["dependency_depth"] = planned.get("dependency_depth")
+		node["repair_order"] = planned.get("repair_order")
+		node["required_action"] = planned.get("required_action")
+		node["tree_text"] = planned.get("tree_text")
+		node["dependency_tree"] = planned.get("dependency_tree")
 	return {
 		"nodes": nodes,
 		"edges": edges,
