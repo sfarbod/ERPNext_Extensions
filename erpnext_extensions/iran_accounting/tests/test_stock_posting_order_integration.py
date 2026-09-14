@@ -648,4 +648,88 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		self.assertFalse(again["stale"], again)
 		_ = before
 
+	def test_farvardin_downstream_replay_25912_25911(self):
+		from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+			replay_downstream_chain,
+		)
+		from erpnext_extensions.iran_accounting.stock_posting_order.integrity import integrity_check
+
+		item = "30300042"
+		batch = "504135-30300042-AK264401A11"
+		if not frappe.db.exists("Stock Entry", "MAT-STE-2026-25912"):
+			self.skipTest("Farvardin downstream vouchers not on site")
+		from_dt = frappe.db.get_value(
+			"Stock Entry", "MAT-STE-2026-25825", ["posting_date", "posting_time"], as_dict=True
+		)
+		from_dt = f"{from_dt.posting_date} {from_dt.posting_time}"
+		fg_before = {
+			vn: frappe.db.sql(
+				"SELECT SUM(amount) a FROM `tabStock Entry Detail` WHERE parent=%s AND is_finished_item=1",
+				vn,
+			)[0][0]
+			for vn in ("MAT-STE-2026-25912", "MAT-STE-2026-25911-1")
+		}
+		plan = replay_downstream_chain(
+			item,
+			batch,
+			from_dt=from_dt,
+			patient_vouchers=["MAT-STE-2026-25824-1", "MAT-STE-2026-25825"],
+			dry_run=True,
+		)
+		self.assertIn("MAT-STE-2026-25912", plan.get("replay_order") or plan.get("affected_vouchers") or [])
+		self.assertIn("MAT-STE-2026-25911-1", plan.get("replay_order") or plan.get("affected_vouchers") or [])
+		self.assertNotIn("MAT-STE-2026-25906", plan.get("replay_order") or [])
+		result = replay_downstream_chain(
+			item,
+			batch,
+			from_dt=from_dt,
+			patient_vouchers=["MAT-STE-2026-25824-1", "MAT-STE-2026-25825"],
+			dry_run=False,
+		)
+		self.assertEqual(result.get("riv"), "NOT_INVOKED")
+		self.assertEqual(result.get("status"), "DOWNSTREAM_COMPLETE")
+		for vn in ("MAT-STE-2026-25912", "MAT-STE-2026-25911-1"):
+			sle = frappe.db.sql(
+				"""
+				SELECT outgoing_rate, stock_value_difference, actual_qty
+				FROM `tabStock Ledger Entry`
+				WHERE voucher_no=%s AND item_code=%s AND actual_qty<0 AND is_cancelled=0
+				""",
+				(vn, item),
+				as_dict=True,
+			)[0]
+			self.assertGreater(abs(flt(sle.outgoing_rate)), 1)
+			self.assertLess(abs(flt(sle.outgoing_rate) - 3333718.97), 1)
+			sabb = frappe.db.sql(
+				"""
+				SELECT sbe.outgoing_rate, sbe.stock_value_difference, sabb.avg_rate
+				FROM `tabStock Ledger Entry` sle
+				JOIN `tabSerial and Batch Bundle` sabb ON sabb.name=sle.serial_and_batch_bundle
+				JOIN `tabSerial and Batch Entry` sbe ON sbe.parent=sabb.name
+				WHERE sle.voucher_no=%s AND sle.item_code=%s AND sle.actual_qty<0 AND sle.is_cancelled=0
+				""",
+				(vn, item),
+				as_dict=True,
+			)[0]
+			self.assertGreater(abs(flt(sabb.outgoing_rate)), 1)
+			self.assertLess(abs(flt(sabb.outgoing_rate) - 3333718.97), 1)
+			fg_after = frappe.db.sql(
+				"SELECT SUM(amount) a FROM `tabStock Entry Detail` WHERE parent=%s AND is_finished_item=1",
+				vn,
+			)[0][0]
+			self.assertLess(abs(flt(fg_after) - flt(fg_before[vn])), 1)
+		gate = integrity_check(
+			["MAT-STE-2026-25824-1", "MAT-STE-2026-25825", "MAT-STE-2026-25912", "MAT-STE-2026-25911-1"]
+		)
+		self.assertTrue(gate["ok"], gate)
+		again = replay_downstream_chain(
+			item,
+			batch,
+			from_dt=from_dt,
+			patient_vouchers=["MAT-STE-2026-25824-1", "MAT-STE-2026-25825"],
+			dry_run=False,
+		)
+		self.assertEqual(again.get("status"), "DOWNSTREAM_COMPLETE")
+		self.assertFalse(again.get("replay_required_count"))
+
 

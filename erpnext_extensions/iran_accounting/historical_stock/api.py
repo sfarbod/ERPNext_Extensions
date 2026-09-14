@@ -213,6 +213,19 @@ def rebuild_affected_documents_api(rows=None, dry_run=True):
 	return rebuild_affected_documents(parsed, dry_run=_dry(dry_run, True))
 
 
+@frappe.whitelist()
+def replay_downstream_api(rows=None, dry_run=True):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+		replay_downstream_for_rows,
+	)
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact item/batch chain rows are required")
+	return replay_downstream_for_rows(parsed, dry_run=_dry(dry_run, True))
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair

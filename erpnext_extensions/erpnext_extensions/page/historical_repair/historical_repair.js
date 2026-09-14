@@ -73,6 +73,13 @@ class HistoricalRepairPage {
 			() => this.rebuild_affected_documents(),
 			"btn-info"
 		);
+		this.btn_replay_ds = this._btn(
+			$actions,
+			"replay-downstream",
+			__("Replay Downstream"),
+			() => this.replay_downstream(),
+			"btn-info"
+		);
 		this.btn_resume = this._btn($actions, "resume", __("Resume"), () => this.resume());
 		this.btn_repair.prop("disabled", true);
 		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$body);
@@ -267,6 +274,30 @@ class HistoricalRepairPage {
 		});
 	}
 
+	replay_downstream() {
+		const rows = this.selected_rows();
+		if (!rows.length) {
+			frappe.msgprint(__("Select the repaired chain (item + batch). This is not a global replay."));
+			return;
+		}
+		frappe.call({
+			method: `${this.ppo}.replay_downstream`,
+			args: { rows, dry_run: 1 },
+			freeze: true,
+			callback: (r) => {
+				this.$preview.text(this.format_preview(r.message || {}));
+				frappe.confirm(__("Apply this identity-scoped downstream replay? Database backup recommended."), () => {
+					frappe.call({
+						method: `${this.ppo}.replay_downstream`,
+						args: { rows, dry_run: 0 },
+						freeze: true,
+						callback: (rr) => this.$preview.text(this.format_preview(rr.message || {})),
+					});
+				});
+			},
+		});
+	}
+
 	integrity() {
 		const rows = this.selected_rows();
 		const vouchers = [];
@@ -314,9 +345,10 @@ class HistoricalRepairPage {
 			lines.push(`cross_time_likely: ${msg.summary.cross_time_likely || 0}`);
 			lines.push(`cross_time_ambiguous: ${msg.summary.cross_time_ambiguous || 0}`);
 		}
-		lines.push(`count: ${msg.count ?? (msg.rows || []).length}`);
+		lines.push(`count: ${msg.count ?? (msg.rows || msg.applied || []).length}`);
 		lines.push(`eligible: ${(msg.eligible || []).length}`);
-		(msg.rows || []).slice(0, 40).forEach((row, i) => {
+		if (msg.elapsed_seconds != null) lines.push(`elapsed_seconds: ${msg.elapsed_seconds}`);
+		(msg.rows || msg.applied || []).slice(0, 40).forEach((row, i) => {
 			lines.push("");
 			lines.push(`--- case ${i + 1} ${row.voucher || row.chain || row.riv_name || ""} ---`);
 			[
@@ -327,6 +359,11 @@ class HistoricalRepairPage {
 				"Valuation Impact",
 				"Manufacture Source Rate",
 				"Rate Status",
+				"Replay Depth",
+				"Dependent Count",
+				"Affected Vouchers",
+				"Estimated Runtime",
+				"Replay Scope",
 				"Negative Start",
 				"Negative Voucher",
 				"Later Inbound",
@@ -349,6 +386,11 @@ class HistoricalRepairPage {
 					"Valuation Impact": row.valuation_impact,
 					"Manufacture Source Rate": row.manufacture_source_rate,
 					"Rate Status": row.rate_status || (row.outbound_gaps && row.outbound_gaps.length ? "STALE / REBUILD REQUIRED" : ""),
+					"Replay Depth": row.replay_depth,
+					"Dependent Count": row.dependent_count,
+					"Affected Vouchers": (row.affected_vouchers || []).join(", "),
+					"Estimated Runtime": row.estimated_runtime,
+					"Replay Scope": row.replay_scope,
 					"Negative Start": row.negative_start,
 					"Negative Voucher": row.negative_voucher,
 					"Later Inbound": row.later_inbound,
@@ -364,6 +406,22 @@ class HistoricalRepairPage {
 					Status: row.status,
 				}[label];
 				if (key !== undefined && key !== null && key !== "") lines.push(`${label}: ${key}`);
+			});
+			if (row.replay_order && row.replay_order.length) {
+				lines.push(`Replay order: ${(row.patient_vouchers || []).join(" → ")} → ${row.replay_order.join(" → ")}`);
+			}
+			(row.dependents || (row.downstream && row.downstream.dependents) || []).forEach((dep) => {
+				lines.push(
+					[
+						dep.voucher_no,
+						dep.classification || "",
+						dep.replay_required || "",
+						`current ${dep.current_valuation}`,
+						`expected ${dep.expected_valuation}`,
+						`delta ${dep.difference}`,
+						(dep.reasons || []).join(","),
+					].join(" | ")
+				);
 			});
 			(row.row_simulation || []).forEach((sim) => {
 				lines.push(
@@ -394,6 +452,19 @@ class HistoricalRepairPage {
 		}
 		if (row.status === "ORDER_FIXED_RATE_REBUILD_REQUIRED" || row.optimizer_status === "ORDER_FIXED_RATE_REBUILD_REQUIRED") {
 			return "ORDER_FIXED_RATE_REBUILD_REQUIRED";
+		}
+		if (
+			row.status === "DOWNSTREAM_REPLAY_REQUIRED" ||
+			row.status === "DOWNSTREAM_VALUE_REPLAY_REQUIRED" ||
+			row.downstream_status === "DOWNSTREAM_REPLAY_REQUIRED"
+		) {
+			return "DOWNSTREAM_REPLAY_REQUIRED";
+		}
+		if (row.status === "DOWNSTREAM_COMPLETE") {
+			return "DOWNSTREAM_COMPLETE";
+		}
+		if (row.status === "DOWNSTREAM_SKIPPED") {
+			return "DOWNSTREAM_SKIPPED";
 		}
 		if (row.status === "INTEGRITY_COMPLETE") {
 			return "INTEGRITY_COMPLETE";
@@ -426,6 +497,9 @@ class HistoricalRepairPage {
 				__("Minimum Qty Before"),
 				__("Minimum Qty After"),
 				__("Valuation Impact"),
+				__("Replay Depth"),
+				__("Dependent Count"),
+				__("Replay Scope"),
 				__("Dependency Reason"),
 				__("Confidence"),
 				__("Status"),
@@ -472,6 +546,9 @@ class HistoricalRepairPage {
 				row.min_qty_before,
 				row.min_qty_after,
 				row.valuation_impact || "",
+				row.replay_depth == null ? "" : String(row.replay_depth),
+				row.dependent_count == null ? "" : String(row.dependent_count),
+				row.replay_scope || "",
 				row.dependency_reason,
 				row.confidence,
 				this.status_label(row),

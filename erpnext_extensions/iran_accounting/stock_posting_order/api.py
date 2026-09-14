@@ -104,3 +104,17 @@ def rebuild_affected_documents(rows=None, dry_run=True):
 		frappe.throw("Exact inbound/outbound rows are required")
 	is_dry = True if dry_run in (None, "") else (dry_run if isinstance(dry_run, bool) else bool(cint(dry_run)))
 	return _rebuild(parsed, dry_run=is_dry)
+
+
+@frappe.whitelist()
+def replay_downstream(rows=None, dry_run=True):
+	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+		replay_downstream_for_rows,
+	)
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact item/batch chain rows are required")
+	is_dry = True if dry_run in (None, "") else (dry_run if isinstance(dry_run, bool) else bool(cint(dry_run)))
+	return replay_downstream_for_rows(parsed, dry_run=is_dry)

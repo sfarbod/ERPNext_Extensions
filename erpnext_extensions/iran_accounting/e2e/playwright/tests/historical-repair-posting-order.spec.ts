@@ -175,12 +175,26 @@ test.describe("5.2.7 Posting Order — 17 Farvardin cross-time @release-blocking
     }
     await captureStep(page, "ppo_08_farvardin_stock_ledger");
 
+    await page.goto(
+      "/app/query-report/Stock%20Ledger?item_code=30300042&from_date=2026-04-11&to_date=2026-04-11&batch_no=504135-30300042-AK264401A11"
+    );
+    await expect(page.locator(".page-title")).toContainText(/Stock Ledger/i, { timeout: 60_000 });
+    await page.waitForTimeout(3000);
+    const later = await page.locator("body").innerText();
+    expect(later.toLowerCase()).not.toContain("internal server error");
+    if (later.includes("25912") || later.includes("25911-1")) {
+      expect(later).toMatch(/3,?333,?718|3,?333,?719/);
+      expect(later).not.toMatch(/3,?338,?300/);
+    }
+    await captureStep(page, "ppo_08b_farvardin_downstream_ledger");
+
     await page.goto("/app/historical-repair");
     await expect(page.locator("button.hr-tab", { hasText: "Posting Order" })).toBeVisible({ timeout: 60_000 });
     await page.locator("button.hr-tab", { hasText: "Posting Order" }).click();
     await expect(page.locator(".hr-section-title")).toContainText("Production Posting Order", { timeout: 60_000 });
 
     await expect(page.locator("button[data-action='rebuild-docs']")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator("button[data-action='replay-downstream']")).toBeVisible({ timeout: 60_000 });
 
     await page.locator("button[data-action='scan']").click();
     await expect(page.locator("pre[data-role='preview']")).toContainText("Scan complete", { timeout: 180_000 });

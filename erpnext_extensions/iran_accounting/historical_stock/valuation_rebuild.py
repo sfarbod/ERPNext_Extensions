@@ -22,6 +22,7 @@ from erpnext_extensions.iran_accounting.stock_posting_order import (
 	STATUS_RATE_REBUILD_COMPLETE,
 	STATUS_RATE_REBUILD_IN_PROGRESS,
 	STATUS_DOWNSTREAM_VALUE_REPLAY_REQUIRED,
+	STATUS_DOWNSTREAM_REPLAY_REQUIRED,
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
 	VALUE_EPS as REPLAY_VALUE_EPS,
@@ -339,6 +340,35 @@ def rebuild_chain_valuation(
 		"riv": "BLOCKED_UNTIL_CHAIN_HEALTHY",
 	}
 	if dry_run:
+		if item and batch and inbound_document:
+			from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+				plan_downstream_replay,
+			)
+
+			dt = frappe.db.get_value(
+				"Stock Entry", inbound_document, ["posting_date", "posting_time"], as_dict=True
+			)
+			if dt:
+				from_dt = get_datetime(f"{dt.posting_date} {dt.posting_time}")
+				ds = plan_downstream_replay(
+					item,
+					batch,
+					from_dt=from_dt,
+					patient_vouchers=[v for v in (inbound_document, outbound_document) if v],
+					warehouse=warehouse,
+				)
+				plan.update(
+					{
+						"downstream": ds,
+						"replay_depth": ds.get("replay_depth"),
+						"dependent_count": ds.get("dependent_count"),
+						"affected_vouchers": ds.get("affected_vouchers"),
+						"estimated_runtime": ds.get("estimated_runtime"),
+						"replay_scope": ds.get("replay_scope"),
+					}
+				)
+				if ds.get("replay_required_count") and not diag.get("stale"):
+					plan["status"] = STATUS_DOWNSTREAM_REPLAY_REQUIRED
 		return plan
 
 	mfg_applied = False
@@ -401,33 +431,34 @@ def rebuild_chain_valuation(
 	if item and dest_wh:
 		_bin_from_last_sle(item, dest_wh)
 
-	exclude = write
-	downstream = []
-	if item and dest_wh and from_dt:
-		downstream = _downstream_same_item(item, dest_wh, from_dt, exclude)
+	from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+		plan_downstream_replay,
+	)
+
+	ds_plan = {}
+	if item and batch and from_dt:
+		ds_plan = plan_downstream_replay(
+			item,
+			batch,
+			from_dt=from_dt,
+			patient_vouchers=list(write),
+			warehouse=dest_wh or warehouse,
+		)
 
 	after = diagnose_chain(inbound_document, outbound_document, item, warehouse, batch)
-	status = STATUS_INTEGRITY_COMPLETE
-	if after["stale"]:
-		status = STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
-	elif downstream:
-		status = STATUS_DOWNSTREAM_VALUE_REPLAY_REQUIRED
-	elif any(not g.get("balanced") for g in gl if g.get("gl")):
-		status = STATUS_GL_REBUILD_REQUIRED
-	else:
-		# GL dict shape from _rebuild_gl_no_commit
-		status = STATUS_INTEGRITY_COMPLETE
-
 	pair_gl_ok = all((g.get("gl") or {}).get("balanced", g.get("rebuilt") is False) for g in gl)
 	if after["stale"]:
 		status = STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
 	elif not pair_gl_ok:
 		status = STATUS_GL_REBUILD_REQUIRED
-	elif downstream:
-		# Pair rates complete; later dest-warehouse consumes are reported, not auto-GL'd.
+	elif ds_plan.get("replay_required_count"):
+		status = STATUS_DOWNSTREAM_REPLAY_REQUIRED
+		after["valuation_impact"] = "OK"
+		after["downstream_status"] = STATUS_DOWNSTREAM_REPLAY_REQUIRED
+	else:
 		status = STATUS_INTEGRITY_COMPLETE
 		after["valuation_impact"] = "OK"
-		after["downstream_status"] = STATUS_DOWNSTREAM_VALUE_REPLAY_REQUIRED
+		after["downstream_status"] = ds_plan.get("status") or STATUS_DOWNSTREAM_VALUE_REPLAY_REQUIRED
 
 	return {
 		**after,
@@ -438,8 +469,14 @@ def rebuild_chain_valuation(
 		"sabb": sabb,
 		"sle_rates": sle_rates,
 		"gl_rebuilt": gl,
-		"downstream_vouchers": downstream,
-		"downstream_count": len(downstream),
+		"downstream": ds_plan,
+		"downstream_vouchers": ds_plan.get("replay_order") or ds_plan.get("affected_vouchers") or [],
+		"downstream_count": ds_plan.get("dependent_count") or 0,
+		"replay_depth": ds_plan.get("replay_depth"),
+		"dependent_count": ds_plan.get("dependent_count"),
+		"affected_vouchers": ds_plan.get("affected_vouchers"),
+		"estimated_runtime": ds_plan.get("estimated_runtime"),
+		"replay_scope": ds_plan.get("replay_scope"),
 		"riv": "NOT_INVOKED",
 		"quantity_impact": after.get("quantity_impact"),
 		"valuation_impact": after.get("valuation_impact"),

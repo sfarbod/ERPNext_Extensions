@@ -23,6 +23,8 @@ from erpnext_extensions.iran_accounting.stock_posting_order import (
 	STATUS_VALUATION_POISON,
 	STATUS_INTEGRITY_COMPLETE,
 	STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED,
+	STATUS_DOWNSTREAM_REPLAY_REQUIRED,
+	STATUS_DOWNSTREAM_COMPLETE,
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import simulate_running
 from erpnext_extensions.iran_accounting.stock_posting_order.ordering import (
@@ -419,11 +421,14 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 			primary = moves[0]
 			qty_ok = True
 			rate_status = (valuation or {}).get("status") or STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
-			final_status = (
-				STATUS_INTEGRITY_COMPLETE
-				if rate_status == STATUS_INTEGRITY_COMPLETE
-				else STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
-			)
+			if rate_status in (
+				STATUS_INTEGRITY_COMPLETE,
+				STATUS_DOWNSTREAM_REPLAY_REQUIRED,
+				STATUS_DOWNSTREAM_COMPLETE,
+			):
+				final_status = rate_status
+			else:
+				final_status = STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
 			entry = {
 				**row,
 				"status": final_status,
@@ -437,6 +442,12 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				"valuation_changed": valuation_changed,
 				"valuation": valuation,
 				"valuation_impact": (valuation or {}).get("valuation_impact"),
+				"replay_depth": (valuation or {}).get("replay_depth"),
+				"dependent_count": (valuation or {}).get("dependent_count"),
+				"affected_vouchers": (valuation or {}).get("affected_vouchers"),
+				"estimated_runtime": (valuation or {}).get("estimated_runtime"),
+				"replay_scope": (valuation or {}).get("replay_scope"),
+				"downstream": (valuation or {}).get("downstream"),
 				"gl_before": gl_before,
 				"gl_after": gl_after,
 				"gl_rebuilt": gl_touched or (valuation or {}).get("gl_rebuilt"),

@@ -275,6 +275,32 @@ Desk action: **Rebuild Affected Documents** (selected chain only).
 
 Downstream WIP consumes of this batch (Apr 11 `25912` / `25911-1`) still carry pre-repair outgoing 3,338,300 on mixed-lot warehouse MA. They are listed as `DOWNSTREAM_VALUE_REPLAY_REQUIRED` (40 later dest-warehouse vouchers) and were **not** auto-GL-rebuilt (multi-item Manufacture). The named Farvardin pair is rate-complete.
 
+## 11e. Downstream value replay (identity-scoped)
+
+Post-order + SABB rebuild left later **same-batch** consumes at the old 3,338,300 rate. New engine `historical_stock/downstream_replay.py` walks item + batch/SABB forward, classifies DIRECT / INDIRECT / UNRELATED / STOP_CHAIN, and replays only the repaired identity.
+
+Farvardin graph:
+
+```
+25824-1 Manufacture IN
+→ 25825 Transfer (value-neutral, already repaired)
+→ 25912 Manufacture consume −47  DIRECT
+→ 25911-1 Manufacture consume −1852 DIRECT (empties batch)
+```
+
+Other WIP lots (`25906` / `25916` / `25919`, batch `504143-…`) are UNRELATED and were not written.
+
+| Voucher | Consume SVD before | Consume SVD after | Outgoing rate after | FG residual |
+|---------|--------------------|-------------------|---------------------|-------------|
+| 25912 | −156,900,109 at 3,338,300 | **−156,684,791.47** | **3,333,718.97** | **unchanged** 173,757,558.13 |
+| 25911-1 | −6,182,531,600 at 3,338,300 | **−6,174,047,527.53** | **3,333,718.97** | **unchanged** 6,842,048,667 |
+
+SABB/SBE outgoing rates rebuilt; inverted SBE incoming-on-OUT cleared. Manufacture GL left as 2-line FG amount (not rebuilt). RIV not invoked. Pair 25824-1 / 25825 unchanged. Batch remaining qty/value after 25911-1: **0**.
+
+Desk: **Replay Downstream** (dry-run preview, then confirm apply). Statuses: `DOWNSTREAM_PENDING`, `DOWNSTREAM_REPLAY_REQUIRED`, `DOWNSTREAM_REPLAYING`, `DOWNSTREAM_COMPLETE`, `DOWNSTREAM_SKIPPED`.
+
+Backup taken first: `20260914_075728-development_localhost-database.sql.gz`.
+
 ## 12. Controlled real repair
 
 17 Farvardin (`MAT-STE-2026-25825` / `MAT-STE-2026-25824-1`) was repaired on **development.localhost** with SLE/Bin/GL replay (11c). Other operator EXACT reconstructable zero-rate rows were **not** written.
@@ -286,12 +312,12 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 | Area | Result |
 |------|--------|
 | `test_historical_stock` (unit) | PASS (25) |
-| `test_stock_posting_order` | PASS (66, incl. valuation rebuild contract) |
+| `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
-| `test_stock_posting_order_integration` | PASS (12, incl. Farvardin apply + SABB rate rebuild) |
+| `test_stock_posting_order_integration` | PASS (13, incl. Farvardin apply + SABB rate rebuild + downstream 25912/25911-1) |
 | `test_manufacture_rounding` | PASS |
-| Playwright posting-order + Farvardin repaired ledger + 6-tab integrity | PASS (4), no API 500 |
+| Playwright posting-order + Farvardin repaired ledger + downstream Apr 11 + 6-tab integrity | PASS (4), no API 500 |
 | `bench build --app erpnext_extensions` | PASS |
 | `migrate` ×2 | PASS |
 | Local `run_gate(full_stress=1)` | PASS (stress 148.29 s; RIV×2; 03516; flows) |

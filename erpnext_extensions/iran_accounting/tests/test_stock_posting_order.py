@@ -1097,3 +1097,126 @@ class TestValuationRebuildContract(unittest.TestCase):
 		self.assertIn("RIV is not invoked from valuation rebuild", src)
 		self.assertLess(src.find("allow_riv"), src.find("diagnose_chain"))
 
+
+class TestDownstreamReplayContract(unittest.TestCase):
+	def _ctx(self, **extra):
+		base = {
+			"item": "30300042",
+			"batch": "504135-30300042-AK264401A11",
+			"patient_vouchers": {"MAT-STE-2026-25824-1", "MAT-STE-2026-25825"},
+			"visited_warehouses": {"WIP"},
+			"work_order": "MFG-WO-2026-00575",
+			"job_card": "PO-JOB07754",
+			"remaining_qty": 1899,
+		}
+		base.update(extra)
+		return base
+
+	def test_same_batch_manufacture_consume_is_direct(self):
+		from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+			CLASS_DIRECT,
+			classify_dependency,
+		)
+
+		out = classify_dependency(
+			{
+				"voucher_no": "MAT-STE-2026-25912",
+				"purpose": "Manufacture",
+				"item_code": "30300042",
+				"warehouse": "WIP",
+				"batch": "504135-30300042-AK264401A11",
+				"actual_qty": -47,
+				"work_order": "MFG-WO-2026-00575",
+				"job_card": "PO-JOB07754",
+				"serial_and_batch_bundle": "bundle",
+			},
+			self._ctx(),
+		)
+		self.assertEqual(out["classification"], CLASS_DIRECT)
+		self.assertIn("same batch", out["reasons"])
+		self.assertIn("same manufacture consume", out["reasons"])
+		self.assertIn("partial consume", out["reasons"])
+		self.assertFalse(out["preview_only"])
+
+	def test_different_batch_is_unrelated(self):
+		from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+			CLASS_UNRELATED,
+			classify_dependency,
+		)
+
+		out = classify_dependency(
+			{
+				"voucher_no": "MAT-STE-2026-25906",
+				"purpose": "Material Transfer for Manufacture",
+				"item_code": "30300042",
+				"warehouse": "WIP",
+				"batch": "504143-30300042-AK264402A11",
+				"actual_qty": 1206,
+			},
+			self._ctx(),
+		)
+		self.assertEqual(out["classification"], CLASS_UNRELATED)
+		self.assertIn("different batch", out["reasons"])
+
+	def test_unknown_voucher_type_is_preview_only(self):
+		from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
+			CLASS_STOP,
+			classify_dependency,
+		)
+
+		out = classify_dependency(
+			{
+				"voucher_no": "MAT-SR-1",
+				"voucher_type": "Stock Reconciliation",
+				"purpose": "",
+				"item_code": "30300042",
+				"warehouse": "WIP",
+				"batch": "504135-30300042-AK264401A11",
+				"actual_qty": -1,
+			},
+			self._ctx(),
+		)
+		self.assertEqual(out["classification"], CLASS_STOP)
+		self.assertTrue(out["preview_only"])
+
+	def test_last_consume_takes_batch_residual(self):
+		from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import expected_movements
+
+		priced = expected_movements(
+			1899,
+			6330732319,
+			[
+				{"voucher_no": "A", "actual_qty": -47, "stock_value_difference": -156900109, "purpose": "Manufacture"},
+				{"voucher_no": "B", "actual_qty": -1852, "stock_value_difference": -6182531600, "purpose": "Manufacture"},
+			],
+		)
+		self.assertEqual(len(priced), 2)
+		self.assertTrue(priced[0]["replay_required_bool"])
+		self.assertTrue(priced[1]["replay_required_bool"])
+		self.assertLess(abs(priced[0]["expected_valuation"] + priced[1]["expected_valuation"] + 6330732319), 1)
+		self.assertAlmostEqual(priced[1]["remaining_qty_after"], 0)
+		self.assertLess(abs(priced[1]["remaining_value_after"]), 1)
+
+	def test_protected_output_skips_fg(self):
+		from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import _is_protected_output
+
+		fg = type("R", (), {"is_finished_item": 1, "is_scrap_item": 0, "secondary_item_type": "", "s_warehouse": None, "t_warehouse": "Q"})()
+		rm = type("R", (), {"is_finished_item": 0, "is_scrap_item": 0, "secondary_item_type": "", "s_warehouse": "WIP", "t_warehouse": None})()
+		self.assertTrue(_is_protected_output(fg))
+		self.assertFalse(_is_protected_output(rm))
+
+	def test_downstream_statuses_exist(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order import (
+			STATUS_DOWNSTREAM_COMPLETE,
+			STATUS_DOWNSTREAM_PENDING,
+			STATUS_DOWNSTREAM_REPLAYING,
+			STATUS_DOWNSTREAM_REPLAY_REQUIRED,
+			STATUS_DOWNSTREAM_SKIPPED,
+		)
+
+		self.assertEqual(STATUS_DOWNSTREAM_PENDING, "DOWNSTREAM_PENDING")
+		self.assertEqual(STATUS_DOWNSTREAM_REPLAY_REQUIRED, "DOWNSTREAM_REPLAY_REQUIRED")
+		self.assertEqual(STATUS_DOWNSTREAM_REPLAYING, "DOWNSTREAM_REPLAYING")
+		self.assertEqual(STATUS_DOWNSTREAM_COMPLETE, "DOWNSTREAM_COMPLETE")
+		self.assertEqual(STATUS_DOWNSTREAM_SKIPPED, "DOWNSTREAM_SKIPPED")
+
