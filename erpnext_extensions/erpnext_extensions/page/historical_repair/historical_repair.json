@@ -22,10 +22,13 @@
   },
   {
    "role": "Manufacturing Manager"
+  },
+  {
+   "role": "Administrator"
   }
  ],
  "script": null,
  "standard": "Yes",
  "style": null,
- "title": "Historical Stock Integrity & Repair"
+ "title": "Historical Repair"
 }

@@ -311,16 +311,17 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 
 | Area | Result |
 |------|--------|
-| `test_historical_stock` (unit) | PASS (48, incl. permissions L1/L2/L3, xlsx zip, snapshot jsonable, non-global repost) |
+| `test_historical_stock` (unit) | PASS (49, incl. unprivileged PermissionError, L1/L2/L3, xlsx zip, snapshot jsonable, non-global repost) |
 | `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
+| Combined unit (`test_historical_stock` + `test_stock_posting_order`) | **121 PASS**, 0 skipped |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
-| `test_scrap_absorbed_costing` | PASS |
 | `test_stock_posting_order_integration` | PASS (13, incl. Farvardin apply + SABB rate rebuild + downstream 25912/25911-1) |
-| `test_manufacture_rounding` | PASS |
-| Playwright posting-order + Farvardin repaired ledger + downstream Apr 11 + 6-tab integrity + hardening dashboard | PASS (5), no API 500 |
+| Playwright Historical Repair | **6 PASS**, 0 skipped, no API 500: navigation (direct URL / Stock Tools sidebar / workspace / Awesome Bar), hardening dashboard, 6-tab integrity, posting-order, Farvardin ledger |
 | `bench build --app erpnext_extensions` | PASS |
-| `migrate` ×2 | PASS |
+| `migrate` (navigation v1–v3 applied) | PASS |
 | Local `run_gate(full_stress=0)` | PASS (stress_scale 0.2) |
+
+Farvardin re-check (read-only, 2026-09-14): 25824-1 / 25825 / 25912 / 25911-1 integrity **PASS**. Graph `25827 → 25824-1 → 25825 → 25912 → 25911-1`. Identity outgoing **3,333,718.97**. 25741 and 25407 voucher integrity **PASS** (25741 remains a downstream dependency of 25407; do not Repair Selected in isolation).
 
 ## 15. Maintenance tool (wrong-rate + selective + UI)
 
@@ -394,8 +395,9 @@ Peak RSS ~435 MB. No writes. No global RIV.
 
 ### Remaining limitations
 
-- Scan All (dashboard, no manufacture get_doc loop) is **13.4 s** on this site (target 15 s). Full multi-engine scan with manufacture still ~16 s.
-- Wrong Rate Scan is **3.82 s** (target 3 s) because each row still runs the existing reconstruction lookups. No algorithm change.
+- Scan All (dashboard, `include_manufacture=False`) was **13.4 s** on the MVR dataset (target 15 s). After additional local gate vouchers on this site it measured **16.6 s**. No further SQL change without reducing correctness. Treat Scan All as **site-volume dependent**; document as a Known Limitation when SLE volume grows.
+- Wrong Rate Scan is **3.8–4.0 s** (target 3 s) because each row still runs the existing reconstruction lookups. No algorithm change.
+- Zero Rate Scan is **1.7–2.0 s** (target 2 s). Borderline on a busy site; keep the current engine.
 - Progress remaining time is wall-clock around one RPC, not a queued job ETA.
 - GL rebuild / RIV cannot be fully rolled back in-app — DATABASE BACKUP REQUIRED.
 - Consume SLE `valuation_rate` on 25912 / 25911-1 can still show warehouse moving-average **3,338,300** while identity outgoing is **3,333,718.97** (SABB/SBE is the identity truth).
@@ -415,11 +417,13 @@ No new repair engines. Accounting policy is unchanged. Writes stay identity-scop
 
 ### Permission matrix
 
-| | Stock Manager | System Manager | Administrator |
+| | Stock Manager / Manufacturing Manager / Accounts Manager | System Manager | Administrator |
 |---|---|---|---|
 | A read surface | Yes | Yes | Yes |
 | B writes | Hidden | Yes, after Dry Run → Impact → confirm → DATABASE BACKUP REQUIRED → Repair → Integrity → optional selective RIV | Yes, same workflow |
 | C experimental | Hidden | Hidden | Advanced Mode |
+
+Unauthorized users receive Frappe **PermissionError** (`Not permitted to use Historical Repair` on APIs; `No read permission for Page Historical Repair` on the Desk page). Never 404, blank page, or a hidden broken route.
 
 Administrator is detected before System Manager so Admin always has full access.
 
@@ -432,39 +436,70 @@ Open page → Scan All → Dashboard → choose KPI
         → Integrity → optional Repost Selected
 ```
 
+B writes never skip: Dry Run → Impact Analysis → Confirmation → DATABASE BACKUP REQUIRED → Repair → Integrity → optional selective Item+Warehouse RIV.
+
 Repost scope: Company + Warehouse + Item + Batch + Work Order + Voucher + date range. Company/date alone is rejected. Never global RIV.
 
 ### UI
 
 Sticky toolbar, grouped actions, status badges, severity KPI colors, tooltips, keyboard shortcuts (`/` search, `S` scan, `A` scan all, `D` dry run, `G` graph, `I` integrity), indeterminate progress, empty states, better scan errors. Repair buttons stay disabled until Dry Run + Impact.
 
+### Accessibility (release blocker)
+
+Historical Repair must be reachable after `bench build`, `migrate`, `clear-cache`, `clear-website-cache`, and `bench restart`.
+
+| Path | Status (development.localhost) |
+|------|--------------------------------|
+| Direct URL `/app/historical-repair` | PASS |
+| Stock workspace Tools card + Maintenance card + shortcut chip | PASS |
+| Stock sidebar Tools → Historical Repair | PASS |
+| Warehouse Control / Production Control sidebar | PASS (Page link) |
+| Awesome Bar (`Ctrl+K`, title **Historical Repair**) | PASS |
+| Page roles | Stock Manager, Manufacturing Manager, Accounts Manager, System Manager, Administrator |
+| Desk | Stock desktop icon → Stock sidebar Tools |
+| JS / CSS bundles | Loaded with the page; Playwright recorded no console errors and no HTTP 500 |
+
+Patches (idempotent): `ensure_historical_repair_navigation` + `_v2` + `_v3`.
+
+Screenshots: `docs/release_5_2_7/`.
+
+![Direct URL](docs/release_5_2_7/hsr_nav_direct_url.png)
+![Stock sidebar](docs/release_5_2_7/hsr_nav_sidebar.png)
+![Stock workspace](docs/release_5_2_7/hsr_nav_workspace.png)
+![Awesome Bar](docs/release_5_2_7/hsr_nav_awesome_bar.png)
+![Dashboard](docs/release_5_2_7/hsr_dashboard.png)
+
 ### Known limitations
 
-See §16 remaining limitations. Wrong Rate Scan still misses the 3 s target.
+See §16 remaining limitations. Wrong Rate Scan still misses the 3 s target. Scan All can exceed 15 s as SLE volume grows.
 
 ### Production checklist
 
-1. Do not push/tag from this workspace until an operator publishes.
-2. `bench build --app erpnext_extensions` then migrate twice.
-3. Production dry-run all six tabs. Review EXACT vs AMBIGUOUS.
-4. Database backup before any B write.
-5. Repair patient-zero first. Never 25741 in isolation.
-6. Repost Selected is one Item+Warehouse identity after Integrity PASS.
+1. Do not push/tag/publish from this workspace until an operator publishes.
+2. `bench build --app erpnext_extensions` then `migrate` twice, `clear-cache`, `clear-website-cache`, `bench restart`.
+3. Confirm Historical Repair opens from Stock workspace, Stock Tools sidebar, Awesome Bar, and `/app/historical-repair`.
+4. Production dry-run all six tabs. Review EXACT vs AMBIGUOUS.
+5. Database backup before any B write.
+6. Repair patient-zero first. Never 25741 in isolation.
+7. Repost Selected is one Item+Warehouse identity after Integrity PASS.
 
 ## 14. Deployment
 
-1. Do not push/tag from this workspace.
+1. Do not push/tag/publish from this workspace.
 2. `bench build --app erpnext_extensions`
-3. `bench --site <site> migrate` twice
-4. Production **dry-run only** first (all six tabs). Review EXACT vs DEPENDENCY vs AMBIGUOUS.
-5. Backup the database before any Repair Selected.
-6. Repair **patient-zero first**, never 25741 in isolation.
-7. Repost Selected is one Item+Warehouse RIV after Integrity PASS — never all stock.
+3. `bench --site <site> migrate` twice (applies Historical Repair navigation patches)
+4. `bench --site <site> clear-cache` and `clear-website-cache`, then `bench restart`
+5. Open Historical Repair from Stock workspace, sidebar Tools, Awesome Bar, and the direct URL
+6. Production **dry-run only** first (all six tabs). Review EXACT vs DEPENDENCY vs AMBIGUOUS.
+7. Backup the database before any Repair Selected.
+8. Repair **patient-zero first**, never 25741 in isolation.
+9. Repost Selected is one Item+Warehouse RIV after Integrity PASS — never all stock.
 
 ## Rollback
 
-Restore the pre-repair database backup. Do not reverse rates/timestamps by hand without SLE replay. App rollback: previous version **5.2.6**.
+Restore the pre-repair database backup. Do not reverse rates/timestamps by hand without SLE replay. App rollback: previous version **5.2.6**. In-app Rollback is experimental (Administrator Advanced Mode) and cannot reverse GL/RIV without a database backup.
 
 ## Version
 
 - `erpnext_extensions.__version__` = `5.2.7`
+- Recommended git tag (not applied in this workspace): **`v5.2.7`**

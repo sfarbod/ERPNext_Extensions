@@ -667,6 +667,20 @@ class TestImpactAndRollback(unittest.TestCase):
 
 
 class TestPermissionsAndExport(unittest.TestCase):
+	def test_unprivileged_user_gets_permission_message(self):
+		from erpnext_extensions.iran_accounting.historical_stock import permissions as perm
+
+		err = type("PermissionError", (Exception,), {})
+		fake = mock.Mock()
+		fake.session.user = "employee@x"
+		fake.get_roles.return_value = ["Employee"]
+		fake.PermissionError = err
+		fake.throw.side_effect = lambda msg, exc=None: (_ for _ in ()).throw(err(msg))
+		with mock.patch("erpnext_extensions.iran_accounting.historical_stock.permissions.frappe", fake):
+			with self.assertRaises(err) as raised:
+				perm.access_level()
+		self.assertIn("Not permitted", str(raised.exception))
+
 	def test_stock_manager_is_read_only(self):
 		from erpnext_extensions.iran_accounting.historical_stock import permissions as perm
 
