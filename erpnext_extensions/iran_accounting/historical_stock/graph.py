@@ -59,21 +59,31 @@ def repair_graph(item=None, batch=None, work_order=None, voucher=None, warehouse
 					"warehouse": r.warehouse,
 					"batch": batch,
 					"qty": r.actual_qty,
+					"rate": r.outgoing_rate if flt(r.actual_qty) < 0 else r.incoming_rate,
 					"incoming_rate": r.incoming_rate,
 					"outgoing_rate": r.outgoing_rate,
 					"work_order": r.work_order,
 					"posting_datetime": str(r.posting_datetime),
 					"status": "SUBMITTED" if r.docstatus == 1 else r.docstatus,
+					"repair_status": "SUBMITTED" if r.docstatus == 1 else r.docstatus,
+					"replay_order": len(nodes) + 1,
+					"replay_depth": 0,
 					"estimated_replay_count": 1,
 				}
 			)
 			if prev:
 				edges.append({"from": prev, "to": r.voucher_no})
 			prev = r.voucher_no
+	depth = max(0, len(nodes) - 1)
+	for i, node in enumerate(nodes):
+		node["replay_order"] = i + 1
+		node["replay_depth"] = depth - i
+		node["estimated_replay_count"] = depth - i
 	return {
 		"nodes": nodes,
 		"edges": edges,
 		"count": len(nodes),
+		"replay_depth": depth,
 		"item": item,
 		"batch": batch,
 		"work_order": work_order,

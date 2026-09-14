@@ -109,37 +109,44 @@ def classify_zero_row(row, _cache=None) -> dict:
 	detail = g(row, "name")
 
 	if g(row, "allow_zero_valuation_rate") or purpose == "Stock Reconciliation" or g(row, "voucher_type") == "Stock Reconciliation":
-		return {
-			"topic": "ZERO_RATE",
-			"voucher": parent,
-			"voucher_detail": detail,
-			"idx": g(row, "idx"),
-			"purpose": purpose,
-			"item": item,
-			"warehouse": warehouse,
-			"s_warehouse": g(row, "s_warehouse"),
-			"t_warehouse": g(row, "t_warehouse"),
-			"batch": batch,
-			"sabb": g(row, "serial_and_batch_bundle"),
-			"qty": qty,
-			"current_rate": flt(g(row, "basic_rate")),
-			"current_amount": flt(g(row, "amount")),
-			"historical_rate": 0.0,
-			"proposed_rate": 0.0,
-			"proposed_amount": 0.0,
-			"source_of_truth": "allow_zero_valuation_rate"
-			if g(row, "allow_zero_valuation_rate")
-			else "document_authoritative",
-			"confidence": CONFIDENCE_EXACT,
-			"zero_class": Z0_LEGITIMATE_ZERO,
-			"status": Z0_LEGITIMATE_ZERO,
-			"patient_zero": None,
-			"eligible": False,
-			"work_order": g(row, "work_order"),
-			"job_card": g(row, "job_card"),
-			"is_finished_item": g(row, "is_finished_item"),
-			"secondary_item_type": g(row, "secondary_item_type"),
-		}
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		return attach_rate_analysis(
+			{
+				"topic": "ZERO_RATE",
+				"voucher": parent,
+				"voucher_detail": detail,
+				"idx": g(row, "idx"),
+				"purpose": purpose,
+				"item": item,
+				"warehouse": warehouse,
+				"s_warehouse": g(row, "s_warehouse"),
+				"t_warehouse": g(row, "t_warehouse"),
+				"batch": batch,
+				"sabb": g(row, "serial_and_batch_bundle"),
+				"qty": qty,
+				"current_rate": flt(g(row, "basic_rate")),
+				"current_amount": flt(g(row, "amount")),
+				"historical_rate": 0.0,
+				"proposed_rate": 0.0,
+				"proposed_amount": 0.0,
+				"source_of_truth": "allow_zero_valuation_rate"
+				if g(row, "allow_zero_valuation_rate")
+				else "document_authoritative",
+				"confidence": CONFIDENCE_EXACT,
+				"zero_class": Z0_LEGITIMATE_ZERO,
+				"status": Z0_LEGITIMATE_ZERO,
+				"patient_zero": None,
+				"eligible": False,
+				"work_order": g(row, "work_order"),
+				"job_card": g(row, "job_card"),
+				"is_finished_item": g(row, "is_finished_item"),
+				"secondary_item_type": g(row, "secondary_item_type"),
+				"reconstruction_sources": {},
+				"rate_source": "document_authoritative",
+			},
+			row,
+		)
 
 	version_rate, version_amount = _version_rate(parent, detail)
 	batch_rate = _batch_inward_rate(item, batch, warehouse)
@@ -207,35 +214,55 @@ def classify_zero_row(row, _cache=None) -> dict:
 		status = STATUS_MANUAL_REVIEW
 
 	amount = flt(proposed) * qty
-	return {
-		"topic": "ZERO_RATE",
-		"voucher": parent,
-		"voucher_detail": detail,
-		"idx": g(row, "idx"),
-		"purpose": purpose,
-		"item": item,
-		"warehouse": warehouse,
-		"s_warehouse": g(row, "s_warehouse"),
-		"t_warehouse": g(row, "t_warehouse"),
-		"batch": batch,
-		"sabb": g(row, "serial_and_batch_bundle"),
-		"qty": qty,
-		"current_rate": flt(g(row, "basic_rate")),
-		"current_amount": flt(g(row, "amount")),
-		"historical_rate": version_rate or batch_rate or prev_sle_rate,
-		"proposed_rate": proposed,
-		"proposed_amount": amount,
-		"source_of_truth": source,
-		"confidence": confidence,
-		"zero_class": zero_class,
-		"status": status,
-		"patient_zero": patient,
-		"eligible": status == STATUS_RECONSTRUCTABLE and confidence == CONFIDENCE_EXACT,
-		"work_order": g(row, "work_order"),
-		"job_card": g(row, "job_card"),
-		"is_finished_item": g(row, "is_finished_item"),
-		"secondary_item_type": g(row, "secondary_item_type"),
-	}
+	sources = {}
+	if abs(version_rate) > RATE_EPS:
+		sources["version"] = version_rate
+	if abs(prev_sle_rate) > RATE_EPS:
+		sources["previous_healthy_sle"] = prev_sle_rate
+	if abs(batch_rate) > RATE_EPS:
+		sources["batch_inward"] = batch_rate
+	if abs(transfer_sle) > RATE_EPS:
+		sources["transfer_source"] = transfer_sle
+	if abs(issued) > RATE_EPS:
+		sources["manufacture_pool"] = issued
+	from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+	return attach_rate_analysis(
+		{
+			"topic": "ZERO_RATE",
+			"voucher": parent,
+			"voucher_detail": detail,
+			"idx": g(row, "idx"),
+			"purpose": purpose,
+			"item": item,
+			"warehouse": warehouse,
+			"s_warehouse": g(row, "s_warehouse"),
+			"t_warehouse": g(row, "t_warehouse"),
+			"batch": batch,
+			"sabb": g(row, "serial_and_batch_bundle"),
+			"qty": qty,
+			"current_rate": flt(g(row, "basic_rate")),
+			"current_amount": flt(g(row, "amount")),
+			"historical_rate": version_rate or batch_rate or prev_sle_rate,
+			"proposed_rate": proposed,
+			"proposed_amount": amount,
+			"source_of_truth": source,
+			"confidence": confidence,
+			"zero_class": zero_class,
+			"status": status,
+			"patient_zero": patient,
+			"eligible": status == STATUS_RECONSTRUCTABLE and confidence == CONFIDENCE_EXACT,
+			"work_order": g(row, "work_order"),
+			"job_card": g(row, "job_card"),
+			"is_finished_item": g(row, "is_finished_item"),
+			"secondary_item_type": g(row, "secondary_item_type"),
+			"posting_date": g(row, "posting_date"),
+			"posting_time": g(row, "posting_time"),
+			"reconstruction_sources": sources,
+			"rate_source": source,
+		},
+		row,
+	)
 
 
 def preview_zero_row(row: dict) -> dict:

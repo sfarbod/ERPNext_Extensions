@@ -287,6 +287,33 @@ def rollback_run_api(repair_run_id=None, dry_run=True):
 	return rollback_run(repair_run_id, dry_run=_dry(dry_run, True))
 
 
+@frappe.whitelist()
+def impact_analysis_api(rows=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.impact import plan_repair_impact
+
+	return plan_repair_impact(_parse(rows))
+
+
+@frappe.whitelist()
+def preview_reconstruction_api(row=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.expected import preview_reconstruction
+
+	parsed = row if isinstance(row, dict) else (_parse(row) or {})
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	return preview_reconstruction(parsed or {})
+
+
+@frappe.whitelist()
+def historical_benchmark_api(company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.benchmark import run_historical_benchmark
+
+	return run_historical_benchmark(company=company or None)
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair

@@ -12,6 +12,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	STATUS_BLOCKED,
 	STATUS_DEPENDENCY_REPAIR_REQUIRED,
 	STATUS_REPAIRED,
+	STATUS_VALUATION_POISON_DEPENDENCY,
 )
 from erpnext_extensions.iran_accounting.historical_stock.audit import append_entry, finish_run, start_run
 from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
@@ -25,13 +26,18 @@ from erpnext_extensions.iran_accounting.historical_stock.zero_rate import classi
 def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 	applied = []
 	blocked = []
+	classified_rows = []
 	log = start_run("ZERO_RATE", dry_run=dry_run)
 	frappe.flags[HISTORICAL_REPAIR_FLAG] = True
+	savepoint = None
+	closed = False
 	try:
 		for raw in rows or []:
 			try:
 				classified = classify_zero_row(_load_detail(raw))
 				merged = {**classified, **{k: v for k, v in raw.items() if v not in (None, "")}}
+				if merged.get("status") == STATUS_VALUATION_POISON_DEPENDENCY:
+					raise frappe.ValidationError("abort on poison dependency")
 				if merged.get("confidence") != CONFIDENCE_EXACT:
 					raise frappe.ValidationError("AMBIGUOUS/LIKELY rows cannot auto-write")
 				if not merged.get("eligible"):
@@ -41,37 +47,66 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 					raise frappe.ValidationError(
 						f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {patient['voucher_no']}"
 					)
-				if dry_run:
-					applied.append({**merged, "written": False, "status": "DRY_RUN"})
-					append_entry(log, merged, written=False)
-					continue
-				_write_se_row(merged)
-				_write_sle_incoming(merged)
-				replay = replay_from_patient_zero(
-					merged["item"],
-					merged["warehouse"],
-					merged.get("batch"),
-					from_dt=patient.get("posting_datetime"),
-				)
-				from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
-					sync_sabb_from_sle,
-					write_sle_transaction_rates,
-				)
-
-				write_sle_transaction_rates(merged["voucher"], merged["item"])
-				sync_sabb_from_sle(merged["voucher"], merged["item"])
-				applied.append({**merged, "written": True, "status": STATUS_REPAIRED, "replay": replay})
-				append_entry(log, {**merged, "replay": replay}, written=True)
+				classified_rows.append((raw, merged, patient))
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
+		if blocked and not dry_run:
+			finish_run(log, applied=0, blocked=len(blocked), error="aborted: no partial commits")
+			closed = True
+			return {
+				"dry_run": False,
+				"aborted": True,
+				"reason": "ambiguity, poison, or ineligible row in selection",
+				"database_backup_recommended": True,
+				"applied": [],
+				"blocked": blocked,
+				"repair_run_id": getattr(log, "repair_run_id", None),
+			}
+		if not dry_run:
+			savepoint = f"hsr_{frappe.generate_hash(length=8)}"
+			frappe.db.savepoint(savepoint)
+		from erpnext_extensions.iran_accounting.historical_stock.snapshot import capture_identity_snapshot
+
+		for raw, merged, patient in classified_rows:
+			if dry_run:
+				applied.append({**merged, "written": False, "status": "DRY_RUN", "database_backup_recommended": True})
+				append_entry(log, merged, written=False)
+				continue
+			snap = capture_identity_snapshot(merged["voucher"], merged.get("item"), merged.get("warehouse"), merged.get("batch"))
+			merged["snapshot_before"] = snap
+			merged["full_rollback_possible"] = snap.get("full_rollback_possible")
+			_write_se_row(merged)
+			_write_sle_incoming(merged)
+			replay = replay_from_patient_zero(
+				merged["item"],
+				merged["warehouse"],
+				merged.get("batch"),
+				from_dt=patient.get("posting_datetime"),
+			)
+			from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+				sync_sabb_from_sle,
+				write_sle_transaction_rates,
+			)
+
+			write_sle_transaction_rates(merged["voucher"], merged["item"])
+			sync_sabb_from_sle(merged["voucher"], merged["item"])
+			applied.append({**merged, "written": True, "status": STATUS_REPAIRED, "replay": replay})
+			append_entry(log, {**merged, "replay": replay, "snapshot_before": snap}, written=True)
+	except Exception:
+		if savepoint:
+			frappe.db.rollback(save_point=savepoint)
+		raise
 	finally:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = False
-		finish_run(log, applied=len(applied), blocked=len(blocked))
+		if not closed:
+			finish_run(log, applied=len(applied), blocked=len(blocked))
 	return {
 		"dry_run": dry_run,
 		"repair_run_id": getattr(log, "repair_run_id", None),
 		"applied": applied,
 		"blocked": blocked,
+		"database_backup_recommended": True,
+		"aborted": False,
 	}
 
 

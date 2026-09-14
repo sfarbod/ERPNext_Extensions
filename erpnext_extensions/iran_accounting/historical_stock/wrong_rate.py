@@ -56,13 +56,17 @@ def pick_reconstruction(sources: dict[str, float], *, corroborating: dict[str, f
 	primary = tried[0]
 	rate = flt(sources[primary])
 	others = [n for n in tried[1:] if abs(flt(sources[n]) - rate) <= 1]
-	if primary in ("transfer_source", "implied_svd") or others:
+	disagree = [n for n in tried[1:] if abs(flt(sources[n]) - rate) > 1]
+	if others and not disagree:
 		confidence = CONFIDENCE_EXACT
-		source = primary if not others else f"{primary}+{others[0]}"
+		source = f"{primary}+{others[0]}"
+	elif primary in ("transfer_source", "implied_svd") and not disagree:
+		confidence = CONFIDENCE_EXACT
+		source = primary
 	elif primary == "version":
 		confidence = CONFIDENCE_LIKELY
 		source = primary
-	elif primary in ("previous_healthy_sle", "batch_inward", "manufacture_pool"):
+	elif primary in ("previous_healthy_sle", "batch_inward", "manufacture_pool") and not disagree:
 		confidence = CONFIDENCE_LIKELY
 		source = primary
 	else:
@@ -139,6 +143,9 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 		row["expected"] = row.get("proposed_rate")
 		row["difference"] = flt(row.get("proposed_rate")) - flt(row.get("current_rate"))
 		row["source"] = row.get("source_of_truth")
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		row = attach_rate_analysis(row, raw)
 		key = ("SE", row.get("voucher_detail") or row.get("voucher"))
 		if key not in seen:
 			seen.add(key)
@@ -291,34 +298,44 @@ def _classify_sle_mismatch(sle, cache=None) -> dict:
 	expected = implied if use_implied else current
 	confidence = CONFIDENCE_EXACT if use_implied else (CONFIDENCE_LIKELY if flags else CONFIDENCE_AMBIGUOUS)
 	eligible = use_implied
-	return {
-		"topic": "WRONG_RATE",
-		"surface": "SLE",
-		"voucher": sle.voucher_no,
-		"voucher_detail": sle.voucher_detail_no,
-		"sle": sle.name,
-		"purpose": sle.purpose,
-		"item": sle.item_code,
-		"warehouse": sle.warehouse,
-		"batch": None,
-		"sabb": sle.serial_and_batch_bundle,
-		"qty": qty,
-		"current": current,
-		"expected": expected,
-		"difference": flt(expected) - current,
-		"source": "implied_svd" if use_implied else "scan_flag",
-		"source_of_truth": "implied_svd" if use_implied else "scan_flag",
-		"confidence": confidence,
-		"flags": flags,
-		"mismatch_class": flags[0] if flags else W_STALE_SOURCE,
-		"status": STATUS_RECONSTRUCTABLE if eligible else STATUS_MANUAL_REVIEW,
-		"eligible": eligible,
-		"patient_zero": None,
-		"work_order": sle.work_order,
-		"current_rate": current,
-		"proposed_rate": expected,
-		"historical_rate": expected,
-	}
+	from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+	return attach_rate_analysis(
+		{
+			"topic": "WRONG_RATE",
+			"surface": "SLE",
+			"voucher": sle.voucher_no,
+			"voucher_detail": sle.voucher_detail_no,
+			"sle": sle.name,
+			"purpose": sle.purpose,
+			"item": sle.item_code,
+			"warehouse": sle.warehouse,
+			"batch": None,
+			"sabb": sle.serial_and_batch_bundle,
+			"qty": qty,
+			"current": current,
+			"expected": expected,
+			"difference": flt(expected) - current,
+			"source": "implied_svd" if use_implied else "scan_flag",
+			"source_of_truth": "implied_svd" if use_implied else "scan_flag",
+			"rate_source": "implied_svd" if use_implied else "scan_flag",
+			"confidence": confidence,
+			"flags": flags,
+			"mismatch_class": flags[0] if flags else W_STALE_SOURCE,
+			"status": STATUS_RECONSTRUCTABLE if eligible else STATUS_MANUAL_REVIEW,
+			"eligible": eligible,
+			"patient_zero": None,
+			"work_order": sle.work_order,
+			"current_rate": current,
+			"proposed_rate": expected,
+			"historical_rate": expected,
+			"current_incoming_rate": flt(sle.incoming_rate),
+			"current_outgoing_rate": flt(sle.outgoing_rate),
+			"current_valuation_rate": flt(sle.valuation_rate),
+			"reconstruction_sources": {"implied_svd": implied} if abs(implied) > RATE_EPS else {},
+		},
+		sle,
+	)
 
 
 def _count(rows, key):

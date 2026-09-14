@@ -24,6 +24,26 @@
 	gap: 8px;
 	margin-bottom: 12px;
 }
+.historical-repair-page .hr-kpi {
+	border: 1px solid var(--border-color);
+	border-radius: 10px;
+	padding: 8px 12px;
+	min-width: 110px;
+	background: var(--fg-color);
+	text-align: left;
+	cursor: pointer;
+}
+.historical-repair-page .hr-kpi-label {
+	display: block;
+	font-size: 11px;
+	color: var(--text-muted);
+}
+.historical-repair-page .hr-kpi-value {
+	font-size: 16px;
+}
+.historical-repair-page .hr-kpi-score {
+	border-color: var(--primary);
+}
 .historical-repair-page .hr-chip {
 	border: 1px solid var(--border-color);
 	border-radius: 16px;
@@ -72,6 +92,9 @@
 	top: 0;
 	z-index: 3;
 	background: var(--subtle-fg);
+	resize: horizontal;
+	overflow: hidden;
+	min-width: 72px;
 }
 .historical-repair-page table.hr-table th:first-child,
 .historical-repair-page table.hr-table td:first-child {
@@ -159,4 +182,44 @@
 }
 .historical-repair-page .hr-tab {
 	border-radius: 4px;
+}
+.historical-repair-page .hr-recon {
+	white-space: pre-wrap;
+	background: var(--bg-light-gray);
+	padding: 12px;
+	border-radius: 6px;
+	margin-top: 12px;
+	font-family: var(--font-stack);
+	font-size: 12px;
+	min-height: 40px;
+}
+.historical-repair-page .hr-graph-edge {
+	margin: 2px 0 2px 12px;
+	color: var(--text-muted);
+}
+.historical-repair-page .hr-graph-meta {
+	color: var(--text-muted);
+	margin-bottom: 6px;
+}
+.historical-repair-page .hr-col-filter {
+	width: 100%;
+	min-width: 64px;
+	font-size: 11px;
+	padding: 2px 4px;
+}
+.historical-repair-page .hr-columns {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+.historical-repair-page .hr-col-choice {
+	font-size: 12px;
+	margin-right: 8px;
+}
+.historical-repair-page .hr-filter-row th {
+	top: 28px;
+	position: sticky;
+	z-index: 3;
+	background: var(--subtle-fg);
 }

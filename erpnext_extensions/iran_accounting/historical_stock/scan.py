@@ -45,6 +45,40 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		key = pz.get("voucher_no")
 		if key:
 			patients[key] = patients.get(key, 0) + 1
+	replay = _replay_kpis()
+	zero_n = zero.get("count") or 0
+	wrong_n = wrong.get("count") or 0
+	posting_n = len(posting.get("rows") or [])
+	gl_n = gl.get("count") or 0
+	bin_n = len(sle.get("bin_mismatches") or [])
+	riv_n = riv.get("count") or 0
+	sabb_n = _broken_sabb()
+	repairable = (wrong.get("repairable") or 0) + exact
+	penalty = posting_n * 0.25 + zero_n * 0.5 + wrong_n + sabb_n + bin_n + gl_n * 1.5 + riv_n * 1.5
+	from math import log10
+
+	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
+	dashboard = {
+		"Integrity Score": integrity_score,
+		"Zero Rate": zero_n,
+		"Wrong Rate": wrong_n,
+		"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
+		"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
+		"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
+		"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
+		"Wrong Avg": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+		"Broken SABB": sabb_n,
+		"Broken Bin": bin_n,
+		"Broken GL": gl_n,
+		"Failed RIV": riv_n,
+		"Patient Zero": len(patients),
+		"Repairable": repairable,
+		"Manual": (wrong.get("manual") or 0) + likely,
+		"Ambiguous": (wrong.get("ambiguous") or 0) + ambiguous,
+		"Replay Pending": replay["pending"],
+		"Replay Complete": replay["complete"],
+		"Average Replay Time": replay["average_s"],
+	}
 	return {
 		"start_local": start.isoformat(timespec="seconds"),
 		"end_local": end.isoformat(timespec="seconds"),
@@ -82,22 +116,50 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"failed_riv": {"count": riv.get("count"), "by_status": riv.get("by_status")},
 		"patient_zero_vouchers": patients,
 		"patient_zero_count": len(patients),
-		"dashboard": {
-			"Posting Order": len(posting.get("rows") or []),
-			"Zero Rate": zero.get("count") or 0,
-			"Wrong Rate": wrong.get("count") or 0,
-			"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
-			"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
-			"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
-			"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
-			"Wrong Avg Rate": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
-			"Broken SABB": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
-			"Broken Bin": len(sle.get("bin_mismatches") or []),
-			"Broken GL": gl.get("count") or 0,
-			"Failed RIV": riv.get("count") or 0,
-			"Patient Zero": len(patients),
-			"Repairable": (wrong.get("repairable") or 0) + exact,
-			"Manual": (wrong.get("manual") or 0) + likely,
-			"Ambiguous": (wrong.get("ambiguous") or 0) + ambiguous,
-		},
+		"dashboard": dashboard,
 	}
+
+
+def _broken_sabb() -> int:
+	import frappe
+
+	try:
+		return int(
+			frappe.db.sql(
+				"""
+				SELECT COUNT(*) FROM (
+					SELECT sabb.name
+					FROM `tabSerial and Batch Bundle` sabb
+					JOIN `tabStock Ledger Entry` sle
+						ON sle.serial_and_batch_bundle=sabb.name AND sle.is_cancelled=0
+					WHERE ABS(IFNULL(sabb.avg_rate,0)) > 0.0001
+					  AND ABS(
+					        IFNULL(sabb.avg_rate,0)
+					        - IFNULL(IF(sle.actual_qty<0, sle.outgoing_rate, sle.incoming_rate),0)
+					      ) > 1
+					LIMIT 500
+				) t
+				"""
+			)[0][0]
+			or 0
+		)
+	except Exception:
+		return 0
+
+
+def _replay_kpis() -> dict:
+	import frappe
+
+	if not frappe.db.exists("DocType", "Historical Stock Repair Log"):
+		return {"pending": 0, "complete": 0, "average_s": 0}
+	pending = frappe.db.count("Historical Stock Repair Log", {"status": "In Progress"})
+	complete = frappe.db.count("Historical Stock Repair Log", {"status": "Completed"})
+	avg = frappe.db.sql(
+		"""
+		SELECT AVG(TIMESTAMPDIFF(SECOND, started_on, ended_on))
+		FROM `tabHistorical Stock Repair Log`
+		WHERE status='Completed' AND started_on IS NOT NULL AND ended_on IS NOT NULL
+		"""
+	)[0][0]
+	return {"pending": pending, "complete": complete, "average_s": round(float(avg or 0), 2)}
+

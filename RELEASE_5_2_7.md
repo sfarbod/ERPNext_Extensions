@@ -311,13 +311,13 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 
 | Area | Result |
 |------|--------|
-| `test_historical_stock` (unit) | PASS (32, incl. wrong-rate / reconstruction priority) |
+| `test_historical_stock` (unit) | PASS (38, incl. expected-rate columns, impact text, disagreeing sources) |
 | `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
 | `test_stock_posting_order_integration` | PASS (13, incl. Farvardin apply + SABB rate rebuild + downstream 25912/25911-1) |
 | `test_manufacture_rounding` | PASS |
-| Playwright posting-order + Farvardin repaired ledger + downstream Apr 11 + 6-tab integrity | PASS (4), no API 500 |
+| Playwright posting-order + Farvardin repaired ledger + downstream Apr 11 + 6-tab integrity + hardening dashboard | PASS (5), no API 500 |
 | `bench build --app erpnext_extensions` | PASS |
 | `migrate` ×2 | PASS |
 | Local `run_gate(full_stress=1)` | PASS (stress 148.29 s; RIV×2; 03516; flows) |
@@ -355,11 +355,50 @@ Confidence: EXACT / LIKELY / AMBIGUOUS / MANUAL. Only EXACT auto-repairs.
 3. Dry Run / Preview (Repair Selected stays disabled until Dry Run).
 4. Repair Selected / Replay Downstream / Rebuild Affected Documents (each dry-runs first).
 5. Integrity Check. Selective RIV only if identity is healthy.
-6. Repair History / Rollback (snapshot restore of SE rates). Resume open run.
+6. Repair History / Rollback (SE/SLE/SABB/SBE/Bin/GL snapshots when captured; otherwise DATABASE BACKUP REQUIRED). Resume open run.
 
 ### Farvardin re-validation (this phase)
 
 Batch `504135-30300042-AK264401A11`: 25824-1 / 25825 / 25912 / 25911-1 — posting order intact, outgoing/incoming/SABB at reconstructed **3,333,718.97**, SVD value-neutral on transfer, FG residual preserved, pair+downstream integrity PASS. Graph nodes include that chain (plus earlier Reject `25827`).
+
+## 16. Production hardening (expected rates, impact, rollback, KPI)
+
+This phase does not change accounting policy. It makes Historical Repair operator-safe.
+
+| Gap | Implementation |
+|-----|----------------|
+| Expected Rate Analysis | Scan rows carry current/expected basic, valuation, incoming, outgoing, amount, difference, source, confidence, repair required. Reconstruction never uses Bin. |
+| Impact Analysis | `impact.plan_repair_impact` runs before Repair Selected. Operator must confirm. Always shows DATABASE BACKUP REQUIRED. |
+| Rollback | `snapshot.capture_identity_snapshot` stores SE/SLE/SABB/SBE/Bin/GL before write. Incomplete snapshots abort in-app rollback. |
+| Dashboard | Integrity Score + Wrong Rate family + SABB/Bin/GL/RIV + Replay Pending/Complete + Average Replay Time. |
+| Reconstruction preview | Selected row shows Current → Expected → Difference → chosen source → alternatives. Disagreeing sources are LIKELY/AMBIGUOUS, never silent EXACT. |
+| Safety | Write batches abort on AMBIGUOUS/poison (no partial commits). Savepoint per apply. Default Dry Run. |
+
+### Benchmark (development.localhost, read-only)
+
+| Operation | Elapsed | Rows | Rows/s | CPU user | MariaDB questions |
+|-----------|---------|------|--------|----------|-------------------|
+| Full Scan | 16.410 s | — | — | 3.38 s | 25530 |
+| Wrong Rate Scan | 3.862 s | 2001 | 518 | 0.68 s | 8844 |
+| Posting Order Scan | 3.365 s | 918 | 273 | 1.07 s | 29 |
+| Zero Rate Scan | 1.763 s | 616 | 349 | 0.24 s | 3283 |
+| Replay Planner | 0.135 s | 3 | 22 | 0.00 s | 7 |
+| Identity Replay (dry) | 0.003 s | 1 | 351 | 0.00 s | 4 |
+| Bin Rebuild (scan) | 0.973 s | 566 | 582 | 0.17 s | 503 |
+| GL Rebuild (scan) | 0.204 s | 3 | 15 | 0.01 s | 249 |
+| Selective RIV (preview) | 0.031 s | — | — | 0.01 s | 159 |
+| Dry Run | 3.232 s | 72 | 22 | 0.94 s | 29 |
+| Integrity (Farvardin×4) | 0.005 s | 4 | 740 | 0.00 s | 25 |
+
+Peak RSS ~435 MB. No writes. No global RIV.
+
+### Remaining limitations
+
+- Full Scan was **16.4 s** (target 15 s for 100k SLE; this run is multi-engine, not a 100k SLE-only scan).
+- Export Excel is UTF-8 BOM CSV, not xlsx.
+- Progress remaining time is wall-clock around one RPC, not a queued job ETA.
+- GL rebuild / RIV cannot be fully rolled back in-app — DATABASE BACKUP REQUIRED.
+- Consume SLE `valuation_rate` on 25912 / 25911-1 can still show warehouse moving-average **3,338,300** while identity outgoing is **3,333,718.97** (SABB/SBE is the identity truth).
 
 ## 14. Deployment
 

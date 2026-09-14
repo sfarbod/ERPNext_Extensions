@@ -567,6 +567,93 @@ class TestWrongRateContract(unittest.TestCase):
 		with self.assertRaises(Exception):
 			require_scope({})
 
+	def test_disagreeing_sources_are_not_exact(self):
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import pick_reconstruction
+
+		picked = pick_reconstruction({"version": 118700, "purchase_receipt": 118650})
+		self.assertNotEqual(picked["confidence"], "EXACT")
+
+
+class TestExpectedRateAnalysis(unittest.TestCase):
+	def test_scan_columns_current_expected_difference(self):
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		row = attach_rate_analysis(
+			{
+				"qty": 10,
+				"current_rate": 0,
+				"proposed_rate": 118700,
+				"proposed_amount": 1187000,
+				"eligible": True,
+				"confidence": "EXACT",
+				"source_of_truth": "version+batch_inward",
+				"t_warehouse": "Stores",
+				"reconstruction_sources": {"version": 118700, "batch_inward": 118700},
+			},
+			{"basic_rate": 0, "valuation_rate": 0, "amount": 0, "qty": 10, "t_warehouse": "Stores"},
+		)
+		self.assertEqual(row["current_basic_rate"], 0)
+		self.assertEqual(row["expected_basic_rate"], 118700)
+		self.assertEqual(row["difference"], 118700)
+		self.assertEqual(row["rate_source"], "version+batch_inward")
+		self.assertTrue(row["repair_required"])
+		self.assertFalse(row["sources_disagree"])
+
+	def test_preview_shows_alternatives_and_disagreement(self):
+		from erpnext_extensions.iran_accounting.historical_stock.expected import preview_reconstruction
+
+		out = preview_reconstruction(
+			{
+				"current": 0,
+				"reconstruction_sources": {"version": 118700, "purchase_receipt": 118650, "batch_inward": 118700},
+			}
+		)
+		self.assertTrue(out["sources_disagree"])
+		self.assertNotEqual(out["confidence"], "EXACT")
+		self.assertGreaterEqual(len(out["alternative_sources"]), 2)
+		self.assertFalse(out["bin_used"])
+
+	def test_bin_never_in_preview(self):
+		from erpnext_extensions.iran_accounting.historical_stock.expected import preview_reconstruction
+
+		out = preview_reconstruction({"current": 1, "reconstruction_sources": {"bin": 99, "transfer_source": 50}})
+		self.assertFalse(out["bin_used"])
+		self.assertEqual(out["chosen_source"], "transfer_source")
+
+
+class TestImpactAndRollback(unittest.TestCase):
+	def test_impact_text_requires_confirmation_and_backup(self):
+		from erpnext_extensions.iran_accounting.historical_stock.impact import format_impact
+
+		text = format_impact(
+			{
+				"repairing": ["MAT-STE-2026-25407"],
+				"stock_entries": 12,
+				"sle": 51,
+				"sabb": 17,
+				"sbe": 17,
+				"bin": 3,
+				"gl": 5,
+				"failed_riv": 2,
+				"estimated_replay_seconds": 14,
+				"estimated_sql_updates": 93,
+				"estimated_replay_depth": 4,
+				"replay_chain": ["25407", "25715", "25716", "25741", "25912", "25911"],
+				"full_rollback_possible": False,
+			}
+		)
+		self.assertIn("DATABASE BACKUP REQUIRED", text)
+		self.assertIn("25407", text)
+		self.assertIn("51 SLE", text)
+		self.assertIn("Nothing executes before operator confirmation", text)
+
+	def test_truncated_snapshot_refuses_write_rollback(self):
+		from erpnext_extensions.iran_accounting.historical_stock.snapshot import restore_snapshot
+
+		out = restore_snapshot({"truncated": True, "full_rollback_possible": False}, dry_run=True)
+		self.assertFalse(out["full_rollback_possible"])
+		self.assertIn("DATABASE BACKUP REQUIRED", out["warning"])
+
 
 if __name__ == "__main__":
 	unittest.main()

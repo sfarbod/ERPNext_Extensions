@@ -30,6 +30,9 @@ class HistoricalRepairPage {
 		this.visible_rows = [];
 		this.sort_keys = [];
 		this.cancelled = false;
+		this.hidden_cols = new Set();
+		this.col_filters = {};
+		this.last_impact = null;
 		this.$body = $(page.body);
 		this.render();
 	}
@@ -94,15 +97,18 @@ class HistoricalRepairPage {
 		this.$tools = $('<div class="hr-grid-tools">').appendTo(this.$body);
 		this.$search = $('<input class="form-control input-sm hr-search" data-role="search" placeholder="Search">').appendTo(this.$tools);
 		this.$search.on("input", () => this.render_table());
-		["Select All", "Unselect All", "Select EXACT", "Select Repairable", "Select Visible Rows"].forEach((label) => {
+		["Select All", "Unselect All", "Select EXACT", "Select Repairable", "Select Visible Rows", "Select Current Page"].forEach((label) => {
 			this._btn(this.$tools, label.toLowerCase().replace(/\s+/g, "-"), __(label), () => this.select_by(label));
 		});
+		this._btn(this.$tools, "columns", __("Columns"), () => this.toggle_columns());
 		this._btn(this.$tools, "export-csv", __("Export CSV"), () => this.export_grid("csv"));
 		this._btn(this.$tools, "export-excel", __("Export Excel"), () => this.export_grid("excel"));
 		this._btn(this.$tools, "copy-selected", __("Copy selected"), () => this.copy_selected());
+		this.$columns = $('<div class="hr-columns" data-role="columns" style="display:none">').appendTo(this.$body);
 		this.$progress = $('<div class="hr-progress"><div class="hr-progress-bar"></div></div>').appendTo(this.$body);
 		this.$eta = $('<div class="text-muted" data-role="eta">').appendTo(this.$body);
 		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$body);
+		this.$recon = $('<div class="hr-recon" data-role="reconstruction">').appendTo(this.$body);
 		this.$graph = $('<div class="hr-graph" data-role="graph">').appendTo(this.$body);
 		this.$preview = $('<pre class="hr-preview" data-role="preview">').appendTo(this.$body);
 		this.switch_topic(this.topic);
@@ -158,11 +164,14 @@ class HistoricalRepairPage {
 			riv: [`${this.api}.scan_failed_riv_api`, {}],
 		};
 		const [method, args] = map[this.topic];
+		this.start_progress();
 		frappe.call({
 			method,
 			args,
 			freeze: true,
 			callback: (r) => {
+				this.end_progress();
+				if (this.cancelled) return;
 				const msg = r.message || {};
 				this.rows = msg.rows || msg || [];
 				if (!Array.isArray(this.rows)) this.rows = [];
@@ -171,6 +180,7 @@ class HistoricalRepairPage {
 				this.render_table();
 				this.$preview.text(__("Scan complete. Run Dry Run before repairing."));
 			},
+			error: () => this.end_progress(),
 		});
 	}
 
@@ -210,6 +220,27 @@ class HistoricalRepairPage {
 			frappe.msgprint(__("Select at least one eligible EXACT row."));
 			return;
 		}
+		frappe.call({
+			method: `${this.api}.impact_analysis_api`,
+			args: { rows: rows.length ? rows : this.selected_rows() },
+			freeze: true,
+			callback: (ir) => {
+				const impact = ir.message || {};
+				this.last_impact = impact;
+				this.$preview.text(impact.preview_text || JSON.stringify(impact, null, 2));
+				if (impact.aborted) {
+					frappe.msgprint(__("Repair aborted: ambiguity or poison dependency. Nothing executed."));
+					return;
+				}
+				const warn = impact.full_rollback_possible
+					? __("Database backup recommended. Apply this identity-scoped repair?")
+					: __("DATABASE BACKUP REQUIRED. Full in-app rollback is not possible. Continue?");
+				frappe.confirm(warn + "\n\n" + (impact.preview_text || ""), () => this._execute_repair(rows));
+			},
+		});
+	}
+
+	_execute_repair(rows) {
 		let method;
 		let args;
 		if (this.topic === "posting") {
@@ -372,13 +403,18 @@ class HistoricalRepairPage {
 	render_dashboard(dash) {
 		this.$dashboard.empty();
 		Object.entries(dash).forEach(([label, n]) => {
-			const $chip = $('<button type="button" class="hr-chip">').text(label).append($("<b>").text(n));
+			const $chip = $('<button type="button" class="hr-kpi">')
+				.append($('<span class="hr-kpi-label">').text(label))
+				.append($('<b class="hr-kpi-value">').text(n));
+			if (label === "Integrity Score") $chip.addClass("hr-kpi-score");
 			$chip.on("click", () => {
 				if (/Posting/i.test(label)) this.switch_topic("posting");
-				else if (/Zero|Wrong|Rate|Amount|Incoming|Outgoing|Avg/i.test(label)) this.switch_topic("zero");
+				else if (/Zero|Wrong|Rate|Amount|Incoming|Outgoing|Avg|Patient|Repairable|Manual|Ambiguous/i.test(label))
+					this.switch_topic("zero");
 				else if (/Bin|SABB/i.test(label)) this.switch_topic("sle");
 				else if (/GL/i.test(label)) this.switch_topic("gl");
-				else if (/RIV/i.test(label)) this.switch_topic("riv");
+				else if (/RIV|Replay/i.test(label)) this.switch_topic("riv");
+				else return;
 				this.scan();
 			});
 			this.$dashboard.append($chip);
@@ -394,7 +430,7 @@ class HistoricalRepairPage {
 			else if (mode === "Unselect All") on = false;
 			else if (mode === "Select EXACT") on = row.confidence === "EXACT";
 			else if (mode === "Select Repairable") on = !!row.eligible;
-			else if (mode === "Select Visible Rows") on = true;
+			else if (mode === "Select Visible Rows" || mode === "Select Current Page") on = true;
 			el.checked = on;
 		});
 	}
@@ -439,10 +475,29 @@ class HistoricalRepairPage {
 				const g = r.message || {};
 				const $box = this.$graph.empty();
 				(g.nodes || []).forEach((n, i) => {
-					if (i) $box.append(document.createTextNode(" → "));
-					const $a = $('<a class="hr-link">').text(n.voucher).attr("title", `${n.purpose || ""} ${n.item || ""}`);
+					if (i) $box.append($('<div class="hr-graph-edge">').text("↓"));
+					const $a = $('<a class="hr-link hr-graph-node">').text(n.voucher);
+					$a.attr(
+						"title",
+						[
+							n.purpose,
+							n.item,
+							n.warehouse,
+							n.batch,
+							`qty ${n.qty}`,
+							`rate ${n.rate}`,
+							`order ${n.replay_order}`,
+							`depth ${n.replay_depth}`,
+							n.repair_status,
+						]
+							.filter(Boolean)
+							.join(" · ")
+					);
 					$a.on("click", () => frappe.set_route("Form", "Stock Entry", n.voucher));
-					$box.append($a);
+					const $meta = $("<div class='hr-graph-meta'>").text(
+						`${n.purpose || ""} · ${n.item || ""} · ${n.warehouse || ""} · ${n.batch || ""} · qty ${n.qty ?? ""} · rate ${n.rate ?? ""} · #${n.replay_order ?? ""} · depth ${n.replay_depth ?? ""} · ${n.repair_status || n.status || ""}`
+					);
+					$box.append($("<div>").append($a).append($meta));
 				});
 				this.$preview.text(JSON.stringify(g, null, 2));
 			},
@@ -501,6 +556,10 @@ class HistoricalRepairPage {
 		if (msg.timing) {
 			lines.push(`start_local: ${msg.timing.start_local || msg.start_local || ""}`);
 			lines.push(`elapsed_seconds: ${msg.timing.elapsed_seconds || msg.duration_s || ""}`);
+		}
+		if (msg.dashboard) {
+			lines.push("Dashboard");
+			Object.entries(msg.dashboard).forEach(([k, v]) => lines.push(`${k}: ${v}`));
 		}
 		if (msg.summary) {
 			lines.push(`same_time_groups: ${msg.summary.same_time_groups || 0}`);
@@ -684,15 +743,20 @@ class HistoricalRepairPage {
 				__("Item"),
 				__("Warehouse"),
 				__("Batch/SABB"),
-				__("Current Rate"),
-				__("Historical Rate"),
-				__("Proposed Rate"),
-				__("Source of Truth"),
-				__("Flags"),
-				__("Current"),
-				__("Expected"),
+				__("Current Basic Rate"),
+				__("Expected Basic Rate"),
+				__("Current Valuation Rate"),
+				__("Expected Valuation Rate"),
+				__("Current Incoming"),
+				__("Expected Incoming"),
+				__("Current Outgoing"),
+				__("Expected Outgoing"),
+				__("Current Amount"),
+				__("Expected Amount"),
 				__("Difference"),
+				__("Rate Source"),
 				__("Confidence"),
+				__("Repair Required"),
 				__("Patient Zero"),
 				__("Status"),
 			];
@@ -736,15 +800,20 @@ class HistoricalRepairPage {
 				row.item,
 				row.warehouse,
 				row.batch,
-				row.current_rate,
-				row.historical_rate,
-				row.proposed_rate,
-				row.source_of_truth,
-				(row.flags || []).join(",") || row.mismatch_class || "",
-				row.current ?? row.current_rate,
-				row.expected ?? row.proposed_rate,
+				row.current_basic_rate ?? row.current_rate,
+				row.expected_basic_rate ?? row.proposed_rate,
+				row.current_valuation_rate,
+				row.expected_valuation_rate,
+				row.current_incoming_rate,
+				row.expected_incoming_rate,
+				row.current_outgoing_rate,
+				row.expected_outgoing_rate,
+				row.current_amount,
+				row.expected_amount,
 				row.difference,
+				row.rate_source || row.source_of_truth,
 				row.confidence,
+				row.repair_required ? "YES" : "NO",
 				(row.patient_zero && row.patient_zero.voucher_no) || "",
 				row.status,
 			];
@@ -763,7 +832,9 @@ class HistoricalRepairPage {
 		const q = (this.$search && this.$search.val() ? this.$search.val() : "").toLowerCase();
 		const $table = $('<table class="hr-table" data-role="posting-order-table">');
 		const $head = $("<tr>");
+		const $filters = $("<tr class='hr-filter-row'>");
 		cols.forEach((c, i) => {
+			if (this.hidden_cols.has(i)) return;
 			const $th = $("<th>").text(c.trim());
 			if (i > 0) {
 				$th.css("cursor", "pointer").on("click", () => {
@@ -772,13 +843,27 @@ class HistoricalRepairPage {
 				});
 			}
 			$head.append($th);
+			const $inp = $('<input class="form-control input-xs hr-col-filter">').attr("data-col", i).val(this.col_filters[i] || "");
+			$inp.on("input", (e) => {
+				e.stopPropagation();
+				this.col_filters[i] = e.target.value;
+				this.render_table();
+			});
+			$inp.on("click", (e) => e.stopPropagation());
+			$filters.append($("<th>").append(i === 0 ? "" : $inp));
 		});
-		$table.append($("<thead>").append($head));
+		$table.append($("<thead>").append($head).append($filters));
 		const $body = $("<tbody>");
 		let rows = (this.rows || []).map((row, idx) => ({ row, idx }));
 		if (q) {
 			rows = rows.filter(({ row }) => JSON.stringify(row).toLowerCase().includes(q));
 		}
+		Object.entries(this.col_filters || {}).forEach(([i, val]) => {
+			if (!val) return;
+			const col = parseInt(i, 10) - 1;
+			const needle = String(val).toLowerCase();
+			rows = rows.filter(({ row }) => String(this.cells_for_row(row)[col] || "").toLowerCase().includes(needle));
+		});
 		if (this.sort_keys && this.sort_keys[0]) {
 			const { i, dir } = this.sort_keys[0];
 			rows.sort((a, b) => {
@@ -788,13 +873,14 @@ class HistoricalRepairPage {
 			});
 		}
 		rows.forEach(({ row, idx }) => {
-			const $tr = $("<tr>").attr("title", row.reason || row.dependency_reason || (row.flags || []).join(", ") || row.status || "");
+			const $tr = $("<tr>").attr("title", row.reason || row.dependency_reason || (row.flags || []).join(", ") || row.rate_source || row.status || "");
 			const $cb = $('<input type="checkbox">')
 				.attr("data-idx", idx)
 				.attr("data-eligible", row.eligible ? "1" : "0");
 			if (row.eligible) $cb.prop("checked", true);
 			$tr.append($("<td>").append($cb));
 			this.cells_for_row(row).forEach((val, i, arr) => {
+				if (this.hidden_cols.has(i + 1)) return;
 				const $td = $("<td>");
 				const s = val == null ? "" : String(val);
 				if (/^MAT-STE-/.test(s) || (i < 3 && this.topic === "posting" && s && i <= 2)) {
@@ -808,6 +894,10 @@ class HistoricalRepairPage {
 				}
 				$tr.append($td);
 			});
+			$tr.on("click", (e) => {
+				if (e.target && e.target.type === "checkbox") return;
+				this.show_reconstruction(row);
+			});
 			$body.append($tr);
 		});
 		$table.append($body);
@@ -815,5 +905,74 @@ class HistoricalRepairPage {
 		if (!this.rows.length) {
 			this.$table.append($("<p>").text(__("No anomalies in this topic.")));
 		}
+	}
+
+	toggle_columns() {
+		const cols = this.columns_for_topic();
+		this.$columns.toggle().empty();
+		cols.forEach((c, i) => {
+			if (!i) return;
+			const $lab = $("<label class='hr-col-choice'>");
+			const $cb = $('<input type="checkbox">').prop("checked", !this.hidden_cols.has(i));
+			$cb.on("change", () => {
+				if ($cb.prop("checked")) this.hidden_cols.delete(i);
+				else this.hidden_cols.add(i);
+				this.render_table();
+			});
+			$lab.append($cb).append(document.createTextNode(" " + c));
+			this.$columns.append($lab);
+		});
+	}
+
+	show_reconstruction(row) {
+		frappe.call({
+			method: `${this.api}.preview_reconstruction_api`,
+			args: { row },
+			callback: (r) => {
+				const p = r.message || {};
+				const alts = (p.alternative_sources || [])
+					.map((s) => `${s.source}\n${s.rate}`)
+					.join("\n\n");
+				const lines = [
+					"Rate Reconstruction Preview",
+					"",
+					`Current`,
+					`${p.current}`,
+					"↓",
+					"Expected",
+					`${p.expected}`,
+					"↓",
+					"Difference",
+					`${p.difference}`,
+					"↓",
+					"Chosen Source",
+					`${p.chosen_source || ""}`,
+					"",
+					"Alternative Sources",
+					alts || "(none)",
+					"",
+					`Final ${p.expected}`,
+					`Confidence ${p.confidence}`,
+				];
+				if (p.sources_disagree) lines.push("Sources disagree — not auto-repaired.");
+				if (p.bin_used) lines.push("ERROR: Bin was used");
+				this.$recon.text(lines.join("\n"));
+			},
+		});
+	}
+
+	start_progress() {
+		this.cancelled = false;
+		this._progress_t0 = Date.now();
+		this.$progress.show();
+		this.$progress.find(".hr-progress-bar").css("width", "15%");
+		this.$eta.text(__("Working…"));
+	}
+
+	end_progress() {
+		this.$progress.find(".hr-progress-bar").css("width", "100%");
+		const elapsed = this._progress_t0 ? ((Date.now() - this._progress_t0) / 1000).toFixed(1) : "";
+		this.$eta.text(elapsed ? __("Elapsed {0}s", [elapsed]) : "");
+		setTimeout(() => this.$progress.hide().find(".hr-progress-bar").css("width", "0"), 400);
 	}
 }
