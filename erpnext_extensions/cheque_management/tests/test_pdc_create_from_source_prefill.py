@@ -117,14 +117,14 @@ class TestPdcCreateFromSourcePrefill(unittest.TestCase):
 		self.assertEqual(row.get("reference_doctype"), "Purchase Invoice")
 		self.assertEqual(row.get("reference_name"), "PINV-1")
 
-	def test_create_from_payment_request_to_invoice_sets_source_trace_and_nonzero_amount(self):
+	def test_create_from_payment_request_to_invoice_allocates_to_payment_request(self):
+		"""Invoice-based PR: allocate to the PR itself (capacity key); do not unwrap to PI."""
+
 		def _get_value(dt, nm, fields, **kw):
 			if dt == "Payment Request" and fields == ["docstatus", "workflow_state"]:
 				return {"docstatus": 1, "workflow_state": "Approved"}
 			if dt == "Payment Request" and fields == ["payment_request_type", "party_type", "party"]:
 				return {"payment_request_type": "Outward", "party_type": "Supplier", "party": "SUP-1"}
-			if dt == "Payment Request" and fields == ["reference_doctype", "reference_name"]:
-				return {"reference_doctype": "Purchase Invoice", "reference_name": "PINV-1"}
 			return None
 
 		fake_db = type(
@@ -148,10 +148,49 @@ class TestPdcCreateFromSourcePrefill(unittest.TestCase):
 
 		self.assertTrue(out.get("can_create"))
 		prefill = out.get("prefill") or {}
+		self.assertEqual(prefill.get("reference_doctype"), "Payment Request")
+		self.assertEqual(prefill.get("reference_name"), "PR-1")
 		self.assertEqual(len(prefill.get("allocations") or []), 1)
 		row = (prefill.get("allocations") or [None])[0] or {}
 		self.assertGreater(float(row.get("amount") or 0), 0)
-		self.assertEqual(row.get("source_doctype"), "Payment Request")
-		self.assertEqual(row.get("source_name"), "PR-1")
-		self.assertEqual(row.get("reference_doctype"), "Purchase Invoice")
-		self.assertEqual(row.get("reference_name"), "PINV-1")
+		self.assertEqual(row.get("reference_doctype"), "Payment Request")
+		self.assertEqual(row.get("reference_name"), "PR-1")
+		self.assertFalse(row.get("source_doctype"))
+		self.assertFalse(row.get("source_name"))
+
+	def test_create_from_payment_request_purchase_order_allows_pdc_without_fake_pi(self):
+		"""PO-based Payment Request must be creatable; allocation stays on PR (no fabricated PI)."""
+
+		def _get_value(dt, nm, fields, **kw):
+			if dt == "Payment Request" and fields == ["docstatus", "workflow_state"]:
+				return {"docstatus": 1, "workflow_state": "Approved"}
+			if dt == "Payment Request" and fields == ["payment_request_type", "party_type", "party"]:
+				return {"payment_request_type": "Outward", "party_type": "Supplier", "party": "SUP-1"}
+			return None
+
+		fake_db = type(
+			"DB", (), {"exists": staticmethod(lambda dt, nm: True), "get_value": staticmethod(_get_value)}
+		)()
+		fake_frappe = type("F", (), {"db": fake_db, "has_permission": staticmethod(lambda *a, **k: True)})()
+
+		with (
+			_ThrowCtx(),
+			patch.object(pdc_src, "frappe", fake_frappe),
+			patch(
+				"erpnext_extensions.cheque_management.pdc_create_from_source.get_settlement_summary_for_reference",
+				return_value={"company": "_TC", "currency": "IRR", "remaining_balance": 2640000000.0},
+			),
+			patch(
+				"erpnext_extensions.cheque_management.pdc_create_from_source.is_payment_request_settlement_eligible",
+				return_value=True,
+			),
+		):
+			out = pdc_src.prepare_post_dated_cheque_prefill_from_source(
+				"Payment Request", "ACC-PRQ-2026-00412"
+			)
+
+		self.assertTrue(out.get("can_create"), out.get("message"))
+		row = ((out.get("prefill") or {}).get("allocations") or [None])[0] or {}
+		self.assertEqual(row.get("reference_doctype"), "Payment Request")
+		self.assertEqual(row.get("reference_name"), "ACC-PRQ-2026-00412")
+		self.assertNotEqual(row.get("reference_doctype"), "Purchase Invoice")

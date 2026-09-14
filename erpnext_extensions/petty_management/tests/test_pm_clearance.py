@@ -462,8 +462,26 @@ def _fund_pm_request(employee: str, amount: float) -> tuple[str, str]:
 	return req.name, pe.name
 
 
+_po_required_prev: str | None = None
+
+
+def _ensure_test_pi_without_po() -> None:
+	"""Buying Settings on this site may require PO; PM clearance fixtures need bare PIs."""
+	global _po_required_prev
+	if _po_required_prev is not None:
+		return
+	try:
+		cur = frappe.db.get_single_value("Buying Settings", "po_required")
+	except Exception:
+		return
+	_po_required_prev = cur
+	if (cur or "").strip() == "Yes":
+		frappe.db.set_single_value("Buying Settings", "po_required", "No")
+
+
 def _make_pi_outstanding(amount: float):
 	"""Build a draft Purchase Invoice without importing ERPNext ``test_purchase_invoice``."""
+	_ensure_test_pi_without_po()
 
 	supplier = "_Test Supplier" if frappe.db.exists("Supplier", "_Test Supplier") else None
 	if not supplier:
@@ -494,6 +512,7 @@ def _make_pi_outstanding(amount: float):
 	pi.currency = frappe.db.get_value("Company", COMPANY, "default_currency") or "IRR"
 	pi.conversion_rate = 1
 	pi.bill_no = "PM-PI-" + frappe.generate_hash(length=8)
+	pi.remarks = "PM Clearance test fixture"
 	if cc:
 		pi.cost_center = cc
 	pi.append(
@@ -2274,6 +2293,167 @@ class TestPMClearanceLifecyclePolicy(unittest.TestCase):
 		self.assertEqual(st, "Cancelled")
 		self.assertLess(flt(sum_prior_pm_request_allocations(req_name, None)), 1e-3)
 		self.assertGreaterEqual(flt(get_pm_request_available_amount(req_name)), 10_000.0 - 1e-3)
+
+	def test_cancel_draft_je_with_clearance_deletes_orphan_draft_je(self):
+		"""Cancelling clearance while settlement JE is still draft must remove the draft JE."""
+		mod = _pm()
+		approved = _workflow_state_for("PM Clearance", "Approved")
+		if not approved:
+			self.skipTest("Active PM Clearance workflow with Approved state not found.")
+
+		emp = _make_employee()
+		self._track("Employee", emp)
+		_make_holder(emp)
+		req_name, _pe = _fund_pm_request(emp, 8_000.0)
+		self._track("PM Request", req_name)
+		pi = _make_pi_outstanding(2_000)
+		pi.insert()
+		pi.submit()
+		self._track("Purchase Invoice", pi.name)
+
+		cl = _lifecycle_base_clearance(emp, pi, 2_000)
+		cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 2_000})
+		cl.insert()
+		cl.submit()
+		self._track("PM Clearance", cl.name)
+		_approve_pm_clearance_for_reservation(cl.name)
+		frappe.db.set_value("PM Clearance", cl.name, "workflow_state", approved, update_modified=False)
+
+		# Force draft JE (disable auto-submit if configured).
+		from erpnext_extensions.petty_management.utils import get_pm_settings
+
+		settings = get_pm_settings()
+		prev_auto = None
+		if settings and hasattr(settings, "auto_submit_journal_entry"):
+			prev_auto = settings.auto_submit_journal_entry
+			settings.db_set("auto_submit_journal_entry", 0, update_modified=False)
+
+		try:
+			out = mod.settle_petty_cash(cl.name)
+			je_name = out["journal_entry"]
+			self.assertEqual(cint(frappe.db.get_value("Journal Entry", je_name, "docstatus")), 0)
+			cl = frappe.get_doc("PM Clearance", cl.name)
+			cl.cancel()
+			self.assertFalse(frappe.db.exists("Journal Entry", je_name))
+			self.assertEqual(cint(frappe.db.get_value("PM Clearance", cl.name, "docstatus")), 2)
+		finally:
+			if prev_auto is not None:
+				settings.db_set("auto_submit_journal_entry", prev_auto, update_modified=False)
+
+	def test_amended_clearance_not_blocked_by_cancelled_predecessor_allocations(self):
+		"""Amend of cancelled clearance must reset lifecycle and reuse freed funding/PIs."""
+		mod = _pm()
+		from erpnext_extensions.petty_management.services.allocation_service import (
+			get_pm_request_available_amount,
+			sum_prior_pm_request_allocations,
+		)
+
+		approved = _workflow_state_for("PM Clearance", "Approved")
+		draft = _workflow_state_for("PM Clearance", "Draft")
+		if not approved:
+			self.skipTest("Active PM Clearance workflow with Approved state not found.")
+
+		emp = _make_employee()
+		self._track("Employee", emp)
+		_make_holder(emp)
+		req_name, _pe = _fund_pm_request(emp, 10_000.0)
+		self._track("PM Request", req_name)
+		pi = _make_pi_outstanding(2_500)
+		pi.insert()
+		pi.submit()
+		self._track("Purchase Invoice", pi.name)
+
+		cl = _lifecycle_base_clearance(emp, pi, 2_500)
+		cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 2_500})
+		cl.insert()
+		cl.submit()
+		self._track("PM Clearance", cl.name)
+		_approve_pm_clearance_for_reservation(cl.name)
+		frappe.db.set_value("PM Clearance", cl.name, "workflow_state", approved, update_modified=False)
+
+		out = mod.settle_petty_cash(cl.name)
+		je_name = out["journal_entry"]
+		self._track("Journal Entry", je_name)
+		je = frappe.get_doc("Journal Entry", je_name)
+		if je.docstatus == 0:
+			je.submit()
+		je.cancel()
+		cl = frappe.get_doc("PM Clearance", cl.name)
+		cl.cancel()
+
+		self.assertLess(flt(sum_prior_pm_request_allocations(req_name, None)), 1e-3)
+		self.assertGreaterEqual(flt(get_pm_request_available_amount(req_name)), 10_000.0 - 1e-3)
+
+		# Simulate Desk Amend: copy cancelled doc with stale Approved/Cancelled fields.
+		amended = frappe.copy_doc(cl)
+		amended.amended_from = cl.name
+		amended.docstatus = 0
+		amended.workflow_state = approved
+		amended.status = "Cancelled"
+		# Do not set journal_entry to a cancelled JE (Link validation); prepare clears any residue.
+		amended.journal_entry = None
+		amended.insert()
+		self._track("PM Clearance", amended.name)
+
+		amended.reload()
+		self.assertFalse((amended.journal_entry or "").strip())
+		self.assertEqual((amended.status or "").strip(), "Draft")
+		if draft:
+			self.assertEqual(
+				(frappe.db.get_value("Workflow State", amended.workflow_state, "workflow_state_name") or amended.workflow_state),
+				"Draft",
+			)
+		# Allocations from cancelled predecessor must not consume availability.
+		self.assertGreaterEqual(flt(get_pm_request_available_amount(req_name, amended.name)), 2_500.0 - 1e-3)
+
+	def test_je_cancel_on_submitted_clearance_allows_settle_again(self):
+		"""Submitted clearance with cancelled JE must allow JE recreation (no duplicate while active)."""
+		mod = _pm()
+		approved = _workflow_state_for("PM Clearance", "Approved")
+		if not approved:
+			self.skipTest("Active PM Clearance workflow with Approved state not found.")
+
+		emp = _make_employee()
+		self._track("Employee", emp)
+		_make_holder(emp)
+		req_name, _pe = _fund_pm_request(emp, 7_000.0)
+		self._track("PM Request", req_name)
+		pi = _make_pi_outstanding(1_500)
+		pi.insert()
+		pi.submit()
+		self._track("Purchase Invoice", pi.name)
+
+		cl = _lifecycle_base_clearance(emp, pi, 1_500)
+		cl.append("request_allocations", {"pm_request": req_name, "allocated_amount": 1_500})
+		cl.insert()
+		cl.submit()
+		self._track("PM Clearance", cl.name)
+		_approve_pm_clearance_for_reservation(cl.name)
+		frappe.db.set_value("PM Clearance", cl.name, "workflow_state", approved, update_modified=False)
+
+		first = mod.settle_petty_cash(cl.name)
+		je1 = first["journal_entry"]
+		self._track("Journal Entry", je1)
+		je = frappe.get_doc("Journal Entry", je1)
+		if je.docstatus == 0:
+			je.submit()
+		je.cancel()
+
+		cl.reload()
+		self.assertFalse((cl.journal_entry or "").strip())
+		self.assertNotEqual(cl.status, "Settled")
+		from erpnext_extensions.petty_management.services.clearance_action_policy import (
+			get_pm_clearance_action_flags,
+		)
+
+		flags = get_pm_clearance_action_flags(cl.name)
+		self.assertTrue(flags.get("can_settle"))
+
+		second = mod.settle_petty_cash(cl.name)
+		je2 = second["journal_entry"]
+		self._track("Journal Entry", je2)
+		self.assertNotEqual(je1, je2)
+		self.assertTrue(frappe.db.exists("Journal Entry", je2))
 
 	def test_preview_remains_balanced(self):
 		mod = _pm()

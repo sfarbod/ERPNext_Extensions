@@ -39,6 +39,9 @@ def before_validate_clearance(doc: Document) -> None:
 
 	# v5.0.6: evaluate pending-edit guard before row normalization mutates child tables.
 	assert_pending_not_editable(doc)
+	# Amend copies cancelled predecessor fields; reset before other validations.
+	if doc.is_new() and (getattr(doc, "amended_from", None) or "").strip():
+		prepare_amended_clearance(doc)
 	if doc.docstatus == 0:
 		normalize_funding_allocation_rows(doc)
 		prune_empty_request_allocation_rows(doc)
@@ -172,7 +175,7 @@ def on_submit_clearance(doc: Document) -> None:
 
 
 def before_cancel_clearance(doc: Document) -> None:
-	"""Accounting-safe cancel: never auto-cancel GL. User must cancel JE first."""
+	"""Accounting-safe cancel: never auto-cancel submitted GL. User must cancel JE first."""
 	if not doc.journal_entry:
 		return
 	je_ds = cint(frappe.db.get_value("Journal Entry", doc.journal_entry, "docstatus"))
@@ -185,7 +188,84 @@ def before_cancel_clearance(doc: Document) -> None:
 		)
 
 
+def _delete_draft_settlement_journal_entries(clearance_name: str, linked_je: str | None = None) -> None:
+	"""Remove draft settlement JEs tied to a clearance so they cannot block amend/recreate.
+
+	Submitted JEs are never deleted here (before_cancel already blocks clearance cancel).
+	"""
+	names: set[str] = set()
+	je_link = (linked_je or "").strip()
+	if je_link:
+		names.add(je_link)
+	meta = frappe.get_meta("Journal Entry")
+	if meta.has_field("custom_pm_clearance") and clearance_name:
+		for n in frappe.get_all(
+			"Journal Entry",
+			filters={"custom_pm_clearance": clearance_name, "docstatus": 0},
+			pluck="name",
+		):
+			names.add(n)
+	for je_name in names:
+		if not je_name or not frappe.db.exists("Journal Entry", je_name):
+			continue
+		if cint(frappe.db.get_value("Journal Entry", je_name, "docstatus")) != 0:
+			continue
+		# Clear back-links before delete (generated_document + clearance.journal_entry).
+		for row_name in frappe.get_all(
+			"PM Clearance Detail",
+			filters={"generated_doctype": "Journal Entry", "generated_document": je_name},
+			pluck="name",
+		):
+			frappe.db.set_value(
+				"PM Clearance Detail",
+				row_name,
+				{"generated_doctype": None, "generated_document": None},
+				update_modified=False,
+			)
+		for cl_name in frappe.get_all(
+			"PM Clearance",
+			filters={"journal_entry": je_name},
+			pluck="name",
+		):
+			frappe.db.set_value(
+				"PM Clearance",
+				cl_name,
+				{"journal_entry": None},
+				update_modified=False,
+			)
+		frappe.delete_doc("Journal Entry", je_name, force=1, ignore_permissions=True)
+
+
+def prepare_amended_clearance(doc: Document) -> None:
+	"""Reset lifecycle/settlement fields copied from a cancelled predecessor on Amend.
+
+	Frappe ``copy_doc(..., from_amend=1)`` copies ``workflow_state``, ``status``, and
+	``journal_entry``. Leaving those values would yield a draft with Approved workflow /
+	Cancelled status that cannot be settled cleanly.
+	"""
+	if not (getattr(doc, "amended_from", None) or "").strip():
+		return
+	if cint(getattr(doc, "docstatus", 0)) != 0:
+		return
+
+	doc.journal_entry = None
+	for row in getattr(doc, "details", None) or []:
+		row.generated_doctype = None
+		row.generated_document = None
+
+	from erpnext_extensions.petty_management.services.clearance_action_policy import (
+		LIFECYCLE_DRAFT,
+		ensure_workflow_state_record,
+	)
+
+	doc.workflow_state = ensure_workflow_state_record(LIFECYCLE_DRAFT) or LIFECYCLE_DRAFT
+	doc.status = LIFECYCLE_DRAFT
+
+
 def on_cancel_clearance(doc: Document) -> None:
+	# Drop incomplete draft settlement JEs so Amend/recreate is not blocked by orphans.
+	_delete_draft_settlement_journal_entries(doc.name, getattr(doc, "journal_entry", None))
+
 	frappe.db.set_value(
 		"PM Clearance",
 		doc.name,

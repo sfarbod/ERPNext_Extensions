@@ -3,7 +3,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt, getdate, today
+from frappe.utils import cint, flt, getdate, today
 
 from erpnext_extensions.petty_management.services.accounting_party import (
 	journal_entry_party_for_petty_cash_credit,
@@ -155,8 +155,20 @@ def settle_petty_cash(pm_clearance: str) -> dict[str, str]:
 
 	existing_je = frappe.db.get_value("PM Clearance", pm_clearance, "journal_entry")
 	if existing_je:
-		st = frappe.db.get_value("PM Clearance", pm_clearance, "status") or ""
-		return {"journal_entry": existing_je, "status": st}
+		je_ds = None
+		if frappe.db.exists("Journal Entry", existing_je):
+			je_ds = cint(frappe.db.get_value("Journal Entry", existing_je, "docstatus"))
+		# Active (draft or submitted) JE: idempotent return. Cancelled/missing: clear stale link.
+		if je_ds in (0, 1):
+			st = frappe.db.get_value("PM Clearance", pm_clearance, "status") or ""
+			return {"journal_entry": existing_je, "status": st}
+		frappe.db.set_value(
+			"PM Clearance",
+			pm_clearance,
+			{"journal_entry": None},
+			update_modified=False,
+		)
+		doc.journal_entry = None
 
 	if not clearance_is_approved(doc):
 		frappe.throw(_("Settle is only allowed when PM Clearance is Approved."), title=_("Approval required"))
