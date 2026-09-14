@@ -21,6 +21,8 @@ from erpnext_extensions.iran_accounting.stock_posting_order import (
 	STATUS_REPAIRED,
 	STATUS_STALE,
 	STATUS_VALUATION_POISON,
+	STATUS_INTEGRITY_COMPLETE,
+	STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED,
 )
 from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import simulate_running
 from erpnext_extensions.iran_accounting.stock_posting_order.ordering import (
@@ -83,6 +85,15 @@ def scan_production_posting_order_anomalies(
 		include_no_repair=include_no_repair,
 	)
 	rows = list(result.get("rows") or [])
+	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import scan_stale_valuation_chains
+
+	stale = scan_stale_valuation_chains(company=company, from_date=from_date, to_date=to_date)
+	have = {(r.get("outbound_document"), r.get("item")) for r in rows}
+	for extra in stale:
+		key = (extra.get("outbound_document"), extra.get("item"))
+		if key not in have:
+			rows.append(extra)
+			have.add(key)
 	rows.sort(key=_row_rank)
 	return rows[:SCAN_LIMIT] if len(rows) > SCAN_LIMIT else rows
 
@@ -376,6 +387,20 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 					for vn in sorted(touched | {row["outbound_document"]}):
 						gl_touched.append(_rebuild_gl_no_commit(vn))
 
+				from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+					rebuild_chain_valuation,
+				)
+
+				valuation = rebuild_chain_valuation(
+					row.get("inbound_document"),
+					row.get("outbound_document"),
+					item=row.get("item"),
+					warehouse=row.get("warehouse"),
+					batch=row.get("batch"),
+					dry_run=False,
+					allow_riv=False,
+				)
+
 				gl_after = {
 					vn: _gl_balanced(vn)
 					for vn in gl_before
@@ -392,9 +417,16 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 			riv_revalidated = _revalidate_failed_riv(row.get("item"), row.get("warehouse"))
 
 			primary = moves[0]
+			qty_ok = True
+			rate_status = (valuation or {}).get("status") or STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
+			final_status = (
+				STATUS_INTEGRITY_COMPLETE
+				if rate_status == STATUS_INTEGRITY_COMPLETE
+				else STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED
+			)
 			entry = {
 				**row,
-				"status": STATUS_REPAIRED,
+				"status": final_status,
 				"old_outbound_time": primary.get("old") or row.get("current_outbound_time"),
 				"new_outbound_time": primary.get("new") or row.get("proposed_outbound_time"),
 				"min_qty_before": str(current.get("min_qty")),
@@ -403,9 +435,11 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				"repair_run_id": run_id,
 				"replay": replay_results,
 				"valuation_changed": valuation_changed,
+				"valuation": valuation,
+				"valuation_impact": (valuation or {}).get("valuation_impact"),
 				"gl_before": gl_before,
 				"gl_after": gl_after,
-				"gl_rebuilt": gl_touched,
+				"gl_rebuilt": gl_touched or (valuation or {}).get("gl_rebuilt"),
 				"failed_riv_revalidated": riv_revalidated,
 				"seconds_shifted": max((m.get("seconds") or 0) for m in moves),
 			}

@@ -592,4 +592,60 @@ class TestStockPostingOrderIntegration(unittest.TestCase):
 		self.assertGreaterEqual(flt(sles[0].qty_after_transaction), 0)
 		self.assertGreaterEqual(flt(sles[-1].qty_after_transaction), 0)
 
+	def test_farvardin_valuation_rebuild_sabb_and_ledger_rates(self):
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+			diagnose_chain,
+			rebuild_chain_valuation,
+		)
+
+		out_name = "MAT-STE-2026-25825"
+		in_name = "MAT-STE-2026-25824-1"
+		if not frappe.db.exists("Stock Entry", out_name):
+			self.skipTest("17 Farvardin vouchers not on site")
+		before = diagnose_chain(in_name, out_name, "30300042")
+		result = rebuild_chain_valuation(
+			in_name,
+			out_name,
+			item="30300042",
+			warehouse="انبار Quarantine محصول نیمه ساخته اسپاد",
+			batch="504135-30300042-AK264401A11",
+			dry_run=False,
+			allow_riv=False,
+		)
+		self.assertNotEqual(result.get("riv"), "INVOKED")
+		self.assertEqual(result.get("riv"), "NOT_INVOKED")
+		after = diagnose_chain(in_name, out_name, "30300042")
+		self.assertFalse(after["stale"], after)
+		self.assertTrue(after["transfer_value_neutral"])
+		out_sle = frappe.db.sql(
+			"""
+			SELECT outgoing_rate, incoming_rate, stock_value_difference, actual_qty
+			FROM `tabStock Ledger Entry`
+			WHERE voucher_no=%s AND item_code='30300042' AND actual_qty<0 AND is_cancelled=0
+			""",
+			out_name,
+			as_dict=True,
+		)[0]
+		self.assertGreater(abs(flt(out_sle.outgoing_rate)), 1)
+		self.assertGreater(abs(flt(out_sle.stock_value_difference)), 1)
+		sabb = frappe.db.sql(
+			"""
+			SELECT sbe.outgoing_rate, sbe.incoming_rate, sbe.stock_value_difference, sabb.avg_rate
+			FROM `tabStock Ledger Entry` sle
+			JOIN `tabSerial and Batch Bundle` sabb ON sabb.name=sle.serial_and_batch_bundle
+			JOIN `tabSerial and Batch Entry` sbe ON sbe.parent=sabb.name
+			WHERE sle.voucher_no=%s AND sle.item_code='30300042' AND sle.actual_qty<0 AND sle.is_cancelled=0
+			""",
+			out_name,
+			as_dict=True,
+		)[0]
+		self.assertGreater(abs(flt(sabb.outgoing_rate)), 1)
+		self.assertGreater(abs(flt(sabb.stock_value_difference)), 1)
+		self.assertGreater(abs(flt(sabb.avg_rate)), 1)
+		again = rebuild_chain_valuation(
+			in_name, out_name, item="30300042", dry_run=False, allow_riv=False
+		)
+		self.assertFalse(again["stale"], again)
+		_ = before
+
 

@@ -256,6 +256,25 @@ Warehouse qty_after on **other lots** (Apr 11 `25906` −1206 etc.) is unchanged
 
 Failed RIV `4cu72iljul` (30300042 / Quarantine) was reclassified, not retried.
 
+## 11d. Post-order rate reconstruction (SABB / Stock Ledger)
+
+Quantity repair left **Serial and Batch Entry** on 25825 at inverted/zero rates. ERPNext Stock Ledger with SABB segregation reads **SBE**, not SLE:
+
+| Report column | Before 11d (segregate) | After 11d |
+|---------------|------------------------|-----------|
+| Manufacture Incoming Rate | 3,333,719 | **3,333,718.97** (SVD 6,330,732,319) |
+| Transfer OUT Incoming Rate | 0 (ERPNext zeros inbound on OUT) | **0** (same by design) |
+| Transfer OUT Outgoing Rate | **−0** (SBE SVD 0) | **3,333,718.97** |
+| Transfer IN Incoming Rate | **3,338,300** (inverted leftover) | **3,333,718.97** |
+| Transfer OUT SABB total_amount | **0** | **−6,330,732,319** |
+| Transfer IN SABB total_amount | 6,339,432,069 | **6,330,732,319** |
+
+Unified engine: `historical_stock/valuation_rebuild.py` (SE → SLE txn rates → SABB/SBE → Bin → selective GL). Shared with Zero / Lost Rate. RIV never auto-invoked. Status `INTEGRITY_COMPLETE` only when quantity **and** rates are clean.
+
+Desk action: **Rebuild Affected Documents** (selected chain only).
+
+Downstream WIP consumes of this batch (Apr 11 `25912` / `25911-1`) still carry pre-repair outgoing 3,338,300 on mixed-lot warehouse MA. They are listed as `DOWNSTREAM_VALUE_REPLAY_REQUIRED` (40 later dest-warehouse vouchers) and were **not** auto-GL-rebuilt (multi-item Manufacture). The named Farvardin pair is rate-complete.
+
 ## 12. Controlled real repair
 
 17 Farvardin (`MAT-STE-2026-25825` / `MAT-STE-2026-25824-1`) was repaired on **development.localhost** with SLE/Bin/GL replay (11c). Other operator EXACT reconstructable zero-rate rows were **not** written.
@@ -267,10 +286,10 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 | Area | Result |
 |------|--------|
 | `test_historical_stock` (unit) | PASS (25) |
-| `test_stock_posting_order` | PASS (59, incl. inversion-artifact replay + 5.2.0 residual SVD) |
+| `test_stock_posting_order` | PASS (66, incl. valuation rebuild contract) |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
-| `test_stock_posting_order_integration` | PASS (11, incl. Farvardin apply replay, not timestamp-only) |
+| `test_stock_posting_order_integration` | PASS (12, incl. Farvardin apply + SABB rate rebuild) |
 | `test_manufacture_rounding` | PASS |
 | Playwright posting-order + Farvardin repaired ledger + 6-tab integrity | PASS (4), no API 500 |
 | `bench build --app erpnext_extensions` | PASS |

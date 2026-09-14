@@ -90,3 +90,17 @@ def diagnose_batch(batch_no=None):
 def posting_order_integrity_check(vouchers=None, item_code=None, warehouse=None):
 	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
 	return integrity_check(_parse(vouchers), item_code=item_code, warehouse=warehouse)
+
+
+@frappe.whitelist()
+def rebuild_affected_documents(rows=None, dry_run=True):
+	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+		rebuild_affected_documents as _rebuild,
+	)
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact inbound/outbound rows are required")
+	is_dry = True if dry_run in (None, "") else (dry_run if isinstance(dry_run, bool) else bool(cint(dry_run)))
+	return _rebuild(parsed, dry_run=is_dry)

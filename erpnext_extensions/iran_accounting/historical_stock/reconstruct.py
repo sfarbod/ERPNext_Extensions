@@ -53,6 +53,13 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 					merged.get("batch"),
 					from_dt=patient.get("posting_datetime"),
 				)
+				from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+					sync_sabb_from_sle,
+					write_sle_transaction_rates,
+				)
+
+				write_sle_transaction_rates(merged["voucher"], merged["item"])
+				sync_sabb_from_sle(merged["voucher"], merged["item"])
 				applied.append({**merged, "written": True, "status": STATUS_REPAIRED, "replay": replay})
 				append_entry(log, {**merged, "replay": replay}, written=True)
 			except Exception as exc:
@@ -94,6 +101,13 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 				replay = None
 				if item and wh:
 					replay = replay_from_patient_zero(item.item_code, wh, item.batch_no, from_dt=doc.posting_date)
+					from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+						sync_sabb_from_sle,
+						write_sle_transaction_rates,
+					)
+
+					write_sle_transaction_rates(vn, item.item_code)
+					sync_sabb_from_sle(vn, item.item_code)
 				applied.append({**preview, "written": True, "status": STATUS_REPAIRED, "replay": replay})
 				append_entry(log, preview, written=True)
 			except Exception as exc:

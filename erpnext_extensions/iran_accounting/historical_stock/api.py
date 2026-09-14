@@ -202,6 +202,17 @@ def resume_last_run(topic=None):
 	return {"repair_run_id": log.repair_run_id, "status": log.status, "cursor": log.resume_cursor, "topic": log.topic}
 
 
+@frappe.whitelist()
+def rebuild_affected_documents_api(rows=None, dry_run=True):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import rebuild_affected_documents
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact inbound/outbound rows are required")
+	return rebuild_affected_documents(parsed, dry_run=_dry(dry_run, True))
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair

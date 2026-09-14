@@ -1020,3 +1020,80 @@ class TestNegativeIntervalDetector(unittest.TestCase):
 		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
 		self.assertEqual(rows[0]["min_qty_after"], "0")
 
+
+class TestValuationRebuildContract(unittest.TestCase):
+	def test_txn_rate_from_source_svd(self):
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import _txn_rate
+
+		rate = _txn_rate(-1899, -6330732319)
+		self.assertGreater(rate, 0)
+		self.assertLess(abs(float(rate) - (6330732319 / 1899)), 0.01)
+
+	def test_riv_blocked_on_rebuild(self):
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import rebuild_chain_valuation
+
+		with self.assertRaises(Exception):
+			rebuild_chain_valuation("IN", "OUT", dry_run=False, allow_riv=True)
+
+	def test_zero_outgoing_with_value_is_stale(self):
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import _txn_rate
+
+		self.assertGreater(_txn_rate(-1899, -6330732319), 0)
+		self.assertEqual(_txn_rate(-1899, 0), 0)
+
+	def test_transfer_out_in_identical_value(self):
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import _txn_rate
+
+		self.assertEqual(_txn_rate(-1899, -6330732319), _txn_rate(1899, 6330732319))
+
+	def test_manufacture_residual_not_reprice(self):
+		inn = _row(
+			"i",
+			"IN",
+			1899,
+			"1",
+			incoming_rate=3333719,
+			valuation_rate=3333719,
+			stock_value_difference=6330732319,
+			purpose="Manufacture",
+		)
+		out = _row(
+			"o",
+			"OUT",
+			-1899,
+			"2",
+			incoming_rate=0,
+			valuation_rate=3333719,
+			stock_value_difference=-1,
+		)
+		fixed = replay_series([inn, out], 0, 0)
+		self.assertEqual(fixed[0]["stock_value_difference"], 6330732319)
+		self.assertEqual(fixed[1]["stock_value_difference"], -6330732319)
+
+	def test_posting_order_fixed_rate_rebuild_status_exists(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order import (
+			STATUS_DOWNSTREAM_VALUE_REPLAY_REQUIRED,
+			STATUS_GL_REBUILD_REQUIRED,
+			STATUS_INTEGRITY_COMPLETE,
+			STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED,
+			STATUS_RATE_REBUILD_COMPLETE,
+			STATUS_RATE_REBUILD_IN_PROGRESS,
+		)
+
+		self.assertEqual(STATUS_ORDER_FIXED_RATE_REBUILD_REQUIRED, "ORDER_FIXED_RATE_REBUILD_REQUIRED")
+		self.assertEqual(STATUS_RATE_REBUILD_IN_PROGRESS, "RATE_REBUILD_IN_PROGRESS")
+		self.assertEqual(STATUS_RATE_REBUILD_COMPLETE, "RATE_REBUILD_COMPLETE")
+		self.assertEqual(STATUS_DOWNSTREAM_VALUE_REPLAY_REQUIRED, "DOWNSTREAM_VALUE_REPLAY_REQUIRED")
+		self.assertEqual(STATUS_GL_REBUILD_REQUIRED, "GL_REBUILD_REQUIRED")
+		self.assertEqual(STATUS_INTEGRITY_COMPLETE, "INTEGRITY_COMPLETE")
+
+	def test_rebuild_sequence_does_not_start_with_riv(self):
+		import inspect
+
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import rebuild_chain_valuation
+
+		src = inspect.getsource(rebuild_chain_valuation)
+		self.assertIn('"prerequisite Manufacture"', src)
+		self.assertIn("RIV is not invoked from valuation rebuild", src)
+		self.assertLess(src.find("allow_riv"), src.find("diagnose_chain"))
+

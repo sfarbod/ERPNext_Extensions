@@ -256,15 +256,20 @@ def replay_item_warehouse(
 		if step["svd_changed"]:
 			valuation_changed = True
 			touched_vouchers.add(row.voucher_no)
+		rate = abs(flt(step["stock_value_difference"]) / flt(row.actual_qty)) if flt(row.actual_qty) else 0
+		payload = {
+			"qty_after_transaction": flt(step["qty_after_transaction"]),
+			"stock_value": flt(step["stock_value"], value_prec),
+			"stock_value_difference": flt(step["stock_value_difference"], value_prec),
+			"valuation_rate": flt(step["valuation_rate"]),
+		}
+		if flt(row.actual_qty) < 0:
+			payload["outgoing_rate"] = rate
+			payload["incoming_rate"] = 0
 		frappe.db.set_value(
 			"Stock Ledger Entry",
 			row.name,
-			{
-				"qty_after_transaction": flt(step["qty_after_transaction"]),
-				"stock_value": flt(step["stock_value"], value_prec),
-				"stock_value_difference": flt(step["stock_value_difference"], value_prec),
-				"valuation_rate": flt(step["valuation_rate"]),
-			},
+			payload,
 			update_modified=False,
 		)
 	_bin_from_last_sle(item_code, warehouse)

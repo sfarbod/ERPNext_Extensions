@@ -66,6 +66,13 @@ class HistoricalRepairPage {
 		this.btn_repair = this._btn($actions, "repair", __("Repair Selected"), () => this.repair_selected(), "btn-danger");
 		this.btn_repost = this._btn($actions, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning");
 		this.btn_integrity = this._btn($actions, "integrity", __("Integrity Check"), () => this.integrity());
+		this.btn_rebuild_docs = this._btn(
+			$actions,
+			"rebuild-docs",
+			__("Rebuild Affected Documents"),
+			() => this.rebuild_affected_documents(),
+			"btn-info"
+		);
 		this.btn_resume = this._btn($actions, "resume", __("Resume"), () => this.resume());
 		this.btn_repair.prop("disabled", true);
 		this.$table = $('<div class="hr-table-wrap">').appendTo(this.$body);
@@ -246,6 +253,20 @@ class HistoricalRepairPage {
 		});
 	}
 
+	rebuild_affected_documents() {
+		const rows = this.selected_rows();
+		if (!rows.length) {
+			frappe.msgprint(__("Select the chain to rebuild (inbound + outbound). This is not a global rebuild."));
+			return;
+		}
+		frappe.call({
+			method: `${this.ppo}.rebuild_affected_documents`,
+			args: { rows, dry_run: 0 },
+			freeze: true,
+			callback: (r) => this.$preview.text(this.format_preview(r.message || {})),
+		});
+	}
+
 	integrity() {
 		const rows = this.selected_rows();
 		const vouchers = [];
@@ -302,6 +323,10 @@ class HistoricalRepairPage {
 				"Item",
 				"Warehouse",
 				"Batch",
+				"Quantity Impact",
+				"Valuation Impact",
+				"Manufacture Source Rate",
+				"Rate Status",
 				"Negative Start",
 				"Negative Voucher",
 				"Later Inbound",
@@ -320,6 +345,10 @@ class HistoricalRepairPage {
 					Item: row.item || row.item_code,
 					Warehouse: row.warehouse,
 					Batch: row.batch,
+					"Quantity Impact": row.quantity_impact,
+					"Valuation Impact": row.valuation_impact,
+					"Manufacture Source Rate": row.manufacture_source_rate,
+					"Rate Status": row.rate_status || (row.outbound_gaps && row.outbound_gaps.length ? "STALE / REBUILD REQUIRED" : ""),
 					"Negative Start": row.negative_start,
 					"Negative Voucher": row.negative_voucher,
 					"Later Inbound": row.later_inbound,
@@ -363,6 +392,12 @@ class HistoricalRepairPage {
 		if (row.status === "ELIGIBLE" && row.optimizer_status === "SAME_TIME_REPAIRABLE") {
 			return "SAME_TIME_REPAIRABLE";
 		}
+		if (row.status === "ORDER_FIXED_RATE_REBUILD_REQUIRED" || row.optimizer_status === "ORDER_FIXED_RATE_REBUILD_REQUIRED") {
+			return "ORDER_FIXED_RATE_REBUILD_REQUIRED";
+		}
+		if (row.status === "INTEGRITY_COMPLETE") {
+			return "INTEGRITY_COMPLETE";
+		}
 		return row.status;
 	}
 
@@ -390,6 +425,7 @@ class HistoricalRepairPage {
 				__("Seconds Shifted"),
 				__("Minimum Qty Before"),
 				__("Minimum Qty After"),
+				__("Valuation Impact"),
 				__("Dependency Reason"),
 				__("Confidence"),
 				__("Status"),
@@ -435,6 +471,7 @@ class HistoricalRepairPage {
 				this.seconds_label(row),
 				row.min_qty_before,
 				row.min_qty_after,
+				row.valuation_impact || "",
 				row.dependency_reason,
 				row.confidence,
 				this.status_label(row),
