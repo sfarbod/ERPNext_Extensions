@@ -33,6 +33,14 @@ from erpnext_extensions.iran_accounting.stock_posting_order.api import (
 )
 
 
+from erpnext_extensions.iran_accounting.historical_stock.permissions import (
+	require_admin,
+	require_read,
+	require_repair,
+	require_write_if_applying,
+)
+
+
 def _parse(value):
 	if isinstance(value, str):
 		value = value.strip()
@@ -46,7 +54,15 @@ def _parse(value):
 
 
 def _guard():
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	require_read()
+
+
+def _guard_repair():
+	require_repair()
+
+
+def _guard_admin():
+	require_admin()
 
 
 def _dry(value, default=True) -> bool:
@@ -55,6 +71,14 @@ def _dry(value, default=True) -> bool:
 	if isinstance(value, bool):
 		return value
 	return bool(cint(value))
+
+
+@frappe.whitelist()
+def session_info_api():
+	from erpnext_extensions.iran_accounting.historical_stock.permissions import session_info
+
+	require_read()
+	return session_info()
 
 
 @frappe.whitelist()
@@ -89,11 +113,12 @@ def dry_run_zero_rates(rows=None, company=None, voucher=None):
 
 @frappe.whitelist()
 def repair_zero_rates_selected(rows=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact document rows are required")
-	return repair_zero_rate_selected(parsed, dry_run=_dry(dry_run, True))
+	return repair_zero_rate_selected(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()
@@ -114,11 +139,12 @@ def scan_wrong_rates_api(company=None, voucher=None, item_code=None, warehouse=N
 
 @frappe.whitelist()
 def repair_wrong_rates_selected(rows=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact document rows are required")
-	return repair_wrong_rate_selected(parsed, dry_run=_dry(dry_run, True))
+	return repair_wrong_rate_selected(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()
@@ -141,11 +167,12 @@ def dry_run_manufacture(rows=None, company=None):
 
 @frappe.whitelist()
 def repair_manufacture_selected_api(rows=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact document rows are required")
-	return repair_manufacture_selected(parsed, dry_run=_dry(dry_run, True))
+	return repair_manufacture_selected(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()
@@ -162,12 +189,13 @@ def scan_gl_api(company=None):
 
 @frappe.whitelist()
 def rebuild_gl_selected(vouchers=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	parsed = _parse(vouchers)
 	if not parsed:
 		frappe.throw("Exact vouchers are required")
-	out = [rebuild_gl_for_voucher(v if isinstance(v, str) else v.get("voucher"), dry_run=_dry(dry_run, True)) for v in parsed]
-	return {"dry_run": _dry(dry_run, True), "rows": out}
+	out = [rebuild_gl_for_voucher(v if isinstance(v, str) else v.get("voucher"), dry_run=is_dry) for v in parsed]
+	return {"dry_run": is_dry, "rows": out}
 
 
 @frappe.whitelist()
@@ -184,15 +212,16 @@ def scan_failed_riv_api():
 
 @frappe.whitelist()
 def retry_failed_riv_selected(names=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	parsed = _parse(names)
 	if not parsed:
 		frappe.throw("Exact RIV names are required")
 	out = []
 	for name in parsed:
 		riv = name if isinstance(name, str) else name.get("riv_name") or name.get("name")
-		out.append(retry_failed_riv(riv, dry_run=_dry(dry_run, True)))
-	return {"dry_run": _dry(dry_run, True), "rows": out}
+		out.append(retry_failed_riv(riv, dry_run=is_dry))
+	return {"dry_run": is_dry, "rows": out}
 
 
 @frappe.whitelist()
@@ -203,8 +232,9 @@ def preview_repost(item_code=None, warehouse=None, batch=None, from_date=None):
 
 @frappe.whitelist()
 def repost_selected_api(item_code=None, warehouse=None, from_date=None, dry_run=True):
-	_guard()
-	return repost_selected(item_code, warehouse, from_date=from_date or None, dry_run=_dry(dry_run, True))
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	return repost_selected(item_code, warehouse, from_date=from_date or None, dry_run=is_dry)
 
 
 @frappe.whitelist()
@@ -219,7 +249,7 @@ def integrity_api(vouchers=None, item_code=None, warehouse=None):
 
 @frappe.whitelist()
 def resume_last_run(topic=None):
-	_guard()
+	_guard_repair()
 	from erpnext_extensions.iran_accounting.historical_stock.audit import last_open_run
 
 	log = last_open_run(topic)
@@ -230,18 +260,20 @@ def resume_last_run(topic=None):
 
 @frappe.whitelist()
 def rebuild_affected_documents_api(rows=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import rebuild_affected_documents
 
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact inbound/outbound rows are required")
-	return rebuild_affected_documents(parsed, dry_run=_dry(dry_run, True))
+	return rebuild_affected_documents(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()
 def replay_downstream_api(rows=None, dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
 		replay_downstream_for_rows,
 	)
@@ -249,18 +281,19 @@ def replay_downstream_api(rows=None, dry_run=True):
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact item/batch chain rows are required")
-	return replay_downstream_for_rows(parsed, dry_run=_dry(dry_run, True))
+	return replay_downstream_for_rows(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()
 def selective_repair_api(scope=None, op="replay", dry_run=True):
-	_guard()
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
 	from erpnext_extensions.iran_accounting.historical_stock.selective import selective_pipeline
 
 	parsed = scope if isinstance(scope, dict) else _parse(scope)
 	if isinstance(parsed, list):
 		parsed = parsed[0] if parsed else {}
-	return selective_pipeline(parsed or {}, op=op or "replay", dry_run=_dry(dry_run, True))
+	return selective_pipeline(parsed or {}, op=op or "replay", dry_run=is_dry)
 
 
 @frappe.whitelist()
@@ -281,7 +314,7 @@ def repair_history_api():
 
 @frappe.whitelist()
 def rollback_run_api(repair_run_id=None, dry_run=True):
-	_guard()
+	_guard_admin()
 	from erpnext_extensions.iran_accounting.historical_stock.audit import rollback_run
 
 	return rollback_run(repair_run_id, dry_run=_dry(dry_run, True))
@@ -308,10 +341,26 @@ def preview_reconstruction_api(row=None):
 
 @frappe.whitelist()
 def historical_benchmark_api(company=None):
-	_guard()
+	_guard_admin()
 	from erpnext_extensions.iran_accounting.historical_stock.benchmark import run_historical_benchmark
 
 	return run_historical_benchmark(company=company or None)
+
+
+@frappe.whitelist()
+def export_xlsx_api(topic=None, headers=None, rows=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.export import xlsx_bytes
+	import base64
+
+	hdrs = _parse(headers) or []
+	body = _parse(rows) or []
+	content = xlsx_bytes([str(h) for h in hdrs], body)
+	return {
+		"filename": f"historical-repair-{topic or 'export'}.xlsx",
+		"filedata": base64.b64encode(content).decode(),
+		"content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	}
 
 
 # Re-export posting-order APIs so the page can use one namespace.

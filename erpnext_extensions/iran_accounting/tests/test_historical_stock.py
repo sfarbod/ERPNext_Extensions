@@ -655,5 +655,79 @@ class TestImpactAndRollback(unittest.TestCase):
 		self.assertIn("DATABASE BACKUP REQUIRED", out["warning"])
 
 
+class TestPermissionsAndExport(unittest.TestCase):
+	def test_stock_manager_is_read_only(self):
+		from erpnext_extensions.iran_accounting.historical_stock import permissions as perm
+
+		err = type("PermissionError", (Exception,), {})
+		fake = mock.Mock()
+		fake.session.user = "stock@x"
+		fake.get_roles.return_value = ["Stock Manager"]
+		fake.PermissionError = err
+		fake.throw.side_effect = lambda msg, exc=None: (_ for _ in ()).throw(err(msg))
+		with mock.patch("erpnext_extensions.iran_accounting.historical_stock.permissions.frappe", fake):
+			self.assertEqual(perm.access_level(), 1)
+			with self.assertRaises(err):
+				perm.require_repair()
+
+	def test_system_manager_can_repair_not_admin(self):
+		from erpnext_extensions.iran_accounting.historical_stock import permissions as perm
+
+		err = type("PermissionError", (Exception,), {})
+		fake = mock.Mock()
+		fake.session.user = "sm@x"
+		fake.get_roles.return_value = ["System Manager"]
+		fake.PermissionError = err
+		fake.throw.side_effect = lambda msg, exc=None: (_ for _ in ()).throw(err(msg))
+		with mock.patch("erpnext_extensions.iran_accounting.historical_stock.permissions.frappe", fake):
+			self.assertEqual(perm.access_level(), 2)
+			self.assertEqual(perm.require_repair(), 2)
+			with self.assertRaises(err):
+				perm.require_admin()
+
+	def test_administrator_is_level_three(self):
+		from erpnext_extensions.iran_accounting.historical_stock import permissions as perm
+
+		fake = mock.Mock()
+		fake.session.user = "Administrator"
+		fake.get_roles.return_value = ["System Manager", "Stock Manager"]
+		with mock.patch("erpnext_extensions.iran_accounting.historical_stock.permissions.frappe", fake):
+			self.assertEqual(perm.access_level(), 3)
+
+	def test_xlsx_is_zip(self):
+		from erpnext_extensions.iran_accounting.historical_stock.export import xlsx_bytes
+
+		data = xlsx_bytes(["A", "B"], [["1", "2"]])
+		self.assertTrue(data.startswith(b"PK"))
+		self.assertGreater(len(data), 40)
+
+	def test_repair_selected_is_operational_not_experimental(self):
+		from erpnext_extensions.iran_accounting.historical_stock.permissions import FEATURE_MATURITY
+
+		self.assertEqual(FEATURE_MATURITY["scan"], "A")
+		self.assertEqual(FEATURE_MATURITY["repair_selected"], "B")
+		self.assertEqual(FEATURE_MATURITY["rollback"], "C")
+		self.assertEqual(FEATURE_MATURITY["benchmark"], "C")
+
+	def test_graph_without_identity_does_not_throw(self):
+		from erpnext_extensions.iran_accounting.historical_stock.graph import repair_graph
+
+		out = repair_graph()
+		self.assertEqual(out["nodes"], [])
+		self.assertIn("requires", (out.get("warning") or "").lower())
+
+	def test_impact_chain_uses_voucher_when_item_missing(self):
+		from erpnext_extensions.iran_accounting.historical_stock.impact import _chain_for
+
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.graph.repair_graph",
+			return_value={"nodes": [{"voucher": "MAT-STE-2026-27531"}]},
+		) as graph:
+			chain = _chain_for([{"voucher": "MAT-STE-2026-27531", "eligible": True, "confidence": "EXACT"}])
+		graph.assert_called_once()
+		self.assertEqual(graph.call_args.kwargs["voucher"], "MAT-STE-2026-27531")
+		self.assertEqual(chain, ["MAT-STE-2026-27531"])
+
+
 if __name__ == "__main__":
 	unittest.main()

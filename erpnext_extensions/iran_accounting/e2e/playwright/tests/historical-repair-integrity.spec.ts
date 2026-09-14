@@ -43,6 +43,11 @@ test.describe("5.2.7 Historical Stock Integrity tabs @release-blocking", () => {
     await captureStep(page, "hsr_01_posting_order");
 
     for (const label of TABS) {
+      const modal = page.locator(".modal.show");
+      if (await modal.count()) {
+        await page.keyboard.press("Escape");
+        await expect(modal).toHaveCount(0, { timeout: 5_000 });
+      }
       const tab = page.locator("button.hr-tab", { hasText: label });
       await expect(tab).toBeVisible({ timeout: 30_000 });
       await tab.click();

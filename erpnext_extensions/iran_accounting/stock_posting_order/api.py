@@ -8,6 +8,11 @@ import json
 import frappe
 from frappe.utils import cint
 
+from erpnext_extensions.iran_accounting.historical_stock.permissions import (
+	require_admin,
+	require_read,
+	require_write_if_applying,
+)
 from erpnext_extensions.iran_accounting.stock_posting_order.integrity import integrity_check
 from erpnext_extensions.iran_accounting.stock_posting_order.repair import apply_repairs, dry_run, scan_production_posting_order_anomalies
 
@@ -31,7 +36,7 @@ def scan_posting_order_anomalies(
 	to_date=None,
 	include_likely=1,
 ):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	require_read()
 	return scan_production_posting_order_anomalies(
 		company=company or None,
 		from_date=from_date or None,
@@ -42,7 +47,7 @@ def scan_posting_order_anomalies(
 
 @frappe.whitelist()
 def dry_run_posting_order_repair(rows=None, company=None, from_date=None, to_date=None):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	require_read()
 	parsed = _parse(rows)
 	if parsed:
 		return dry_run(parsed)
@@ -51,7 +56,6 @@ def dry_run_posting_order_repair(rows=None, company=None, from_date=None, to_dat
 
 @frappe.whitelist()
 def repair_posting_order_selected(rows=None, dry_run=True, expected_signatures=None):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact document rows are required")
@@ -61,6 +65,7 @@ def repair_posting_order_selected(rows=None, dry_run=True, expected_signatures=N
 		is_dry = dry_run
 	else:
 		is_dry = bool(cint(dry_run))
+	require_write_if_applying(is_dry)
 	sigs = _parse(expected_signatures)
 	if sigs:
 		got = {r.get("dependency_signature") for r in parsed}
@@ -80,7 +85,7 @@ def repair_posting_order_selected(rows=None, dry_run=True, expected_signatures=N
 
 @frappe.whitelist()
 def diagnose_batch(batch_no=None):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	require_admin()
 	from erpnext_extensions.iran_accounting.stock_posting_order.scanner import diagnose_canonical_batch
 
 	return diagnose_canonical_batch(batch_no or "")
@@ -88,13 +93,12 @@ def diagnose_batch(batch_no=None):
 
 @frappe.whitelist()
 def posting_order_integrity_check(vouchers=None, item_code=None, warehouse=None):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
+	require_read()
 	return integrity_check(_parse(vouchers), item_code=item_code, warehouse=warehouse)
 
 
 @frappe.whitelist()
 def rebuild_affected_documents(rows=None, dry_run=True):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
 	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
 		rebuild_affected_documents as _rebuild,
 	)
@@ -103,12 +107,12 @@ def rebuild_affected_documents(rows=None, dry_run=True):
 	if not parsed:
 		frappe.throw("Exact inbound/outbound rows are required")
 	is_dry = True if dry_run in (None, "") else (dry_run if isinstance(dry_run, bool) else bool(cint(dry_run)))
+	require_write_if_applying(is_dry)
 	return _rebuild(parsed, dry_run=is_dry)
 
 
 @frappe.whitelist()
 def replay_downstream(rows=None, dry_run=True):
-	frappe.only_for(("System Manager", "Stock Manager", "Accounts Manager"))
 	from erpnext_extensions.iran_accounting.historical_stock.downstream_replay import (
 		replay_downstream_for_rows,
 	)
@@ -117,4 +121,5 @@ def replay_downstream(rows=None, dry_run=True):
 	if not parsed:
 		frappe.throw("Exact item/batch chain rows are required")
 	is_dry = True if dry_run in (None, "") else (dry_run if isinstance(dry_run, bool) else bool(cint(dry_run)))
+	require_write_if_applying(is_dry)
 	return replay_downstream_for_rows(parsed, dry_run=is_dry)

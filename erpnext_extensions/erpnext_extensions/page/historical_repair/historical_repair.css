@@ -12,7 +12,39 @@
 .historical-repair-page .hr-actions {
 	display: flex;
 	flex-wrap: wrap;
+	gap: 10px;
+	align-items: center;
+}
+.historical-repair-page .hr-action-group {
+	display: flex;
+	flex-wrap: wrap;
 	gap: 6px;
+	padding-right: 10px;
+	border-right: 1px solid var(--border-color);
+}
+.historical-repair-page .hr-action-group:last-child {
+	border-right: 0;
+}
+.historical-repair-page button[data-action="repair"]:disabled,
+.historical-repair-page button[data-action="replay-downstream"]:disabled,
+.historical-repair-page button[data-action="rebuild-docs"]:disabled,
+.historical-repair-page button[data-action="repost"]:disabled {
+	opacity: 0.45;
+	pointer-events: none;
+}
+.historical-repair-page .hr-advanced {
+	margin: 0 6px;
+	font-size: 12px;
+	white-space: nowrap;
+}
+.historical-repair-page .hr-row-exact {
+	background: color-mix(in srgb, var(--green-100) 55%, transparent);
+}
+.historical-repair-page .hr-row-likely td {
+	background: color-mix(in srgb, var(--yellow-50, #fff8e1) 70%, transparent);
+}
+.historical-repair-page .hr-row-blocked td {
+	background: color-mix(in srgb, var(--red-50, #ffebee) 70%, transparent);
 }
 .historical-repair-page .hr-section-title {
 	font-weight: 600;

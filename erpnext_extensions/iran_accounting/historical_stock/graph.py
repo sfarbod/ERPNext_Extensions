@@ -9,7 +9,16 @@ from frappe.utils import flt
 
 def repair_graph(item=None, batch=None, work_order=None, voucher=None, warehouse=None, limit=80) -> dict:
 	if not any((item, batch, work_order, voucher)):
-		frappe.throw("Graph requires item, batch, work order, or voucher")
+		return {
+			"nodes": [],
+			"edges": [],
+			"count": 0,
+			"replay_depth": 0,
+			"item": item,
+			"batch": batch,
+			"work_order": work_order,
+			"warning": "Graph requires item, batch, work order, or voucher",
+		}
 	conds = ["sle.is_cancelled=0"]
 	args: list = []
 	join = "JOIN `tabStock Entry` se ON se.name=sle.voucher_no"

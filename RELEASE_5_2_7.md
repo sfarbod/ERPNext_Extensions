@@ -311,7 +311,7 @@ Synthetic integration: reconstruct + idempotent dry-run/write on a new test item
 
 | Area | Result |
 |------|--------|
-| `test_historical_stock` (unit) | PASS (38, incl. expected-rate columns, impact text, disagreeing sources) |
+| `test_historical_stock` (unit) | PASS (45, incl. expected-rate columns, impact text, L1/L2/L3 permissions, xlsx zip, graph empty-identity) |
 | `test_stock_posting_order` | PASS (72, incl. valuation rebuild + downstream classify/residual) |
 | `test_historical_stock_integration` | PASS (6, incl. 25741 read-only + Farvardin repaired-or-detect) |
 | `test_scrap_absorbed_costing` | PASS |
@@ -394,11 +394,44 @@ Peak RSS ~435 MB. No writes. No global RIV.
 
 ### Remaining limitations
 
-- Full Scan was **16.4 s** (target 15 s for 100k SLE; this run is multi-engine, not a 100k SLE-only scan).
-- Export Excel is UTF-8 BOM CSV, not xlsx.
+- Full Scan was **16.99 s** (target 15 s for 100k SLE; this run is multi-engine, not a 100k SLE-only scan).
 - Progress remaining time is wall-clock around one RPC, not a queued job ETA.
 - GL rebuild / RIV cannot be fully rolled back in-app — DATABASE BACKUP REQUIRED.
 - Consume SLE `valuation_rate` on 25912 / 25911-1 can still show warehouse moving-average **3,338,300** while identity outgoing is **3,333,718.97** (SABB/SBE is the identity truth).
+- Reconstruction preview can still pick an earlier Reject inward as LIKELY (`3,333,711` vs reconstructed `3,333,718.97`).
+
+## 17. MVR release hardening (permissions, hide-not-disable, safe mode)
+
+No new repair engines. Accounting policy is unchanged. Writes stay identity-scoped. Default path is Scan → Dry Run → Preview → Impact → DATABASE BACKUP REQUIRED → operator confirm → Repair.
+
+### Feature maturity
+
+| Feature | Class | Who |
+|---------|-------|-----|
+| Scan, Scan All, Dry Run, Dashboard, Expected Rate, Impact, Graph, Integrity, History, Export, search/filter/sort | **A Production Ready** | All page roles |
+| Repair Selected, Replay Downstream, Rebuild Affected Documents, Repost Selected, Resume, Cancel, Advanced Mode | **B Operational** | System Manager + Administrator |
+| Rollback, Benchmark, snapshots, diagnose_batch, developer diagnostics | **C Experimental** | Administrator only |
+
+### Permission model
+
+| Level | Identity | Writes |
+|-------|----------|--------|
+| 1 Operational read | Stock Manager, Manufacturing Manager, Accounts Manager | None. Repair/Replay/Rebuild/Repost/Resume/Cancel/Rollback/Benchmark are **hidden**, not disabled. |
+| 2 System Manager | System Manager | Stable repair after Dry Run + Impact + DATABASE BACKUP REQUIRED + confirm |
+| 3 Administrator | user `Administrator` (checked before System Manager) | Level 2 plus experimental tools |
+
+API: scan/dry-run/impact/graph/integrity/export = read. Apply (`dry_run=0`) = System Manager. Rollback + Benchmark + diagnose_batch = Administrator.
+
+### UI
+
+- Dashboard KPIs sit above the title. Clicking a KPI opens the matching topic and scan.
+- Toolbar groups: Scan | Repair (hidden at L1) | Inspect | Advanced (Resume/Cancel; Rollback/Benchmark if Administrator).
+- Unavailable actions are omitted from the DOM.
+- Repair Selected stays disabled until Dry Run + Impact succeed.
+- Eligible rows are not pre-checked; operator uses Select EXACT / Select Repairable.
+- Graph/Impact empty identity returns a preview warning instead of a blocking modal.
+- Export Excel is real OOXML (`PK` zip), not CSV.
+- Column chooser layout is saved per topic in `localStorage`.
 
 ## 14. Deployment
 

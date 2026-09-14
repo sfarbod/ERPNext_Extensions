@@ -60,13 +60,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
 	dashboard = {
 		"Integrity Score": integrity_score,
-		"Zero Rate": zero_n,
+		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
+		"Zero Rate": zero_n,
 		"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
 		"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
 		"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
 		"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
-		"Wrong Avg": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+		"Wrong Average": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
 		"Broken SABB": sabb_n,
 		"Broken Bin": bin_n,
 		"Broken GL": gl_n,

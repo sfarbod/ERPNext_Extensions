@@ -30,6 +30,14 @@ test.describe("5.2.7 Historical Repair hardening UX @release-blocking", () => {
     await expect(page.locator(".hr-section-title")).toContainText("Production Posting Order", {
       timeout: 60_000,
     });
+    await expect(page.locator(".hr-dashboard")).toBeVisible();
+    await expect(page.locator(".hr-action-group[data-group='scan']")).toBeVisible();
+    await expect(page.locator(".hr-action-group[data-group='repair']")).toBeVisible();
+    await expect(page.locator("button[data-action='repair']")).toBeVisible();
+    await expect(page.locator("button[data-action='rollback']")).toBeHidden();
+    await page.locator("[data-role='advanced']").check();
+    await expect(page.locator("button[data-action='rollback']")).toBeVisible();
+    await expect(page.locator("button[data-action='benchmark']")).toBeVisible();
     await expect(page.locator("button[data-action='scan-all']")).toBeVisible();
     await expect(page.locator("button[data-action='columns']")).toBeVisible();
     await page.locator("button[data-action='scan-all']").click();

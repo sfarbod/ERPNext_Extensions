@@ -235,19 +235,38 @@ def _count_failed_riv(items, warehouses) -> int:
 def _chain_for(rows) -> list[str]:
 	from erpnext_extensions.iran_accounting.historical_stock.graph import repair_graph
 
-	row = next((r for r in rows if r.get("item") or r.get("item_code") or r.get("batch") or r.get("voucher")), None)
+	row = next(
+		(
+			r
+			for r in rows
+			if r.get("item")
+			or r.get("item_code")
+			or r.get("batch")
+			or r.get("voucher")
+			or r.get("voucher_no")
+			or r.get("inbound_document")
+			or r.get("outbound_document")
+		),
+		None,
+	)
 	if not row:
 		return collect_vouchers(rows)
-	try:
-		g = repair_graph(
-			item=row.get("item") or row.get("item_code"),
-			batch=row.get("batch"),
-			work_order=row.get("work_order"),
-			voucher=None,
-			warehouse=row.get("warehouse"),
-			limit=40,
-		)
-		nodes = [n.get("voucher") for n in (g.get("nodes") or []) if n.get("voucher")]
-		return nodes or collect_vouchers(rows)
-	except Exception:
+	item = row.get("item") or row.get("item_code")
+	voucher = (
+		row.get("voucher")
+		or row.get("voucher_no")
+		or row.get("inbound_document")
+		or row.get("outbound_document")
+	)
+	if not any((item, row.get("batch"), row.get("work_order"), voucher)):
 		return collect_vouchers(rows)
+	g = repair_graph(
+		item=item,
+		batch=row.get("batch"),
+		work_order=row.get("work_order"),
+		voucher=voucher,
+		warehouse=row.get("warehouse"),
+		limit=40,
+	)
+	nodes = [n.get("voucher") for n in (g.get("nodes") or []) if n.get("voucher")]
+	return nodes or collect_vouchers(rows)
