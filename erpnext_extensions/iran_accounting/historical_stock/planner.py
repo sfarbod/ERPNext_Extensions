@@ -43,7 +43,12 @@ PLAN_WAITING_RIV = "WAITING_RIV"
 PLAN_AMBIGUOUS = "AMBIGUOUS"
 PLAN_MANUAL = "MANUAL"
 PLAN_NO_REPAIR_PATH = "NO_REPAIR_PATH"
+PLAN_READY_LOCAL = "READY_LOCAL_REPAIR"
 PLAN_READY_BATCH_SCOPED = "READY_BATCH_SCOPED_REPAIR"
+PLAN_READY_WO = "READY_WORK_ORDER_REPAIR"
+PLAN_READY_IDENTITY = "READY_IDENTITY_REPAIR"
+PLAN_WAREHOUSE_ESCALATION = "WAREHOUSE_ESCALATION_REQUIRED"
+PLAN_INVALID_GRAPH = "INVALID_DEPENDENCY_GRAPH"
 
 PLAN_STATUSES = (
 	PLAN_READY,
@@ -56,7 +61,20 @@ PLAN_STATUSES = (
 	PLAN_AMBIGUOUS,
 	PLAN_MANUAL,
 	PLAN_NO_REPAIR_PATH,
+	PLAN_READY_LOCAL,
 	PLAN_READY_BATCH_SCOPED,
+	PLAN_READY_WO,
+	PLAN_READY_IDENTITY,
+	PLAN_WAREHOUSE_ESCALATION,
+	PLAN_INVALID_GRAPH,
+)
+
+READY_STATUSES = (
+	PLAN_READY,
+	PLAN_READY_LOCAL,
+	PLAN_READY_BATCH_SCOPED,
+	PLAN_READY_WO,
+	PLAN_READY_IDENTITY,
 )
 
 DATABASE_BACKUP_REQUIRED = "DATABASE BACKUP REQUIRED"
@@ -138,7 +156,7 @@ def stamp_scan_result(result: dict | None, *, cache: dict | None = None) -> dict
 	out["rows"] = rows
 	out["eligible"] = [r for r in rows if r.get("eligible")]
 	out["repairable"] = sum(
-		1 for r in rows if r.get("planner_status") == PLAN_READY and cint(r.get("sql_updates")) > 0
+		1 for r in rows if r.get("planner_status") in READY_STATUSES and cint(r.get("sql_updates")) > 0
 	)
 	return out
 
@@ -149,8 +167,8 @@ def plan_selection(rows: list | None) -> dict:
 	rows = list(rows or [])
 	decisions = [evaluate_row(r, cache=cache) for r in rows]
 	planned_rows = [attach_plan(r, cache=cache) for r in rows]
-	blockers = [d for d in decisions if d["planner_status"] != PLAN_READY or cint(d["sql_updates"]) <= 0]
-	ready = [d for d in decisions if d["planner_status"] == PLAN_READY and cint(d["sql_updates"]) > 0]
+	blockers = [d for d in decisions if d["planner_status"] not in READY_STATUSES or cint(d["sql_updates"]) <= 0]
+	ready = [d for d in decisions if d["planner_status"] in READY_STATUSES and cint(d["sql_updates"]) > 0]
 	all_ready = bool(decisions) and not blockers
 	sql = sum(cint(d["sql_updates"]) for d in ready) if all_ready else 0
 	replay = sum(cint(d["replay_count"]) for d in ready) if all_ready else 0
@@ -188,7 +206,7 @@ def plan_selection(rows: list | None) -> dict:
 		"decisions": decisions,
 		"eligible": [d for d in decisions if d["eligible"]],
 		"blocked": blockers,
-		"planner_status": PLAN_READY if all_ready and sql > 0 else (blockers[0]["planner_status"] if blockers else PLAN_BLOCKED),
+		"planner_status": (ready[0]["planner_status"] if all_ready and ready else (blockers[0]["planner_status"] if blockers else PLAN_BLOCKED)),
 		"reason": skip_reason,
 		"skip_reason": skip_reason,
 		"confidence": ready[0]["confidence"] if len(ready) == 1 else None,
@@ -231,6 +249,10 @@ def plan_selection(rows: list | None) -> dict:
 		"estimated_repair_count": (planned_rows[0].get("estimated_repair_count") if planned_rows else 0),
 		"blocked_because": (planned_rows[0].get("blocked_because") if planned_rows else None),
 		"batch_isolation": (planned_rows[0].get("batch_isolation") if planned_rows else None),
+		"smallest_safe_scope": (planned_rows[0].get("smallest_safe_scope") if planned_rows else None),
+		"dependency_type": (planned_rows[0].get("dependency_type") if planned_rows else None),
+		"escalation_reason": (planned_rows[0].get("escalation_reason") if planned_rows else None),
+		"unrelated_poison": (planned_rows[0].get("unrelated_poison") if planned_rows else None),
 	}
 	if all_ready and ready:
 		plan["sle"] = sum(cint(d.get("sle_count")) for d in ready)
@@ -257,7 +279,7 @@ def assert_ready(row: dict, *, cache: dict | None = None) -> dict:
 	import frappe
 
 	decision = evaluate_row(row, cache=cache)
-	if decision["planner_status"] != PLAN_READY or cint(decision["sql_updates"]) <= 0:
+	if decision["planner_status"] not in READY_STATUSES or cint(decision["sql_updates"]) <= 0:
 		frappe.throw(
 			decision["reason"] or f"{decision['planner_status']} — Repair Selected is disabled",
 			title=decision["planner_status"],
@@ -282,8 +304,8 @@ def _not_ready(decision, status, reason, *, prerequisite=None, dependency=None, 
 	return decision
 
 
-def _ready(decision, *, sql, replay=0, rebuild=0, reason="READY", **counts) -> dict:
-	decision["planner_status"] = PLAN_READY
+def _ready(decision, *, sql, replay=0, rebuild=0, reason="READY", planner_status=None, **counts) -> dict:
+	decision["planner_status"] = planner_status or PLAN_READY
 	decision["eligible"] = True
 	decision["blocked"] = False
 	decision["reason"] = reason
@@ -342,46 +364,60 @@ def _evaluate_posting(row, decision, cache) -> dict:
 	if not in_t or not out_t:
 		return _not_ready(decision, PLAN_BLOCKED, "Current posting date/time is required")
 	from_dt = min(get_datetime(in_t), get_datetime(out_t))
-	identities = set()
-	vw_cache = cache.setdefault("vw", {})
-	for doc_move in moves:
-		doc = doc_move.get("document")
-		if not doc:
-			continue
-		if doc not in vw_cache:
-			try:
-				vw_cache[doc] = set(_voucher_item_warehouses(doc))
-			except Exception:
-				vw_cache[doc] = set()
-		identities |= vw_cache[doc]
-	if row.get("item") and row.get("warehouse"):
-		identities.add((row["item"], row["warehouse"]))
-	poison_cache = cache.setdefault("poison", {})
-	for item_code, warehouse in identities:
-		key = (item_code, warehouse, str(from_dt))
-		if key not in poison_cache:
-			poison_cache[key] = window_poison_hit(
-				item_code, warehouse, from_dt, ignore_inversion_artifacts=True
-			)
-		hit = poison_cache[key]
-		if hit:
-			pair_vouchers = {row.get("inbound_document"), row.get("outbound_document")} | {
-				m.get("document") for m in moves if m.get("document")
-			}
-			on_pair = hit.get("voucher") in pair_vouchers
-			scope = "on this pair" if on_pair else "on unrelated voucher — not an inversion artifact of this pair"
-			detail = (
-				f"{hit['reason']} on {hit.get('voucher') or ''} {hit.get('sle') or ''} "
-				f"incoming_rate={hit.get('incoming_rate')} ({scope})"
-			).strip()
-			prereq = hit.get("voucher") if not on_pair else None
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES, evaluate_minimal_scope
+
+	scope = evaluate_minimal_scope(row, cache=cache)
+	decision["scope"] = scope
+	if scope.get("window_loaded"):
+		if scope.get("status") not in READY_SCOPES:
 			return _not_ready(
 				decision,
-				PLAN_WAITING_RATE_REPAIR if prereq else PLAN_WAITING_RATE_REPAIR,
-				f"{STATUS_VALUATION_POISON}: {item_code} {warehouse} ({detail})",
-				dependency=hit["reason"],
-				prerequisite=prereq or hit.get("voucher"),
+				scope.get("status") or PLAN_WAREHOUSE_ESCALATION,
+				scope.get("escalation_reason") or scope.get("reason") or PLAN_WAREHOUSE_ESCALATION,
+				dependency=scope.get("dependency_type"),
+				prerequisite=(scope.get("local_poisons") or [{}])[0].get("voucher") if scope.get("local_poisons") else None,
 			)
+	else:
+		identities = set()
+		vw_cache = cache.setdefault("vw", {})
+		for doc_move in moves:
+			doc = doc_move.get("document")
+			if not doc:
+				continue
+			if doc not in vw_cache:
+				try:
+					vw_cache[doc] = set(_voucher_item_warehouses(doc))
+				except Exception:
+					vw_cache[doc] = set()
+			identities |= vw_cache[doc]
+		if row.get("item") and row.get("warehouse"):
+			identities.add((row["item"], row["warehouse"]))
+		poison_cache = cache.setdefault("poison", {})
+		for item_code, warehouse in identities:
+			key = (item_code, warehouse, str(from_dt))
+			if key not in poison_cache:
+				poison_cache[key] = window_poison_hit(
+					item_code, warehouse, from_dt, ignore_inversion_artifacts=True
+				)
+			hit = poison_cache[key]
+			if hit:
+				pair_vouchers = {row.get("inbound_document"), row.get("outbound_document")} | {
+					m.get("document") for m in moves if m.get("document")
+				}
+				on_pair = hit.get("voucher") in pair_vouchers
+				scope_txt = "on this pair" if on_pair else "on unrelated voucher — not an inversion artifact of this pair"
+				detail = (
+					f"{hit['reason']} on {hit.get('voucher') or ''} {hit.get('sle') or ''} "
+					f"incoming_rate={hit.get('incoming_rate')} ({scope_txt})"
+				).strip()
+				prereq = hit.get("voucher") if not on_pair else None
+				return _not_ready(
+					decision,
+					PLAN_WAITING_RATE_REPAIR if prereq else PLAN_WAITING_RATE_REPAIR,
+					f"{STATUS_VALUATION_POISON}: {item_code} {warehouse} ({detail})",
+					dependency=hit["reason"],
+					prerequisite=prereq or hit.get("voucher"),
+				)
 	rev = _posting_revalidate(row, moves, from_dt, cache)
 	if rev:
 		return _not_ready(decision, PLAN_BLOCKED, rev)
@@ -394,7 +430,8 @@ def _evaluate_posting(row, decision, cache) -> dict:
 		sql=sql,
 		replay=1,
 		rebuild=counts["sle"] + counts["sabb"],
-		reason="READY — posting-order EXACT pair, poison-free",
+		reason=(scope.get("reason") if scope.get("window_loaded") else "READY — posting-order EXACT pair, poison-free"),
+		planner_status=(scope.get("status") if scope.get("window_loaded") and scope.get("status") in READY_SCOPES else PLAN_READY),
 		se_count=counts["se"],
 		sle_count=counts["sle"],
 		sabb_count=counts["sabb"],

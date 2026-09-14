@@ -499,16 +499,35 @@ See §16 remaining limitations. Wrong Rate Scan still misses the 3 s target. Sca
 
 Blocked rows no longer stop at generic `BLOCKED`. Scan, Dashboard, Graph, Impact, Planner, and Repair share one walker (`historical_stock/dependency.py`) on top of `evaluate_row`.
 
-| Field | Meaning |
+### Minimal Scope Evaluator (`historical_stock/scope.py`)
+
+Repair order is smallest-safe-scope first. A Batch/SABB posting inversion is simulated on the pair + same-batch downstream **before** any warehouse-wide walk.
+
+| Scope | Meaning |
 |-------|---------|
-| Immediate Dependency | Voucher this row waits on |
-| Root Patient Zero | Deepest unique voucher in the walk |
-| Repair Order | Root → … → selected → Replay downstream → Integrity |
-| Required Action | `Repair {voucher} first` / `Repair Wrong Rate first` / `NO REPAIR PATH: Manual\|Ambiguous\|Circular\|…` |
+| `LOCAL_VOUCHER` | Timestamp/rate on this voucher only |
+| `BATCH_SCOPED` | Prerequisite inbound, dependent outbound, same Batch/SABB downstream |
+| `WORK_ORDER_SCOPED` | Same WO/JC chain |
+| `IDENTITY_SCOPED` | Item + Warehouse + Batch |
+| `WAREHOUSE_VALUATION_SCOPED` | Item + Warehouse moving average / qty_after |
+| `UNSAFE_GLOBAL_DEPENDENCY` | Graph still cyclic after minimal-scope analysis |
 
-Desk: **Dependency Resolution** panel, **Go To Root Cause**, **Repair Dependency Chain** (READY root only; never warehouse/item/company-wide).
+Poison is split:
 
-`MAT-STE-2026-26156` stays **WAITING_RATE_REPAIR**, not `READY_BATCH_SCOPED_REPAIR`. Warehouse identity (item+warehouse qty_after / moving average) plus later negative incoming on **MAT-STE-2026-25469** is real poison. Repair sequence: 25791 leftover patient-zero and 25469 rates are circular until 25469 is reconstructed EXACT; then re-scan 26156. Do not apply 26156 while 25469 poison remains.
+- `LOCAL_POISON` — same Batch/SABB or the selected pair. Blocks until repaired.
+- `UNRELATED_WAREHOUSE_POISON` — different lot / WO. Listed with `effect NONE` or the exact SLE fields that would change. Does **not** automatically become a wait-for edge.
+
+Graph edges are typed: `DOCUMENT_DEPENDENCY`, `BATCH_DEPENDENCY`, `WORK_ORDER_DEPENDENCY`, `VALUATION_DEPENDENCY`, `WAREHOUSE_MA_DEPENDENCY`, `GL_DEPENDENCY`, `PATIENT_ZERO_DEPENDENCY`.
+
+Planner statuses: `READY_LOCAL_REPAIR`, `READY_BATCH_SCOPED_REPAIR`, `READY_WORK_ORDER_REPAIR`, `READY_IDENTITY_REPAIR`, `WAITING_RATE_REPAIR`, `WAITING_SLE_REPAIR`, `WAITING_GL_REPAIR`, `WAITING_PATIENT_ZERO`, `WAREHOUSE_ESCALATION_REQUIRED`, `INVALID_DEPENDENCY_GRAPH`, `AMBIGUOUS`, `MANUAL`, `NO_REPAIR_PATH`.
+
+`MAT-STE-2026-26156` (batch `5861-30300014-SO262014T321`) is **`WAREHOUSE_ESCALATION_REQUIRED`**, not `READY_BATCH_SCOPED_REPAIR`. Batch qty is recoverable in isolation, but SLE `qty_after` / `stock_value` / `valuation_rate` are item+warehouse. In the 157s inversion window, **MAT-STE-2026-26176** (batch 5862) and **MAT-STE-2026-26129-1** (batch 5860) sit between 26156 and 26135-1 and must be rewritten. That is a proven `WAREHOUSE_MA_DEPENDENCY`.
+
+`MAT-STE-2026-25469` / `25475` / `25534-1` (batches 9312 / 9313 / 9350) are **unrelated warehouse poison**, effect **NONE**. They are **not** required first. The old 25469 ↔ 25791 cycle was warehouse-wide overreach, not a real wait-for edge on 26156.
+
+Intended sequence if/when warehouse scope is repairable: `26135-1 → 26156 → 26186 → 26178-1 → Integrity`. Repair Selected stays disabled until that warehouse replay is a READY root. Repair Dependency Chain still executes only a proven READY root, never every Stock Entry in the warehouse.
+
+Desk: **Dependency Resolution** panel shows Smallest Safe Scope, Dependency Type, Escalation Reason, Unrelated poison (effect on selected chain), Repair Sequence. **Go To Root Cause**, **Repair Dependency Chain** (READY root only).
 
 ## Rollback
 

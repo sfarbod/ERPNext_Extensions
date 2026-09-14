@@ -62,6 +62,12 @@ def resolve_dependencies(row: dict | None, *, cache: dict | None = None, _decisi
 	"""Walk blockers until the first repairable root, a terminal stop, or a cycle."""
 	cache = cache if cache is not None else {}
 	row = dict(row or {})
+	if row.get("inbound_document") and row.get("outbound_document"):
+		from erpnext_extensions.iran_accounting.historical_stock.scope import evaluate_minimal_scope
+
+		scope = evaluate_minimal_scope(row, cache=cache)
+		if scope.get("window_loaded"):
+			return _resolution_from_scope(row, scope, _decision)
 	walked = _walk(row, cache=cache, stack=[], depth=0, decision=_decision)
 	nodes = walked.get("nodes") or []
 	tree = walked.get("tree") or _leaf_node(row, _decision or {})
@@ -125,6 +131,165 @@ def resolve_dependencies(row: dict | None, *, cache: dict | None = None, _decisi
 	}
 
 
+def _resolution_from_scope(row, scope, decision) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.planner import evaluate_row
+	from erpnext_extensions.iran_accounting.historical_stock.scope import (
+		PLAN_INVALID_GRAPH,
+		PLAN_WAREHOUSE_ESCALATION,
+		READY_SCOPES,
+		SCOPE_BATCH,
+	)
+
+	decision = decision or evaluate_row(row)
+	inbound = row.get("inbound_document")
+	outbound = row.get("outbound_document") or voucher_of(row)
+	repair_order = list(scope.get("repair_order") or [])
+	if outbound and outbound not in repair_order:
+		repair_order.append(outbound)
+	status = scope.get("status") or decision.get("planner_status")
+	if scope.get("cyclic"):
+		status = PLAN_INVALID_GRAPH
+	edges = scope.get("edges") or []
+	immediate = None
+	if scope.get("local_poisons"):
+		immediate = scope["local_poisons"][0].get("voucher")
+	elif status not in READY_SCOPES and status not in (PLAN_WAREHOUSE_ESCALATION, PLAN_INVALID_GRAPH):
+		immediate = inbound
+	dep_type = scope.get("dependency_type")
+	if edges:
+		dep_type = edges[0].get("type") or dep_type
+	unrelated = scope.get("unrelated_poison") or []
+	none_unrelated = [p for p in unrelated if p.get("effect") == "NONE"]
+	ready = status in READY_SCOPES
+	required = _scope_required_action(scope, inbound, outbound, none_unrelated)
+	tree = _scope_tree(outbound, inbound, edges, scope)
+	count = max(len(repair_order), 1)
+	runtime_s = max(0.05, (count * MS_PER_STEP) / 1000.0)
+	preview = _chain_preview(repair_order, required)
+	return {
+		"current_voucher": outbound,
+		"status": status,
+		"immediate_blocker": immediate if not ready else None,
+		"root_blocker": inbound or outbound,
+		"root_status": status,
+		"root_topic": "POSTING_ORDER",
+		"root_row": row if ready else None,
+		"dependency_depth": max(0, len(repair_order) - 1),
+		"repair_order": repair_order,
+		"repair_sequence": " → ".join(repair_order),
+		"estimated_repair_count": count,
+		"estimated_runtime": f"{runtime_s:.2f}s",
+		"estimated_runtime_seconds": runtime_s,
+		"required_action": required,
+		"no_repair_path": status == PLAN_INVALID_GRAPH,
+		"stop_reason": "Invalid graph" if status == PLAN_INVALID_GRAPH else None,
+		"circular": bool(scope.get("cyclic")),
+		"blocked_because": scope.get("escalation_reason") or scope.get("reason"),
+		"dependency_tree": tree,
+		"tree_text": format_tree(tree, count),
+		"chain_preview": preview,
+		"batch_isolation": {
+			"smallest_safe_scope": scope.get("smallest_safe_scope"),
+			"escalation_reason": scope.get("escalation_reason"),
+			"unrelated_poison": unrelated,
+			"local_poisons": scope.get("local_poisons"),
+			"classification": scope.get("smallest_safe_scope"),
+			"can_isolate_batch": ready and scope.get("smallest_safe_scope") == SCOPE_BATCH,
+			"would_affect_unrelated_batches": bool(scope.get("other_batch_rewrite_count")),
+			"would_corrupt_gl_or_ma": bool(scope.get("other_batch_rewrite_count")) or not scope.get("pair_end_value_equal"),
+		},
+		"first_actionable": inbound,
+		"nodes": [],
+		"smallest_safe_scope": scope.get("smallest_safe_scope"),
+		"dependency_type": dep_type,
+		"escalation_reason": scope.get("escalation_reason"),
+		"unrelated_poison": unrelated,
+		"edges": edges,
+		"scope": scope,
+	}
+
+
+def _scope_required_action(scope, inbound, outbound, none_unrelated) -> str:
+	from erpnext_extensions.iran_accounting.historical_stock.scope import (
+		PLAN_INVALID_GRAPH,
+		PLAN_WAREHOUSE_ESCALATION,
+		READY_SCOPES,
+		SCOPE_BATCH,
+	)
+
+	status = scope.get("status")
+	if status in READY_SCOPES:
+		return f"Repair {inbound or outbound} first"
+	if status == PLAN_INVALID_GRAPH:
+		return "NO REPAIR PATH: INVALID_DEPENDENCY_GRAPH"
+	if status == PLAN_WAREHOUSE_ESCALATION:
+		msg = f"Cannot repair at {SCOPE_BATCH}. {scope.get('escalation_reason') or ''}".strip()
+		if none_unrelated:
+			listed = ", ".join(f"{p['voucher']} / batch {p.get('batch') or '?'}" for p in none_unrelated[:4])
+			msg += f" Unrelated poison {listed} effect NONE — do not repair those first."
+		return msg
+	if scope.get("local_poisons"):
+		p = scope["local_poisons"][0]
+		return f"Repair Wrong Rate {p['voucher']} first ({p.get('reason')})"
+	return scope.get("reason") or f"Repair {inbound} first"
+
+
+def _scope_tree(outbound, inbound, edges, scope) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
+
+	children = []
+	if inbound and inbound != outbound:
+		children.append(
+			{
+				"voucher": inbound,
+				"status": "READY" if scope.get("status") in READY_SCOPES else scope.get("status"),
+				"blocked_because": None,
+				"edge_type": "BATCH_DEPENDENCY",
+				"children": [],
+			}
+		)
+	seen = {inbound, outbound}
+	prev = outbound
+	for extra in scope.get("repair_order") or []:
+		if extra in seen:
+			continue
+		seen.add(extra)
+		children.append(
+			{
+				"voucher": extra,
+				"status": scope.get("status"),
+				"blocked_because": f"same-batch downstream after {prev}",
+				"edge_type": "DOCUMENT_DEPENDENCY",
+				"relation": "then",
+				"children": [],
+			}
+		)
+		prev = extra
+	for e in edges:
+		if e.get("type") != "WAREHOUSE_MA_DEPENDENCY":
+			continue
+		if e.get("to") in seen:
+			continue
+		seen.add(e.get("to"))
+		children.append(
+			{
+				"voucher": e.get("to"),
+				"status": scope.get("status"),
+				"blocked_because": e.get("why"),
+				"edge_type": e.get("type"),
+				"relation": "would rewrite",
+				"children": [],
+			}
+		)
+	return {
+		"voucher": outbound,
+		"status": scope.get("status"),
+		"blocked_because": scope.get("escalation_reason"),
+		"children": children,
+		"depth": 0,
+	}
+
+
 def stamp_dependency(row: dict, *, cache: dict | None = None, decision: dict | None = None) -> dict:
 	"""Overlay the canonical tree onto a planner-stamped row."""
 	out = dict(row or {})
@@ -150,8 +315,14 @@ def stamp_dependency(row: dict, *, cache: dict | None = None, decision: dict | N
 	out["chain_preview"] = resolution["chain_preview"]
 	out["batch_isolation"] = resolution["batch_isolation"]
 	out["first_actionable"] = resolution["first_actionable"]
+	out["smallest_safe_scope"] = resolution.get("smallest_safe_scope") or (resolution.get("batch_isolation") or {}).get("smallest_safe_scope")
+	out["dependency_type"] = resolution.get("dependency_type")
+	out["escalation_reason"] = resolution.get("escalation_reason")
+	out["unrelated_poison"] = resolution.get("unrelated_poison")
+	out["edges"] = resolution.get("edges")
 	status = out.get("planner_status")
-	from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_BLOCKED, PLAN_READY
+	from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_BLOCKED
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
 
 	if status == PLAN_BLOCKED and resolution["immediate_blocker"]:
 		out["planner_status"] = _waiting_status_for(resolution)
@@ -162,7 +333,7 @@ def stamp_dependency(row: dict, *, cache: dict | None = None, decision: dict | N
 		out["planner_status"] = PLAN_NO_REPAIR_PATH
 		if isinstance(out.get("planner"), dict):
 			out["planner"]["planner_status"] = PLAN_NO_REPAIR_PATH
-	if status != PLAN_READY:
+	if status not in READY_SCOPES:
 		out["eligible"] = False
 		out["blocked"] = True
 		out["sql_updates"] = 0
@@ -170,26 +341,74 @@ def stamp_dependency(row: dict, *, cache: dict | None = None, decision: dict | N
 
 
 def analyze_batch_isolation(row: dict | None, *, cache: dict | None = None) -> dict:
-	"""ERPNext SLE identity is item+warehouse. Batch-scoped replay is fail-closed."""
+	"""Prove whether this Batch/SABB can be repaired without warehouse-wide replay.
+
+	Fail-closed when the inversion window cannot be loaded. Escalate only when
+	simulation rewrites other-batch qty_after / stock_value / valuation_rate.
+	"""
 	row = row or {}
 	cache = cache if cache is not None else {}
-	item = row.get("item") or row.get("item_code")
-	warehouse = row.get("warehouse")
-	batch = row.get("batch")
+	from erpnext_extensions.iran_accounting.historical_stock.scope import (
+		READY_SCOPES,
+		SCOPE_BATCH,
+		evaluate_minimal_scope,
+	)
+
+	if not (row.get("inbound_document") and row.get("outbound_document")):
+		return {
+			"A": "No — SLE qty_after / valuation_rate / moving average are item+warehouse, not batch.",
+			"B": "Unknown — not a posting-order pair.",
+			"C": "Unknown.",
+			"classification": "NOT_POSTING_ORDER",
+			"can_isolate_batch": False,
+			"would_affect_unrelated_batches": True,
+			"would_corrupt_gl_or_ma": True,
+		}
+	scope = evaluate_minimal_scope(row, cache=cache)
+	if scope.get("window_loaded"):
+		ready = scope.get("status") in READY_SCOPES
+		isolated = ready and scope.get("smallest_safe_scope") == SCOPE_BATCH
+		return {
+			"A": (
+				"Yes — batch qty is recoverable and other-batch SLE identity is unchanged."
+				if isolated
+				else "No — SLE qty_after / valuation_rate / moving average are item+warehouse, not batch."
+			),
+			"B": (
+				"No — simulation does not rewrite unrelated batches."
+				if not scope.get("other_batch_rewrite_count")
+				else "Yes — a warehouse replay would rewrite unrelated batches in the same identity."
+			),
+			"C": (
+				"No — pair-end warehouse value matches and unrelated poison is not MA-relevant."
+				if isolated
+				else "Yes — later lots inherit warehouse moving average; GL would diverge without warehouse replay."
+			),
+			"classification": scope.get("smallest_safe_scope"),
+			"status": scope.get("status"),
+			"can_isolate_batch": isolated,
+			"would_affect_unrelated_batches": bool(scope.get("other_batch_rewrite_count")),
+			"would_corrupt_gl_or_ma": bool(scope.get("other_batch_rewrite_count")) or not scope.get("pair_end_value_equal"),
+			"escalation_reason": scope.get("escalation_reason"),
+			"unrelated_poison": scope.get("unrelated_poison"),
+			"local_poisons": scope.get("local_poisons"),
+			"other_batch_changes": scope.get("other_batch_changes"),
+			"smallest_safe_scope": scope.get("smallest_safe_scope"),
+		}
 	why = {
 		"A": "No — SLE qty_after / valuation_rate / moving average are item+warehouse, not batch.",
 		"B": "Yes — a warehouse replay would rewrite unrelated batches in the same identity.",
 		"C": "Yes — later lots would inherit a stale warehouse moving average and GL would diverge.",
-		"classification": None,
+		"classification": "WAREHOUSE_WIDE_POISON",
 		"can_isolate_batch": False,
 		"would_affect_unrelated_batches": True,
 		"would_corrupt_gl_or_ma": True,
+		"detail": "Inversion window not loaded; warehouse-wide gate stays closed.",
 	}
-	if not (row.get("inbound_document") and row.get("outbound_document")):
-		why["classification"] = "NOT_POSTING_ORDER"
-		return why
+	item = row.get("item") or row.get("item_code")
+	warehouse = row.get("warehouse")
+	batch = row.get("batch")
 	if not item or not warehouse:
-		why["classification"] = "WAREHOUSE_WIDE_POISON"
 		why["detail"] = "Posting-order identity is incomplete; warehouse-wide gate stays closed."
 		return why
 	batches = _window_batches(item, warehouse, row.get("current_outbound_time") or row.get("current_inbound_time"), cache)
@@ -197,17 +416,13 @@ def analyze_batch_isolation(row: dict | None, *, cache: dict | None = None) -> d
 	why["window_batches"] = batches
 	why["unrelated_batches"] = other
 	if other:
-		why["classification"] = "WAREHOUSE_WIDE_POISON"
 		why["detail"] = (
 			f"Window contains {len(other)} unrelated batch(es); "
-			"cannot isolate this Batch/SABB/Work Order from warehouse qty_after."
+			"cannot isolate this Batch/SABB/Work Order from warehouse qty_after without simulation."
 		)
 		return why
-	# Even a single-batch window still shares warehouse qty_after with any future
-	# receipt of another lot. Never promote to READY_BATCH_SCOPED_REPAIR.
-	why["classification"] = "WAREHOUSE_WIDE_POISON"
 	why["detail"] = (
-		"Single-batch window still uses warehouse identity. "
+		"Single-batch window still uses warehouse identity until a loaded simulation proves isolation. "
 		f"{PLAN_READY_BATCH_SCOPED} is not proven safe."
 	)
 	return why
@@ -215,11 +430,12 @@ def analyze_batch_isolation(row: dict | None, *, cache: dict | None = None) -> d
 
 def apply_dependency_chain(row: dict, *, dry_run: bool = True) -> dict:
 	"""Repair only the current READY root. Never the warehouse, item, or descendants."""
-	from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, attach_plan
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
 
 	resolution = resolve_dependencies(row)
 	root_row = resolution.get("root_row")
-	if resolution.get("no_repair_path") or resolution.get("root_status") != PLAN_READY or not root_row:
+	if resolution.get("no_repair_path") or resolution.get("root_status") not in READY_SCOPES or not root_row:
 		reason = resolution.get("required_action") or "NO REPAIR PATH"
 		return {
 			"dry_run": dry_run,
@@ -242,7 +458,7 @@ def apply_dependency_chain(row: dict, *, dry_run: bool = True) -> dict:
 			"required_action": reason,
 		}
 	planned = attach_plan(root_row)
-	if planned.get("planner_status") != PLAN_READY or cint(planned.get("sql_updates")) <= 0:
+	if planned.get("planner_status") not in READY_SCOPES or cint(planned.get("sql_updates")) <= 0:
 		reason = planned.get("reason") or "Root is not READY"
 		return {
 			"dry_run": dry_run,
@@ -263,7 +479,7 @@ def apply_dependency_chain(row: dict, *, dry_run: bool = True) -> dict:
 		"dry_run": True,
 		"aborted": False,
 		"executable": True,
-		"planner_status": PLAN_READY,
+		"planner_status": planned.get("planner_status"),
 		"repairing": [voucher_of(planned)],
 		"reason": f"Repair only {voucher_of(planned)}. Descendants stay untouched until the next scan.",
 		"sql_updates_planned": cint(planned.get("sql_updates")),
@@ -297,11 +513,14 @@ def format_tree(tree: dict | None, estimated_count: int | None = None) -> str:
 		voucher = node.get("voucher") or "(unknown)"
 		status = node.get("status") or ""
 		because = node.get("blocked_because")
+		edge = node.get("edge_type") or ""
+		rel = node.get("relation") or "waits for"
 		if is_root:
 			lines.append(voucher)
 		else:
+			tag = f"  [{edge}]" if edge else ""
 			extra = f"  ({because})" if because else (f"  {status}" if status else "")
-			lines.append(f"{prefix}├── waits for {voucher}{extra}")
+			lines.append(f"{prefix}├── {rel} {voucher}{tag}{extra}")
 		children = node.get("children") or []
 		child_prefix = "│   " if is_root else prefix + "│   "
 		for child in children:
@@ -352,9 +571,13 @@ def tree_as_graph(resolution: dict) -> dict:
 		return order
 
 	walk(resolution.get("dependency_tree") or {}, 1)
+	typed = [
+		{"from": e.get("from"), "to": e.get("to"), "type": e.get("type"), "why": e.get("why")}
+		for e in resolution.get("edges") or []
+	]
 	return {
 		"nodes": nodes,
-		"edges": edges,
+		"edges": typed or edges,
 		"count": len(nodes),
 		"replay_depth": resolution.get("dependency_depth") or 0,
 		"dependency_tree": resolution.get("dependency_tree"),
@@ -364,6 +587,10 @@ def tree_as_graph(resolution: dict) -> dict:
 		"planner_status": resolution.get("status"),
 		"root_blocker": resolution.get("root_blocker"),
 		"immediate_blocker": resolution.get("immediate_blocker"),
+		"smallest_safe_scope": resolution.get("smallest_safe_scope"),
+		"dependency_type": resolution.get("dependency_type"),
+		"escalation_reason": resolution.get("escalation_reason"),
+		"unrelated_poison": resolution.get("unrelated_poison"),
 	}
 
 
@@ -380,7 +607,8 @@ def load_blocker_row(voucher: str, *, cache: dict | None = None, hint: dict | No
 
 
 def _walk(row, *, cache, stack, depth, decision=None):
-	from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY, evaluate_row
+	from erpnext_extensions.iran_accounting.historical_stock.planner import evaluate_row
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
 
 	voucher = voucher_of(row)
 	decision = decision or evaluate_row(row, cache=cache)
@@ -397,7 +625,7 @@ def _walk(row, *, cache, stack, depth, decision=None):
 		"topic": _topic_of(row),
 		"depth": depth,
 		"children": [],
-		"ready": decision.get("planner_status") == PLAN_READY and cint(decision.get("sql_updates")) > 0,
+		"ready": decision.get("planner_status") in READY_SCOPES and cint(decision.get("sql_updates")) > 0,
 	}
 	nodes = [node]
 	if node["ready"] or depth >= MAX_DEPTH:
@@ -493,10 +721,10 @@ def _stop(root_status, circular, actionable, walked):
 	from erpnext_extensions.iran_accounting.historical_stock.planner import (
 		PLAN_AMBIGUOUS,
 		PLAN_MANUAL,
-		PLAN_READY,
 	)
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
 
-	if root_status == PLAN_READY:
+	if root_status in READY_SCOPES:
 		return False, None
 	if root_status == PLAN_AMBIGUOUS:
 		return True, STOP_AMBIGUOUS
@@ -511,10 +739,10 @@ def _stop(root_status, circular, actionable, walked):
 
 def _required_action(*, root_status, root_voucher, circular, stop_reason, actionable, waiting, immediate=None):
 	from erpnext_extensions.iran_accounting.historical_stock.planner import (
-		PLAN_READY,
 		PLAN_WAITING_GL_REPAIR,
 		PLAN_WAITING_SLE_REPAIR,
 	)
+	from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
 
 	target = (actionable or {}).get("voucher") or immediate or root_voucher
 	because = (actionable or {}).get("blocked_because") or ""
@@ -525,7 +753,7 @@ def _required_action(*, root_status, root_voucher, circular, stop_reason, action
 				"(warehouse poison and leftover patient-zero wait on each other; not auto)"
 			)
 		return f"NO REPAIR PATH: {STOP_CIRCULAR}"
-	if root_status == PLAN_READY and root_voucher:
+	if root_status in READY_SCOPES and root_voucher:
 		return f"Repair {root_voucher} first"
 	if waiting == PLAN_WAITING_SLE_REPAIR:
 		return "Replay Downstream first"

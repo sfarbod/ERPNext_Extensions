@@ -372,7 +372,7 @@ class HistoricalRepairPage {
 	}
 
 	_is_ready(row) {
-		return !!(row && row.planner_status === "READY" && Number(row.sql_updates || 0) > 0);
+		return !!(row && /^READY/.test(String(row.planner_status || "")) && Number(row.sql_updates || 0) > 0);
 	}
 
 	_impact_executable(impact) {
@@ -381,7 +381,7 @@ class HistoricalRepairPage {
 			impact.executable !== false &&
 			!impact.aborted &&
 			(impact.estimated_sql_updates || impact.sql_updates || 0) > 0 &&
-			impact.planner_status === "READY"
+			impact.planner_status === "READY" || /^READY/.test(String(impact.planner_status || ""))
 		);
 	}
 
@@ -1001,6 +1001,9 @@ class HistoricalRepairPage {
 				__("Root Patient Zero"),
 				__("Dependency Depth"),
 				__("Repair Order"),
+				__("Smallest Safe Scope"),
+				__("Dependency Type"),
+				__("Escalation Reason"),
 				__("Required Action"),
 				__("Blocker"),
 				__("Confidence"),
@@ -1075,6 +1078,9 @@ class HistoricalRepairPage {
 				row.root_patient_zero || row.root_blocker || (row.patient_zero && row.patient_zero.voucher_no) || "",
 				row.dependency_depth == null ? "" : String(row.dependency_depth),
 				row.repair_order || "",
+				row.smallest_safe_scope || "",
+				row.dependency_type || "",
+				row.escalation_reason || "",
 				row.required_action || "",
 				row.blocker || row.reason || row.skip_reason || "",
 				row.confidence,
@@ -1355,14 +1361,16 @@ class HistoricalRepairPage {
 		[
 			[__("Current Voucher"), src.outbound_document || src.voucher || src.inbound_document],
 			[__("Status"), src.planner_status || (impact && impact.planner_status)],
-			[__("Immediate blocker"), src.immediate_blocker || (impact && impact.immediate_blocker)],
-			[__("Root blocker"), src.root_blocker || (impact && impact.root_blocker)],
-			[__("Root status"), src.root_status || (impact && impact.root_status)],
-			[__("Dependency depth"), src.dependency_depth != null ? src.dependency_depth : impact && impact.dependency_depth],
-			[__("Repair sequence"), src.repair_order || (impact && impact.repair_sequence)],
-			[__("Estimated repair count"), src.estimated_repair_count || (impact && impact.estimated_repair_count)],
-			[__("Estimated runtime"), src.estimated_runtime || (impact && impact.estimated_replay_seconds)],
-			[__("Required action"), src.required_action || (impact && impact.required_action)],
+			[__("Smallest Safe Scope"), src.smallest_safe_scope || (impact && impact.smallest_safe_scope)],
+			[__("Batch/SABB"), src.batch],
+			[__("Immediate Dependency"), src.immediate_blocker || (impact && impact.immediate_blocker)],
+			[__("Root Dependency"), src.root_blocker || (impact && impact.root_blocker)],
+			[__("Dependency Type"), src.dependency_type || (impact && impact.dependency_type)],
+			[__("Patient Zero"), src.root_patient_zero || src.root_blocker],
+			[__("Repair Sequence"), src.repair_order || (impact && impact.repair_sequence)],
+			[__("Escalation required"), src.escalation_reason || (impact && impact.escalation_reason) ? __("YES") : src.smallest_safe_scope ? __("NO") : ""],
+			[__("Escalation Reason"), src.escalation_reason || (impact && impact.escalation_reason)],
+			[__("Required Action"), src.required_action || (impact && impact.required_action)],
 			[__("Blocked because"), src.blocked_because],
 		].forEach(([label, val]) => {
 			if (val == null || val === "") return;
@@ -1374,6 +1382,18 @@ class HistoricalRepairPage {
 			meta.append($line);
 		});
 		this.$deps.append(meta);
+		const unrelated = src.unrelated_poison || (impact && impact.unrelated_poison) || [];
+		if (unrelated.length) {
+			this.$deps.append($("<div class='hr-deps-preview-title'>").text(__("Unrelated poison")));
+			unrelated.forEach((p) => {
+				const effect = p.effect || "NONE";
+				this.$deps.append(
+					$("<div>").text(
+						`${p.voucher || ""} / batch ${p.batch || ""}  Effect on selected chain: ${effect}`
+					)
+				);
+			});
+		}
 		if (tree) this.$deps.append(this._tree_el(tree));
 		else if (text) this.$deps.append($("<pre class='hr-deps-tree'>").text(text));
 		const preview = src.chain_preview || (impact && impact.chain_preview) || [];
@@ -1392,8 +1412,12 @@ class HistoricalRepairPage {
 		const $box = $('<div class="hr-deps-node">').css("margin-left", depth ? 18 : 0);
 		const voucher = node.voucher || "";
 		const $row = $("<div>");
-		if (depth) $row.append($("<span class='text-muted'>").text("├── waits for "));
+		if (depth) {
+			const rel = node.relation || (node.edge_type === "WAREHOUSE_MA_DEPENDENCY" ? "would rewrite " : "├── waits for ");
+			$row.append($("<span class='text-muted'>").text(rel.startsWith("├") ? rel : "├── " + rel + " "));
+		}
 		if (voucher) $row.append(depth ? this.link_cell(voucher, "Stock Entry") : $("<strong>").text(voucher));
+		if (node.edge_type) $row.append($("<span class='text-muted'>").text("  [" + node.edge_type + "]"));
 		if (node.status) $row.append($("<span class='text-muted'>").text("  " + node.status));
 		if (node.blocked_because) $row.append($("<span class='text-muted'>").text("  (" + node.blocked_because + ")"));
 		$box.append($row);
@@ -1407,7 +1431,7 @@ class HistoricalRepairPage {
 
 	_toggle_chain_button(row, impact) {
 		if (!this.btn_repair_chain) return;
-		const rootReady = (row && row.root_status === "READY") || (impact && impact.root_status === "READY");
+		const rootReady = (row && /^READY/.test(String(row.root_status || ""))) || (impact && /^READY/.test(String(impact.root_status || "")));
 		const noPath = (row && row.no_repair_path) || (impact && impact.no_repair_path);
 		this.btn_repair_chain.prop("disabled", !(this.access.can_repair && rootReady && !noPath));
 	}

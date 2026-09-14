@@ -320,6 +320,7 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 					row.get("outbound_document"),
 				}
 				write_vouchers = {vn for vn in sync_targets if vn}
+				allow_unrelated = str(row.get("planner_status") or "") == "READY_BATCH_SCOPED_REPAIR"
 				# Source warehouse first, then copy transfer-in incoming_rate,
 				# then destination warehouse. A second pass picks up dest SVD.
 				# Only the inverted pair is written; later lots keep their SLE.
@@ -332,6 +333,7 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 							from_dt,
 							ignore_inversion_artifacts=True,
 							write_vouchers=write_vouchers,
+							allow_unrelated_poison=allow_unrelated,
 						)
 						if not rep.get("ok"):
 							raise frappe.ValidationError(

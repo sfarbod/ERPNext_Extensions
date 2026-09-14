@@ -252,18 +252,25 @@ def replay_item_warehouse(
 	*,
 	ignore_inversion_artifacts: bool = True,
 	write_vouchers: set | None = None,
+	allow_unrelated_poison: bool = False,
 ) -> dict:
-	poison = window_poison_reason(
+	hit = window_poison_hit(
 		item_code, warehouse, from_dt, ignore_inversion_artifacts=ignore_inversion_artifacts
 	)
-	if poison:
-		return {
-			"ok": False,
-			"status": STATUS_VALUATION_POISON,
-			"reason": poison,
-			"item_code": item_code,
-			"warehouse": warehouse,
-		}
+	if hit:
+		on_write_set = write_vouchers is not None and hit.get("voucher") in write_vouchers
+		# Default stays fail-closed. READY_BATCH_SCOPED_REPAIR may skip poison that
+		# simulation proved is not MA-relevant and is outside the write set.
+		if not allow_unrelated_poison or write_vouchers is None or on_write_set:
+			return {
+				"ok": False,
+				"status": STATUS_VALUATION_POISON,
+				"reason": hit.get("reason") or window_poison_reason(
+					item_code, warehouse, from_dt, ignore_inversion_artifacts=ignore_inversion_artifacts
+				),
+				"item_code": item_code,
+				"warehouse": warehouse,
+			}
 	prev = _fetch_previous(item_code, warehouse, from_dt)
 	opening_qty = D(prev.qty_after_transaction) if prev else D(0)
 	opening_value = D(prev.stock_value) if prev else D(0)

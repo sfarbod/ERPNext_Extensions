@@ -1393,5 +1393,298 @@ class TestDependencyResolution(unittest.TestCase):
 		self.assertNotIn("negative_incoming_rate", INVERSION_ARTIFACT_POISONS)
 
 
+def _scope_sle(name, voucher, qty, dt, *, batch="", purpose="", incoming=0, outgoing=0, svd=0, after=0, value=0, rate=0, wo=""):
+	from datetime import datetime
+
+	if isinstance(dt, str):
+		dt = datetime.fromisoformat(dt)
+	return {
+		"name": name,
+		"voucher_no": voucher,
+		"actual_qty": qty,
+		"posting_datetime": dt,
+		"creation": dt,
+		"batch": batch,
+		"purpose": purpose,
+		"incoming_rate": incoming,
+		"outgoing_rate": outgoing,
+		"stock_value_difference": svd,
+		"qty_after_transaction": after,
+		"stock_value": value,
+		"valuation_rate": rate,
+		"work_order": wo,
+	}
+
+
+class TestMinimalScope(unittest.TestCase):
+	INB = "MAT-STE-IN"
+	OUT = "MAT-STE-OUT"
+	BATCH = "B1"
+	OTHER = "B2"
+	WO = "WO-1"
+
+	def _row(self, **kw):
+		from datetime import datetime
+
+		base = {
+			"inbound_document": self.INB,
+			"outbound_document": self.OUT,
+			"item": "I",
+			"warehouse": "W",
+			"batch": self.BATCH,
+			"work_order": self.WO,
+			"current_outbound_time": datetime(2026, 4, 15, 18, 1, 10),
+			"current_inbound_time": datetime(2026, 4, 15, 18, 3, 46),
+			"proposed_outbound_time": datetime(2026, 4, 15, 18, 3, 47),
+			"moves": [{"document": self.OUT, "new": datetime(2026, 4, 15, 18, 3, 47)}],
+		}
+		base.update(kw)
+		return base
+
+	def test_batch_local_inversion_unrelated_poison_does_not_block(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import (
+			PLAN_READY_BATCH,
+			POISON_UNRELATED,
+			analyze_scope,
+		)
+
+		sles = [
+			_scope_sle("1", self.OUT, -10, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=10, svd=-100, after=-10, value=-100),
+			_scope_sle("2", self.INB, 10, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=10, svd=100, after=0, value=0),
+			_scope_sle("3", "POISON", 5, "2026-09-01T10:00:00", batch=self.OTHER, purpose="Manufacture", incoming=-50, svd=-250, after=5, value=-250, wo="OTHER-WO"),
+		]
+		row = self._row()
+		times = {self.OUT: datetime(2026, 4, 15, 18, 3, 47)}
+		out = analyze_scope(row, sles, times, opening_qty=10, opening_value=100)
+		self.assertTrue(out["batch_qty_ok"])
+		unrelated = [p for p in out["unrelated_poison"] if p["voucher"] == "POISON"]
+		self.assertEqual(unrelated[0]["class"], POISON_UNRELATED)
+		self.assertEqual(unrelated[0]["effect"], "NONE")
+		self.assertEqual(out["status"], PLAN_READY_BATCH)
+		self.assertFalse(out["escalation_required"])
+
+	def test_batch_local_repair_succeeds_without_touching_unrelated_lot(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import PLAN_READY_BATCH, analyze_scope
+
+		sles = [
+			_scope_sle("1", self.OUT, -10, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=10, svd=-100),
+			_scope_sle("2", self.INB, 10, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=10, svd=100),
+			_scope_sle("3", "LATER", -4, "2026-04-16T12:00:00", batch=self.OTHER, purpose="Material Transfer for Manufacture", outgoing=10, svd=-40),
+		]
+		out = analyze_scope(
+			self._row(),
+			sles,
+			{self.OUT: datetime(2026, 4, 15, 18, 3, 47)},
+			opening_qty=10,
+			opening_value=100,
+		)
+		self.assertEqual(out["status"], PLAN_READY_BATCH)
+		self.assertEqual(out["other_batch_rewrite_count"], 0)
+
+	def test_batch_local_escalates_when_warehouse_ma_dependency_exists(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import (
+			EDGE_WAREHOUSE_MA,
+			PLAN_WAREHOUSE_ESCALATION,
+			analyze_scope,
+		)
+
+		sles = [
+			_scope_sle("1", self.OUT, -10, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=100, svd=-1000),
+			_scope_sle("x", "OTHER-OUT", -5, "2026-04-15T18:02:00", batch=self.OTHER, purpose="Material Transfer for Manufacture", outgoing=50, svd=-250, wo=self.WO),
+			_scope_sle("2", self.INB, 10, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=80, svd=800),
+		]
+		out = analyze_scope(self._row(), sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		self.assertEqual(out["status"], PLAN_WAREHOUSE_ESCALATION)
+		self.assertTrue(out["escalation_required"])
+		self.assertGreater(out["other_batch_rewrite_count"], 0)
+		self.assertTrue(any(e["type"] == EDGE_WAREHOUSE_MA for e in out["edges"]))
+		self.assertIn("WAREHOUSE_MA", out["escalation_reason"] or "")
+
+	def test_unrelated_warehouse_poison_does_not_automatically_block(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import PLAN_READY_BATCH, analyze_scope
+
+		sles = [
+			_scope_sle("1", self.OUT, -8, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=8, svd=-64),
+			_scope_sle("2", self.INB, 8, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=8, svd=64),
+			_scope_sle("p", "25469", 2, "2026-09-06T10:00:00", batch="9312", purpose="Manufacture", incoming=-99, svd=-198, wo="WO-OTHER"),
+		]
+		out = analyze_scope(
+			self._row(),
+			sles,
+			{self.OUT: datetime(2026, 4, 15, 18, 3, 47)},
+			opening_qty=8,
+			opening_value=64,
+		)
+		self.assertEqual(out["status"], PLAN_READY_BATCH)
+		self.assertTrue(all(p["effect"] == "NONE" for p in out["unrelated_poison"]))
+
+	def test_local_poison_does_block(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import POISON_LOCAL, analyze_scope
+
+		sles = [
+			_scope_sle("1", self.OUT, -8, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=8, svd=-64),
+			_scope_sle("2", self.INB, 8, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=-12, svd=-96),
+		]
+		out = analyze_scope(self._row(), sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		self.assertTrue(out["local_poisons"])
+		self.assertEqual(out["local_poisons"][0]["class"], POISON_LOCAL)
+		self.assertEqual(out["status"], "WAITING_RATE_REPAIR")
+
+	def test_dependency_edge_types(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import EDGE_BATCH, EDGE_DOCUMENT, analyze_scope
+
+		row = self._row(downstream_vouchers=["MAT-STE-DOWN"])
+		sles = [
+			_scope_sle("1", self.OUT, -3, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=3, svd=-9),
+			_scope_sle("2", self.INB, 3, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=3, svd=9),
+		]
+		out = analyze_scope(row, sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		types = {e["type"] for e in out["edges"]}
+		self.assertIn(EDGE_BATCH, types)
+		self.assertIn(EDGE_DOCUMENT, types)
+
+	def test_two_node_cycle(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import PLAN_INVALID_GRAPH, analyze_scope, _cyclic
+
+		self.assertTrue(_cyclic([{"from": "A", "to": "B", "type": "X"}, {"from": "B", "to": "A", "type": "Y"}]))
+		self.assertFalse(_cyclic([{"from": "A", "to": "B", "type": "X"}, {"from": "B", "to": "C", "type": "Y"}]))
+		row = self._row(downstream_vouchers=[self.INB])
+		sles = [
+			_scope_sle("1", self.OUT, -2, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=2, svd=-4),
+			_scope_sle("2", self.INB, 2, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=2, svd=4),
+		]
+		out = analyze_scope(row, sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		self.assertTrue(out["cyclic"])
+		self.assertEqual(out["status"], PLAN_INVALID_GRAPH)
+
+	def test_multi_node_cycle(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import PLAN_INVALID_GRAPH, analyze_scope, _cyclic
+
+		self.assertTrue(
+			_cyclic(
+				[
+					{"from": "A", "to": "B", "type": "X"},
+					{"from": "B", "to": "C", "type": "X"},
+					{"from": "C", "to": "A", "type": "X"},
+				]
+			)
+		)
+		row = self._row(downstream_vouchers=[self.OUT, self.INB])
+		sles = [
+			_scope_sle("1", self.OUT, -2, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=2, svd=-4),
+			_scope_sle("2", self.INB, 2, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=2, svd=4),
+		]
+		out = analyze_scope(row, sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		self.assertTrue(out["cyclic"])
+		self.assertEqual(out["status"], PLAN_INVALID_GRAPH)
+
+	def test_patient_zero_resolution_is_not_warehouse_overreach(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import analyze_scope
+
+		sles = [
+			_scope_sle("1", self.OUT, -6, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=6, svd=-36),
+			_scope_sle("2", self.INB, 6, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=6, svd=36),
+			_scope_sle("pz", "25791", -1, "2026-04-05T18:00:15", batch="OTHERPZ", purpose="Material Transfer for Manufacture", outgoing=6, svd=-6, after=0, value=50),
+		]
+		# 25791 is before the window start in real data; if present later as leftover it must not be a BATCH edge
+		out = analyze_scope(self._row(), sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		self.assertFalse(any(e["to"] == "25791" and e["type"] == "PATIENT_ZERO_DEPENDENCY" for e in out["edges"]))
+
+	def test_minimal_scope_selection_prefers_batch(self):
+		from datetime import datetime
+		from erpnext_extensions.iran_accounting.historical_stock.scope import SCOPE_BATCH, analyze_scope
+
+		sles = [
+			_scope_sle("1", self.OUT, -1, "2026-04-15T18:01:10", batch=self.BATCH, purpose="Material Transfer for Manufacture", outgoing=1, svd=-1),
+			_scope_sle("2", self.INB, 1, "2026-04-15T18:03:46", batch=self.BATCH, purpose="Manufacture", incoming=1, svd=1),
+		]
+		out = analyze_scope(self._row(), sles, {self.OUT: datetime(2026, 4, 15, 18, 3, 47)})
+		self.assertEqual(out["smallest_safe_scope"], SCOPE_BATCH)
+
+	def test_rescan_after_root_repair_chain_is_root_only(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import apply_dependency_chain
+		from erpnext_extensions.iran_accounting.historical_stock.planner import PLAN_READY
+
+		row = self._row()
+		evals = {
+			self.OUT: {"planner_status": "WAITING_RATE_REPAIR", "required_prerequisite": self.INB, "sql_updates": 0, "eligible": False, "blocked": True, "reason": "wait"},
+			self.INB: {"planner_status": PLAN_READY, "eligible": True, "blocked": False, "sql_updates": 3, "reason": "READY"},
+		}
+
+		def fake_eval(r, cache=None):
+			from erpnext_extensions.iran_accounting.historical_stock.dependency import voucher_of
+			from erpnext_extensions.iran_accounting.historical_stock.planner import empty_decision
+
+			d = empty_decision()
+			d.update(evals[voucher_of(r)])
+			return d
+
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			side_effect=fake_eval,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.load_blocker_row",
+			return_value={"voucher": self.INB},
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.attach_plan",
+			side_effect=lambda r, cache=None: {**r, "planner_status": PLAN_READY, "sql_updates": 3, "eligible": True},
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency._dispatch_root_repair",
+			return_value={"applied": [{"voucher": self.INB}], "sql_updates_executed": 3},
+		) as dispatch:
+			wrote = apply_dependency_chain({"voucher": self.OUT, "inbound_document": self.INB, "outbound_document": self.OUT}, dry_run=False)
+		self.assertEqual(dispatch.call_count, 1)
+		self.assertEqual(wrote.get("repaired_root"), self.INB)
+
+	def test_unrelated_poison_is_not_walked_on_loaded_scope(self):
+		from erpnext_extensions.iran_accounting.historical_stock.dependency import resolve_dependencies
+		from erpnext_extensions.iran_accounting.historical_stock.planner import empty_decision
+		from erpnext_extensions.iran_accounting.historical_stock.scope import PLAN_WAREHOUSE_ESCALATION, SCOPE_WAREHOUSE
+
+		row = self._row()
+		scope = {
+			"window_loaded": True,
+			"status": PLAN_WAREHOUSE_ESCALATION,
+			"smallest_safe_scope": SCOPE_WAREHOUSE,
+			"escalation_reason": "WAREHOUSE_MA_DEPENDENCY: OTHER-OUT (batch B2)",
+			"reason": "WAREHOUSE_MA_DEPENDENCY: OTHER-OUT (batch B2)",
+			"cyclic": False,
+			"repair_order": [self.INB, self.OUT, "MAT-STE-DOWN"],
+			"edges": [
+				{"from": self.INB, "to": self.OUT, "type": "BATCH_DEPENDENCY", "why": "same batch"},
+				{"from": self.OUT, "to": "OTHER-OUT", "type": "WAREHOUSE_MA_DEPENDENCY", "why": "interleaved"},
+			],
+			"unrelated_poison": [
+				{"voucher": "MAT-STE-2026-25469", "batch": "9312", "effect": "NONE", "class": "UNRELATED_WAREHOUSE_POISON"}
+			],
+			"local_poisons": [],
+			"other_batch_rewrite_count": 1,
+			"pair_end_value_equal": False,
+			"dependency_type": "BATCH_DEPENDENCY",
+		}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scope.evaluate_minimal_scope",
+			return_value=scope,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner.evaluate_row",
+			return_value=empty_decision(planner_status=PLAN_WAREHOUSE_ESCALATION, reason=scope["reason"]),
+		):
+			res = resolve_dependencies(row)
+		self.assertEqual(res["status"], PLAN_WAREHOUSE_ESCALATION)
+		self.assertNotIn("MAT-STE-2026-25469", res["repair_order"])
+		self.assertFalse(res["circular"])
+		self.assertEqual(res["unrelated_poison"][0]["effect"], "NONE")
+		self.assertIn("WAREHOUSE_MA", res["escalation_reason"])
+
+
 if __name__ == "__main__":
 	unittest.main()
