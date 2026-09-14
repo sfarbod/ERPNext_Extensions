@@ -411,8 +411,8 @@ No new repair engines. Accounting policy is unchanged. Writes stay identity-scop
 
 | Class | Features | Who |
 |-------|----------|-----|
-| **A Production Ready** | Scan, Scan All, Dashboard, Dry Run, Expected Rate Preview, Impact Analysis, Graph, Integrity Check, Repair History, Search, column filters, multi-sort, frozen header/first column, horizontal/vertical scroll, column chooser, save layout, CSV/XLSX export, hyperlinks, KPI cards, copy selected, Select All / Visible / Repairable / EXACT | Stock Manager (read), System Manager, Administrator |
-| **B Operational** | Repair Selected, Repair Current Filter, Repair Current Page, Repair Current Scope, Replay Downstream, Rebuild Affected Documents, Repost Selected | System Manager, Administrator |
+| **A Production Ready** | Scan, Scan All, Dashboard, Dry Run, Expected Rate Preview, Impact Analysis, Graph, Integrity Check, Repair History, Search, column filters, multi-sort, frozen header/first column, column resize, horizontal/vertical scroll, column chooser, save layout, CSV/XLSX export, hyperlinks, KPI cards, copy selected, Select All / None / Visible / Repairable / EXACT | Stock Manager (read), System Manager, Administrator |
+| **B Operational** | Repair Selected, Repair Current Filter, Repair Current Page, Repair Current Scope, Repair Dependency Chain, Replay Downstream, Rebuild Affected Documents, Repost Selected | System Manager, Administrator |
 | **C Experimental** | Advanced Mode, Resume, Cancel, Rollback, Benchmark, snapshots, diagnose APIs, developer tools | Administrator only. Hidden for everyone else. Incomplete tools are omitted, not disabled. |
 
 ### Permission matrix
@@ -442,7 +442,7 @@ Repost scope: Company + Warehouse + Item + Batch + Work Order + Voucher + date r
 
 ### UI
 
-Sticky toolbar, grouped actions, status badges, severity KPI colors, tooltips, keyboard shortcuts (`/` search, `S` scan, `A` scan all, `D` dry run, `G` graph, `I` integrity), indeterminate progress, empty states, better scan errors. Repair buttons stay disabled until Dry Run + Impact.
+Sticky toolbar, grouped actions, status badges, severity KPI colors, tooltips, keyboard shortcuts (`/` search, `S` scan, `A` scan all, `D` dry run, `G` graph, `I` integrity), indeterminate progress, empty states, better scan errors. Repair buttons stay disabled until Dry Run + Impact. Impact Analysis that is not READY with SQL updates > 0 cannot unlock Repair (fail closed). Dependency Resolution shows Current Scope, Required Scope, Reason, Effect, estimated affected vouchers / replay count / SQL updates.
 
 ### Accessibility (release blocker)
 

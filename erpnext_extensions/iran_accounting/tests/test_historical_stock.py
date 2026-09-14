@@ -646,6 +646,8 @@ class TestImpactAndRollback(unittest.TestCase):
 		self.assertIn("DATABASE BACKUP REQUIRED", text)
 		self.assertIn("25407", text)
 		self.assertIn("51 SLE", text)
+		self.assertIn("Current Scope:", text)
+		self.assertIn("Required Scope:", text)
 		self.assertIn("Nothing executes before operator confirmation", text)
 
 	def test_zero_sql_updates_disables_repair_in_impact_text(self):

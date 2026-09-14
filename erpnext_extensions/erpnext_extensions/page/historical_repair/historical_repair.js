@@ -150,7 +150,7 @@ class HistoricalRepairPage {
 		this.$tools = $('<div class="hr-grid-tools">').appendTo(this.$shell);
 		this.$search = $('<input class="form-control input-sm hr-search" data-role="search" placeholder="Search all columns  (/ )">').appendTo(this.$tools);
 		this.$search.on("input", () => this.render_table());
-		["Select All", "Unselect All", "Select EXACT", "Select Repairable", "Select Visible Rows", "Select Current Page"].forEach((label) => {
+		["Select All", "Select None", "Select EXACT", "Select Repairable", "Select Visible Rows", "Select Current Page"].forEach((label) => {
 			this._btn(this.$tools, label.toLowerCase().replace(/\s+/g, "-"), __(label), () => this.select_by(label));
 		});
 		this._btn(this.$tools, "columns", __("Columns"), () => this.toggle_columns());
@@ -376,12 +376,13 @@ class HistoricalRepairPage {
 	}
 
 	_impact_executable(impact) {
-		return (
-			!!impact &&
+		const sql = Number(impact && (impact.estimated_sql_updates || impact.sql_updates) || 0);
+		return !!(
+			impact &&
 			impact.executable !== false &&
 			!impact.aborted &&
-			(impact.estimated_sql_updates || impact.sql_updates || 0) > 0 &&
-			impact.planner_status === "READY" || /^READY/.test(String(impact.planner_status || ""))
+			sql > 0 &&
+			/^READY/.test(String(impact.planner_status || ""))
 		);
 	}
 
@@ -518,7 +519,10 @@ class HistoricalRepairPage {
 					frappe.call({
 						method: `${this.api}.repost_selected_api`,
 						args: { ...scope, dry_run: 0 },
-						callback: (rr) => this.$preview.text(JSON.stringify(rr.message || {}, null, 2)),
+						callback: (rr) => {
+							this._show_write_result(rr.message || {}, __("Repost"));
+							this.integrity();
+						},
 					});
 				});
 			},
@@ -542,7 +546,10 @@ class HistoricalRepairPage {
 						method: `${this.ppo}.rebuild_affected_documents`,
 						args: { rows, dry_run: 0 },
 						freeze: true,
-						callback: (rr) => this.$preview.text(this.format_preview(rr.message || {})),
+						callback: (rr) => {
+							this._show_write_result(rr.message || {}, __("Rebuild"));
+							this.integrity();
+						},
 					});
 				});
 			},
@@ -566,10 +573,30 @@ class HistoricalRepairPage {
 						method: `${this.ppo}.replay_downstream`,
 						args: { rows, dry_run: 0 },
 						freeze: true,
-						callback: (rr) => this.$preview.text(this.format_preview(rr.message || {})),
+						callback: (rr) => {
+							this._show_write_result(rr.message || {}, __("Replay Downstream"));
+							this.integrity();
+						},
 					});
 				});
 			},
+		});
+	}
+
+	_show_write_result(msg, title) {
+		this.$preview.text(typeof msg === "string" ? msg : JSON.stringify(msg, null, 2));
+		if (msg && (msg.aborted || msg.ok === false || msg.eligible === false)) {
+			frappe.msgprint({
+				title: __("{0} skipped", [title || __("Write")]),
+				message: msg.reason || msg.skip_reason || msg.error || __("Nothing was written."),
+				indicator: "orange",
+			});
+			return;
+		}
+		frappe.msgprint({
+			title: __("{0} complete", [title || __("Write")]),
+			message: __("Identity-scoped write finished. Integrity Check is running. Optional next step: Repost Selected for this Item+Warehouse (never global)."),
+			indicator: "green",
 		});
 	}
 
@@ -659,7 +686,7 @@ class HistoricalRepairPage {
 			const row = this.rows[idx] || {};
 			let on = false;
 			if (mode === "Select All") on = true;
-			else if (mode === "Unselect All") on = false;
+			else if (mode === "Select None" || mode === "Unselect All") on = false;
 			else if (mode === "Select EXACT") on = this._is_ready(row);
 			else if (mode === "Select Repairable") on = this._is_ready(row);
 			else if (mode === "Select Visible Rows" || mode === "Select Current Page") on = true;
@@ -1361,17 +1388,21 @@ class HistoricalRepairPage {
 		[
 			[__("Current Voucher"), src.outbound_document || src.voucher || src.inbound_document],
 			[__("Status"), src.planner_status || (impact && impact.planner_status)],
-			[__("Smallest Safe Scope"), src.smallest_safe_scope || (impact && impact.smallest_safe_scope)],
+			[__("Current Scope"), src.inbound_document && src.outbound_document ? "BATCH_SCOPED" : "LOCAL_VOUCHER"],
+			[__("Required Scope"), src.smallest_safe_scope || (impact && impact.smallest_safe_scope)],
 			[__("Batch/SABB"), src.batch],
 			[__("Immediate Dependency"), src.immediate_blocker || (impact && impact.immediate_blocker)],
 			[__("Root Dependency"), src.root_blocker || (impact && impact.root_blocker)],
 			[__("Dependency Type"), src.dependency_type || (impact && impact.dependency_type)],
 			[__("Patient Zero"), src.root_patient_zero || src.root_blocker],
 			[__("Repair Sequence"), src.repair_order || (impact && impact.repair_sequence)],
+			[__("Reason"), src.escalation_reason || src.blocked_because || src.reason || (impact && (impact.escalation_reason || impact.reason))],
+			[__("Effect"), this._scope_effect(src, impact)],
+			[__("Estimated affected vouchers"), src.estimated_repair_count || (impact && impact.estimated_repair_count)],
+			[__("Estimated replay count"), src.replay_count || src.estimated_replay_depth || (impact && (impact.replay_count || impact.estimated_replay_depth))],
+			[__("Estimated SQL updates"), src.sql_updates != null ? src.sql_updates : impact && (impact.sql_updates || impact.estimated_sql_updates)],
 			[__("Escalation required"), src.escalation_reason || (impact && impact.escalation_reason) ? __("YES") : src.smallest_safe_scope ? __("NO") : ""],
-			[__("Escalation Reason"), src.escalation_reason || (impact && impact.escalation_reason)],
 			[__("Required Action"), src.required_action || (impact && impact.required_action)],
-			[__("Blocked because"), src.blocked_because],
 		].forEach(([label, val]) => {
 			if (val == null || val === "") return;
 			const $line = $("<div>");
@@ -1405,6 +1436,22 @@ class HistoricalRepairPage {
 			});
 		}
 		this._toggle_chain_button(src, impact);
+	}
+
+	_scope_effect(src, impact) {
+		const unrelated = src.unrelated_poison || (impact && impact.unrelated_poison) || [];
+		const none = unrelated.filter((p) => !p.effect || p.effect === "NONE");
+		if (src.escalation_reason || (impact && impact.escalation_reason)) {
+			const n = src.estimated_repair_count || (impact && impact.estimated_repair_count) || "";
+			return __("Warehouse moving-average / qty_after rewrite required{0}", [n ? ` (${n} vouchers)` : ""]);
+		}
+		if (none.length) {
+			return __("Unrelated warehouse poison effect NONE");
+		}
+		if (/^READY/.test(String(src.planner_status || (impact && impact.planner_status) || ""))) {
+			return __("Smallest safe scope is sufficient");
+		}
+		return src.blocked_because || "";
 	}
 
 	_tree_el(node, depth) {
