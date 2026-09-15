@@ -11,6 +11,7 @@ def run(*, max_n=20, dry_run=0):
 	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.apply import (
 		apply_wrong_rate_root,
 	)
+	from erpnext_extensions.iran_accounting.stock_posting_order.repair import apply_repairs
 	from frappe.utils import flt
 	import frappe
 

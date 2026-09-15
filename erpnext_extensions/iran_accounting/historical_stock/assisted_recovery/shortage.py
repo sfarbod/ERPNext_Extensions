@@ -170,6 +170,32 @@ def search_hidden_inbound(row: dict, *, cache: dict | None = None) -> dict:
 			"outbound": out_v,
 			"min_before": min_before,
 		}
+	# Unique external inbound after outbound with enough qty → deterministic unlock candidate
+	out_dt = str(row.get("current_outbound_time") or row.get("outbound_posting_datetime") or "")
+	deficit = abs(min_before) if min_before < 0 else abs(flt(row.get("negative_amount") or 0))
+	unique_ext = []
+	for c in actionable:
+		if c.get("kind") != "later_inbound":
+			continue
+		if c.get("voucher_type") not in ("Purchase Receipt", "Stock Reconciliation", "Purchase Invoice"):
+			continue
+		if out_dt and str(c.get("posting_datetime") or "") <= out_dt:
+			continue
+		if flt(c.get("qty") or 0) + 1e-9 < deficit:
+			continue
+		unique_ext.append(c)
+	if len(unique_ext) == 1:
+		return {
+			"outcome": "UNIQUE_EXTERNAL_INBOUND",
+			"proven_shortage": False,
+			"candidates": candidates[:15],
+			"actionable": unique_ext,
+			"unique_inbound": unique_ext[0],
+			"reason": "Unique later Purchase/RECO inbound covers the deficit — deterministic reorder candidate",
+			"outbound": out_v,
+			"min_before": min_before,
+			"safe_to_auto": True,
+		}
 	if actionable:
 		return {
 			"outcome": OPERATOR_DECISION,

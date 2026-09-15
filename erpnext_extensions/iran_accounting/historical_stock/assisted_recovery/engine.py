@@ -96,6 +96,30 @@ def reclassify_row(
 	if opt == "REAL_STOCK_SHORTAGE" or "SHORTAGE" in ps or topic == "POSTING_ORDER" and "SHORTAGE" in opt:
 		shortage = search_hidden_inbound(row, cache=cache)
 		outcome = shortage.get("outcome") or REAL_STOCK_SHORTAGE
+		if outcome == "UNIQUE_EXTERNAL_INBOUND" and shortage.get("safe_to_auto"):
+			# Build a synthetic CROSS/MULTI proposal against the unique inbound.
+			ready = _unique_inbound_ready_row(row, shortage)
+			if ready:
+				card = build_decision_card(
+					row,
+					impact=impact,
+					shortage=shortage,
+					resolution={
+						"promote_to": ASSISTED_READY,
+						"reason": shortage.get("reason"),
+						"confidence": 0.97,
+					},
+				)
+				return _pack(
+					row,
+					ASSISTED_READY,
+					BUCKET_AUTO,
+					shortage.get("reason"),
+					impact,
+					card,
+					extra={"shortage": shortage},
+					ready_row=ready,
+				)
 		bucket = BUCKET_REAL_SHORTAGE if outcome == REAL_STOCK_SHORTAGE else BUCKET_OPERATOR
 		card = build_decision_card(row, impact=impact, shortage=shortage)
 		return _pack(row, outcome, bucket, shortage.get("reason"), impact, card, extra={"shortage": shortage})
@@ -394,6 +418,74 @@ def _evidence_brief(evidence: dict) -> dict:
 		"n_reco": len(evidence.get("stock_reconciliations") or []),
 		"gl": evidence.get("gl"),
 	}
+
+
+def _unique_inbound_ready_row(row: dict, shortage: dict) -> dict | None:
+	"""Turn a UNIQUE_EXTERNAL_INBOUND shortage into an applyable Posting Order row."""
+	import frappe
+	from erpnext_extensions.iran_accounting.stock_posting_order.multi_move import (
+		propose_multi_move_after_inbound,
+	)
+	from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import (
+		propose_outbound_after_inbound,
+	)
+	from erpnext_extensions.iran_accounting.stock_posting_order.ordering import format_datetime
+	from frappe.utils import get_datetime
+
+	uniq = shortage.get("unique_inbound") or {}
+	in_v = uniq.get("voucher")
+	out_v = row.get("outbound_document") or row.get("voucher")
+	item = row.get("item")
+	wh = row.get("warehouse")
+	if not (in_v and out_v and item and wh):
+		return None
+	series = frappe.db.sql(
+		"""
+		SELECT name, item_code, warehouse, batch_no, voucher_type, voucher_no, actual_qty,
+		       posting_datetime, posting_date, creation, modified, company,
+		       serial_and_batch_bundle
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime, creation
+		""",
+		(item, wh),
+		as_dict=True,
+	)
+	outbound = next((r for r in series if r.voucher_no == out_v and flt(r.actual_qty) < 0), None)
+	inbound = next((r for r in series if r.voucher_no == in_v and flt(r.actual_qty) > 0), None)
+	if not outbound or not inbound:
+		return None
+	interval = {"outbound": outbound, "inbound": inbound, "recovered": True}
+	proposal = propose_outbound_after_inbound(interval, series)
+	if not proposal.get("ok"):
+		proposal = propose_multi_move_after_inbound(interval, series)
+	if not proposal.get("ok"):
+		return None
+	ready = dict(row)
+	ready.update(
+		{
+			"topic": "POSTING_ORDER",
+			"inbound_document": in_v,
+			"outbound_document": out_v,
+			"optimizer_status": proposal.get("status") or "CROSS_TIME_REPAIRABLE",
+			"confidence": "LIKELY",
+			"eligible": True,
+			"planner_status": "READY_BATCH_SCOPED_REPAIR",
+			"moves": proposal.get("moves") or [],
+			"proposed_outbound_time": format_datetime(proposal["proposed_outbound"]),
+			"proposed_inbound_time": format_datetime(proposal["proposed_inbound"]),
+			"current_outbound_time": format_datetime(get_datetime(outbound.posting_datetime)),
+			"current_inbound_time": format_datetime(get_datetime(inbound.posting_datetime)),
+			"min_qty_before": str(proposal["current"]["min_qty"]),
+			"min_qty_after": str(proposal["proposed"]["min_qty"]),
+			"final_qty_before": str(proposal["current"]["final_qty"]),
+			"final_qty_after": str(proposal["proposed"]["final_qty"]),
+			"valuation_impact": "QUANTITY-ONLY",
+			"sql_updates": max(1, len(proposal.get("moves") or [])),
+			"assisted_promotion": "UNIQUE_EXTERNAL_INBOUND",
+		}
+	)
+	return ready
 
 
 def _pack(row, status, bucket, reason, impact, card, extra=None, ready_row=None) -> dict:
