@@ -238,29 +238,60 @@ def _class_gl(company):
 
 
 def _class_warehouse_placeholder(company):
+	"""Live warehouse campaign discovery via Warehouse Engine optimizer."""
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
+		discover_warehouse_campaigns,
+	)
+
+	try:
+		disc = discover_warehouse_campaigns(company=company)
+	except Exception as exc:
+		return {
+			"repair_class": "WAREHOUSE_WIDE",
+			"priority": CLASS_PRIORITY["WAREHOUSE_WIDE"],
+			"current_count": 0,
+			"READY": 0,
+			"WAITING": 0,
+			"MANUAL": 0,
+			"AMBIGUOUS": 0,
+			"risk": "CRITICAL",
+			"notes": f"Warehouse engine discover failed: {exc}",
+			"can_bulk": False,
+			"promotion_status": "ENGINE_ERROR",
+		}
+
+	campaigns = disc.get("campaigns") or []
+	ready = disc.get("n_ready_campaigns") or 0
+	depths = [int(c.get("dependency_depth") or 0) for c in campaigns]
+	sql = sum(int(c.get("expected_sql") or 0) for c in (disc.get("ready_campaigns") or []))
+	replay = sum(int(c.get("expected_replay") or 0) for c in (disc.get("ready_campaigns") or []))
+	runtime = sum(float(c.get("expected_runtime_seconds") or 0) for c in (disc.get("ready_campaigns") or []))
 	return {
 		"repair_class": "WAREHOUSE_WIDE",
 		"priority": CLASS_PRIORITY["WAREHOUSE_WIDE"],
-		"current_count": 0,
-		"READY": 0,
-		"WAITING": 0,
-		"MANUAL": 0,
-		"AMBIGUOUS": 0,
-		"patient_zero_count": 0,
-		"identity_count": 0,
-		"average_dependency_depth": 0,
-		"maximum_dependency_depth": 0,
-		"cross_warehouse": 0,
-		"cross_batch": 0,
+		"current_count": len(campaigns),
+		"READY": ready,
+		"WAITING": disc.get("n_campaign_required") or 0,
+		"MANUAL": disc.get("n_shortage") or 0,
+		"AMBIGUOUS": disc.get("n_ambiguous") or 0,
+		"patient_zero_count": len(disc.get("ready_campaigns") or []),
+		"identity_count": disc.get("n_identities") or 0,
+		"average_dependency_depth": round(sum(depths) / len(depths), 2) if depths else 0,
+		"maximum_dependency_depth": max(depths) if depths else 0,
+		"cross_warehouse": (disc.get("graph_summary") or {}).get("n_cross_wh_edges") or 0,
+		"cross_batch": (disc.get("graph_summary") or {}).get("n_bridge_nodes") or 0,
 		"cross_work_order": 0,
-		"estimated_sql": 0,
-		"estimated_replay": 0,
-		"estimated_runtime_seconds": 0,
-		"risk": "CRITICAL",
-		"expected_kpi_reduction": {},
-		"notes": "Requires Warehouse Dependency Engine before any apply",
+		"estimated_sql": sql,
+		"estimated_replay": replay,
+		"estimated_runtime_seconds": round(runtime, 2),
+		"risk": "LOW" if ready else "HIGH",
+		"expected_kpi_reduction": {"Posting Order BLOCKED/WAREHOUSE": ready},
+		"notes": disc.get("message")
+		or "Warehouse Engine campaigns — joint multi-pair + cross-identity proof required",
 		"can_bulk": False,
-		"promotion_status": "ENGINE_REQUIRED",
+		"promotion_status": "READY_CAMPAIGNS" if ready else "NO_READY_CAMPAIGN",
+		"ready_campaign_ids": [c.get("campaign_id") for c in (disc.get("ready_campaigns") or [])],
+		"n_eligible_pairs": disc.get("n_eligible_pairs"),
 	}
 
 
@@ -286,7 +317,8 @@ def _dependency_graph_summary(classes) -> dict:
 			{"from": "WRONG_RATE", "to": "GL", "kind": "hard_before"},
 			{"from": "I4_LEFTOVER_REPAIR", "to": "FAILED_RIV", "kind": "hard_before"},
 			{"from": "GL", "to": "FAILED_RIV", "kind": "hard_before"},
-			{"from": "WAREHOUSE_WIDE", "to": "FAILED_RIV", "kind": "blocked_until_engine"},
+			{"from": "WAREHOUSE_WIDE", "to": "FAILED_RIV", "kind": "after_warehouse_campaigns"},
+			{"from": "POSTING_ORDER", "to": "WAREHOUSE_WIDE", "kind": "escalate_multi_pair"},
 		]
 	)
 	return {"nodes": nodes, "edges": edges}
