@@ -315,12 +315,13 @@ def run_assisted_campaign(
 		"by_bucket": dict(by_bucket),
 		"by_outcome": dict(by_outcome),
 		"n_auto_ready": len(ready_rows),
-		"ready_rows": ready_rows[:50],
+		"ready_rows": ready_rows[:120],
 		"assisted_cards": [r.get("decision_card") for r in results if r.get("bucket") == BUCKET_ASSISTED][:40],
 		"operator_cards": [r.get("decision_card") for r in results if r.get("bucket") == BUCKET_OPERATOR][:40],
 		"shortage_proven": [r for r in results if r.get("bucket") == BUCKET_REAL_SHORTAGE][:20],
 		"no_evidence": [r for r in results if r.get("bucket") == BUCKET_NO_EVIDENCE][:20],
 		"results": results,
+		"universe": universe,
 	}
 
 

@@ -1,0 +1,54 @@
+# Copyright (c) 2026 — Apply AUTO-promoted assisted recovery READY rows
+from __future__ import annotations
+
+import json
+
+
+def run(*, max_n=20, dry_run=0):
+	from erpnext_extensions.iran_accounting.historical_stock.assisted_recovery.engine import (
+		run_assisted_campaign,
+	)
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.apply import (
+		apply_wrong_rate_root,
+	)
+	import frappe
+
+	campaign = run_assisted_campaign(threshold=0.95)
+	ready = list(campaign.get("ready_rows") or [])
+	# Prefer roots (not dependents): sort by dependency depth proxy — no patient_zero wait
+	def is_root(r):
+		pz = r.get("patient_zero")
+		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
+		return not pz_v or pz_v == r.get("voucher")
+
+	ready.sort(key=lambda r: (0 if is_root(r) else 1, r.get("voucher") or ""))
+	applied, failed = [], []
+	for row in ready[: int(max_n)]:
+		if int(dry_run):
+			applied.append({"voucher": row.get("voucher"), "item": row.get("item"), "dry_run": True, "expected": row.get("expected") or row.get("proposed_rate")})
+			continue
+		res = apply_wrong_rate_root(row, dry_run=False)
+		entry = {
+			"voucher": row.get("voucher"),
+			"item": row.get("item"),
+			"ok": bool(res.get("ok")),
+			"after_rate": res.get("after_rate"),
+			"expected": res.get("expected") or row.get("expected") or row.get("proposed_rate"),
+			"reason": res.get("reason") or res.get("error") or ((res.get("out") or {}).get("reason")),
+		}
+		if entry["ok"]:
+			frappe.db.commit()
+			applied.append(entry)
+		else:
+			failed.append(entry)
+	out = {
+		"n_auto_ready": campaign.get("n_auto_ready"),
+		"by_bucket": campaign.get("by_bucket"),
+		"n_attempted": len(applied) + len(failed),
+		"n_repaired": len(applied),
+		"n_failed": len(failed),
+		"applied": applied,
+		"failed": failed[:15],
+	}
+	print(json.dumps(out, ensure_ascii=False, indent=2, default=str)[:8000])
+	return out

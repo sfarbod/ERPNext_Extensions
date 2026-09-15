@@ -43,10 +43,11 @@ def build_assisted_master_plan(
 		b = r.get("bucket") or BUCKET_OPERATOR
 		buckets.setdefault(b, []).append(r)
 
-	# Rank each bucket by impact score
+	# Rank each bucket by impact score against the scan universe (WAITING fan-out)
+	universe = campaign.get("universe") or results
 	ranked = {}
 	for b, rows in buckets.items():
-		ranked[b] = rank_roots(rows, results)
+		ranked[b] = rank_roots(rows, universe)
 
 	summary = {
 		b: {
