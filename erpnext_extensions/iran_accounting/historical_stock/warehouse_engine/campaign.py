@@ -120,19 +120,34 @@ def apply_warehouse_campaign(campaign_or_pairs, *, dry_run=True) -> dict:
 		for m in moves:
 			_update_posting_datetime(m["document"], get_datetime(m["new"]))
 
-		# 2) Replay every touched identity that cleared simulation
+		# 2) Replay identities — primary first, then sisters that cleared sim.
 		multi = campaign.get("multi_identity") or {}
+		idents = list(multi.get("identities") or [])
+		idents.sort(
+			key=lambda i: 0
+			if i.get("item") == item and i.get("warehouse") == warehouse
+			else 1
+		)
 		replays = []
-		for ident in multi.get("identities") or []:
+		for ident in idents:
 			if not ident.get("clears"):
 				continue
+			# Sister identities: only rewrite SLE for moved vouchers when the
+			# window is large; primary always full-window MA rewrite.
+			is_primary = ident.get("item") == item and ident.get("warehouse") == warehouse
+			row_count = int(ident.get("row_count") or 0)
+			if is_primary or row_count <= 250:
+				write_set = None
+			else:
+				write_set = set(proposed)
 			rep = replay_item_warehouse(
 				ident["item"],
 				ident["warehouse"],
 				from_dt,
 				ignore_inversion_artifacts=True,
-				write_vouchers=None if int(ident.get("row_count") or 0) <= 250 else set(proposed),
+				write_vouchers=write_set,
 				allow_unrelated_poison=True,
+				trust_simulated_series=True,
 			)
 			replays.append({"item": ident["item"], "warehouse": ident["warehouse"], "replay": rep})
 			if not rep.get("ok"):

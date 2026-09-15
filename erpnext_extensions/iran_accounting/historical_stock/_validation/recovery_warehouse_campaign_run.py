@@ -74,7 +74,7 @@ def dry_run_ready():
 	return out
 
 
-def apply_ready():
+def apply_ready(limit=None):
 	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
 		discover_warehouse_campaigns,
 	)
@@ -83,14 +83,64 @@ def apply_ready():
 	)
 
 	disc = discover_warehouse_campaigns(company=COMPANY)
+	ready = list(disc.get("ready_campaigns") or [])
+	# Prefer largest multi-pair Quarantine-style campaigns first
+	ready.sort(key=lambda c: (-int(c.get("n_pairs") or 0), -int(c.get("n_moves") or 0)))
+	if limit is not None:
+		ready = ready[: int(limit)]
 	results = []
-	for c in disc.get("ready_campaigns") or []:
-		# Fresh plan then apply
+	for c in ready:
 		results.append(apply_warehouse_campaign(c, dry_run=False))
-	out = {"n": len(results), "results": [{k: r.get(k) for k in (
-		"ok", "aborted", "planner_status", "campaign_id", "item", "warehouse",
-		"n_moves", "n_pairs", "sql_updates_executed", "elapsed_seconds",
-		"after_plan_status", "after_eligible", "error", "reason", "idempotent_hint",
-	)} for r in results]}
+	out = {
+		"n": len(results),
+		"results": [
+			{
+				k: r.get(k)
+				for k in (
+					"ok",
+					"aborted",
+					"planner_status",
+					"campaign_id",
+					"item",
+					"warehouse",
+					"n_moves",
+					"n_pairs",
+					"sql_updates_executed",
+					"elapsed_seconds",
+					"after_plan_status",
+					"after_eligible",
+					"error",
+					"reason",
+					"idempotent_hint",
+				)
+			}
+			for r in results
+		],
+	}
 	print(json.dumps(out, ensure_ascii=False, indent=2, default=str)[:8000])
 	return out
+
+
+def apply_one(item=None, warehouse=None):
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
+		discover_warehouse_campaigns,
+	)
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.campaign import (
+		apply_warehouse_campaign,
+	)
+
+	disc = discover_warehouse_campaigns(company=COMPANY)
+	for c in disc.get("ready_campaigns") or []:
+		if item and c.get("item") != item:
+			continue
+		if warehouse and c.get("warehouse") != warehouse:
+			continue
+		r = apply_warehouse_campaign(c, dry_run=False)
+		print(json.dumps({k: r.get(k) for k in (
+			"ok", "aborted", "planner_status", "campaign_id", "item", "warehouse",
+			"n_moves", "n_pairs", "sql_updates_executed", "elapsed_seconds",
+			"after_plan_status", "error", "reason",
+		)}, ensure_ascii=False, indent=2, default=str)[:4000])
+		return r
+	print(json.dumps({"ok": False, "reason": "no matching ready campaign"}))
+	return {"ok": False}

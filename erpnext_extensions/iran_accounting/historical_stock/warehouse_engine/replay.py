@@ -84,6 +84,7 @@ def apply_warehouse_repair(row: dict, *, dry_run=True) -> dict:
 			ignore_inversion_artifacts=True,
 			write_vouchers=write_set,
 			allow_unrelated_poison=True,  # MA-dependent other batches are intentional
+			trust_simulated_series=True,
 		)
 		if not rep.get("ok"):
 			frappe.db.rollback(save_point=savepoint)

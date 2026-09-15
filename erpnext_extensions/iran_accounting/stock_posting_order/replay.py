@@ -253,15 +253,22 @@ def replay_item_warehouse(
 	ignore_inversion_artifacts: bool = True,
 	write_vouchers: set | None = None,
 	allow_unrelated_poison: bool = False,
+	trust_simulated_series: bool = False,
 ) -> dict:
 	hit = window_poison_hit(
 		item_code, warehouse, from_dt, ignore_inversion_artifacts=ignore_inversion_artifacts
 	)
 	if hit:
 		on_write_set = write_vouchers is not None and hit.get("voucher") in write_vouchers
-		# Default stays fail-closed. READY_BATCH_SCOPED_REPAIR may skip poison that
-		# simulation proved is not MA-relevant and is outside the write set.
-		if not allow_unrelated_poison or write_vouchers is None or on_write_set:
+		# Default stays fail-closed.
+		# - allow_unrelated_poison: skip poison outside the write set (batch-scoped).
+		# - trust_simulated_series: warehouse campaign already proved the recomputed
+		#   MA series is clean — stored incoming_rate poison will be overwritten.
+		if trust_simulated_series:
+			pass
+		elif allow_unrelated_poison and write_vouchers is not None and not on_write_set:
+			pass
+		else:
 			return {
 				"ok": False,
 				"status": STATUS_VALUATION_POISON,
