@@ -232,7 +232,16 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"timing": timing,
 		"posting_order": {
 			"summary": posting.get("summary"),
-			"count": len(posting.get("rows") or []),
+			# Actionable defects only — NO_REPAIR_NEEDED is healthy same-time noise.
+			"count": len(
+				[
+					r
+					for r in (posting.get("rows") or [])
+					if (r.get("optimizer_status") or r.get("status")) not in ("NO_REPAIR_NEEDED",)
+					and (r.get("planner_status") or "") not in ("NO_REPAIR_PATH",)
+				]
+			),
+			"raw_row_count": len(posting.get("rows") or []),
 			"sle_scanned": posting.get("sle_scanned"),
 		},
 		"zero_rate": {
