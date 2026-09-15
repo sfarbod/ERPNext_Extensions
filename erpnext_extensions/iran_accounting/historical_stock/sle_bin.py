@@ -108,9 +108,27 @@ def scan_sle_bin(
 		i4_status = None
 		repair_cls = None
 		residual = flt(sle.stock_value) if is_i4 else 0.0
+		extra = {}
 		if is_i4:
 			repair_cls = I4_LEFTOVER_REPAIR
-			i4_status = I4_READY if this_is_pz else I4_WAITING
+			# Honest status from dedicated I4 classifier (opening health / sim clear).
+			try:
+				from erpnext_extensions.iran_accounting.historical_stock.i4_repair import classify_i4_row
+
+				cls = classify_i4_row(sle.item_code, sle.warehouse, voucher=sle.voucher_no, sle_name=sle.name)
+				i4_status = cls.get("i4_status") or (I4_READY if this_is_pz else I4_WAITING)
+				for k in (
+					"previous_healthy",
+					"previous_qty",
+					"previous_blocker",
+					"pz_residual_clears_in_sim",
+					"is_patient_zero",
+					"message",
+				):
+					if k in cls:
+						extra[k] = cls.get(k)
+			except Exception:
+				i4_status = I4_READY if this_is_pz else I4_WAITING
 			topic = "I4_LEFTOVER"
 		else:
 			topic = "SLE_BIN"
@@ -135,9 +153,11 @@ def scan_sle_bin(
 				"expected_value": 0.0 if is_i4 else None,
 				"residual_value": residual,
 				"qty_becomes_zero": is_i4,
-				"message": "Identity leftover detected." if is_i4 else "",
+				"message": extra.get("message")
+				or ("Identity leftover detected." if is_i4 else ""),
 				"posting_datetime": str(sle.posting_datetime) if sle.posting_datetime else None,
 				"posting_date": str(sle.posting_date) if sle.posting_date else None,
+				**extra,
 			}
 		)
 	if scope.get("repair_class") != I4_LEFTOVER_REPAIR:
