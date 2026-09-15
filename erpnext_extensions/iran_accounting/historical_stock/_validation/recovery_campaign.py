@@ -53,7 +53,11 @@ def _ready_gl():
 			and r.get("eligible")
 			and not r.get("sle_poisoned")
 			and str(r.get("gl_class") or "")
-			in ("G1_BALANCED_BUT_ECONOMICALLY_WRONG", "G3_UNBALANCED")
+			in (
+				"G1_BALANCED_BUT_ECONOMICALLY_WRONG",
+				"G2_MISSING",
+				"G3_UNBALANCED",
+			)
 		):
 			rows.append(r)
 	return rows, scan
