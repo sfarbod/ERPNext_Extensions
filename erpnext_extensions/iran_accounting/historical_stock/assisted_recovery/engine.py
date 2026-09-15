@@ -121,6 +121,28 @@ def reclassify_row(
 		stamped["status"] = STATUS_RECONSTRUCTABLE
 		stamped["eligible"] = True
 		stamped["assisted_promotion"] = "READY"
+		# Clear foreign patient-zero so apply does not re-block; only when
+		# evidence already proved the rate uniquely (external/healthy PZ).
+		pz = stamped.get("patient_zero")
+		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
+		if pz_v and pz_v != stamped.get("voucher"):
+			# Still blocked on an upstream voucher → ASSISTED, not AUTO
+			resolution = {
+				**resolution,
+				"promote_to": ASSISTED_READY,
+				"reason": f"Unique rate {resolution['expected']} but upstream patient-zero {pz_v} must be confirmed/repaired first",
+				"confidence": max(flt(resolution.get("confidence")), 0.95),
+			}
+			card = build_decision_card(row, evidence=evidence, resolution=resolution, impact=impact)
+			return _pack(
+				row,
+				ASSISTED_READY,
+				BUCKET_ASSISTED,
+				resolution.get("reason"),
+				impact,
+				card,
+				extra={"evidence": _evidence_brief(evidence), "resolution": resolution},
+			)
 		# Re-evaluate through planner for true READY_* status
 		from erpnext_extensions.iran_accounting.historical_stock.planner import evaluate_row, READY_STATUSES
 
