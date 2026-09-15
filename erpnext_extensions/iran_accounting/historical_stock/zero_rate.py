@@ -271,8 +271,12 @@ def classify_zero_row(row, _cache=None) -> dict:
 			proposed, source, confidence = issued, "same_voucher_issued_rate", CONFIDENCE_EXACT
 			zero_class = Z1_HISTORICAL_RATE_LOST
 	elif abs(batch_rate) > RATE_EPS:
-		proposed, source, confidence = batch_rate, "batch_inward", CONFIDENCE_EXACT
-		zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
+		if abs(prev_sle_rate) > RATE_EPS and abs(batch_rate - prev_sle_rate) > 1:
+			proposed, source, confidence = batch_rate, "batch_vs_previous_mismatch", CONFIDENCE_AMBIGUOUS
+			zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
+		else:
+			proposed, source, confidence = batch_rate, "batch_inward", CONFIDENCE_EXACT
+			zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
 	elif abs(prev_sle_rate) > RATE_EPS:
 		proposed, source, confidence = prev_sle_rate, "previous_healthy_sle", CONFIDENCE_EXACT
 		zero_class = Z3_MISSING_INCOMING_VALUATION
