@@ -111,6 +111,7 @@ READY_STATUSES = (
 	PLAN_READY_IDENTITY,
 	PLAN_READY_I4,
 	PLAN_READY_WRONG_RATE,
+	"READY_WAREHOUSE_REPLAY",
 )
 
 DATABASE_BACKUP_REQUIRED = "DATABASE BACKUP REQUIRED"
@@ -388,6 +389,9 @@ def _evaluate_posting(row, decision, cache) -> dict:
 		STATUS_MIDNIGHT_REVIEW,
 		STATUS_REAL_STOCK_SHORTAGE,
 		STATUS_VALUATION_POISON,
+		STATUS_CROSS_TIME_REPAIRABLE,
+		STATUS_REPAIRABLE_SECONDS,
+		STATUS_SAME_TIME_REPAIRABLE,
 	)
 	from erpnext_extensions.iran_accounting.stock_posting_order.repair import _row_moves, _voucher_item_warehouses
 	from erpnext_extensions.iran_accounting.stock_posting_order.replay import window_poison_hit
@@ -401,8 +405,32 @@ def _evaluate_posting(row, decision, cache) -> dict:
 		return _not_ready(decision, PLAN_AMBIGUOUS, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
 	if row.get("confidence") == CONFIDENCE_MANUAL or opt in (STATUS_MANUAL_REVIEW,):
 		return _not_ready(decision, PLAN_MANUAL, f"MANUAL — {opt or 'operator review required'}")
-	if row.get("confidence") and row.get("confidence") != CONFIDENCE_EXACT:
+
+	# Proven quantity recovery: optimizer says repairable and sim clears the deficit.
+	# LIKELY relationship (e.g. same_batch_cross_document) may promote for planner.
+	sim_cleared = False
+	try:
+		min_before = row.get("min_qty_before")
+		min_after = row.get("min_qty_after")
+		if min_before is not None and flt(min_before) < 0 and min_after is not None and flt(min_after) >= 0:
+			sim_cleared = True
+	except (TypeError, ValueError):
+		sim_cleared = False
+	opt_repairable = opt in (
+		STATUS_CROSS_TIME_REPAIRABLE,
+		STATUS_REPAIRABLE_SECONDS,
+		STATUS_SAME_TIME_REPAIRABLE,
+		"CROSS_TIME_REPAIRABLE",
+		"REPAIRABLE_SECONDS",
+		"SAME_TIME_REPAIRABLE",
+	)
+	promote_likely = bool(row.get("confidence") == CONFIDENCE_LIKELY and opt_repairable and sim_cleared)
+
+	if row.get("confidence") and row.get("confidence") != CONFIDENCE_EXACT and not promote_likely:
 		return _not_ready(decision, PLAN_MANUAL, f"{row.get('confidence')} — Repair Selected requires EXACT")
+	if promote_likely:
+		decision["confidence"] = CONFIDENCE_EXACT
+		decision["dependency"] = "promoted_likely_sim_cleared"
 	moves = _row_moves(row)
 	if not moves:
 		return _not_ready(decision, PLAN_BLOCKED, "No timestamp moves in preview — repair no longer needed or already applied")
@@ -426,6 +454,15 @@ def _evaluate_posting(row, decision, cache) -> dict:
 	decision["scope"] = scope
 	if scope.get("window_loaded"):
 		if scope.get("status") not in READY_SCOPES:
+			# Warehouse MA dependency — escalate through Warehouse Engine (not a hard stop).
+			if (
+				scope.get("status") == PLAN_WAREHOUSE_ESCALATION
+				or scope.get("escalation_required")
+				or str(scope.get("smallest_safe_scope") or "") == "WAREHOUSE_VALUATION_SCOPED"
+			):
+				wh_decision = _evaluate_warehouse_escalation(row, decision, cache, scope)
+				if wh_decision is not None:
+					return wh_decision
 			return _not_ready(
 				decision,
 				scope.get("status") or PLAN_WAREHOUSE_ESCALATION,
@@ -493,6 +530,80 @@ def _evaluate_posting(row, decision, cache) -> dict:
 		sabb_count=counts["sabb"],
 		sbe_count=counts["sbe"],
 		bin_count=counts["bin"],
+	)
+
+
+def _evaluate_warehouse_escalation(row, decision, cache, scope) -> dict | None:
+	"""Run Warehouse Engine on MA-escalated posting-order candidates."""
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine import (
+		READY_WAREHOUSE_REPLAY,
+		WAREHOUSE_REAL_SHORTAGE,
+		WAITING_WAREHOUSE_DEPENDENCY,
+		WAREHOUSE_POISONED_OPENING,
+		WAREHOUSE_AMBIGUOUS,
+		UNSAFE_GLOBAL_DEPENDENCY,
+	)
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.planner import (
+		plan_warehouse_repair,
+	)
+
+	try:
+		planned = plan_warehouse_repair(row, cache=cache)
+	except Exception as exc:
+		return _not_ready(
+			decision,
+			PLAN_WAREHOUSE_ESCALATION,
+			f"WAREHOUSE_ESCALATION — warehouse engine error: {exc}",
+			dependency=scope.get("dependency_type"),
+		)
+	decision["warehouse_plan"] = {
+		k: planned.get(k)
+		for k in (
+			"planner_status",
+			"reason",
+			"required_action",
+			"required_scope",
+			"sql_updates",
+			"eligible",
+			"affected_vouchers",
+		)
+	}
+	ps = str(planned.get("planner_status") or "")
+	if ps == READY_WAREHOUSE_REPLAY and planned.get("eligible"):
+		sql = int(planned.get("sql_updates") or 0) or 1
+		return _ready(
+			decision,
+			sql=sql,
+			replay=1,
+			rebuild=sql,
+			reason=planned.get("reason") or "READY_WAREHOUSE_REPLAY — warehouse MA sim clears",
+			planner_status=READY_WAREHOUSE_REPLAY,
+			se_count=len(planned.get("affected_vouchers") or []) or 1,
+		)
+	if ps == WAREHOUSE_REAL_SHORTAGE:
+		return _not_ready(
+			decision,
+			PLAN_BLOCKED,
+			planned.get("reason") or "WAREHOUSE_REAL_SHORTAGE — warehouse qty still negative after reorder",
+			dependency="WAREHOUSE_REAL_SHORTAGE",
+		)
+	if ps in (WAREHOUSE_AMBIGUOUS,):
+		return _not_ready(decision, PLAN_AMBIGUOUS, planned.get("reason") or ps)
+	if ps in (WAITING_WAREHOUSE_DEPENDENCY, WAREHOUSE_POISONED_OPENING):
+		return _not_ready(
+			decision,
+			PLAN_WAITING_RATE_REPAIR if "POISON" in ps else PLAN_WAREHOUSE_ESCALATION,
+			planned.get("reason") or ps,
+			dependency=ps,
+		)
+	if ps == UNSAFE_GLOBAL_DEPENDENCY:
+		return _not_ready(decision, PLAN_INVALID_GRAPH, planned.get("reason") or ps)
+	# Leave as escalation with warehouse engine reason (engine still limited / not ready).
+	return _not_ready(
+		decision,
+		ps or PLAN_WAREHOUSE_ESCALATION,
+		planned.get("reason") or scope.get("escalation_reason") or PLAN_WAREHOUSE_ESCALATION,
+		dependency=scope.get("dependency_type") or ps,
 	)
 
 
