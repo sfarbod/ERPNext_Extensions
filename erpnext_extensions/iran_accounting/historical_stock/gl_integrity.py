@@ -45,7 +45,7 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 	se_header = max(flt(se.total_outgoing_value), flt(se.total_incoming_value))
 	gl_inventory = max(debit, credit)
 	poisoned = _voucher_has_poison_sle(voucher_no)
-	purpose = str(se.purpose or "")
+	purpose = str(getattr(se, "purpose", None) or "")
 	# Material Transfer GL is the net account movement, not SE header totals.
 	transferish = purpose in (
 		"Material Transfer",
