@@ -274,6 +274,28 @@ class TestPatientZeroUnlock(unittest.TestCase):
 		self.assertEqual(by_v["DEP-1"]["planner_status"], PLAN_READY_WRONG_RATE)
 		self.assertTrue(by_v["DEP-1"]["eligible"])
 
+	def test_circular_stamp_survives_assert_ready(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+
+		row = {
+			"topic": "WRONG_RATE",
+			"confidence": "EXACT",
+			"status": "RECONSTRUCTABLE",
+			"eligible": True,
+			"voucher": "A-EARLY",
+			"dependency": "circular_earliest_root",
+			"blocked_because": "circular_earliest_root",
+			"patient_zero": "B-LATE",
+			"proposed_rate": 10.0,
+			"current_rate": 0.0,
+			"flags": ["ZERO_BASIC_RATE"],
+			"item": "I",
+			"warehouse": "W",
+			"surface": "SE",
+		}
+		decision = assert_ready(row)
+		self.assertEqual(decision["planner_status"], PLAN_READY_WRONG_RATE)
+
 	def test_circular_earliest_wins(self):
 		from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
 
