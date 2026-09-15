@@ -45,69 +45,79 @@ def run(*, max_n=5, dry_run=0):
 	clusters = cluster_independent_roots(ready, max_cluster=int(max_n))
 	group = clusters.get("recommended_first_group") or {}
 	order = group.get("roots") or group.get("repair_order") or []
+	# Prefer SAFE_GROUP order, then any remaining READY outbounds.
 	voucher_order = []
 	for root in order[: int(max_n)]:
 		vn = root if isinstance(root, str) else (root.get("voucher") if isinstance(root, dict) else None)
 		if vn and vn not in voucher_order:
 			voucher_order.append(vn)
-	if not voucher_order:
-		# fallback: unique outbound vouchers
-		for r in ready:
-			vn = r.get("outbound_document") or r.get("voucher")
-			if vn and vn not in voucher_order:
-				voucher_order.append(vn)
-			if len(voucher_order) >= int(max_n):
-				break
+	for r in ready:
+		vn = r.get("outbound_document") or r.get("voucher")
+		if vn and vn not in voucher_order:
+			voucher_order.append(vn)
+		if len(voucher_order) >= int(max_n):
+			break
 
 	repaired, failed = [], []
-	seen = set()
+	seen_out = set()
 	for vn in voucher_order:
+		if vn in seen_out:
+			continue
+		seen_out.add(vn)
 		matches = [r for r in ready if (r.get("outbound_document") or r.get("voucher")) == vn]
-		for r in matches:
-			key = (r.get("inbound_document"), r.get("outbound_document"), r.get("item"), r.get("warehouse"))
-			if key in seen:
-				continue
-			seen.add(key)
-			ps = str(r.get("planner_status") or "")
-			try:
-				if ps == "READY_WAREHOUSE_REPLAY":
-					res = apply_warehouse_repair(r, dry_run=bool(int(dry_run)))
-				else:
-					res = apply_repairs([r], dry_run=bool(int(dry_run)))
-					if isinstance(res, dict):
-						blocked = res.get("blocked") or []
-						applied = res.get("applied") or []
-						res = {
-							"ok": bool(applied) and not blocked and not res.get("aborted"),
-							"reason": (blocked[0].get("error") if blocked else None)
-							or res.get("reason")
-							or res.get("skip_reason"),
-							**{k: res.get(k) for k in ("aborted", "applied", "blocked") if k in res},
-						}
+		if not matches:
+			continue
+		ps = str(matches[0].get("planner_status") or "")
+		try:
+			if ps == "READY_WAREHOUSE_REPLAY":
+				res = apply_warehouse_repair(matches[0], dry_run=bool(int(dry_run)))
 				entry = {
-					"inbound": r.get("inbound_document"),
-					"outbound": r.get("outbound_document"),
-					"item": r.get("item"),
+					"inbound": matches[0].get("inbound_document"),
+					"outbound": matches[0].get("outbound_document"),
+					"item": matches[0].get("item"),
 					"ps": ps,
 					"ok": bool(res.get("ok")),
 					"reason": res.get("reason") or res.get("error"),
 					"planner_status": res.get("planner_status"),
+					"joint_n": 1,
 				}
-				if entry["ok"]:
-					repaired.append(entry)
-				else:
-					failed.append(entry)
-			except Exception as e:
-				failed.append(
-					{
-						"inbound": r.get("inbound_document"),
-						"outbound": r.get("outbound_document"),
-						"item": r.get("item"),
-						"ps": ps,
-						"ok": False,
-						"reason": f"{type(e).__name__}: {e}",
-					}
-				)
+				(repaired if entry["ok"] else failed).append(entry)
+			else:
+				# Pass all item-pairs for this outbound together so apply_repairs
+				# can coalesce to a single joint timestamp move.
+				res = apply_repairs(matches, dry_run=bool(int(dry_run)))
+				blocked = (res or {}).get("blocked") or []
+				applied = (res or {}).get("applied") or []
+				ok = bool(applied) and not blocked and not (res or {}).get("aborted")
+				reason = None
+				if blocked:
+					reason = blocked[0].get("error")
+				reason = reason or (res or {}).get("reason") or (res or {}).get("skip_reason")
+				entry = {
+					"inbound": matches[0].get("inbound_document"),
+					"outbound": vn,
+					"item": ",".join(sorted({str(m.get("item") or "") for m in matches})),
+					"ps": ps,
+					"ok": ok,
+					"reason": reason,
+					"planner_status": None,
+					"joint_n": len(matches),
+					"applied_n": len(applied),
+					"blocked_n": len(blocked),
+				}
+				(repaired if ok else failed).append(entry)
+		except Exception as e:
+			failed.append(
+				{
+					"inbound": matches[0].get("inbound_document"),
+					"outbound": vn,
+					"item": matches[0].get("item"),
+					"ps": ps,
+					"ok": False,
+					"reason": f"{type(e).__name__}: {e}",
+					"joint_n": len(matches),
+				}
+			)
 
 	out = {
 		"ok": True,

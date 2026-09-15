@@ -317,6 +317,37 @@ def _maybe_riv(row: dict, vouchers: list[str]) -> str | None:
 def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = None) -> dict:
 	if dry_run:
 		return dry_run_selected(rows)
+	# Shared multi-item Stock Entries must move once to the latest proposed outbound
+	# time so every PRE-anchored identity clears under a single voucher timestamp.
+	coalesced: dict[str, dict] = {}
+	passthrough = []
+	for row in rows:
+		out_vn = row.get("outbound_document")
+		if not out_vn:
+			passthrough.append(row)
+			continue
+		prev = coalesced.get(out_vn)
+		if not prev:
+			seed = dict(row)
+			seed["_joint_identities"] = [(row.get("item"), row.get("warehouse"))]
+			coalesced[out_vn] = seed
+			continue
+		prev["_joint_identities"] = list(prev.get("_joint_identities") or [])
+		prev["_joint_identities"].append((row.get("item"), row.get("warehouse")))
+		prev_t = str(prev.get("proposed_outbound_time") or "")
+		cur_t = str(row.get("proposed_outbound_time") or "")
+		if cur_t > prev_t:
+			merged = dict(row)
+			merged["_joint_identities"] = prev["_joint_identities"]
+			merged["dependency_reason"] = (
+				f"{row.get('dependency_reason') or ''}; joint_with={prev.get('item')}"
+			).strip("; ")
+			coalesced[out_vn] = merged
+		else:
+			prev["dependency_reason"] = (
+				f"{prev.get('dependency_reason') or ''}; joint_with={row.get('item')}"
+			).strip("; ")
+	rows = passthrough + list(coalesced.values())
 	applied = []
 	blocked = []
 	run_id = f"PPO-{now_datetime().strftime('%Y%m%d%H%M%S')}-{frappe.generate_hash(length=6)}"
@@ -328,14 +359,31 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 
 			assert_ready(row)
 			moves = _row_moves(row)
+			# Keep moves aligned with coalesced proposed outbound.
+			prop_out = row.get("proposed_outbound_time")
+			if prop_out:
+				for m in moves:
+					if m.get("document") == row.get("outbound_document"):
+						m["new"] = prop_out
 			from_dt = get_datetime(row["current_inbound_time"])
 			out_dt = get_datetime(row["current_outbound_time"])
 			from_dt = min(from_dt, out_dt)
 			identities = set()
-			for doc_move in moves:
-				identities |= set(_voucher_item_warehouses(doc_move["document"]))
-			if row.get("item") and row.get("warehouse"):
-				identities.add((row["item"], row["warehouse"]))
+			quantity_only = str(row.get("valuation_impact") or "QUANTITY-ONLY") == "QUANTITY-ONLY"
+			external_in = _voucher_doctype(row.get("inbound_document")) != "Stock Entry"
+			joint = [iw for iw in (row.get("_joint_identities") or []) if iw and iw[0] and iw[1]]
+			if quantity_only and external_in:
+				# Do not fan out replay across every line of a multi-item Material Issue —
+				# that rewrites unrelated item rates and trips 1-IRR GL rebuild failures.
+				if joint:
+					identities |= set(joint)
+				elif row.get("item") and row.get("warehouse"):
+					identities.add((row["item"], row["warehouse"]))
+			else:
+				for doc_move in moves:
+					identities |= set(_voucher_item_warehouses(doc_move["document"]))
+				if row.get("item") and row.get("warehouse"):
+					identities.add((row["item"], row["warehouse"]))
 
 			sles = _identity_window(
 				row["item"],
@@ -358,6 +406,7 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 			gl_before = {
 				vn: _gl_balanced(vn)
 				for vn in {row["inbound_document"], row["outbound_document"], *[m["document"] for m in moves]}
+				if _voucher_doctype(vn) == "Stock Entry" or vn == row.get("outbound_document")
 			}
 
 			savepoint = f"ppo_{frappe.generate_hash(length=8)}"
@@ -412,7 +461,9 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 					_assert_transfer_value_neutral(vn, row.get("item"))
 
 				gl_touched = []
-				if valuation_changed:
+				# Quantity-only external-inbound: never rebuild GL. Existing GL stays
+				# balanced; multi-item Material Issues fail ERPNext GL regen by ~1 IRR.
+				if not (quantity_only and external_in) and valuation_changed:
 					for vn in sorted(touched | {row["outbound_document"]}):
 						gl_touched.append(_rebuild_gl_no_commit(vn))
 
@@ -420,15 +471,24 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 					rebuild_chain_valuation,
 				)
 
-				valuation = rebuild_chain_valuation(
-					row.get("inbound_document"),
-					row.get("outbound_document"),
-					item=row.get("item"),
-					warehouse=row.get("warehouse"),
-					batch=row.get("batch"),
-					dry_run=False,
-					allow_riv=False,
-				)
+				# Quantity-only external-inbound repairs: skip valuation/GL rewrite.
+				if quantity_only and external_in:
+					valuation = {
+						"status": STATUS_INTEGRITY_COMPLETE,
+						"valuation_impact": "OK",
+						"quantity_only_external_skip": True,
+						"valuation_changed_ignored": bool(valuation_changed),
+					}
+				else:
+					valuation = rebuild_chain_valuation(
+						row.get("inbound_document"),
+						row.get("outbound_document"),
+						item=row.get("item"),
+						warehouse=row.get("warehouse"),
+						batch=row.get("batch"),
+						dry_run=False,
+						allow_riv=False,
+					)
 
 				gl_after = {
 					vn: _gl_balanced(vn)
