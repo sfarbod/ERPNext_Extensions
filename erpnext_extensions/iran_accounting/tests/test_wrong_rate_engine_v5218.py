@@ -45,8 +45,18 @@ class TestWrongRateReconstructionSources(unittest.TestCase):
 		self.assertEqual(out["confidence"], "EXACT")
 		self.assertEqual(out["source"], "transfer_source")
 
-	def test_batch_inward_likely(self):
+	def test_batch_inward_exact_alone(self):
 		out = pick_reconstruction({"batch_inward": 9.0})
+		self.assertEqual(out["confidence"], "EXACT")
+		self.assertEqual(out["source"], "batch_inward")
+
+	def test_previous_healthy_sle_exact_alone(self):
+		out = pick_reconstruction({"previous_healthy_sle": 88.0})
+		self.assertEqual(out["confidence"], "EXACT")
+		self.assertEqual(out["source"], "previous_healthy_sle")
+
+	def test_manufacture_pool_still_likely(self):
+		out = pick_reconstruction({"manufacture_pool": 12.0})
 		self.assertEqual(out["confidence"], "LIKELY")
 
 	def test_implied_svd_exact(self):
@@ -196,6 +206,122 @@ class TestWrongRatePlannerStates(unittest.TestCase):
 			}
 		)
 		self.assertNotEqual(decision["planner_status"], "BLOCKED")
+
+
+class TestPatientZeroUnlock(unittest.TestCase):
+	def test_already_valued_is_rate_repair_complete(self):
+		decision = evaluate_row(
+			{
+				"topic": "WRONG_RATE",
+				"confidence": "EXACT",
+				"status": "RATE_REBUILD_COMPLETE",
+				"source": "already_valued",
+				"source_of_truth": "already_valued",
+				"eligible": False,
+				"voucher": "PZ-1",
+				"current": 100.0,
+				"expected": 100.0,
+				"current_rate": 100.0,
+				"proposed_rate": 100.0,
+				"flags": ["WRONG_AMOUNT"],
+			}
+		)
+		self.assertEqual(decision["planner_status"], "RATE_REPAIR_COMPLETE")
+
+	def test_waiting_cleared_when_pz_already_valued(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+		result = stamp_scan_result(
+			{
+				"rows": [
+					{
+						"topic": "WRONG_RATE",
+						"confidence": "EXACT",
+						"status": "RATE_REBUILD_COMPLETE",
+						"source": "already_valued",
+						"source_of_truth": "already_valued",
+						"eligible": False,
+						"voucher": "PZ-1",
+						"current": 100.0,
+						"expected": 100.0,
+						"current_rate": 100.0,
+						"proposed_rate": 100.0,
+						"flags": ["WRONG_AMOUNT"],
+						"item": "I",
+						"warehouse": "W",
+					},
+					{
+						"topic": "WRONG_RATE",
+						"confidence": "EXACT",
+						"status": "DEPENDENCY_REPAIR_REQUIRED",
+						"eligible": False,
+						"voucher": "DEP-1",
+						"patient_zero": "PZ-1",
+						"current": 0.0,
+						"expected": 50.0,
+						"current_rate": 0.0,
+						"proposed_rate": 50.0,
+						"flags": ["ZERO_BASIC_RATE"],
+						"item": "I",
+						"warehouse": "W",
+						"surface": "SE",
+					},
+				]
+			}
+		)
+		by_v = {r["voucher"]: r for r in result["rows"]}
+		self.assertEqual(by_v["PZ-1"]["planner_status"], "RATE_REPAIR_COMPLETE")
+		self.assertEqual(by_v["DEP-1"]["planner_status"], PLAN_READY_WRONG_RATE)
+		self.assertTrue(by_v["DEP-1"]["eligible"])
+
+	def test_circular_earliest_wins(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+
+		result = stamp_scan_result(
+			{
+				"rows": [
+					{
+						"topic": "WRONG_RATE",
+						"confidence": "EXACT",
+						"status": "DEPENDENCY_REPAIR_REQUIRED",
+						"eligible": False,
+						"voucher": "A-EARLY",
+						"patient_zero": "B-LATE",
+						"posting_date": "2026-01-01",
+						"posting_time": "10:00:00",
+						"current": 0.0,
+						"expected": 10.0,
+						"proposed_rate": 10.0,
+						"current_rate": 0.0,
+						"flags": ["ZERO_BASIC_RATE"],
+						"item": "I",
+						"warehouse": "W",
+						"surface": "SE",
+					},
+					{
+						"topic": "WRONG_RATE",
+						"confidence": "EXACT",
+						"status": "DEPENDENCY_REPAIR_REQUIRED",
+						"eligible": False,
+						"voucher": "B-LATE",
+						"patient_zero": "A-EARLY",
+						"posting_date": "2026-01-02",
+						"posting_time": "10:00:00",
+						"current": 0.0,
+						"expected": 20.0,
+						"proposed_rate": 20.0,
+						"current_rate": 0.0,
+						"flags": ["ZERO_BASIC_RATE"],
+						"item": "I",
+						"warehouse": "W",
+						"surface": "SE",
+					},
+				]
+			}
+		)
+		by_v = {r["voucher"]: r for r in result["rows"]}
+		self.assertEqual(by_v["A-EARLY"]["planner_status"], PLAN_READY_WRONG_RATE)
+		self.assertEqual(by_v["B-LATE"]["planner_status"], "WAITING_PATIENT_ZERO")
 
 
 if __name__ == "__main__":
