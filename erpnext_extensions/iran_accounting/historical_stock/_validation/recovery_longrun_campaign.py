@@ -69,9 +69,80 @@ def _master_plan(scan) -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock.master_plan import build_master_repair_plan
 
 	try:
-		return build_master_repair_plan(scan)
+		# Prefer fresh rebuild from DB — do not reuse a stale scan payload shape.
+		plan = build_master_repair_plan(company=COMPANY)
+		return plan
+	except TypeError:
+		try:
+			return build_master_repair_plan()
+		except Exception as e:
+			return {"error": str(e), "entries": []}
 	except Exception as e:
 		return {"error": str(e), "entries": []}
+
+
+def _apply_gl(max_n=20) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
+	from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import (
+		scan_gl_integrity,
+		rebuild_gl_for_voucher,
+	)
+	import frappe
+
+	scan = scan_gl_integrity(company=COMPANY, limit=300)
+	ready = []
+	for r in scan.get("rows") or []:
+		ps = str(r.get("planner_status") or "")
+		if (
+			ps in READY_STATUSES
+			and int(r.get("sql_updates") or 0) > 0
+			and r.get("eligible")
+			and not r.get("sle_poisoned")
+			and str(r.get("gl_class") or "") in ("G1_BALANCED_BUT_ECONOMICALLY_WRONG", "G2_MISSING", "G3_UNBALANCED")
+		):
+			ready.append(r)
+	applied, failed = [], []
+	for r in ready[: int(max_n)]:
+		vn = r.get("voucher")
+		try:
+			res = rebuild_gl_for_voucher(vn, dry_run=False)
+			ok = bool(res.get("ok") or res.get("rebuilt") or not res.get("error"))
+			entry = {"voucher": vn, "ok": ok, "gl_class": r.get("gl_class"), "reason": res.get("error") or res.get("reason")}
+			(applied if ok else failed).append(entry)
+			if ok:
+				frappe.db.commit()
+		except Exception as e:
+			failed.append({"voucher": vn, "ok": False, "reason": f"{type(e).__name__}: {e}"})
+	return {"n_ready": len(ready), "n_repaired": len(applied), "n_failed": len(failed), "applied": applied[:10], "failed": failed[:10]}
+
+
+def _apply_wr_ready(max_n=20) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.apply import (
+		apply_wrong_rate_root,
+	)
+	import frappe
+
+	scan = scan_wrong_rates(company=COMPANY, limit=2000)
+	ready = []
+	for r in scan.get("rows") or []:
+		ps = str(r.get("planner_status") or "")
+		if (ps in READY_STATUSES or ps.startswith("READY")) and int(r.get("sql_updates") or 0) > 0 and r.get("eligible"):
+			ready.append(r)
+	applied, failed = [], []
+	for r in ready[: int(max_n)]:
+		res = apply_wrong_rate_root(r, dry_run=False)
+		entry = {
+			"voucher": r.get("voucher"),
+			"item": r.get("item"),
+			"ok": bool(res.get("ok")),
+			"reason": res.get("reason") or res.get("error"),
+		}
+		(applied if entry["ok"] else failed).append(entry)
+		if entry["ok"]:
+			frappe.db.commit()
+	return {"n_ready": len(ready), "n_repaired": len(applied), "n_failed": len(failed)}
 
 
 def _apply_po(ready, max_n=40) -> dict:
@@ -122,6 +193,8 @@ def run_iteration(n: int) -> dict:
 	repairs = {
 		"po": _apply_po(before["ready_po"], max_n=40) if before["ready_po"] else {"n_outbounds": 0},
 		"warehouse": _apply_warehouse(max_n=15),
+		"wr": _apply_wr_ready(max_n=30),
+		"gl": _apply_gl(max_n=20),
 		"assisted": _apply_assisted(max_n=40),
 	}
 	after = _snap()
@@ -150,19 +223,29 @@ def run_iteration(n: int) -> dict:
 				k: repairs["warehouse"].get(k)
 				for k in ("n_ready_before", "n_repaired", "n_failed")
 			},
+			"wr": {k: repairs["wr"].get(k) for k in ("n_ready", "n_repaired", "n_failed")},
+			"gl": {k: repairs["gl"].get(k) for k in ("n_ready", "n_repaired", "n_failed")},
 			"assisted": {
 				k: repairs["assisted"].get(k)
 				for k in ("n_auto_ready", "n_repaired", "n_failed", "n_skipped_matched", "by_bucket")
 			},
 		},
-		"master_plan_n": len(plan.get("entries") or plan.get("rows") or plan.get("plan") or []),
+		"master_plan_n": len(plan.get("classes") or plan.get("entries") or plan.get("rows") or plan.get("plan") or []),
+		"master_plan_ready": {
+			c.get("repair_class"): c.get("READY")
+			for c in (plan.get("classes") or [])
+			if isinstance(c, dict)
+		},
 		"po_by_opt_after": ad.get("po_by_opt"),
 		"worthwhile": bool(
 			(repairs["po"].get("n_ok") or 0) > 0
 			or (repairs["warehouse"].get("n_repaired") or 0) > 0
+			or (repairs["wr"].get("n_repaired") or 0) > 0
+			or (repairs["gl"].get("n_repaired") or 0) > 0
 			or (repairs["assisted"].get("n_repaired") or 0) > 0
 			or (delta.get("po_actionable") or 0) < 0
 			or (delta.get("wrong_rate") or 0) < 0
+			or (delta.get("broken_gl") or 0) < 0
 		),
 	}
 	_dump(f"iter_{n:03d}.json", out)
