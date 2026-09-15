@@ -24,6 +24,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	I4_REPAIRED,
 	I4_REPLAY_REQUIRED,
 	I4_WAITING,
+	RATE_EPS,
 	RIV_SAFE_TO_RETRY,
 	RIV_UNSAFE,
 	RIV_WAITING_GL,
@@ -33,6 +34,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	SLE_POISONED_CHAIN,
 	STATUS_DEPENDENCY_REPAIR_REQUIRED,
 	STATUS_MANUAL_REVIEW,
+	STATUS_RATE_REBUILD_COMPLETE,
 	STATUS_RECONSTRUCTABLE,
 	STATUS_VALUATION_POISON_DEPENDENCY,
 	TOPIC_I4,
@@ -188,7 +190,25 @@ def attach_plan_many(rows: list | None, *, cache: dict | None = None) -> list:
 def stamp_scan_result(result: dict | None, *, cache: dict | None = None) -> dict:
 	"""Stamp Scan/Dashboard payloads so eligible never diverges from Apply."""
 	out = dict(result or {})
-	rows = attach_plan_many(out.get("rows") or [], cache=cache)
+	cache = cache if cache is not None else {}
+	raw_rows = list(out.get("rows") or [])
+	# Index before stamping so WAITING_PZ can resolve cleared / circular roots.
+	by_voucher: dict = {}
+	for r in raw_rows:
+		v = r.get("voucher") or r.get("voucher_no")
+		if v and v not in by_voucher:
+			by_voucher[v] = r
+	cache["rows_by_voucher"] = by_voucher
+	rows = attach_plan_many(raw_rows, cache=cache)
+	# Re-index stamped rows (planner_status now known) and re-stamp WAITING
+	# rows that may unlock after circular / cleared-PZ resolution.
+	by_voucher = {}
+	for r in rows:
+		v = r.get("voucher") or r.get("voucher_no")
+		if v and v not in by_voucher:
+			by_voucher[v] = r
+	cache["rows_by_voucher"] = by_voucher
+	rows = [attach_plan(r, cache=cache) for r in rows]
 	out["rows"] = rows
 	out["eligible"] = [r for r in rows if r.get("eligible")]
 	out["repairable"] = sum(
@@ -486,6 +506,25 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	amb_status = PLAN_RATE_AMBIGUOUS if is_wrong_rate else PLAN_AMBIGUOUS
 	man_status = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_MANUAL
 	wait_dep = PLAN_WAITING_RATE_DEPENDENCY if is_wrong_rate else PLAN_WAITING_RATE_REPAIR
+	# Already-valued / rebuild-complete: rate surface is healthy (amount micro-gaps stay complete).
+	if status == STATUS_RATE_REBUILD_COMPLETE or str(row.get("source") or row.get("source_of_truth") or "") == "already_valued":
+		cur = flt(row.get("current") if row.get("current") is not None else row.get("current_rate"))
+		exp = flt(row.get("expected") if row.get("expected") is not None else row.get("proposed_rate"))
+		if abs(exp) > RATE_EPS and abs(cur - exp) <= 1:
+			return _not_ready(
+				decision,
+				PLAN_RATE_REPAIR_COMPLETE,
+				"RATE_REPAIR_COMPLETE — already valued / rates match",
+				patient=patient,
+			)
+		if status == STATUS_RATE_REBUILD_COMPLETE and abs(cur) > RATE_EPS and abs(exp) <= RATE_EPS:
+			# SE basic present; treat as complete even when attach_rate_analysis shows SLE current=0.
+			return _not_ready(
+				decision,
+				PLAN_RATE_REPAIR_COMPLETE,
+				"RATE_REPAIR_COMPLETE — already valued on SE",
+				patient=patient,
+			)
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
 		return _not_ready(decision, amb_status, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
 	if status in (STATUS_MANUAL_REVIEW, Z0_LEGITIMATE_ZERO) and confidence == CONFIDENCE_MANUAL:
@@ -506,7 +545,17 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 		)
 	if status == Z0_LEGITIMATE_ZERO:
 		return _not_ready(decision, man_status, "Z0 legitimate zero — no repair")
-	if status == STATUS_DEPENDENCY_REPAIR_REQUIRED or (patient and voucher and patient != voucher):
+	# Resolve patient-zero waits that are only engine limitations.
+	if patient and voucher and patient != voucher:
+		if _rate_patient_cleared(patient, cache):
+			patient = None
+			decision["patient_zero"] = voucher
+		elif _circular_earliest_is_self(voucher, patient, cache, row):
+			patient = None
+			decision["patient_zero"] = voucher
+			decision["dependency"] = "circular_earliest_root"
+	still_waiting_pz = bool(patient and voucher and patient != voucher)
+	if still_waiting_pz:
 		return _not_ready(
 			decision,
 			PLAN_WAITING_PATIENT_ZERO,
@@ -527,21 +576,32 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	if row.get("surface") == "SLE" and not patient:
 		patient = _lookup_patient(row, cache)
 		if patient and patient != voucher:
-			return _not_ready(
-				decision,
-				PLAN_WAITING_PATIENT_ZERO,
-				f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {patient}",
-				patient=patient,
-				prerequisite=patient,
-			)
+			if _rate_patient_cleared(patient, cache):
+				patient = None
+			elif _circular_earliest_is_self(voucher, patient, cache, row):
+				patient = None
+			else:
+				return _not_ready(
+					decision,
+					PLAN_WAITING_PATIENT_ZERO,
+					f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {patient}",
+					patient=patient,
+					prerequisite=patient,
+				)
 	if confidence == CONFIDENCE_LIKELY:
 		return _not_ready(decision, man_status, "LIKELY — preview only; Repair Selected requires EXACT")
 	if row.get("confidence") != CONFIDENCE_EXACT:
 		return _not_ready(decision, man_status, f"{row.get('confidence') or 'unknown'} — Repair Selected requires EXACT")
 	if status not in (STATUS_RECONSTRUCTABLE, "") and not row.get("eligible"):
-		fallback = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_NO_REPAIR_PATH
-		return _not_ready(decision, fallback, f"Row not eligible ({status or 'unknown'})")
-	if status == STATUS_RECONSTRUCTABLE or row.get("eligible"):
+		# Cleared dependency rows may still carry DEPENDENCY_REPAIR_REQUIRED status.
+		if status == STATUS_DEPENDENCY_REPAIR_REQUIRED and patient in (None, voucher):
+			status = STATUS_RECONSTRUCTABLE
+		else:
+			fallback = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_NO_REPAIR_PATH
+			return _not_ready(decision, fallback, f"Row not eligible ({status or 'unknown'})")
+	if status == STATUS_RECONSTRUCTABLE or row.get("eligible") or (
+		status == STATUS_DEPENDENCY_REPAIR_REQUIRED and patient in (None, voucher)
+	):
 		counts = _write_counts(row, cache)
 		sql = counts["sql"]
 		if sql <= 0:
@@ -564,6 +624,54 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 		)
 	fallback = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_NO_REPAIR_PATH
 	return _not_ready(decision, fallback, f"Row not eligible ({status or 'unknown'})")
+
+
+def _rate_patient_cleared(patient: str, cache: dict) -> bool:
+	"""True when the named patient-zero no longer needs a rate repair."""
+	by_v = cache.get("rows_by_voucher") or {}
+	prow = by_v.get(patient)
+	if not prow:
+		return False
+	ps = str(prow.get("planner_status") or "")
+	status = str(prow.get("status") or "")
+	source = str(prow.get("source") or prow.get("source_of_truth") or "")
+	if ps == PLAN_RATE_REPAIR_COMPLETE or status == STATUS_RATE_REBUILD_COMPLETE:
+		return True
+	if source == "already_valued":
+		return True
+	cur = flt(prow.get("current") if prow.get("current") is not None else prow.get("current_rate"))
+	exp = flt(prow.get("expected") if prow.get("expected") is not None else prow.get("proposed_rate"))
+	if abs(exp) > RATE_EPS and abs(cur - exp) <= 1 and prow.get("confidence") == CONFIDENCE_EXACT:
+		# Rates already match — amount-only / complete surface.
+		if status == STATUS_RATE_REBUILD_COMPLETE or source == "already_valued":
+			return True
+		flags = prow.get("flags") or []
+		if flags and set(flags) <= {"WRONG_AMOUNT"}:
+			return True
+	return False
+
+
+def _row_posting_key(row: dict) -> tuple:
+	dt = row.get("posting_datetime") or row.get("posting_date") or ""
+	tm = row.get("posting_time") or ""
+	voucher = row.get("voucher") or row.get("voucher_no") or ""
+	try:
+		return (get_datetime(f"{dt} {tm}".strip() if tm else dt), voucher)
+	except Exception:
+		return (str(dt), str(tm), voucher)
+
+
+def _circular_earliest_is_self(voucher: str, patient: str, cache: dict, row: dict) -> bool:
+	"""A↔B patient-zero loops: elect the earliest posting voucher as the root."""
+	by_v = cache.get("rows_by_voucher") or {}
+	prow = by_v.get(patient)
+	if not prow:
+		return False
+	ppz = _patient_name(prow)
+	if not ppz or ppz != voucher:
+		return False
+	self_row = by_v.get(voucher) or row
+	return _row_posting_key(self_row) <= _row_posting_key(prow)
 
 
 def _evaluate_manufacture(row, decision, patient, cache) -> dict:
