@@ -356,7 +356,11 @@ def _classify_sle_mismatch(sle, cache=None) -> dict:
 
 
 def _force_include_patient_zeros(classified: list, seen: set, cache: dict, *, company=None, limit=4000) -> None:
-	"""Pull patient-zero vouchers missing from the scan so WAITING can resolve."""
+	"""Pull patient-zero vouchers missing from the scan so WAITING can resolve.
+
+	Missing roots are always appended even when ``limit`` is already reached —
+	otherwise WAITING_PATIENT_ZERO chains stay stuck forever on PZ_NOT_IN_SCAN.
+	"""
 	present = {r.get("voucher") for r in classified if r.get("voucher")}
 	missing = []
 	for row in classified:
@@ -364,8 +368,11 @@ def _force_include_patient_zeros(classified: list, seen: set, cache: dict, *, co
 		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
 		if pz_v and pz_v not in present and pz_v not in missing:
 			missing.append(pz_v)
+	# Hard cap on extra roots so a pathological graph cannot explode memory.
+	extra_budget = max(200, min(800, len(missing)))
+	added = 0
 	for pz_v in missing:
-		if len(classified) >= int(limit):
+		if added >= extra_budget:
 			break
 		raws = _scan_se_flags(company, pz_v, None, None, None, None, 50)
 		if not raws:
@@ -397,7 +404,8 @@ def _force_include_patient_zeros(classified: list, seen: set, cache: dict, *, co
 			seen.add(key)
 			classified.append(row)
 			present.add(row.get("voucher"))
-			if len(classified) >= int(limit):
+			added += 1
+			if added >= extra_budget:
 				break
 		if pz_v in present:
 			continue
@@ -409,7 +417,8 @@ def _force_include_patient_zeros(classified: list, seen: set, cache: dict, *, co
 			seen.add(key)
 			classified.append(_classify_sle_mismatch(sle, cache=cache))
 			present.add(pz_v)
-			if len(classified) >= int(limit):
+			added += 1
+			if added >= extra_budget:
 				break
 
 
