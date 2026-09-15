@@ -66,6 +66,8 @@ SCRIPTS=(
   playwright_pm_clearance_draft_pi_e2e.mjs
   playwright_pm_clearance_finance_role_queue.mjs
   playwright_pm_clearance_return_remarks_v483.mjs
+  playwright_pm_clearance_outstanding_return_v514.mjs
+  playwright_pm_clearance_return_funding_availability_v5211.mjs
   playwright_pm_request_multi_approval.mjs
   playwright_pm_request_list_permission.mjs
   playwright_pm_clearance_list_permission.mjs

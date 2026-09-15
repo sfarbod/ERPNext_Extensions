@@ -35,6 +35,29 @@ from erpnext_extensions.petty_management.utils import get_pm_holder_name
 _EPS = 1e-6
 
 
+def _skip_funding_availability_over_allocation_gate(doc: Document) -> bool:
+	"""v5.2.11 — skip ONLY allocated > live available funding headroom.
+
+	Still stamps live available / previously_allocated. Never skips company /
+	employee / holder / duplicate / required-link / zero-allocation checks.
+	Finance Approve and ordinary Draft saves remain strict.
+
+	Allowed skip paths (same class as v5.1.4 PI outstanding Return deadlock):
+	1. PM Clearance Return for Correction (``pm_return_for_correction``).
+	2. Pending remark-only save confirmed by ``only_remark_changed_while_pending``.
+	"""
+	if getattr(frappe.flags, "pm_return_for_correction", False):
+		return True
+	if getattr(frappe.flags, "in_pm_workflow_apply", False):
+		return False
+	from erpnext_extensions.petty_management.services.draft_approval_guards import (
+		is_pending_approval_workflow,
+		only_remark_changed_while_pending,
+	)
+
+	return bool(is_pending_approval_workflow(doc) and only_remark_changed_while_pending(doc))
+
+
 def get_pm_request_paid_amount(pm_request: str) -> float:
 	from erpnext_extensions.petty_management.services.funding_queries import sum_submitted_pe_amount
 
@@ -269,7 +292,10 @@ def stamp_opening_allocation_snapshot(row: Document, doc: Document, clr_petty: s
 	row.available_amount = flt(ctx.get("available_amount"))
 	if flt(row.allocated_amount) <= 0:
 		frappe.throw(_("Row {0}: Allocated Amount must be greater than zero.").format(row.idx))
-	if flt(row.allocated_amount) > flt(row.available_amount) + _EPS:
+	if (
+		not _skip_funding_availability_over_allocation_gate(doc)
+		and flt(row.allocated_amount) > flt(row.available_amount) + _EPS
+	):
 		frappe.throw(
 			_("Row {0}: allocated {1} exceeds available opening balance {2} for {3}.").format(
 				row.idx, row.allocated_amount, row.available_amount, row.pm_opening_advance
@@ -358,7 +384,10 @@ def stamp_allocation_snapshot(row: Document, doc: Document, clr_petty: str) -> N
 	row.available_amount = flt(ctx.get("available_amount"))
 	if flt(row.allocated_amount) <= 0:
 		frappe.throw(_("Row {0}: Allocated Amount must be greater than zero.").format(row.idx))
-	if flt(row.allocated_amount) > flt(row.available_amount) + _EPS:
+	if (
+		not _skip_funding_availability_over_allocation_gate(doc)
+		and flt(row.allocated_amount) > flt(row.available_amount) + _EPS
+	):
 		frappe.throw(
 			_("Row {0}: allocated {1} exceeds available PM Request balance {2} for {3}.").format(
 				row.idx, row.allocated_amount, row.available_amount, row.pm_request
