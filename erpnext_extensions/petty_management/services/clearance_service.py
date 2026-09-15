@@ -133,7 +133,15 @@ def validate_clearance_policy(doc: Document) -> None:
 
 	allow_neg = bool(settings and settings.allow_negative_balance)
 	total_avail, funded_avail, opening_avail = _policy_available_for_clearance(doc)
-	if not allow_neg and flt(doc.total_expense_amount) > total_avail + EPSILON:
+	from erpnext_extensions.petty_management.services.allocation_service import (
+		_skip_funding_availability_over_allocation_gate,
+	)
+
+	if (
+		not allow_neg
+		and not _skip_funding_availability_over_allocation_gate(doc)
+		and flt(doc.total_expense_amount) > total_avail + EPSILON
+	):
 		frappe.throw(
 			_("Clearance total {0} exceeds total available balance {1} (Funded {2} + Opening {3}).").format(
 				doc.total_expense_amount,
