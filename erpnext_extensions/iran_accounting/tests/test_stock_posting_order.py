@@ -1037,7 +1037,8 @@ class TestNegativeIntervalDetector(unittest.TestCase):
 		self.assertEqual(rows[0]["optimizer_status"], "CROSS_ITEM_CONFLICT")
 		self.assertFalse(rows[0]["eligible"])
 
-	def test_cross_date_proposal_is_midnight_review(self):
+	def test_cross_date_proposal_is_cross_time_repairable(self):
+		"""Outbound may move onto a later inbound's posting date — classic CROSS_TIME."""
 		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
 
 		out, inn = self._farvardin_pair()
@@ -1046,8 +1047,45 @@ class TestNegativeIntervalDetector(unittest.TestCase):
 		inn["posting_datetime"] = "2026-04-15 18:03:41"
 		inn["posting_date"] = "2026-04-15"
 		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(rows[0]["proposed_outbound_time"], "2026-04-15 18:03:42")
+		self.assertEqual(rows[0]["min_qty_after"], "0")
+		self.assertTrue(rows[0]["eligible"])
+
+	def test_true_end_of_inbound_day_is_midnight_review(self):
+		"""No free second remains on the inbound posting date → MIDNIGHT_REVIEW."""
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		out["posting_datetime"] = "2026-04-14 18:03:50"
+		out["posting_date"] = "2026-04-14"
+		inn["posting_datetime"] = "2026-04-15 23:59:59"
+		inn["posting_date"] = "2026-04-15"
+		rows = scan_series([out, inn], skip_same_second=True)
 		self.assertEqual(rows[0]["optimizer_status"], "MIDNIGHT_REVIEW")
 		self.assertFalse(rows[0]["eligible"])
+
+	def test_purchase_receipt_later_inbound_promoted_to_cross_time(self):
+		"""External Purchase Receipt that recovers qty is deterministic CROSS_TIME LIKELY."""
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out = self._sle("o", "OUT", -10, "2026-04-06 18:01:45", purpose="Material Issue", work_order="WO-A")
+		inn = self._sle(
+			"i",
+			"PR-1",
+			10,
+			"2026-04-06 18:05:00",
+			purpose=None,
+			work_order=None,
+			voucher_type="Purchase Receipt",
+			creation="2026-09-12 02:00:00",
+		)
+		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(rows[0]["confidence"], "LIKELY")
+		self.assertEqual(rows[0]["min_qty_after"], "0")
+		self.assertFalse(rows[0]["eligible"])  # LIKELY needs planner promote
 
 	def test_valuation_poison_blocks_classify(self):
 		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series

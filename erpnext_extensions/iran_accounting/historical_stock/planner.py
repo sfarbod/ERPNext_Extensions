@@ -407,6 +407,13 @@ def _evaluate_posting(row, decision, cache) -> dict:
 	from erpnext_extensions.iran_accounting.stock_posting_order.replay import window_poison_hit
 
 	opt = row.get("optimizer_status") or row.get("status")
+	# Healthy / already non-negative — not an actionable Posting Order defect.
+	if opt in ("NO_REPAIR_NEEDED",):
+		return _not_ready(
+			decision,
+			PLAN_NO_REPAIR_PATH,
+			"NO_REPAIR_NEEDED — running qty already non-negative; no timestamp rewrite",
+		)
 	if opt in (STATUS_MIDNIGHT, STATUS_MIDNIGHT_REVIEW):
 		return _not_ready(decision, PLAN_MANUAL, "MIDNIGHT_REVIEW — posting-date boundary requires manual review")
 	if opt in (STATUS_INSUFFICIENT_STOCK, STATUS_REAL_STOCK_SHORTAGE):

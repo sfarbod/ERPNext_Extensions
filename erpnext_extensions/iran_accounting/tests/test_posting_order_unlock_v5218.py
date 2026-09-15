@@ -74,6 +74,20 @@ class TestPostingOrderLikelyPromotion(unittest.TestCase):
 		self.assertEqual(d["planner_status"], "MANUAL")
 		self.assertFalse(d["eligible"])
 
+	def test_no_repair_needed_is_not_actionable(self):
+		row = {
+			"inbound_document": "IN-1",
+			"outbound_document": "OUT-1",
+			"optimizer_status": "NO_REPAIR_NEEDED",
+			"confidence": "AMBIGUOUS",
+			"min_qty_before": 0,
+			"min_qty_after": 0,
+			"moves": [],
+		}
+		d = evaluate_row(row)
+		self.assertEqual(d["planner_status"], "NO_REPAIR_PATH")
+		self.assertFalse(d["eligible"])
+
 
 class TestWarehouseEscalationRouting(unittest.TestCase):
 	def test_warehouse_ready_routed_from_escalation(self):
