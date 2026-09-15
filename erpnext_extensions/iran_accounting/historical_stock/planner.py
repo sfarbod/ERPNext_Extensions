@@ -600,16 +600,44 @@ def _evaluate_gl(row, decision) -> dict:
 
 
 def _evaluate_riv(row, decision) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock import (
+		RIV_DEADLOCK,
+		RIV_NEGATIVE_STOCK,
+		RIV_PERMANENTLY_UNSAFE,
+		RIV_RAW_MATERIAL_COST,
+		RIV_TIMEOUT,
+		RIV_UNKNOWN,
+		RIV_VALUATION_INTEGRITY,
+		RIV_WAITING_PATIENT_ZERO,
+		RIV_WAITING_REPLAY,
+	)
+
 	st = row.get("riv_status") or row.get("status")
-	if st == RIV_WAITING_RATE:
-		return _not_ready(decision, PLAN_WAITING_RATE_REPAIR, "WAITING_RATE_REPAIR — Failed RIV waits on zero/wrong rate repair")
-	if st == RIV_WAITING_SLE:
-		return _not_ready(decision, PLAN_WAITING_SLE_REPAIR, "WAITING_SLE_REPAIR — Failed RIV waits on SLE replay")
-	if st == RIV_WAITING_GL:
-		return _not_ready(decision, PLAN_WAITING_GL_REPAIR, "WAITING_GL_REPAIR — Failed RIV waits on GL rebuild")
-	if st == RIV_UNSAFE:
-		return _not_ready(decision, PLAN_BLOCKED, "UNSAFE — Failed RIV must not be retried")
-	if st == RIV_SAFE_TO_RETRY:
+	# Accept legacy WAITING_FOR_* strings
+	if st in (RIV_WAITING_RATE, "WAITING_FOR_RATE_REPAIR"):
+		return _not_ready(decision, PLAN_WAITING_RATE_REPAIR, "WAITING_RATE — Failed RIV waits on zero/wrong rate repair")
+	if st in (RIV_WAITING_SLE, "WAITING_FOR_SLE_REPAIR"):
+		return _not_ready(decision, PLAN_WAITING_SLE_REPAIR, "WAITING_SLE — Failed RIV waits on SLE replay")
+	if st in (RIV_WAITING_GL, "WAITING_FOR_GL_REPAIR"):
+		return _not_ready(decision, PLAN_WAITING_GL_REPAIR, "WAITING_GL — Failed RIV waits on GL rebuild")
+	if st == RIV_WAITING_PATIENT_ZERO:
+		return _not_ready(
+			decision,
+			PLAN_WAITING_PATIENT_ZERO,
+			f"WAITING_PATIENT_ZERO — repair {row.get('patient_zero') or 'upstream'} first",
+			patient=row.get("patient_zero"),
+			prerequisite=row.get("patient_zero"),
+		)
+	if st == RIV_WAITING_REPLAY:
+		return _not_ready(decision, PLAN_WAITING_SLE_REPAIR, "WAITING_REPLAY — identity replay incomplete")
+	if st in (RIV_NEGATIVE_STOCK, RIV_RAW_MATERIAL_COST, RIV_VALUATION_INTEGRITY, RIV_PERMANENTLY_UNSAFE, "UNSAFE"):
+		return _not_ready(decision, PLAN_MANUAL, f"{st} — Failed RIV must not be auto-retried")
+	if st in (RIV_UNKNOWN,):
+		return _not_ready(decision, PLAN_MANUAL, "UNKNOWN — Failed RIV needs operator review")
+	if st in (RIV_SAFE_TO_RETRY, RIV_DEADLOCK, RIV_TIMEOUT):
+		# Deadlock/Timeout only READY when classifier already promoted to SAFE_TO_RETRY
+		if st != RIV_SAFE_TO_RETRY:
+			return _not_ready(decision, PLAN_WAITING_RIV, f"{st} — not yet SAFE_TO_RETRY")
 		return _ready(decision, sql=1, reason="READY — SAFE_TO_RETRY")
 	return _not_ready(decision, PLAN_WAITING_RIV, f"{st or 'WAITING_RIV'} — Failed RIV is not READY")
 

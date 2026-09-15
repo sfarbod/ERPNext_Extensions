@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Map Failed Repost Item Valuation to upstream repair dependencies."""
+"""Map Failed Repost Item Valuation to upstream repair dependencies (Phase 2)."""
 
 from __future__ import annotations
 
@@ -10,21 +10,28 @@ from frappe.utils import cint
 
 from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_EXACT,
+	G0_HEALTHY,
+	G3_UNBALANCED,
+	G4_POISONED_SLE,
+	RIV_DEADLOCK,
+	RIV_NEGATIVE_STOCK,
+	RIV_PERMANENTLY_UNSAFE,
+	RIV_RAW_MATERIAL_COST,
 	RIV_SAFE_TO_RETRY,
-	RIV_UNSAFE,
+	RIV_TIMEOUT,
+	RIV_UNKNOWN,
+	RIV_VALUATION_INTEGRITY,
 	RIV_WAITING_GL,
+	RIV_WAITING_PATIENT_ZERO,
 	RIV_WAITING_RATE,
+	RIV_WAITING_REPLAY,
 	RIV_WAITING_SLE,
+	SLE_HEALTHY,
+	SLE_PATIENT_ZERO_REQUIRED,
+	SLE_POISONED_CHAIN,
 )
 from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import classify_stock_entry_gl
 from erpnext_extensions.iran_accounting.historical_stock.sle_bin import classify_identity
-from erpnext_extensions.iran_accounting.historical_stock import (
-	G0_HEALTHY,
-	G3_UNBALANCED,
-	SLE_HEALTHY,
-	SLE_POISONED_CHAIN,
-	SLE_PATIENT_ZERO_REQUIRED,
-)
 
 
 def scan_failed_riv(
@@ -76,9 +83,14 @@ def scan_failed_riv(
 
 
 def classify_failed_riv(doc, _cache=None) -> dict:
-	item = doc.item_code
-	warehouse = doc.warehouse
-	err = doc.error_log or ""
+	"""Classify one Failed RIV with Phase 2 dependency statuses."""
+	item = getattr(doc, "item_code", None) or (doc.get("item_code") if isinstance(doc, dict) else None)
+	warehouse = getattr(doc, "warehouse", None) or (doc.get("warehouse") if isinstance(doc, dict) else None)
+	err = getattr(doc, "error_log", None) or (doc.get("error_log") if isinstance(doc, dict) else None) or ""
+	voucher = getattr(doc, "voucher_no", None) or (doc.get("voucher_no") if isinstance(doc, dict) else None)
+	name = getattr(doc, "name", None) or (doc.get("name") if isinstance(doc, dict) else None)
+	posting_date = getattr(doc, "posting_date", None) or (doc.get("posting_date") if isinstance(doc, dict) else None)
+
 	ck = (item, warehouse)
 	if _cache is not None and ck in _cache:
 		sle_state = _cache[ck]
@@ -86,58 +98,95 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 		sle_state = classify_identity(item, warehouse) if item and warehouse else SLE_HEALTHY
 		if _cache is not None:
 			_cache[ck] = sle_state
+
 	zero_dep = _has_zero_rate_dependency(item, warehouse)
-	err_l = err
-	gl_dep = G0_HEALTHY
-	if "Debit and Credit not equal" in err_l:
-		gl_dep = G3_UNBALANCED
-	retryable = any(
-		token in err_l
-		for token in (
-			"Deadlock found",
-			"Lock wait timeout",
-			"QueryTimeout",
-			"Lost connection",
-			"Unable to acquire",
-		)
-	)
-	if sle_state in (SLE_POISONED_CHAIN, SLE_PATIENT_ZERO_REQUIRED) or zero_dep:
-		riv_status = RIV_WAITING_RATE if zero_dep else RIV_WAITING_SLE
-	elif gl_dep == G3_UNBALANCED:
-		riv_status = RIV_WAITING_GL
-	elif "I1" in err_l or "I4" in err_l or "Stock valuation integrity" in err_l:
-		riv_status = RIV_UNSAFE
-	elif "Get Raw Materials Cost from Consumption Entry" in err_l:
-		riv_status = RIV_UNSAFE
-	elif "The stock for the item" in err_l or "NegativeStock" in err_l:
+	wrong_dep = _has_wrong_rate_dependency(item, warehouse)
+	err_l = err or ""
+	gl_class = G0_HEALTHY
+	if voucher:
+		try:
+			gl_class = classify_stock_entry_gl(voucher).get("gl_class") or G0_HEALTHY
+		except Exception:
+			gl_class = G0_HEALTHY
+
+	deadlock = "Deadlock found" in err_l
+	timeout = any(t in err_l for t in ("Lock wait timeout", "QueryTimeout", "Lost connection", "Unable to acquire"))
+	negative = "The stock for the item" in err_l or "NegativeStock" in err_l or "negative stock" in err_l.lower()
+	raw_mat = "Get Raw Materials Cost from Consumption Entry" in err_l
+	valuation = "I1" in err_l or "I4" in err_l or "Stock valuation integrity" in err_l
+
+	patient_zero = None
+	if sle_state == SLE_PATIENT_ZERO_REQUIRED:
+		patient_zero = _lookup_patient_zero(item, warehouse)
+
+	# Priority: permanent/unsafe classes → waiting upstream → transient retry
+	if valuation:
+		riv_status = RIV_VALUATION_INTEGRITY
+	elif raw_mat:
+		riv_status = RIV_RAW_MATERIAL_COST
+	elif negative:
+		riv_status = RIV_NEGATIVE_STOCK
+	elif sle_state == SLE_PATIENT_ZERO_REQUIRED or (patient_zero and patient_zero != voucher):
+		riv_status = RIV_WAITING_PATIENT_ZERO
+	elif zero_dep or wrong_dep:
+		riv_status = RIV_WAITING_RATE
+	elif sle_state in (SLE_POISONED_CHAIN,):
 		riv_status = RIV_WAITING_SLE
-	elif retryable and sle_state == SLE_HEALTHY and not zero_dep:
-		riv_status = RIV_SAFE_TO_RETRY
+	elif gl_class in (G3_UNBALANCED, G4_POISONED_SLE):
+		riv_status = RIV_WAITING_GL
+	elif sle_state != SLE_HEALTHY:
+		riv_status = RIV_WAITING_REPLAY
+	elif deadlock:
+		riv_status = RIV_DEADLOCK  # still retryable when chain healthy
+	elif timeout:
+		riv_status = RIV_TIMEOUT
+	elif sle_state == SLE_HEALTHY and not zero_dep and not wrong_dep and gl_class == G0_HEALTHY:
+		# Transient or unknown after healthy chain → SAFE only for deadlock/timeout/empty
+		if deadlock or timeout or not err_l.strip():
+			riv_status = RIV_SAFE_TO_RETRY
+		elif any(t in err_l for t in ("Deadlock", "Lock wait", "QueryTimeout", "Lost connection", "Unable to acquire")):
+			riv_status = RIV_SAFE_TO_RETRY
+		else:
+			# Healthy chain but unexplained failure — UNKNOWN (not auto-retry)
+			riv_status = RIV_UNKNOWN
 	else:
-		riv_status = RIV_UNSAFE
+		riv_status = RIV_PERMANENTLY_UNSAFE
+
+	# Deadlock/Timeout on healthy chain are SAFE_TO_RETRY
+	if riv_status in (RIV_DEADLOCK, RIV_TIMEOUT) and sle_state == SLE_HEALTHY and not zero_dep and not wrong_dep:
+		riv_status = RIV_SAFE_TO_RETRY
+
+	eligible = riv_status == RIV_SAFE_TO_RETRY
 	return {
 		"topic": "FAILED_RIV",
-		"riv_name": doc.name,
+		"riv_name": name,
 		"item": item,
 		"warehouse": warehouse,
-		"voucher": doc.voucher_no,
-		"posting_date": str(doc.posting_date) if doc.posting_date else None,
-		"error_head": err[:240],
+		"voucher": voucher,
+		"posting_date": str(posting_date) if posting_date else None,
+		"error_head": (err_l or "")[:240],
 		"sle_state": sle_state,
+		"gl_class": gl_class,
 		"zero_rate_dependency": zero_dep,
+		"wrong_rate_dependency": wrong_dep,
+		"patient_zero": patient_zero,
+		"rate_status": RIV_WAITING_RATE if (zero_dep or wrong_dep) else "HEALTHY",
+		"sle_status": sle_state,
+		"gl_status": gl_class,
+		"replay_status": RIV_WAITING_REPLAY if sle_state not in (SLE_HEALTHY,) else "COMPLETE",
 		"riv_status": riv_status,
 		"status": riv_status,
-		"eligible": riv_status == RIV_SAFE_TO_RETRY,
-		"confidence": CONFIDENCE_EXACT if riv_status == RIV_SAFE_TO_RETRY else "LIKELY",
+		"eligible": eligible,
+		"confidence": CONFIDENCE_EXACT if eligible else "LIKELY",
 	}
 
 
 def retry_failed_riv(riv_name: str, *, dry_run=True) -> dict:
 	preview = classify_failed_riv(frappe.get_doc("Repost Item Valuation", riv_name))
-	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan, READY_STATUSES
 
 	planned = attach_plan(preview)
-	if planned["planner_status"] != "READY":
+	if planned["planner_status"] not in READY_STATUSES and planned["planner_status"] != "READY":
 		return {**planned, "dry_run": dry_run, "written": False, "blocked": True}
 	if dry_run:
 		return {**planned, "dry_run": True, "written": False}
@@ -148,7 +197,9 @@ def retry_failed_riv(riv_name: str, *, dry_run=True) -> dict:
 		doc.restart_reposting()
 	else:
 		doc.db_set("status", "Queued")
-	return {**preview, "written": True, "status": "QUEUED"}
+	frappe.db.commit()
+	after = classify_failed_riv(frappe.get_doc("Repost Item Valuation", riv_name))
+	return {**preview, "written": True, "status": "QUEUED", "after_status": after.get("riv_status"), "after_docstatus": after}
 
 
 def _has_zero_rate_dependency(item, warehouse) -> bool:
@@ -167,6 +218,39 @@ def _has_zero_rate_dependency(item, warehouse) -> bool:
 		(item, warehouse, warehouse),
 	)[0][0]
 	return n > 0
+
+
+def _has_wrong_rate_dependency(item, warehouse) -> bool:
+	"""True when SLE txn rate is zero while SVD implies a nonzero rate (Wrong Rate EXACT)."""
+	if not item or not warehouse:
+		return False
+	n = frappe.db.sql(
+		"""
+		SELECT COUNT(*) FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND ABS(IFNULL(stock_value_difference,0)) > 0.5
+		  AND ABS(IFNULL(actual_qty,0)) > 0.0001
+		  AND (
+		    (actual_qty < 0 AND ABS(IFNULL(outgoing_rate,0)) < 0.0001)
+		    OR (actual_qty > 0 AND ABS(IFNULL(incoming_rate,0)) < 0.0001)
+		  )
+		LIMIT 1
+		""",
+		(item, warehouse),
+	)[0][0]
+	return n > 0
+
+
+def _lookup_patient_zero(item, warehouse):
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.patient_zero import find_patient_zero
+
+		pz = find_patient_zero(item, warehouse)
+		if isinstance(pz, dict):
+			return pz.get("voucher_no") or pz.get("voucher")
+		return pz
+	except Exception:
+		return None
 
 
 def _count(rows, key):
