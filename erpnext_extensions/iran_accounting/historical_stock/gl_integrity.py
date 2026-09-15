@@ -25,7 +25,7 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 	se = frappe.db.get_value(
 		"Stock Entry",
 		voucher_no,
-		["name", "docstatus", "company", "posting_date", "total_outgoing_value", "total_incoming_value"],
+		["name", "docstatus", "company", "posting_date", "purpose", "total_outgoing_value", "total_incoming_value"],
 		as_dict=True,
 	)
 	if not se:
@@ -42,17 +42,32 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 	)
 	debit = sum(flt(r.debit) for r in gl)
 	credit = sum(flt(r.credit) for r in gl)
-	expected = max(flt(se.total_outgoing_value), flt(se.total_incoming_value))
+	se_header = max(flt(se.total_outgoing_value), flt(se.total_incoming_value))
 	gl_inventory = max(debit, credit)
 	poisoned = _voucher_has_poison_sle(voucher_no)
+	purpose = str(se.purpose or "")
+	# Material Transfer GL is the net account movement, not SE header totals.
+	transferish = purpose in (
+		"Material Transfer",
+		"Material Transfer for Manufacture",
+		"Send to Subcontractor",
+	)
+	if transferish:
+		expected = gl_inventory  # balanced transfer with matching GL → not G1 vs SE header
+	else:
+		expected = se_header
 	if se.docstatus == 1 and not gl:
 		klass = G2_MISSING
 	elif abs(debit - credit) > VALUE_EPS:
 		klass = G3_UNBALANCED
 	elif poisoned:
 		klass = G4_POISONED_SLE
-	elif abs(gl_inventory - expected) > VALUE_EPS and expected > VALUE_EPS:
-		klass = G1_ECONOMICALLY_WRONG
+	elif (not transferish) and abs(gl_inventory - expected) > VALUE_EPS and expected > VALUE_EPS:
+		rel = abs(gl_inventory - expected) / max(expected, 1.0)
+		if rel <= 1e-6 or abs(gl_inventory - expected) <= 1000:
+			klass = G0_HEALTHY
+		else:
+			klass = G1_ECONOMICALLY_WRONG
 	else:
 		klass = G0_HEALTHY
 
