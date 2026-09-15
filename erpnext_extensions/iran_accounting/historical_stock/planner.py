@@ -594,9 +594,33 @@ def _evaluate_gl(row, decision) -> dict:
 			f"WAITING_SLE_REPAIR — GL rebuild blocked until SLE is healthy ({voucher})",
 			prerequisite=voucher,
 		)
+	if klass == G2_MISSING and voucher:
+		# Material Transfer / empty GL map cannot be auto-rebuilt — MANUAL
+		if not _gl_expected_map_nonempty(voucher):
+			return _not_ready(
+				decision,
+				PLAN_MANUAL,
+				"MANUAL — G2_MISSING but Stock Entry produced empty expected GL map",
+			)
 	if klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED):
 		return _ready(decision, sql=max(_gl_row_count(voucher), 1), rebuild=1, reason=f"READY — rebuild {klass}")
 	return _not_ready(decision, PLAN_BLOCKED, f"GL class {klass} is not repairable")
+
+
+def _gl_expected_map_nonempty(voucher) -> bool:
+	if not voucher:
+		return False
+	try:
+		import frappe
+		from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+
+		if not frappe.db.exists("Stock Entry", voucher):
+			return False
+		se = frappe.get_doc("Stock Entry", voucher)
+		expected = toggle_debit_credit_if_negative(se.get_gl_entries(se.get_inventory_account_map()))
+		return bool(expected)
+	except Exception:
+		return False
 
 
 def _evaluate_riv(row, decision) -> dict:
