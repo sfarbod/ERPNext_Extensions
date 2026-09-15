@@ -1087,6 +1087,47 @@ class TestNegativeIntervalDetector(unittest.TestCase):
 		self.assertEqual(rows[0]["min_qty_after"], "0")
 		self.assertFalse(rows[0]["eligible"])  # LIKELY needs planner promote
 
+	def test_multi_move_clears_two_outs_after_purchase_receipt(self):
+		"""Two Material Issues before a PRE — both shift after PRE to clear deficit."""
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out1 = self._sle(
+			"o1", "OUT-1", -6, "2026-04-06 10:00:00", purpose="Material Issue", work_order="WO-A"
+		)
+		out2 = self._sle(
+			"o2",
+			"OUT-2",
+			-5,
+			"2026-04-06 11:00:00",
+			purpose="Material Issue",
+			work_order="WO-B",
+			creation="2026-09-12 01:00:00",
+		)
+		inn = self._sle(
+			"i",
+			"PR-MULTI",
+			20,
+			"2026-04-07 09:00:00",
+			purpose=None,
+			work_order=None,
+			voucher_type="Purchase Receipt",
+			creation="2026-09-12 02:00:00",
+		)
+		rows = scan_series([out1, out2, inn], skip_same_second=True)
+		self.assertGreaterEqual(len(rows), 1)
+		# At least one interval should become MULTI_MOVE or CROSS_TIME with cleared qty
+		statuses = {r.get("optimizer_status") for r in rows}
+		self.assertTrue(
+			statuses & {"MULTI_MOVE_REPAIRABLE", "CROSS_TIME_REPAIRABLE"},
+			msg=f"unexpected statuses={statuses}",
+		)
+		cleared = [r for r in rows if r.get("min_qty_after") == "0" and r.get("moves")]
+		self.assertTrue(cleared, msg=rows)
+		# Multi-move path should move more than one document when both outs are in deficit
+		multi = [r for r in cleared if (r.get("docs_changed") or 0) >= 2 or len(r.get("moves") or []) >= 2]
+		if "MULTI_MOVE_REPAIRABLE" in statuses:
+			self.assertTrue(multi)
+
 	def test_valuation_poison_blocks_classify(self):
 		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
 

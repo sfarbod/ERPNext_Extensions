@@ -440,6 +440,7 @@ def _evaluate_posting(row, decision, cache) -> dict:
 		"CROSS_TIME_REPAIRABLE",
 		"REPAIRABLE_SECONDS",
 		"SAME_TIME_REPAIRABLE",
+		"MULTI_MOVE_REPAIRABLE",
 	)
 	promote_likely = bool(row.get("confidence") == CONFIDENCE_LIKELY and opt_repairable and sim_cleared)
 

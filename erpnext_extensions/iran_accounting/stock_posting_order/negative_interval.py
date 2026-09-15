@@ -370,6 +370,22 @@ def classify_interval(
 					"current": proposal["current"],
 					"proposed": proposal["proposed"],
 				}
+			# Single-move failed — try shifting every deficit outbound after the inbound.
+			from erpnext_extensions.iran_accounting.stock_posting_order.multi_move import (
+				try_external_multi_move,
+			)
+
+			multi = try_external_multi_move(
+				interval,
+				series=series,
+				confidence=confidence,
+				reason=reason,
+				by_voucher_all=by_voucher_all,
+				by_identity=by_identity,
+				base=base,
+			)
+			if multi is not None:
+				return multi
 			# Do not mask a failed quantity proposal as "unrelated" — surface the
 			# real optimizer blocker (usually REAL_STOCK_SHORTAGE needing multi-move).
 			fail_status = proposal.get("status") or "LATER_INBOUND_UNRELATED"
@@ -402,6 +418,21 @@ def classify_interval(
 
 	proposal = propose_outbound_after_inbound(interval, series)
 	if not proposal.get("ok"):
+		from erpnext_extensions.iran_accounting.stock_posting_order.multi_move import (
+			try_external_multi_move,
+		)
+
+		multi = try_external_multi_move(
+			interval,
+			series=series,
+			confidence=confidence,
+			reason=reason,
+			by_voucher_all=by_voucher_all,
+			by_identity=by_identity,
+			base=base,
+		)
+		if multi is not None:
+			return multi
 		status = proposal.get("status") or STATUS_REAL_STOCK_SHORTAGE
 		return {
 			**base,
@@ -461,7 +492,11 @@ def interval_to_scan_row(interval: dict, classified: dict) -> dict:
 	out_dt = _dt(outbound)
 	in_dt = _dt(inbound) if inbound is not None else None
 	ui_status = classified.get("status")
-	if classified.get("eligible") and ui_status in ("CROSS_TIME_REPAIRABLE", "SAME_TIME_REPAIRABLE"):
+	if classified.get("eligible") and ui_status in (
+		"CROSS_TIME_REPAIRABLE",
+		"SAME_TIME_REPAIRABLE",
+		"MULTI_MOVE_REPAIRABLE",
+	):
 		ui_status = "ELIGIBLE"
 	payload = {
 		"topic": "POSTING_ORDER",
