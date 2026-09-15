@@ -101,6 +101,19 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 		# For implied_svd: success if outgoing/incoming now equals implied
 		if classified.get("expected_source") == "implied_svd":
 			cleared = abs(after_rate - expected) <= 1.0
+		if cleared and not _svd_residual_ok(classified, expected):
+			# One more SVD restore then re-check
+			_write_sle_expected(classified, expected)
+			if not _svd_residual_ok(classified, expected):
+				frappe.db.rollback(save_point=sp)
+				return {
+					"ok": False,
+					"aborted": True,
+					"dry_run": False,
+					"reason": "svd_residual_not_cleared",
+					"expected": expected,
+					"after_rate": after_rate,
+				}
 
 		if not cleared:
 			frappe.db.rollback(save_point=sp)
@@ -146,27 +159,60 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 
 
 def _write_sle_expected(row: dict, expected: float) -> None:
+	"""Write txn rate and preserve/restore SVD from expected when replay zeros it."""
 	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
 		sync_sabb_from_sle,
 		write_sle_transaction_rates,
 	)
 
-	# Primary: derive from SVD (idempotent with implied_svd)
+	# Primary: derive from SVD (idempotent with implied_svd) when SVD still healthy
 	write_sle_transaction_rates(row.get("voucher"), row.get("item"))
-	# Ensure rate matches expected when SVD implies it
 	sle_name = row.get("sle")
 	if sle_name:
-		qty = flt(frappe.db.get_value("Stock Ledger Entry", sle_name, "actual_qty") or 0)
-		payload = {}
-		if qty < 0:
-			payload["outgoing_rate"] = abs(expected)
-			payload["incoming_rate"] = 0
-		elif qty > 0:
-			payload["incoming_rate"] = abs(expected)
-			payload["outgoing_rate"] = 0
-		if payload:
-			frappe.db.set_value("Stock Ledger Entry", sle_name, payload, update_modified=False)
+		sle = frappe.db.get_value(
+			"Stock Ledger Entry",
+			sle_name,
+			["actual_qty", "stock_value_difference", "incoming_rate", "outgoing_rate"],
+			as_dict=True,
+		)
+		if sle:
+			qty = flt(sle.actual_qty)
+			payload = {}
+			if qty < 0:
+				payload["outgoing_rate"] = abs(expected)
+				payload["incoming_rate"] = 0
+				# Restore SVD when missing/zeroed by MA replay (implied_svd authority)
+				expected_svd = -abs(expected) * abs(qty)
+				if abs(flt(sle.stock_value_difference) - expected_svd) > 0.5:
+					payload["stock_value_difference"] = expected_svd
+			elif qty > 0:
+				payload["incoming_rate"] = abs(expected)
+				payload["outgoing_rate"] = 0
+				expected_svd = abs(expected) * abs(qty)
+				if abs(flt(sle.stock_value_difference) - expected_svd) > 0.5:
+					payload["stock_value_difference"] = expected_svd
+			if payload:
+				frappe.db.set_value("Stock Ledger Entry", sle_name, payload, update_modified=False)
 	sync_sabb_from_sle(row.get("voucher"), row.get("item"))
+
+
+def _svd_residual_ok(row: dict, expected: float) -> bool:
+	sle_name = row.get("sle")
+	if not sle_name:
+		return True
+	sle = frappe.db.get_value(
+		"Stock Ledger Entry",
+		sle_name,
+		["actual_qty", "stock_value_difference"],
+		as_dict=True,
+	)
+	if not sle:
+		return True
+	qty = flt(sle.actual_qty)
+	if abs(qty) <= 0.0001:
+		return True
+	want = (-1 if qty < 0 else 1) * abs(expected) * abs(qty)
+	return abs(flt(sle.stock_value_difference) - want) <= 1.0
 
 
 def _read_current_rate(row: dict) -> float:
