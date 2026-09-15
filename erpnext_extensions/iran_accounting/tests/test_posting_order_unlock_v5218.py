@@ -103,39 +103,44 @@ class TestExternalInboundPreviewFresh(unittest.TestCase):
 
 	def test_assert_preview_fresh_accepts_purchase_receipt(self):
 		from erpnext_extensions.iran_accounting.stock_posting_order.repair import _assert_preview_fresh
+		from datetime import datetime
 
 		row = {
 			"inbound_document": "MAT-PRE-1",
 			"outbound_document": "MAT-STE-OUT",
-			"inbound_modified": "2026-01-01 00:00:00.000000",
-			"outbound_modified": "2026-01-01 00:00:01.000000",
+			"item": "ITEM",
+			"warehouse": "WH",
+			"current_inbound_time": "2026-01-02 10:00:00",
+			"current_outbound_time": "2026-01-01 09:00:00",
+			"inbound_modified": "ignored",
+			"outbound_modified": "ignored",
 		}
 
 		def fake_get_value(doctype, name=None, fieldname=None, **kwargs):
-			# frappe.db.get_value(doctype, filters, fieldname)
-			field = fieldname
 			filters = name
-			if doctype == "Stock Ledger Entry" and isinstance(filters, dict):
-				vn = filters.get("voucher_no")
-				if field == "voucher_type":
-					return "Purchase Receipt" if vn == "MAT-PRE-1" else "Stock Entry"
-				if field == "modified":
-					return row["inbound_modified"]
-			if doctype == "Purchase Receipt" and filters == "MAT-PRE-1":
-				if field == "modified":
-					return row["inbound_modified"]
-				if field == "docstatus":
-					return 1
-			if doctype == "Stock Entry" and filters == "MAT-STE-OUT":
-				if field == "modified":
-					return row["outbound_modified"]
-				if field == "docstatus":
-					return 1
+			field = fieldname
+			if doctype == "Stock Ledger Entry" and isinstance(filters, dict) and field == "voucher_type":
+				return "Purchase Receipt" if filters.get("voucher_no") == "MAT-PRE-1" else "Stock Entry"
+			if doctype == "Purchase Receipt" and filters == "MAT-PRE-1" and field == "docstatus":
+				return 1
+			if doctype == "Stock Entry" and filters == "MAT-STE-OUT" and field == "docstatus":
+				return 1
 			return None
+
+		def fake_sql(query, args=None, pluck=False, **kwargs):
+			vn = args[0] if args else None
+			if vn == "MAT-PRE-1":
+				return [datetime(2026, 1, 2, 10, 0, 0)]
+			if vn == "MAT-STE-OUT":
+				return [datetime(2026, 1, 1, 9, 0, 0)]
+			return []
 
 		with patch(
 			"erpnext_extensions.iran_accounting.stock_posting_order.repair.frappe.db.get_value",
 			side_effect=fake_get_value,
+		), patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair.frappe.db.sql",
+			side_effect=fake_sql,
 		):
 			_assert_preview_fresh(row)
 

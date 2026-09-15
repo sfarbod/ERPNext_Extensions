@@ -146,28 +146,53 @@ def _assert_preview_fresh(row: dict) -> None:
 			f"Outbound must be Stock Entry (got {out_dt}: {row.get('outbound_document')})",
 			title=STATUS_BLOCKED,
 		)
-	in_mod = str(frappe.db.get_value(in_dt, row["inbound_document"], "modified") or "")
-	out_mod = str(frappe.db.get_value(out_dt, row["outbound_document"], "modified") or "")
-	# External inbounds may only expose SLE.modified in the scan row — accept either doc or SLE stamp.
-	in_ok = in_mod == str(row.get("inbound_modified") or "")
-	if not in_ok and in_dt != "Stock Entry":
-		sle_mod = frappe.db.get_value(
-			"Stock Ledger Entry",
-			{"voucher_no": row["inbound_document"], "is_cancelled": 0},
-			"modified",
-			order_by="creation asc",
-		)
-		in_ok = str(sle_mod or "") == str(row.get("inbound_modified") or "")
-	if not in_ok or out_mod != str(row.get("outbound_modified") or ""):
-		frappe.throw(
-			"Document changed since preview; aborting posting-order repair.",
-			title="Stale preview",
-		)
 	in_ds = cint(frappe.db.get_value(in_dt, row["inbound_document"], "docstatus"))
 	out_ds = cint(frappe.db.get_value(out_dt, row["outbound_document"], "docstatus"))
 	if in_ds != 1 or out_ds != 1:
 		status = "CANCELLED" if 2 in (in_ds, out_ds) else STATUS_DRAFT
 		frappe.throw(f"Repair blocked ({status}): documents must be submitted.", title=status)
+
+	# Semantic freshness: posting datetimes must still match the scan preview.
+	# Modified-stamp compares are unreliable across multi-SLE vouchers / PRE parents.
+	def _live_posting(voucher_no: str, *, prefer_qty_sign: int | None = None):
+		conds = ["voucher_no=%s", "is_cancelled=0"]
+		args = [voucher_no]
+		if row.get("item"):
+			conds.append("item_code=%s")
+			args.append(row["item"])
+		if row.get("warehouse"):
+			conds.append("warehouse=%s")
+			args.append(row["warehouse"])
+		if prefer_qty_sign is not None:
+			conds.append("actual_qty > 0" if prefer_qty_sign > 0 else "actual_qty < 0")
+		rows = frappe.db.sql(
+			f"""
+			SELECT posting_datetime FROM `tabStock Ledger Entry`
+			WHERE {" AND ".join(conds)}
+			ORDER BY posting_datetime ASC
+			LIMIT 1
+			""",
+			tuple(args),
+			pluck=True,
+		)
+		return get_datetime(rows[0]) if rows else None
+
+	cur_in = row.get("current_inbound_time")
+	cur_out = row.get("current_outbound_time")
+	if cur_in:
+		live_in = _live_posting(row["inbound_document"], prefer_qty_sign=1)
+		if live_in and str(live_in)[:19] != str(cur_in)[:19]:
+			frappe.throw(
+				"Document changed since preview; aborting posting-order repair.",
+				title="Stale preview",
+			)
+	if cur_out:
+		live_out = _live_posting(row["outbound_document"], prefer_qty_sign=-1)
+		if live_out and str(live_out)[:19] != str(cur_out)[:19]:
+			frappe.throw(
+				"Document changed since preview; aborting posting-order repair.",
+				title="Stale preview",
+			)
 
 
 def _row_moves(row: dict) -> list[dict]:
