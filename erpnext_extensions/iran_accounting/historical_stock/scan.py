@@ -35,24 +35,50 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	sle = _mark("sle_bin", lambda: scan_sle_bin(company=company, limit=2000))
 	gl = _mark("gl", lambda: scan_gl_integrity(company=company, limit=500))
 	riv = _mark("failed_riv", lambda: scan_failed_riv(limit=2000))
+	# I4 scan aligns READY_I4 / Repairable / Patient Zero with the I4 topic scanner.
+	from frappe.utils import nowdate
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import scan_i4_leftover
+
+	i4 = _mark(
+		"i4",
+		lambda: scan_i4_leftover(company=company, from_date="2026-03-21", to_date=str(nowdate()), limit=5000),
+	)
 	end = datetime.now()
 	exact = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "EXACT")
 	likely = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "LIKELY")
 	ambiguous = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "AMBIGUOUS")
+	# Patient Zero = UNIQUE patient-zero vouchers across Zero Rate + I4 + Wrong Rate.
 	patients = {}
-	for r in zero.get("rows") or []:
-		pz = r.get("patient_zero") or {}
-		key = pz.get("voucher_no")
+	patients_by_topic = {"ZERO_RATE": set(), "I4": set(), "WRONG_RATE": set()}
+
+	def _add_pz(topic, row):
+		pz = row.get("patient_zero") or {}
+		key = pz.get("voucher_no") if isinstance(pz, dict) else None
+		if not key and topic == "I4" and row.get("i4_status") in ("READY_I4", "WAITING_I4", "MANUAL", "I4_REPLAY_REQUIRED"):
+			key = row.get("voucher")
 		if key:
 			patients[key] = patients.get(key, 0) + 1
+			patients_by_topic[topic].add(key)
+
+	for r in zero.get("rows") or []:
+		_add_pz("ZERO_RATE", r)
+	for r in i4.get("rows") or []:
+		_add_pz("I4", r)
+	for r in wrong.get("rows") or []:
+		_add_pz("WRONG_RATE", r)
+
 	replay = _replay_kpis()
 	zero_n = zero.get("count") or 0
 	wrong_n = wrong.get("count") or 0
 	posting_n = len(posting.get("rows") or [])
 	gl_n = gl.get("count") or 0
-	bin_n = len(sle.get("bin_mismatches") or [])
+	bin_rows = sle.get("bin_mismatches") or []
+	bin_waiting = sum(1 for b in bin_rows if b.get("status") == "WAITING_DOWNSTREAM_REPAIR")
+	bin_n = len(bin_rows) - bin_waiting
 	riv_n = riv.get("count") or 0
 	sabb_n = _broken_sabb()
+	# Prefer classified I4 scan count; fall back to SQL if scan empty.
+	i4_n = int(i4.get("count") or 0) or _i4_leftover()
 
 	def _ready_n(result):
 		return sum(
@@ -61,6 +87,9 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 			if r.get("planner_status") == "READY" and (r.get("sql_updates") or 0) > 0
 		)
 
+	ready_i4 = sum(
+		1 for r in (i4.get("rows") or []) if r.get("eligible") or r.get("i4_status") == "READY_I4"
+	)
 	repairable = (
 		_ready_n(posting)
 		+ _ready_n(zero)
@@ -69,11 +98,24 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ _ready_n(sle)
 		+ _ready_n(gl)
 		+ _ready_n(riv)
+		+ ready_i4
 	)
-	penalty = posting_n * 0.25 + zero_n * 0.5 + wrong_n + sabb_n + bin_n + gl_n * 1.5 + riv_n * 1.5
+	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
+	penalty = (
+		posting_n * 0.25
+		+ zero_n * 0.5
+		+ wrong_n
+		+ sabb_n
+		+ bin_n * 1.0
+		+ bin_waiting * 0.15
+		+ gl_n * 1.5
+		+ riv_n * 1.5
+		+ i4_n * 0.75
+	)
 	from math import log10
 
 	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
+	i4_by = i4.get("by_status") or {}
 	dashboard = {
 		"Integrity Score": integrity_score,
 		"Posting Order": posting_n,
@@ -84,11 +126,18 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
 		"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
 		"Wrong Average": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+		"I4 Leftover": i4_n,
 		"Broken SABB": sabb_n,
 		"Broken Bin": bin_n,
+		"Waiting Downstream Bin": bin_waiting,
 		"Broken GL": gl_n,
 		"Failed RIV": riv_n,
 		"Patient Zero": len(patients),
+		"Zero Rate Patient Zero": len(patients_by_topic["ZERO_RATE"]),
+		"READY_I4": ready_i4,
+		"WAITING_I4": int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0),
+		"MANUAL_I4": int(i4_by.get("MANUAL") or 0),
+		"REPLAY_REQUIRED_I4": int(i4_by.get("I4_REPLAY_REQUIRED") or 0),
 		"Repairable": repairable,
 		"Manual": (wrong.get("manual") or 0) + likely,
 		"Ambiguous": (wrong.get("ambiguous") or 0) + ambiguous,
@@ -131,8 +180,10 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		},
 		"gl": {"count": gl.get("count"), "by_class": gl.get("by_class")},
 		"failed_riv": {"count": riv.get("count"), "by_status": riv.get("by_status")},
+		"i4": {"count": i4.get("count"), "by_status": i4_by, "ready": ready_i4},
 		"patient_zero_vouchers": patients,
 		"patient_zero_count": len(patients),
+		"patient_zero_by_topic": {k: len(v) for k, v in patients_by_topic.items()},
 		"dashboard": dashboard,
 	}
 
@@ -155,6 +206,28 @@ def _broken_sabb() -> int:
 					        - IFNULL(IF(sle.actual_qty<0, sle.outgoing_rate, sle.incoming_rate),0)
 					      ) > 1
 					LIMIT 500
+				) t
+				"""
+			)[0][0]
+			or 0
+		)
+	except Exception:
+		return 0
+
+
+def _i4_leftover() -> int:
+	import frappe
+
+	try:
+		return int(
+			frappe.db.sql(
+				"""
+				SELECT COUNT(*) FROM (
+					SELECT name FROM `tabStock Ledger Entry`
+					WHERE is_cancelled=0
+					  AND ABS(qty_after_transaction) < 0.0001
+					  AND ABS(IFNULL(stock_value,0)) > 1
+					LIMIT 5000
 				) t
 				"""
 			)[0][0]

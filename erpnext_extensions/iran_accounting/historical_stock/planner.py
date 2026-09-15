@@ -19,6 +19,11 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	G2_MISSING,
 	G3_UNBALANCED,
 	G4_POISONED_SLE,
+	I4_LEFTOVER_REPAIR,
+	I4_READY,
+	I4_REPAIRED,
+	I4_REPLAY_REQUIRED,
+	I4_WAITING,
 	RIV_SAFE_TO_RETRY,
 	RIV_UNSAFE,
 	RIV_WAITING_GL,
@@ -30,6 +35,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	STATUS_MANUAL_REVIEW,
 	STATUS_RECONSTRUCTABLE,
 	STATUS_VALUATION_POISON_DEPENDENCY,
+	TOPIC_I4,
 	Z0_LEGITIMATE_ZERO,
 )
 
@@ -49,6 +55,10 @@ PLAN_READY_WO = "READY_WORK_ORDER_REPAIR"
 PLAN_READY_IDENTITY = "READY_IDENTITY_REPAIR"
 PLAN_WAREHOUSE_ESCALATION = "WAREHOUSE_ESCALATION_REQUIRED"
 PLAN_INVALID_GRAPH = "INVALID_DEPENDENCY_GRAPH"
+PLAN_READY_I4 = I4_READY
+PLAN_WAITING_I4 = I4_WAITING
+PLAN_I4_REPLAY_REQUIRED = I4_REPLAY_REQUIRED
+PLAN_I4_REPAIRED = I4_REPAIRED
 
 PLAN_STATUSES = (
 	PLAN_READY,
@@ -67,6 +77,10 @@ PLAN_STATUSES = (
 	PLAN_READY_IDENTITY,
 	PLAN_WAREHOUSE_ESCALATION,
 	PLAN_INVALID_GRAPH,
+	PLAN_READY_I4,
+	PLAN_WAITING_I4,
+	PLAN_I4_REPLAY_REQUIRED,
+	PLAN_I4_REPAIRED,
 )
 
 READY_STATUSES = (
@@ -75,6 +89,7 @@ READY_STATUSES = (
 	PLAN_READY_BATCH_SCOPED,
 	PLAN_READY_WO,
 	PLAN_READY_IDENTITY,
+	PLAN_READY_I4,
 )
 
 DATABASE_BACKUP_REQUIRED = "DATABASE BACKUP REQUIRED"
@@ -115,6 +130,8 @@ def evaluate_row(row: dict | None, *, cache: dict | None = None) -> dict:
 		return _evaluate_riv(row, decision)
 	if topic in ("GL",) or (row.get("gl_class") and not row.get("inbound_document")):
 		return _evaluate_gl(row, decision)
+	if topic in (TOPIC_I4, "I4_LEFTOVER") or row.get("repair_class") == I4_LEFTOVER_REPAIR:
+		return _evaluate_i4(row, decision, patient)
 	if topic == "SLE_BIN":
 		return _evaluate_sle_bin(row, decision, patient)
 	if topic in ("MANUFACTURE",):
@@ -568,10 +585,21 @@ def _evaluate_riv(row, decision) -> dict:
 
 
 def _evaluate_sle_bin(row, decision, patient) -> dict:
+	# I4 leftover on SLE/Bin tab routes to the I4 planner (not Wrong Rate).
+	reason = str(row.get("reason") or "")
+	poison = reason
+	if "qty_after_zero_nonzero_value" in reason or row.get("repair_class") == I4_LEFTOVER_REPAIR:
+		return _evaluate_i4(row, decision, patient)
 	st = str(row.get("status") or "")
 	if st == SLE_POISONED_CHAIN:
 		return _not_ready(decision, PLAN_BLOCKED, "POISONED_CHAIN — SLE identity is not replay-safe")
-	if st == SLE_PATIENT_ZERO_REQUIRED or patient:
+	voucher = row.get("voucher") or row.get("voucher_no")
+	if patient and voucher and str(patient) == str(voucher) and poison in (
+		"qty_after_zero_nonzero_value",
+		"qty_zero_nonzero_value",
+	):
+		return _evaluate_i4(row, decision, patient)
+	if st == SLE_PATIENT_ZERO_REQUIRED or (patient and str(patient) != str(voucher or "")):
 		return _not_ready(
 			decision,
 			PLAN_WAITING_PATIENT_ZERO,
@@ -579,7 +607,123 @@ def _evaluate_sle_bin(row, decision, patient) -> dict:
 			patient=patient,
 			prerequisite=patient,
 		)
+	if patient and str(patient) == str(voucher or ""):
+		# Self patient-zero of a non-I4 class still waits for that class's repair path.
+		return _not_ready(
+			decision,
+			PLAN_WAITING_PATIENT_ZERO,
+			f"WAITING_PATIENT_ZERO — this voucher is the patient zero ({poison or st})",
+			patient=patient,
+			prerequisite=patient,
+		)
 	return _not_ready(decision, PLAN_WAITING_SLE_REPAIR, "WAITING_SLE_REPAIR — use Replay Downstream / Rebuild after rate repair")
+
+
+def _evaluate_i4(row, decision, patient) -> dict:
+	"""Patient Zero leftover is READY_I4; downstream leftover waits on the root."""
+	voucher = row.get("voucher") or row.get("voucher_no")
+	i4_status = str(row.get("i4_status") or row.get("status") or "")
+	pz = patient or _patient_name(row)
+	replay = cint(row.get("replay_count") or row.get("sql_updates_estimate") or 0)
+	sql = cint(row.get("sql_updates") or 0)
+	if sql <= 0:
+		sql = max(1, replay)  # at least the PZ SLE + identity replay estimate
+	residual = flt(
+		row.get("residual_value")
+		if row.get("residual_value") is not None
+		else row.get("current_value")
+		if row.get("current_value") is not None
+		else row.get("stock_value")
+		if row.get("stock_value") is not None
+		else row.get("residual_stock_value")
+		if row.get("residual_stock_value") is not None
+		else 0
+	)
+	reason_ok = str(row.get("reason") or "")
+	leftover_reason = "qty_after_zero" in reason_ok or row.get("repair_class") == I4_LEFTOVER_REPAIR
+	# Explicit cleared state only when residual is known-zero / repaired flag.
+	if i4_status == I4_REPAIRED or (
+		row.get("qty_becomes_zero")
+		and abs(residual) <= 1
+		and i4_status in (I4_REPAIRED, "")
+	):
+		return _not_ready(decision, PLAN_I4_REPAIRED, "I4_REPAIRED — leftover already cleared")
+
+	is_self_pz = bool(row.get("is_patient_zero")) or (pz and voucher and str(pz) == str(voucher))
+	has_leftover = abs(residual) > 1 or (leftover_reason and residual == 0 and sql > 0) or i4_status == I4_READY
+	prev_healthy = row.get("previous_healthy")
+	pz_clears = row.get("pz_residual_clears_in_sim")
+	prev_qty = row.get("previous_qty")
+	# Opening must be healthy and simulation must clear PZ residual — otherwise MANUAL.
+	if i4_status == "MANUAL" or prev_healthy is False or pz_clears is False:
+		blocker = row.get("previous_blocker") or row.get("message") or (
+			"Previous SLE poisoned / simulation does not clear Patient Zero residual"
+		)
+		return _not_ready(decision, PLAN_MANUAL, f"MANUAL — {blocker}", patient=pz)
+	if prev_qty is not None and flt(prev_qty) < -0.0001:
+		return _not_ready(
+			decision,
+			PLAN_MANUAL,
+			f"MANUAL — previous SLE negative qty_after={prev_qty}; not auto-READY_I4",
+			patient=pz,
+		)
+
+	if is_self_pz and leftover_reason and has_leftover and i4_status in (I4_READY, "", "READY"):
+		return _ready(
+			decision,
+			sql=max(sql, 1),
+			replay=max(replay, 1),
+			rebuild=1,
+			reason="READY_I4 — Identity leftover detected.",
+			planner_status=PLAN_READY_I4,
+			sle_count=replay or sql,
+			bin_count=1,
+			se_count=1,
+		)
+	if pz and voucher and str(pz) != str(voucher):
+		return _not_ready(
+			decision,
+			PLAN_WAITING_I4,
+			f"WAITING_I4 — repair I4 Patient Zero {pz} first",
+			patient=pz,
+			prerequisite=pz,
+		)
+	if i4_status == I4_WAITING or (leftover_reason and not is_self_pz):
+		return _not_ready(
+			decision,
+			PLAN_WAITING_I4,
+			f"WAITING_I4 — repair I4 Patient Zero {pz or 'root'} first",
+			patient=pz,
+			prerequisite=pz,
+		)
+	if i4_status == I4_REPLAY_REQUIRED:
+		return _not_ready(
+			decision,
+			PLAN_I4_REPLAY_REQUIRED,
+			"I4_REPLAY_REQUIRED — leftover root repaired; finish identity replay",
+			patient=pz,
+		)
+	if leftover_reason and is_self_pz:
+		# Fallback only when classify omitted health fields but status is READY_I4.
+		if i4_status == I4_READY:
+			return _ready(
+				decision,
+				sql=max(sql, 1),
+				replay=max(replay, 1),
+				rebuild=1,
+				reason="READY_I4 — Identity leftover detected.",
+				planner_status=PLAN_READY_I4,
+				sle_count=replay or sql,
+				bin_count=1,
+				se_count=1,
+			)
+		return _not_ready(
+			decision,
+			PLAN_MANUAL,
+			"MANUAL — I4 Patient Zero needs healthy previous SLE before auto-repair",
+			patient=pz,
+		)
+	return _not_ready(decision, PLAN_NO_REPAIR_PATH, "NO_REPAIR_PATH — not an I4 leftover")
 
 
 def _posting_revalidate(row, moves, from_dt, cache) -> str | None:

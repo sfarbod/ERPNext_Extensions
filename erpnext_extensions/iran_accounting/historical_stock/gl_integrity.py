@@ -75,12 +75,42 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 	}
 
 
-def scan_gl_integrity(company=None, limit=200) -> dict:
-	conds = ["docstatus=1"]
+def scan_gl_integrity(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+	limit=200,
+) -> dict:
+	conds = ["se.docstatus=1"]
 	args: list = []
+	join = ""
 	if company:
-		conds.append("company=%s")
+		conds.append("se.company=%s")
 		args.append(company)
+	if voucher:
+		conds.append("se.name=%s")
+		args.append(voucher)
+	if work_order:
+		conds.append("se.work_order=%s")
+		args.append(work_order)
+	if from_date:
+		conds.append("se.posting_date>=%s")
+		args.append(from_date)
+	if to_date:
+		conds.append("se.posting_date<=%s")
+		args.append(to_date)
+	if item_code or warehouse:
+		join = " JOIN `tabStock Entry Detail` sed ON sed.parent=se.name "
+		if item_code:
+			conds.append("sed.item_code=%s")
+			args.append(item_code)
+		if warehouse:
+			conds.append("(sed.s_warehouse=%s OR sed.t_warehouse=%s)")
+			args.extend([warehouse, warehouse])
 	# Unbalanced first, then sample recent submitted SE.
 	unbal = frappe.db.sql(
 		"""
@@ -99,9 +129,10 @@ def scan_gl_integrity(company=None, limit=200) -> dict:
 	seen = {r["voucher"] for r in rows}
 	names = frappe.db.sql(
 		f"""
-		SELECT name FROM `tabStock Entry`
+		SELECT DISTINCT se.name FROM `tabStock Entry` se
+		{join}
 		WHERE {" AND ".join(conds)}
-		ORDER BY modified DESC
+		ORDER BY se.modified DESC
 		LIMIT {int(limit)}
 		""",
 		args,
@@ -121,6 +152,15 @@ def scan_gl_integrity(company=None, limit=200) -> dict:
 
 
 def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
+	if not frappe.db.exists("Stock Entry", voucher_no):
+		return {
+			"voucher": voucher_no,
+			"gl_class": G2_MISSING,
+			"dry_run": dry_run,
+			"written": False,
+			"blocked": True,
+			"reason": "not_stock_entry",
+		}
 	preview = classify_stock_entry_gl(voucher_no)
 	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
 

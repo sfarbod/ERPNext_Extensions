@@ -27,17 +27,45 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 )
 
 
-def scan_failed_riv(limit=400) -> dict:
+def scan_failed_riv(
+	limit=400,
+	item_code=None,
+	warehouse=None,
+	voucher=None,
+	from_date=None,
+	to_date=None,
+	company=None,
+) -> dict:
+	conds = ["status='Failed'", "docstatus=1"]
+	args: list = []
+	if item_code:
+		conds.append("item_code=%s")
+		args.append(item_code)
+	if warehouse:
+		conds.append("warehouse=%s")
+		args.append(warehouse)
+	if voucher:
+		conds.append("voucher_no=%s")
+		args.append(voucher)
+	if company:
+		conds.append("company=%s")
+		args.append(company)
+	if from_date:
+		conds.append("posting_date>=%s")
+		args.append(from_date)
+	if to_date:
+		conds.append("posting_date<=%s")
+		args.append(to_date)
 	docs = frappe.db.sql(
-		"""
+		f"""
 		SELECT name, item_code, warehouse, voucher_no, voucher_type, posting_date,
 		       status, error_log, based_on, modified, company
 		FROM `tabRepost Item Valuation`
-		WHERE status='Failed' AND docstatus=1
+		WHERE {" AND ".join(conds)}
 		ORDER BY modified DESC
-		LIMIT %s
+		LIMIT {int(limit)}
 		""",
-		int(limit),
+		args,
 		as_dict=True,
 	)
 	cache = {}

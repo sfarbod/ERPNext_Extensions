@@ -89,9 +89,35 @@ def scan_all(company=None):
 
 
 @frappe.whitelist()
-def scan_zero_rates(company=None, voucher=None):
+def scan_zero_rates(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	batch=None,
+	serial_and_batch_bundle=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+	repair_class=None,
+	planner_status=None,
+	patient_zero=None,
+):
 	_guard()
-	return scan_zero_rate_rows(company=company or None, voucher=voucher or None)
+	return scan_zero_rate_rows(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		batch=batch or None,
+		serial_and_batch_bundle=serial_and_batch_bundle or None,
+		work_order=work_order or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+		repair_class=repair_class or None,
+		planner_status=planner_status or None,
+		patient_zero=patient_zero or None,
+	)
 
 
 @frappe.whitelist()
@@ -151,9 +177,25 @@ def repair_wrong_rates_selected(rows=None, dry_run=True):
 
 
 @frappe.whitelist()
-def scan_manufacture(company=None, voucher=None):
+def scan_manufacture(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+):
 	_guard()
-	return scan_manufacture_anomalies(company=company or None, voucher=voucher or None)
+	return scan_manufacture_anomalies(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		work_order=work_order or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+	)
 
 
 @frappe.whitelist()
@@ -181,15 +223,57 @@ def repair_manufacture_selected_api(rows=None, dry_run=True):
 
 
 @frappe.whitelist()
-def scan_sle_bin_api(company=None, item_code=None, warehouse=None):
+def scan_sle_bin_api(
+	company=None,
+	item_code=None,
+	warehouse=None,
+	voucher=None,
+	batch=None,
+	serial_and_batch_bundle=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+	repair_class=None,
+	planner_status=None,
+	patient_zero=None,
+):
 	_guard()
-	return scan_sle_bin(company=company or None, item_code=item_code or None, warehouse=warehouse or None)
+	return scan_sle_bin(
+		company=company or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		voucher=voucher or None,
+		batch=batch or None,
+		serial_and_batch_bundle=serial_and_batch_bundle or None,
+		work_order=work_order or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+		repair_class=repair_class or None,
+		planner_status=planner_status or None,
+		patient_zero=patient_zero or None,
+	)
 
 
 @frappe.whitelist()
-def scan_gl_api(company=None):
+def scan_gl_api(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+):
 	_guard()
-	return scan_gl_integrity(company=company or None)
+	return scan_gl_integrity(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		work_order=work_order or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+	)
 
 
 @frappe.whitelist()
@@ -210,9 +294,23 @@ def classify_gl_voucher(voucher_no):
 
 
 @frappe.whitelist()
-def scan_failed_riv_api():
+def scan_failed_riv_api(
+	item_code=None,
+	warehouse=None,
+	voucher=None,
+	from_date=None,
+	to_date=None,
+	company=None,
+):
 	_guard()
-	return scan_failed_riv()
+	return scan_failed_riv(
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		voucher=voucher or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+		company=company or None,
+	)
 
 
 @frappe.whitelist()
@@ -447,6 +545,247 @@ def export_xlsx_api(topic=None, headers=None, rows=None):
 		"filedata": base64.b64encode(content).decode(),
 		"content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	}
+
+
+@frappe.whitelist()
+def scan_i4_api(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	batch=None,
+	serial_and_batch_bundle=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import scan_i4_leftover
+
+	return scan_i4_leftover(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		batch=batch or None,
+		serial_and_batch_bundle=serial_and_batch_bundle or None,
+		work_order=work_order or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+	)
+
+
+@frappe.whitelist()
+def dry_run_i4_api(rows=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import dry_run_i4_repair
+
+	return dry_run_i4_repair(_parse(rows))
+
+
+@frappe.whitelist()
+def repair_i4_patient_zero_api(rows=None, dry_run=True):
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import repair_i4_selected
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact I4 rows are required")
+	return repair_i4_selected(parsed, dry_run=is_dry)
+
+
+@frappe.whitelist()
+def find_patient_zero_api(voucher=None, item=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import find_patient_zero_for_voucher
+
+	if not voucher:
+		frappe.throw("Voucher is required")
+	return find_patient_zero_for_voucher(voucher, item=item or None, warehouse=warehouse or None)
+
+
+@frappe.whitelist()
+def root_cause_explorer_api(voucher=None, item=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import root_cause_explorer
+
+	if not voucher:
+		frappe.throw("Voucher is required")
+	return root_cause_explorer(voucher, item=item or None, warehouse=warehouse or None)
+
+
+@frappe.whitelist()
+def identity_health_api(item_code=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import identity_health
+
+	if not item_code or not warehouse:
+		frappe.throw("Item and Warehouse are required")
+	return identity_health(item_code, warehouse)
+
+
+@frappe.whitelist()
+def master_repair_plan_api(company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.master_plan import build_master_repair_plan
+
+	return build_master_repair_plan(company=company or None)
+
+
+@frappe.whitelist()
+def validate_dashboard_api(company=None):
+	"""Compare Dashboard ↔ Scan ↔ Planner ↔ SQL ↔ Queue for every KPI (read-only)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock._validation.dashboard_consistency_v5214 import (
+		collect_kpi_matrix,
+		audit_cache,
+	)
+
+	matrix = collect_kpi_matrix(company=company or None)
+	return {
+		"ok": True,
+		"company": company,
+		"pass_count": matrix.get("pass_count"),
+		"fail_count": matrix.get("fail_count"),
+		"all_pass": matrix.get("all_pass"),
+		"matrix": matrix.get("matrix"),
+		"dashboard": matrix.get("dashboard"),
+		"queue_breakdown": matrix.get("queue_breakdown"),
+		"i4_by_status": matrix.get("i4_by_status"),
+		"sources": matrix.get("sources"),
+		"cache": audit_cache(),
+		"authorize_repairs": bool(matrix.get("all_pass")),
+	}
+
+
+@frappe.whitelist()
+def rebuild_metrics_api(company=None):
+	"""Force a fresh Scan All and return the new dashboard (no repair writes)."""
+	_guard()
+	return scan_all(company=company)
+
+
+@frappe.whitelist()
+def campaign_wizard_api(company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.campaign_wizard import campaign_wizard
+
+	return campaign_wizard(company=company or None)
+
+
+@frappe.whitelist()
+def campaign_preview_api(topic=None, company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.campaign_wizard import campaign_preview
+
+	return campaign_preview(topic=topic or "ZERO_RATE", company=company or None)
+
+
+@frappe.whitelist()
+def campaign_health_api(company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.campaign_wizard import campaign_health
+
+	return campaign_health(company=company or None)
+
+
+@frappe.whitelist()
+def campaign_history_api():
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.campaign_wizard import campaign_history
+
+	return campaign_history()
+
+
+@frappe.whitelist()
+def campaign_export_api(company=None):
+	_guard_admin()
+	from erpnext_extensions.iran_accounting.historical_stock.campaign_wizard import campaign_export
+
+	return campaign_export(company=company or None)
+
+
+@frappe.whitelist()
+def classify_zero_clusters_api(company=None, max_cluster=15):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.zero_rate_campaign import classify_zero_clusters
+
+	return classify_zero_clusters(company=company or None, max_cluster=cint(max_cluster) or 15)
+
+
+@frappe.whitelist()
+def preview_zero_campaign_api(company=None, max_roots=15):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.zero_rate_campaign import preview_zero_campaign
+
+	return preview_zero_campaign(company=company or None, max_roots=cint(max_roots) or 15)
+
+
+@frappe.whitelist()
+def run_zero_safe_cluster_api(company=None, max_roots=12, dry_run=True):
+	"""Apply only when dry_run=0 after backup. Default dry_run=True."""
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	from erpnext_extensions.iran_accounting.historical_stock.zero_rate_campaign import (
+		run_zero_safe_cluster_campaign,
+	)
+
+	return run_zero_safe_cluster_campaign(
+		company=company or None,
+		max_roots=cint(max_roots) or 12,
+		apply=not is_dry,
+	)
+
+
+@frappe.whitelist()
+def classify_wrong_clusters_api(company=None, max_cluster=15):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_campaign import classify_wrong_clusters
+
+	return classify_wrong_clusters(company=company or None, max_cluster=cint(max_cluster) or 15)
+
+
+@frappe.whitelist()
+def classify_riv_campaign_api(company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.failed_riv_campaign import (
+		classify_failed_riv_campaign,
+	)
+
+	return classify_failed_riv_campaign(company=company or None)
+
+
+@frappe.whitelist()
+def classify_gl_campaign_api(company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.gl_campaign import classify_gl_campaign
+
+	return classify_gl_campaign(company=company or None)
+
+
+@frappe.whitelist()
+def warehouse_dependency_api(warehouse=None, company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_dependency import (
+		analyze_warehouse_dependencies,
+	)
+
+	if not warehouse:
+		frappe.throw("warehouse is required")
+	return analyze_warehouse_dependencies(warehouse, company=company or None)
+
+
+@frappe.whitelist()
+def warehouse_replay_simulate_api(warehouse=None, item_code=None, company=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_dependency import (
+		simulate_warehouse_replay_scope,
+	)
+
+	if not warehouse or not item_code:
+		frappe.throw("warehouse and item_code are required")
+	return simulate_warehouse_replay_scope(warehouse, item_code, company=company or None)
 
 
 # Re-export posting-order APIs so the page can use one namespace.
