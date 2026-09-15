@@ -116,6 +116,27 @@ def _apply_gl(max_n=20) -> dict:
 	return {"n_ready": len(ready), "n_repaired": len(applied), "n_failed": len(failed), "applied": applied[:10], "failed": failed[:10]}
 
 
+def _apply_svd_residue(max_n=40) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.svd_residue import (
+		scan_matched_rate_svd_residue,
+		apply_svd_residue,
+	)
+
+	rows = scan_matched_rate_svd_residue(COMPANY, limit=500)
+	applied, failed = [], []
+	for r in rows[: int(max_n)]:
+		res = apply_svd_residue(r, dry_run=False)
+		entry = {
+			"voucher": r.get("voucher"),
+			"item": r.get("item"),
+			"ok": bool(res.get("ok")) and int(res.get("changed") or 0) > 0,
+			"changed": res.get("changed"),
+			"reason": res.get("reason"),
+		}
+		(applied if entry["ok"] else failed).append(entry)
+	return {"n_candidates": len(rows), "n_repaired": len(applied), "n_failed": len(failed)}
+
+
 def _apply_wr_ready(max_n=20) -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
 	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
@@ -194,6 +215,7 @@ def run_iteration(n: int) -> dict:
 		"po": _apply_po(before["ready_po"], max_n=40) if before["ready_po"] else {"n_outbounds": 0},
 		"warehouse": _apply_warehouse(max_n=15),
 		"wr": _apply_wr_ready(max_n=30),
+		"svd": _apply_svd_residue(max_n=40),
 		"gl": _apply_gl(max_n=20),
 		"assisted": _apply_assisted(max_n=40),
 	}
@@ -224,6 +246,7 @@ def run_iteration(n: int) -> dict:
 				for k in ("n_ready_before", "n_repaired", "n_failed")
 			},
 			"wr": {k: repairs["wr"].get(k) for k in ("n_ready", "n_repaired", "n_failed")},
+			"svd": {k: repairs["svd"].get(k) for k in ("n_candidates", "n_repaired", "n_failed")},
 			"gl": {k: repairs["gl"].get(k) for k in ("n_ready", "n_repaired", "n_failed")},
 			"assisted": {
 				k: repairs["assisted"].get(k)
@@ -241,6 +264,7 @@ def run_iteration(n: int) -> dict:
 			(repairs["po"].get("n_ok") or 0) > 0
 			or (repairs["warehouse"].get("n_repaired") or 0) > 0
 			or (repairs["wr"].get("n_repaired") or 0) > 0
+			or (repairs["svd"].get("n_repaired") or 0) > 0
 			or (repairs["gl"].get("n_repaired") or 0) > 0
 			or (repairs["assisted"].get("n_repaired") or 0) > 0
 			or (delta.get("po_actionable") or 0) < 0

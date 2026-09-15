@@ -44,15 +44,31 @@ def run(*, max_n=20, dry_run=0):
 		if int(dry_run):
 			applied.append({"voucher": row.get("voucher"), "item": row.get("item"), "dry_run": True, "expected": row.get("expected") or row.get("proposed_rate")})
 			continue
-		res = apply_wrong_rate_root(row, dry_run=False)
-		entry = {
-			"voucher": row.get("voucher"),
-			"item": row.get("item"),
-			"ok": bool(res.get("ok")),
-			"after_rate": res.get("after_rate"),
-			"expected": res.get("expected") or row.get("expected") or row.get("proposed_rate"),
-			"reason": res.get("reason") or res.get("error") or ((res.get("out") or {}).get("reason")),
-		}
+		# Posting-order unique-inbound promotions carry moves — use PO apply.
+		if str(row.get("topic") or "") == "POSTING_ORDER" and row.get("moves"):
+			res = apply_repairs([row], dry_run=False)
+			blocked = res.get("blocked") or []
+			applied_rows = res.get("applied") or []
+			entry = {
+				"voucher": row.get("outbound_document") or row.get("voucher"),
+				"item": row.get("item"),
+				"ok": bool(applied_rows) and not blocked,
+				"after_rate": None,
+				"expected": None,
+				"reason": (blocked[0].get("error") if blocked else None) or res.get("reason"),
+				"kind": "POSTING_ORDER",
+			}
+		else:
+			res = apply_wrong_rate_root(row, dry_run=False)
+			entry = {
+				"voucher": row.get("voucher"),
+				"item": row.get("item"),
+				"ok": bool(res.get("ok")),
+				"after_rate": res.get("after_rate"),
+				"expected": res.get("expected") or row.get("expected") or row.get("proposed_rate"),
+				"reason": res.get("reason") or res.get("error") or ((res.get("out") or {}).get("reason")),
+				"kind": "WRONG_RATE",
+			}
 		if entry["ok"]:
 			frappe.db.commit()
 			applied.append(entry)
