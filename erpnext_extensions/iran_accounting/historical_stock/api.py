@@ -788,6 +788,53 @@ def warehouse_replay_simulate_api(warehouse=None, item_code=None, company=None):
 	return simulate_warehouse_replay_scope(warehouse, item_code, company=company or None)
 
 
+@frappe.whitelist()
+def warehouse_plan_api(row=None):
+	"""Plan a warehouse-scoped repair for a posting-order / escalation row (read-only)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.planner import (
+		plan_warehouse_repair,
+	)
+
+	parsed = row if isinstance(row, dict) else (_parse(row) or {})
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	if not parsed:
+		frappe.throw("A warehouse repair row is required")
+	return plan_warehouse_repair(parsed)
+
+
+@frappe.whitelist()
+def warehouse_dry_run_api(row=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.replay import (
+		apply_warehouse_repair,
+	)
+
+	parsed = row if isinstance(row, dict) else (_parse(row) or {})
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	if not parsed:
+		frappe.throw("A warehouse repair row is required")
+	return apply_warehouse_repair(parsed, dry_run=True)
+
+
+@frappe.whitelist()
+def warehouse_apply_api(row=None, dry_run=True):
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.replay import (
+		apply_warehouse_repair,
+	)
+
+	parsed = row if isinstance(row, dict) else (_parse(row) or {})
+	if isinstance(parsed, list):
+		parsed = parsed[0] if parsed else {}
+	if not parsed:
+		frappe.throw("A warehouse repair row is required")
+	return apply_warehouse_repair(parsed, dry_run=is_dry)
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair

@@ -175,7 +175,15 @@ class HistoricalRepairPage {
 			"btn-primary",
 			__("Preview repair campaigns by class — no bulk apply")
 		);
-		this.btn_cluster_explorer = this._btn(
+				this.btn_warehouse_plan = this._btn(
+			g3,
+			"warehouse-plan",
+			__("Warehouse Plan"),
+			() => this.show_warehouse_plan(),
+			"btn-primary",
+			__("Plan warehouse-scoped replay for selected posting-order row")
+		);
+this.btn_cluster_explorer = this._btn(
 			g3,
 			"cluster-explorer",
 			__("Cluster Explorer"),
