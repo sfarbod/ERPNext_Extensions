@@ -112,6 +112,32 @@ def reclassify_row(
 
 	# Unique READY candidate — stamp EXACT fields for downstream auto apply
 	if promote == "READY" and abs(flt(resolution.get("expected"))) > RATE_EPS:
+		exp = flt(resolution["expected"])
+		obs = flt(row.get("observed") or row.get("current_rate") or row.get("rate"))
+		if obs and abs(exp - obs) <= max(1.0, abs(exp) * 1e-9):
+			# Valuation rate already matches — Wrong Rate flag is SVD/transfer residue.
+			card = build_decision_card(
+				row,
+				evidence=evidence,
+				resolution={
+					**resolution,
+					"promote_to": OPERATOR_DECISION,
+					"reason": (
+						f"Rate already matches expected {exp}; residual is SVD/transfer "
+						f"incoming_rate=0 residue — needs selective value replay, not rate write"
+					),
+				},
+				impact=impact,
+			)
+			return _pack(
+				row,
+				OPERATOR_DECISION,
+				BUCKET_OPERATOR,
+				"RATE_MATCHED_SVD_RESIDUE",
+				impact,
+				card,
+				extra={"evidence": evidence, "resolution": resolution, "matched_rate": exp},
+			)
 		stamped = dict(row)
 		stamped["confidence"] = CONFIDENCE_EXACT
 		stamped["expected"] = resolution["expected"]

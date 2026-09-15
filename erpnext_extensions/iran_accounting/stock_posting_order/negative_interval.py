@@ -370,6 +370,19 @@ def classify_interval(
 					"current": proposal["current"],
 					"proposed": proposal["proposed"],
 				}
+			# Do not mask a failed quantity proposal as "unrelated" — surface the
+			# real optimizer blocker (usually REAL_STOCK_SHORTAGE needing multi-move).
+			fail_status = proposal.get("status") or "LATER_INBOUND_UNRELATED"
+			return {
+				**base,
+				"status": fail_status,
+				"optimizer_status": fail_status,
+				"confidence": confidence,
+				"dependency_reason": reason or "external_inbound_proposal_failed",
+				"eligible": False,
+				"current": proposal.get("current"),
+				"proposed": proposal.get("proposed"),
+			}
 		return {
 			**base,
 			"status": "LATER_INBOUND_UNRELATED",
