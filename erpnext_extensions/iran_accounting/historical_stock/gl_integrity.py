@@ -209,16 +209,40 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 	# Capture before rows for dimension verify
 	before_dims = list(preview.get("dimensions") or [])
 	se = frappe.get_doc("Stock Entry", voucher_no)
-	from erpnext.accounts.utils import repost_gle_for_stock_vouchers
+	from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+	from erpnext.accounts.utils import _delete_accounting_ledger_entries
 
-	repost_gle_for_stock_vouchers(
-		[("Stock Entry", voucher_no)],
-		se.posting_date,
-		se.company,
-	)
+	inventory_account_map = se.get_inventory_account_map()
+	expected = toggle_debit_credit_if_negative(se.get_gl_entries(inventory_account_map))
+	if not expected:
+		return {
+			**preview,
+			"dry_run": False,
+			"written": False,
+			"blocked": True,
+			"reason": "NO_EXPECTED_GL — Stock Entry produced empty GL map (not auto-rebuilt)",
+		}
+	_delete_accounting_ledger_entries("Stock Entry", voucher_no)
+	se.make_gl_entries(gl_entries=expected, from_repost=True)
 	after = classify_stock_entry_gl(voucher_no)
 	if after["gl_class"] == G3_UNBALANCED:
 		frappe.throw(f"GL rebuild failed: {voucher_no} still unbalanced")
+	if preview.get("gl_class") == G2_MISSING and after["gl_class"] == G2_MISSING:
+		return {
+			**after,
+			"written": False,
+			"blocked": True,
+			"reason": "G2_STILL_MISSING — repost produced no GL rows",
+			"before": preview,
+		}
+	if after["gl_class"] in (G2_MISSING, G4_POISONED_SLE):
+		return {
+			**after,
+			"written": False,
+			"blocked": True,
+			"reason": f"rebuild residual {after['gl_class']}",
+			"before": preview,
+		}
 	return {
 		**after,
 		"written": True,
