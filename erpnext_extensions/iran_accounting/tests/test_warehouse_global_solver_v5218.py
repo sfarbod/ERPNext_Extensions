@@ -105,6 +105,14 @@ class TestGlobalSolveComponent(unittest.TestCase):
 		self.assertTrue(out["eligible"])
 		self.assertIn("OUT", out.get("proposed_times") or {})
 
+	def test_cycle_detected_for_opposite_transfer(self):
+		from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.global_solver import (
+			_constraint_cycle,
+		)
+
+		self.assertEqual(_constraint_cycle([("A", "B"), ("B", "A")]), ("A", "B"))
+		self.assertIsNone(_constraint_cycle([("A", "B"), ("B", "C")]))
+
 	def test_micro_oscillation_detected(self):
 		with patch(
 			"erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.global_solver._live_time",

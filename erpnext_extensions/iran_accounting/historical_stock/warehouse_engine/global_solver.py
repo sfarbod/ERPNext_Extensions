@@ -162,11 +162,54 @@ def solve_component(component: dict) -> dict:
 	proposed, move_rows, from_dt, synth_notes = merge_proposed_times(pairs)
 	constraints = _pair_constraints(pairs)
 
+	# Contradictory transfer constraints (A before B AND B before A) → stop
+	cycle = _constraint_cycle(constraints)
+	if cycle:
+		anchor = pairs[0]
+		return {
+			"ok": False,
+			"eligible": False,
+			"planner_status": WAREHOUSE_AMBIGUOUS,
+			"reason": (
+				"MATHEMATICAL_AMBIGUITY — contradictory cross-warehouse transfer order "
+				f"cycle {cycle[0]} ⇄ {cycle[1]} (inbound/outbound roles reverse across warehouses)"
+			),
+			"required_action": "Operator decision — cannot satisfy both warehouses with one posting order",
+			"campaign_id": f"WHGLOBAL-CYCLE-{abs(hash(cycle)) % 10_000_000:07d}",
+			"solver": "global_shared_voucher",
+			"n_pairs": len(pairs),
+			"n_identities": component.get("n_identities"),
+			"n_vouchers": component.get("n_vouchers"),
+			"multi_item_vouchers": component.get("multi_item_vouchers"),
+			"identities": component.get("identities"),
+			"constraint_cycle": list(cycle),
+			"moves": [],
+			"proposed_times": {},
+			"notes": synth_notes,
+			"pairs": pairs,
+			"item": anchor.get("item") or anchor.get("item_code"),
+			"warehouse": anchor.get("warehouse"),
+			"group_class": "UNSAFE_GROUP",
+			"expected_sql": 0,
+			"expected_replay": 0,
+			"expected_runtime_seconds": 0,
+			"expected_risk": "CRITICAL",
+			"rollback_scope": "none",
+			"dependency_depth": max(0, len(pairs) - 1),
+			"blocker_class": "MATHEMATICAL_AMBIGUITY",
+		}
+
 	# Iteratively enforce supply-before-starvation without micro-rebumping
 	solved, solve_notes, verification = _solve_constraints(
 		proposed, from_dt, constraints, max_rounds=12
 	)
 	proposed = solved
+	# Re-enforce pair constraints after expansion (never let expansion invert a pair)
+	proposed, pair_notes = _enforce_pair_constraints(proposed, constraints)
+	solve_notes = list(solve_notes) + pair_notes
+	# If enforcement recreates a cycle conflict vs live multi-warehouse roles, detect
+	if _constraint_cycle(constraints):
+		pass  # already checked; constraints themselves are static
 	move_rows = _moves_from_proposed(proposed, move_rows)
 	proposed, move_rows, noop_notes = _drop_noop_moves(proposed, move_rows)
 	notes = list(synth_notes) + list(solve_notes) + list(noop_notes)
@@ -519,14 +562,78 @@ def _pair_vouchers(p: dict) -> set[str]:
 
 
 def _pair_constraints(pairs: list[dict]) -> list[tuple[str, str]]:
-	"""Return (before, after) voucher constraints: before must post earlier."""
+	"""Return (before, after) voucher constraints: before must post earlier.
+
+	Also infers the reverse constraint on the sister warehouse of a transfer
+	pair. If inbound posts +qty on W and -qty elsewhere, and outbound posts
+	-qty on W and +qty elsewhere, the sister warehouse needs the opposite
+	order — which is a mathematical contradiction for a single posting_datetime.
+	"""
 	out = []
 	for p in pairs:
 		inn = p.get("inbound_document")
 		outb = p.get("outbound_document")
-		if inn and outb:
+		wh = p.get("warehouse")
+		if inn and outb and inn != outb:
 			out.append((inn, outb))
+			if wh and _is_opposite_transfer_pair(inn, outb, wh):
+				# Sister warehouse requires reverse order → explicit cycle edge
+				out.append((outb, inn))
 	return out
+
+
+def _is_opposite_transfer_pair(inbound: str, outbound: str, warehouse: str) -> bool:
+	"""True when inbound is + on warehouse and outbound is - on warehouse,
+	and both vouchers also post the opposite sign on some other warehouse."""
+	import frappe
+
+	rows = frappe.db.sql(
+		"""
+		SELECT voucher_no, warehouse, SUM(actual_qty) AS qty
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_no IN %s AND is_cancelled=0
+		GROUP BY voucher_no, warehouse
+		""",
+		((inbound, outbound),),
+		as_dict=True,
+	)
+	by_v = defaultdict(dict)
+	for r in rows:
+		by_v[r.voucher_no][r.warehouse] = float(r.qty or 0)
+	in_map = by_v.get(inbound) or {}
+	out_map = by_v.get(outbound) or {}
+	in_here = in_map.get(warehouse, 0)
+	out_here = out_map.get(warehouse, 0)
+	if not (in_here > 0 and out_here < 0):
+		return False
+	# Opposite signs elsewhere
+	in_elsewhere = any(w != warehouse and q < 0 for w, q in in_map.items())
+	out_elsewhere = any(w != warehouse and q > 0 for w, q in out_map.items())
+	return bool(in_elsewhere and out_elsewhere)
+
+
+def _constraint_cycle(constraints: list[tuple[str, str]]) -> tuple[str, str] | None:
+	"""Detect A→B and B→A contradictions (cross-warehouse transfer role reversal)."""
+	fwd = set()
+	for a, b in constraints:
+		if (b, a) in fwd:
+			return (a, b) if a < b else (b, a)
+		fwd.add((a, b))
+	return None
+
+
+def _enforce_pair_constraints(proposed: dict, constraints: list[tuple[str, str]]):
+	notes = []
+	proposed = dict(proposed or {})
+	for inn, outb in constraints:
+		in_t = proposed.get(inn) or _live_time(inn)
+		out_t = proposed.get(outb) or _live_time(outb)
+		if in_t and out_t and get_datetime(out_t) <= get_datetime(in_t):
+			proposed[outb] = get_datetime(in_t) + timedelta(seconds=MIN_BUMP_SECONDS)
+			if inn not in proposed:
+				proposed[inn] = get_datetime(in_t)
+			notes.append(f"re-enforce pair {outb} after {inn}")
+	return proposed, notes
 
 
 def _multi_item_vouchers(vouchers: list[str]) -> list[str]:
