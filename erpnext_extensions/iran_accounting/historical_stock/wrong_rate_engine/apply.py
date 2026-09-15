@@ -88,6 +88,10 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 			if not replay.get("ok"):
 				# soft: keep rate write if replay blocked by unrelated poison — still verify rate
 				replay = {**replay, "soft_fail": True}
+			# Replay may recompute MA txn rates to 0 when valuation is poisoned;
+			# re-assert EXACT expected from reconstruction source (never Bin).
+			if classified.get("surface") == "SLE" or classified.get("sle"):
+				_write_sle_expected(classified, expected)
 
 		# Residual verify
 		after_rate = _read_current_rate(classified)

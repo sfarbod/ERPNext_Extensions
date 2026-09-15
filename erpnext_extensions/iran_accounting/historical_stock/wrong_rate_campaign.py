@@ -36,11 +36,13 @@ def _dump(name, data):
 def inventory(company=None, limit=2000) -> dict:
 	out = classify_wrong_rate_universe(company=company or COMPANY, limit=limit)
 	_dump("inventory.json", {k: v for k, v in out.items() if k != "rows"})
-	# Prefer smallest sql_updates among READY
+	# Prefer smallest sql among READY with sql>0
 	ready = sorted(
-		out.get("ready_rows") or [],
+		[r for r in (out.get("ready_rows") or []) if int(r.get("sql_updates") or 0) > 0],
 		key=lambda r: (int(r.get("sql_updates") or 99), str(r.get("voucher") or "")),
 	)
+	out["ready_rows"] = ready
+	out["ready_wrong_rate"] = len(ready)
 	out["ordered_ready"] = [
 		{
 			"voucher": r.get("voucher"),
