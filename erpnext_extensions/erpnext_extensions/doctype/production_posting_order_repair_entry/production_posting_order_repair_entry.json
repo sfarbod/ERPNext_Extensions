@@ -25,10 +25,9 @@
  "fields": [
   {
    "fieldname": "inbound_document",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Inbound Document",
-   "options": "Stock Entry"
+   "label": "Inbound Document"
   },
   {
    "fieldname": "outbound_document",

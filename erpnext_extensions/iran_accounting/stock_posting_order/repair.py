@@ -49,13 +49,14 @@ def _row_rank(row: dict) -> tuple:
 
 
 def _gl_balanced(voucher_no: str) -> dict:
+	vt = _voucher_doctype(voucher_no) if voucher_no else "Stock Entry"
 	rows = frappe.db.sql(
 		"""
 		SELECT SUM(debit) debit, SUM(credit) credit
 		FROM `tabGL Entry`
-		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
+		WHERE voucher_type=%s AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
 		""",
-		voucher_no,
+		(vt, voucher_no),
 		as_dict=True,
 	)
 	debit = flt(rows[0].debit) if rows else 0
@@ -124,16 +125,46 @@ def dry_run(candidates: list[dict] | None = None, **scan_kwargs) -> dict:
 	}
 
 
+def _voucher_doctype(voucher_no: str) -> str:
+	"""Resolve SLE voucher_type so external inbounds (PRE/RECO) are not forced to Stock Entry."""
+	if not voucher_no:
+		return "Stock Entry"
+	vt = frappe.db.get_value(
+		"Stock Ledger Entry",
+		{"voucher_no": voucher_no, "is_cancelled": 0},
+		"voucher_type",
+	)
+	return str(vt or "Stock Entry")
+
+
 def _assert_preview_fresh(row: dict) -> None:
-	in_mod = str(frappe.db.get_value("Stock Entry", row["inbound_document"], "modified"))
-	out_mod = str(frappe.db.get_value("Stock Entry", row["outbound_document"], "modified"))
-	if in_mod != str(row.get("inbound_modified")) or out_mod != str(row.get("outbound_modified")):
+	in_dt = _voucher_doctype(row.get("inbound_document"))
+	out_dt = _voucher_doctype(row.get("outbound_document"))
+	# Outbound timestamp rewrite is Stock Entry only; inbound may be PRE/RECO/etc.
+	if out_dt != "Stock Entry":
+		frappe.throw(
+			f"Outbound must be Stock Entry (got {out_dt}: {row.get('outbound_document')})",
+			title=STATUS_BLOCKED,
+		)
+	in_mod = str(frappe.db.get_value(in_dt, row["inbound_document"], "modified") or "")
+	out_mod = str(frappe.db.get_value(out_dt, row["outbound_document"], "modified") or "")
+	# External inbounds may only expose SLE.modified in the scan row — accept either doc or SLE stamp.
+	in_ok = in_mod == str(row.get("inbound_modified") or "")
+	if not in_ok and in_dt != "Stock Entry":
+		sle_mod = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{"voucher_no": row["inbound_document"], "is_cancelled": 0},
+			"modified",
+			order_by="creation asc",
+		)
+		in_ok = str(sle_mod or "") == str(row.get("inbound_modified") or "")
+	if not in_ok or out_mod != str(row.get("outbound_modified") or ""):
 		frappe.throw(
 			"Document changed since preview; aborting posting-order repair.",
 			title="Stale preview",
 		)
-	in_ds = cint(frappe.db.get_value("Stock Entry", row["inbound_document"], "docstatus"))
-	out_ds = cint(frappe.db.get_value("Stock Entry", row["outbound_document"], "docstatus"))
+	in_ds = cint(frappe.db.get_value(in_dt, row["inbound_document"], "docstatus"))
+	out_ds = cint(frappe.db.get_value(out_dt, row["outbound_document"], "docstatus"))
 	if in_ds != 1 or out_ds != 1:
 		status = "CANCELLED" if 2 in (in_ds, out_ds) else STATUS_DRAFT
 		frappe.throw(f"Repair blocked ({status}): documents must be submitted.", title=status)
@@ -315,10 +346,11 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				touched = set()
 				ordered = _ordered_identities(identities, row)
 				moved_vouchers = [m["document"] for m in moves]
-				sync_targets = set(moved_vouchers) | {
-					row.get("inbound_document"),
-					row.get("outbound_document"),
-				}
+				# External inbounds (Purchase Receipt / RECO) are quantity anchors only —
+				# do not rewrite their SLE valuation during a posting-order move.
+				sync_targets = set(moved_vouchers) | {row.get("outbound_document")}
+				if _voucher_doctype(row.get("inbound_document")) == "Stock Entry":
+					sync_targets.add(row.get("inbound_document"))
 				write_vouchers = {vn for vn in sync_targets if vn}
 				allow_unrelated = str(row.get("planner_status") or "") == "READY_BATCH_SCOPED_REPAIR"
 				# Source warehouse first, then copy transfer-in incoming_rate,
@@ -432,18 +464,25 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 			if STATUS_VALUATION_POISON in msg:
 				status = STATUS_VALUATION_POISON
 			blocked.append({"row": row, "error": msg, "status": status})
-			_append_audit(
-				log,
-				{
-					**row,
-					"status": status,
-					"dependency_reason": msg,
-					"old_outbound_time": row.get("current_outbound_time"),
-					"new_outbound_time": row.get("proposed_outbound_time"),
-				},
-			)
+			try:
+				_append_audit(
+					log,
+					{
+						**row,
+						"status": status,
+						"dependency_reason": msg,
+						"old_outbound_time": row.get("current_outbound_time"),
+						"new_outbound_time": row.get("proposed_outbound_time"),
+					},
+				)
+			except Exception:
+				# Never mask the real repair failure with audit-link validation.
+				pass
 	if log:
-		log.save(ignore_permissions=True)
+		try:
+			log.save(ignore_permissions=True)
+		except Exception:
+			frappe.log_error(title="Production Posting Order Repair Log save failed")
 	sql_executed = 0
 	for entry in applied:
 		sql_executed += len(entry.get("replay") or []) + 1

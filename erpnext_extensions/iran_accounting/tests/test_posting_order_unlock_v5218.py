@@ -89,6 +89,57 @@ class TestPostingOrderLikelyPromotion(unittest.TestCase):
 		self.assertFalse(d["eligible"])
 
 
+class TestExternalInboundPreviewFresh(unittest.TestCase):
+	"""Purchase Receipt anchors must not be forced through Stock Entry Link lookups."""
+
+	def test_voucher_doctype_prefers_sle_type(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import _voucher_doctype
+
+		with patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair.frappe.db.get_value",
+			return_value="Purchase Receipt",
+		):
+			self.assertEqual(_voucher_doctype("MAT-PRE-1"), "Purchase Receipt")
+
+	def test_assert_preview_fresh_accepts_purchase_receipt(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import _assert_preview_fresh
+
+		row = {
+			"inbound_document": "MAT-PRE-1",
+			"outbound_document": "MAT-STE-OUT",
+			"inbound_modified": "2026-01-01 00:00:00.000000",
+			"outbound_modified": "2026-01-01 00:00:01.000000",
+		}
+
+		def fake_get_value(doctype, name=None, fieldname=None, **kwargs):
+			# frappe.db.get_value(doctype, filters, fieldname)
+			field = fieldname
+			filters = name
+			if doctype == "Stock Ledger Entry" and isinstance(filters, dict):
+				vn = filters.get("voucher_no")
+				if field == "voucher_type":
+					return "Purchase Receipt" if vn == "MAT-PRE-1" else "Stock Entry"
+				if field == "modified":
+					return row["inbound_modified"]
+			if doctype == "Purchase Receipt" and filters == "MAT-PRE-1":
+				if field == "modified":
+					return row["inbound_modified"]
+				if field == "docstatus":
+					return 1
+			if doctype == "Stock Entry" and filters == "MAT-STE-OUT":
+				if field == "modified":
+					return row["outbound_modified"]
+				if field == "docstatus":
+					return 1
+			return None
+
+		with patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair.frappe.db.get_value",
+			side_effect=fake_get_value,
+		):
+			_assert_preview_fresh(row)
+
+
 class TestWarehouseEscalationRouting(unittest.TestCase):
 	def test_warehouse_ready_routed_from_escalation(self):
 		row = {
