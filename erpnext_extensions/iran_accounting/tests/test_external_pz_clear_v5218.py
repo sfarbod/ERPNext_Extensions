@@ -68,6 +68,30 @@ class TestExternalPatientZeroClear(unittest.TestCase):
 		with patch(f"{PLANNER}._voucher_type_of", return_value="Stock Entry"):
 			self.assertFalse(_rate_patient_cleared("MAT-STE-1", cache, row=row))
 
+	def test_unknown_stub_falls_through_to_external(self):
+		row = {
+			"item": "16100066",
+			"warehouse": "WH-A",
+			"expected": 5072466.0,
+		}
+		cache = {
+			"rows_by_voucher": {
+				"MAT-RECO-1": {"voucher": "MAT-RECO-1", "status": "UNKNOWN"},
+			}
+		}
+		sle_rows = [
+			{
+				"actual_qty": 0.0,
+				"incoming_rate": 5072466.0,
+				"valuation_rate": 5072466.0,
+				"stock_value_difference": 1.0,
+			}
+		]
+		with patch(f"{PLANNER}._voucher_type_of", return_value="Stock Reconciliation"), patch(
+			f"{PLANNER}._sle_rates_for_voucher_item", return_value=sle_rows
+		):
+			self.assertTrue(_rate_patient_cleared("MAT-RECO-1", cache, row=row))
+
 	def test_evaluate_row_promotes_after_healthy_reco_pz(self):
 		row = {
 			"topic": "WRONG_RATE",

@@ -771,6 +771,11 @@ def _rate_patient_cleared(patient: str, cache: dict, row: dict | None = None) ->
 			flags = prow.get("flags") or []
 			if flags and set(flags) <= {"WRONG_AMOUNT"}:
 				return True
+		# Apply-time stubs (UNKNOWN / empty SE fetch) must not suppress the
+		# external SLE probe for RECO/PRE roots.
+		stub = status in ("", "UNKNOWN") and not prow.get("confidence") and not source
+		if stub:
+			return _external_patient_rate_healthy(patient, cache, row=row)
 		return False
 	# Patient absent from scan — probe ledger directly (RECO / PRE / PI).
 	return _external_patient_rate_healthy(patient, cache, row=row)

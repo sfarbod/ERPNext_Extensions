@@ -66,7 +66,7 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 				pz_name = _patient_name(merged)
 				if pz_name and pz_name != voucher:
 					_ensure_pz_row_in_cache(pz_name, cache)
-					if _rate_patient_cleared(pz_name, cache):
+					if _rate_patient_cleared(pz_name, cache, row=merged):
 						merged["patient_zero"] = {
 							"voucher_no": voucher,
 							"posting_datetime": merged.get("posting_datetime")
