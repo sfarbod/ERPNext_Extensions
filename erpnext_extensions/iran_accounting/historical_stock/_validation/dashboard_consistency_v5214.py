@@ -10,7 +10,7 @@ from datetime import datetime
 from time import perf_counter
 
 import frappe
-from frappe.utils import flt, nowdate
+from frappe.utils import cint, flt, nowdate
 
 COMPANY = "اسپاد فارمد دارو"
 FROM_DATE = "2026-03-21"
