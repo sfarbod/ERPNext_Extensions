@@ -39,7 +39,19 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 				# Circular earliest-root election is a planner stamp; re-classify alone
 				# would re-block as DEPENDENCY_REPAIR_REQUIRED without the peer row.
 				if str(raw.get("dependency") or raw.get("blocked_because") or "") == "circular_earliest_root":
-					merged["patient_zero"] = merged.get("voucher")
+					pz = raw.get("patient_zero") if isinstance(raw.get("patient_zero"), dict) else {}
+					merged["patient_zero"] = {
+						"voucher_no": merged.get("voucher"),
+						"posting_datetime": (
+							(pz or {}).get("posting_datetime")
+							or merged.get("posting_datetime")
+							or f"{merged.get('posting_date') or ''} {merged.get('posting_time') or ''}".strip()
+						),
+						"item_code": merged.get("item"),
+						"warehouse": merged.get("warehouse"),
+						"batch": merged.get("batch"),
+						"reason": "circular_earliest_root",
+					}
 					merged["status"] = STATUS_RECONSTRUCTABLE
 					merged["eligible"] = True
 					merged["dependency"] = "circular_earliest_root"
@@ -48,6 +60,8 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 				cache = {"rows_by_voucher": {voucher: merged}} if voucher else {}
 				assert_ready(merged, cache=cache)
 				patient = merged.get("patient_zero") or {}
+				if isinstance(patient, str):
+					patient = {"voucher_no": patient}
 				classified_rows.append((raw, merged, patient))
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})

@@ -46,7 +46,20 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 	if str(row.get("dependency") or row.get("blocked_because") or "") == "circular_earliest_root":
 		classified["dependency"] = "circular_earliest_root"
 		classified["blocked_because"] = "circular_earliest_root"
-		classified["patient_zero"] = classified.get("voucher") or row.get("voucher")
+		pz = row.get("patient_zero") if isinstance(row.get("patient_zero"), dict) else {}
+		classified["patient_zero"] = {
+			"voucher_no": classified.get("voucher") or row.get("voucher"),
+			"posting_datetime": (
+				(pz or {}).get("posting_datetime")
+				or classified.get("posting_datetime")
+				or row.get("posting_datetime")
+				or f"{row.get('posting_date') or ''} {row.get('posting_time') or ''}".strip()
+			),
+			"item_code": classified.get("item") or row.get("item"),
+			"warehouse": classified.get("warehouse") or row.get("warehouse"),
+			"batch": classified.get("batch") or row.get("batch"),
+			"reason": "circular_earliest_root",
+		}
 		classified["status"] = "RECONSTRUCTABLE"
 		classified["eligible"] = True
 	# Prefer scan-stamped EXACT expected when present.
