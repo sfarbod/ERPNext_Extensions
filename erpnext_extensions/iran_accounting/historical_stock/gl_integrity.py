@@ -32,7 +32,8 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		return {"voucher": voucher_no, "gl_class": G2_MISSING, "status": G2_MISSING}
 	gl = frappe.db.sql(
 		"""
-		SELECT name, account, debit, credit, cost_center, is_cancelled
+		SELECT name, account, debit, credit, cost_center, project, against, party, party_type,
+		       is_cancelled
 		FROM `tabGL Entry`
 		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
 		""",
@@ -54,10 +55,31 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		klass = G1_ECONOMICALLY_WRONG
 	else:
 		klass = G0_HEALTHY
+
+	# Phase 2 role: root vs downstream / waiting
+	from erpnext_extensions.iran_accounting.historical_stock import (
+		GL_DOWNSTREAM,
+		GL_MANUAL,
+		GL_ROOT,
+		GL_WAITING_RATE,
+		GL_WAITING_REPLAY,
+		GL_WAITING_SLE,
+	)
+
+	if poisoned or klass == G4_POISONED_SLE:
+		role = GL_WAITING_SLE
+	elif klass == G0_HEALTHY:
+		role = G0_HEALTHY
+	elif klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED):
+		role = GL_ROOT
+	else:
+		role = GL_MANUAL
+
 	return {
 		"topic": "GL",
 		"voucher": voucher_no,
 		"gl_class": klass,
+		"gl_role": role,
 		"status": klass,
 		"stored_debit": debit,
 		"stored_credit": credit,
@@ -65,14 +87,27 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		"expected_credit": expected,
 		"difference": abs(debit - credit) if klass == G3_UNBALANCED else abs(gl_inventory - expected),
 		"reason": klass,
-		"eligible": klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED, G4_POISONED_SLE),
+		"eligible": klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED) and not poisoned,
 		"confidence": CONFIDENCE_LIKELY if klass == G1_ECONOMICALLY_WRONG else CONFIDENCE_EXACT,
 		"gl_rows": len(gl),
+		"sle_poisoned": bool(poisoned),
+		"is_root": role == GL_ROOT,
 		"dimensions": [
-			{"account": r.account, "debit": r.debit, "credit": r.credit, "cost_center": r.cost_center}
+			{
+				"account": r.account,
+				"debit": r.debit,
+				"credit": r.credit,
+				"cost_center": r.cost_center,
+				"project": r.project,
+				"party": r.party,
+				"party_type": r.party_type,
+			}
 			for r in gl
 		],
+		"has_stock_adjustment": any("Stock Adjustment" in str(r.account or "") for r in gl),
+		"has_round_off": any("Round Off" in str(r.account or "") for r in gl),
 	}
+
 
 
 def scan_gl_integrity(
@@ -165,10 +200,14 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
 
 	planned = attach_plan(preview)
-	if planned["planner_status"] != "READY":
+	from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
+
+	if planned["planner_status"] not in READY_STATUSES and planned["planner_status"] != "READY":
 		return {**planned, "dry_run": dry_run, "written": False, "blocked": True}
 	if dry_run:
 		return {**planned, "dry_run": True, "written": False}
+	# Capture before rows for dimension verify
+	before_dims = list(preview.get("dimensions") or [])
 	se = frappe.get_doc("Stock Entry", voucher_no)
 	from erpnext.accounts.utils import repost_gle_for_stock_vouchers
 
@@ -180,7 +219,24 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 	after = classify_stock_entry_gl(voucher_no)
 	if after["gl_class"] == G3_UNBALANCED:
 		frappe.throw(f"GL rebuild failed: {voucher_no} still unbalanced")
-	return {**after, "written": True, "before": preview}
+	return {
+		**after,
+		"written": True,
+		"before": preview,
+		"before_dimensions": before_dims,
+		"dimension_cost_centers_preserved": _dims_field_ok(before_dims, after.get("dimensions"), "cost_center"),
+		"no_unexpected_stock_adjustment": not after.get("has_stock_adjustment")
+		or any("Stock Adjustment" in str(d.get("account") or "") for d in before_dims),
+		"no_unexpected_round_off": not after.get("has_round_off")
+		or any("Round Off" in str(d.get("account") or "") for d in before_dims),
+	}
+
+
+def _dims_field_ok(before, after, field) -> bool:
+	b = sorted(str(d.get(field) or "") for d in (before or []) if d.get(field))
+	a = sorted(str(d.get(field) or "") for d in (after or []) if d.get(field))
+	# Soft: all before values still present
+	return all(x in a for x in b)
 
 
 def _voucher_has_poison_sle(voucher_no: str) -> bool:
