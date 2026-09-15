@@ -33,9 +33,20 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 			try:
 				classified = classify_zero_row(_load_detail(raw))
 				merged = {**classified, **{k: v for k, v in raw.items() if v not in (None, "")}}
+				from erpnext_extensions.iran_accounting.historical_stock import STATUS_RECONSTRUCTABLE
 				from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
 
-				assert_ready(merged)
+				# Circular earliest-root election is a planner stamp; re-classify alone
+				# would re-block as DEPENDENCY_REPAIR_REQUIRED without the peer row.
+				if str(raw.get("dependency") or raw.get("blocked_because") or "") == "circular_earliest_root":
+					merged["patient_zero"] = merged.get("voucher")
+					merged["status"] = STATUS_RECONSTRUCTABLE
+					merged["eligible"] = True
+					merged["dependency"] = "circular_earliest_root"
+					merged["confidence"] = merged.get("confidence") or raw.get("confidence")
+				voucher = merged.get("voucher")
+				cache = {"rows_by_voucher": {voucher: merged}} if voucher else {}
+				assert_ready(merged, cache=cache)
 				patient = merged.get("patient_zero") or {}
 				classified_rows.append((raw, merged, patient))
 			except Exception as exc:

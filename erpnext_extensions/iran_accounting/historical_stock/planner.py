@@ -546,7 +546,11 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	if status == Z0_LEGITIMATE_ZERO:
 		return _not_ready(decision, man_status, "Z0 legitimate zero — no repair")
 	# Resolve patient-zero waits that are only engine limitations.
-	if patient and voucher and patient != voucher:
+	if str(row.get("dependency") or row.get("blocked_because") or "") == "circular_earliest_root":
+		patient = None
+		decision["patient_zero"] = voucher
+		decision["dependency"] = "circular_earliest_root"
+	elif patient and voucher and patient != voucher:
 		if _rate_patient_cleared(patient, cache):
 			patient = None
 			decision["patient_zero"] = voucher

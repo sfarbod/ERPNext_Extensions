@@ -42,6 +42,17 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 	# Ensure proposed_rate present for writers
 	classified["proposed_rate"] = expected
 	classified.setdefault("topic", "WRONG_RATE")
+	# Carry planner circular-root election into writers (re-classify alone loses it).
+	if str(row.get("dependency") or row.get("blocked_because") or "") == "circular_earliest_root":
+		classified["dependency"] = "circular_earliest_root"
+		classified["blocked_because"] = "circular_earliest_root"
+		classified["patient_zero"] = classified.get("voucher") or row.get("voucher")
+		classified["status"] = "RECONSTRUCTABLE"
+		classified["eligible"] = True
+	# Prefer scan-stamped EXACT expected when present.
+	if row.get("proposed_rate") and abs(flt(row.get("proposed_rate"))) > RATE_EPS:
+		classified["proposed_rate"] = flt(row.get("proposed_rate"))
+		expected = classified["proposed_rate"]
 
 	if dry_run:
 		preview = repair_wrong_rate_selected([classified], dry_run=True)
