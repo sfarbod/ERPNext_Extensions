@@ -1,0 +1,194 @@
+# Copyright (c) 2026, ERPNext Extensions contributors
+"""Wrong Rate controlled apply with residual verify + identity replay."""
+
+from __future__ import annotations
+
+from time import perf_counter
+
+import frappe
+from frappe.utils import flt
+
+from erpnext_extensions.iran_accounting.historical_stock import HISTORICAL_REPAIR_FLAG, RATE_EPS
+from erpnext_extensions.iran_accounting.historical_stock.reconstruct import repair_wrong_rate_selected
+from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine import (
+	RATE_REPAIR_COMPLETE,
+	READY_WRONG_RATE,
+)
+from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.classifier import (
+	classify_wrong_rate_row,
+)
+from erpnext_extensions.iran_accounting.stock_posting_order.replay import replay_item_warehouse
+
+
+def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
+	"""Apply one EXACT wrong-rate root; verify outgoing/incoming matches expected."""
+	t0 = perf_counter()
+	classified = classify_wrong_rate_row(row)
+	if classified.get("rate_status") != READY_WRONG_RATE and not (
+		classified.get("eligible") and classified.get("confidence") == "EXACT"
+	):
+		return {
+			"ok": False,
+			"aborted": True,
+			"dry_run": dry_run,
+			"reason": f"not READY_WRONG_RATE ({classified.get('rate_status')})",
+			"classified": {k: classified.get(k) for k in ("rate_status", "rate_bucket", "expected_source")},
+		}
+
+	expected = flt(classified.get("expected_value") or classified.get("proposed_rate"))
+	if abs(expected) <= RATE_EPS:
+		return {"ok": False, "aborted": True, "dry_run": dry_run, "reason": "expected rate is zero — refuse"}
+
+	# Ensure proposed_rate present for writers
+	classified["proposed_rate"] = expected
+	classified.setdefault("topic", "WRONG_RATE")
+
+	if dry_run:
+		preview = repair_wrong_rate_selected([classified], dry_run=True)
+		return {
+			"ok": True,
+			"dry_run": True,
+			"voucher": classified.get("voucher"),
+			"item": classified.get("item"),
+			"warehouse": classified.get("warehouse"),
+			"current": classified.get("current_value"),
+			"expected": expected,
+			"source": classified.get("expected_source"),
+			"surface": classified.get("surface"),
+			"preview": {"aborted": preview.get("aborted"), "blocked": preview.get("blocked"), "sle_preview": bool(preview.get("sle_preview"))},
+			"elapsed_seconds": round(perf_counter() - t0, 3),
+		}
+
+	frappe.flags[HISTORICAL_REPAIR_FLAG] = True
+	sp = f"wr_{frappe.generate_hash(length=8)}"
+	frappe.db.savepoint(sp)
+	try:
+		out = repair_wrong_rate_selected([classified], dry_run=False)
+		if out.get("aborted") or out.get("blocked"):
+			frappe.db.rollback(save_point=sp)
+			return {"ok": False, "aborted": True, "dry_run": False, "out": out}
+
+		# Explicit SLE rate write when surface=SLE (implied SVD → txn rate)
+		if classified.get("surface") == "SLE" or classified.get("sle"):
+			_write_sle_expected(classified, expected)
+
+		# Identity replay from this voucher datetime when warehouse known
+		replay = None
+		item, wh = classified.get("item"), classified.get("warehouse")
+		from_dt = classified.get("posting_datetime") or _voucher_dt(classified.get("voucher"))
+		if item and wh and from_dt:
+			replay = replay_item_warehouse(
+				item,
+				wh,
+				from_dt,
+				ignore_inversion_artifacts=True,
+				write_vouchers=None,
+				allow_unrelated_poison=False,
+			)
+			if not replay.get("ok"):
+				# soft: keep rate write if replay blocked by unrelated poison — still verify rate
+				replay = {**replay, "soft_fail": True}
+
+		# Residual verify
+		after_rate = _read_current_rate(classified)
+		cleared = abs(after_rate - expected) <= 1.0 or (
+			abs(after_rate) > RATE_EPS and abs(flt(classified.get("current_value"))) <= RATE_EPS
+		)
+		# For implied_svd: success if outgoing/incoming now equals implied
+		if classified.get("expected_source") == "implied_svd":
+			cleared = abs(after_rate - expected) <= 1.0
+
+		if not cleared:
+			frappe.db.rollback(save_point=sp)
+			return {
+				"ok": False,
+				"aborted": True,
+				"dry_run": False,
+				"reason": "residual_not_cleared",
+				"expected": expected,
+				"after_rate": after_rate,
+			}
+
+		# Selective GL
+		gl = None
+		try:
+			from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import rebuild_gl_for_voucher
+
+			gl = rebuild_gl_for_voucher(classified.get("voucher"), dry_run=False)
+		except Exception as exc:
+			gl = {"skipped": True, "error": str(exc)}
+
+		frappe.db.commit()
+		return {
+			"ok": True,
+			"dry_run": False,
+			"voucher": classified.get("voucher"),
+			"item": item,
+			"warehouse": wh,
+			"expected": expected,
+			"after_rate": after_rate,
+			"cleared": True,
+			"status": RATE_REPAIR_COMPLETE,
+			"replay": {k: (replay or {}).get(k) for k in ("ok", "status", "written", "touched_vouchers", "reason")},
+			"gl": gl,
+			"elapsed_seconds": round(perf_counter() - t0, 3),
+			"riv": "NOT_INVOKED",
+		}
+	except Exception as exc:
+		frappe.db.rollback(save_point=sp)
+		return {"ok": False, "aborted": True, "error": str(exc)}
+	finally:
+		frappe.flags[HISTORICAL_REPAIR_FLAG] = False
+
+
+def _write_sle_expected(row: dict, expected: float) -> None:
+	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+		sync_sabb_from_sle,
+		write_sle_transaction_rates,
+	)
+
+	# Primary: derive from SVD (idempotent with implied_svd)
+	write_sle_transaction_rates(row.get("voucher"), row.get("item"))
+	# Ensure rate matches expected when SVD implies it
+	sle_name = row.get("sle")
+	if sle_name:
+		qty = flt(frappe.db.get_value("Stock Ledger Entry", sle_name, "actual_qty") or 0)
+		payload = {}
+		if qty < 0:
+			payload["outgoing_rate"] = abs(expected)
+			payload["incoming_rate"] = 0
+		elif qty > 0:
+			payload["incoming_rate"] = abs(expected)
+			payload["outgoing_rate"] = 0
+		if payload:
+			frappe.db.set_value("Stock Ledger Entry", sle_name, payload, update_modified=False)
+	sync_sabb_from_sle(row.get("voucher"), row.get("item"))
+
+
+def _read_current_rate(row: dict) -> float:
+	sle_name = row.get("sle")
+	if sle_name:
+		sle = frappe.db.get_value(
+			"Stock Ledger Entry",
+			sle_name,
+			["actual_qty", "incoming_rate", "outgoing_rate"],
+			as_dict=True,
+		)
+		if sle:
+			return flt(sle.outgoing_rate if flt(sle.actual_qty) < 0 else sle.incoming_rate)
+	# SE detail
+	vd = row.get("voucher_detail")
+	if vd:
+		return flt(frappe.db.get_value("Stock Entry Detail", vd, "basic_rate") or 0)
+	return 0.0
+
+
+def _voucher_dt(voucher):
+	if not voucher:
+		return None
+	from frappe.utils import get_datetime
+
+	row = frappe.db.get_value("Stock Entry", voucher, ["posting_date", "posting_time"], as_dict=True)
+	if not row:
+		return None
+	return get_datetime(f"{row.posting_date} {row.posting_time or '00:00:00'}")
