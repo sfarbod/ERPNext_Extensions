@@ -57,16 +57,24 @@ def pick_reconstruction(sources: dict[str, float], *, corroborating: dict[str, f
 	rate = flt(sources[primary])
 	others = [n for n in tried[1:] if abs(flt(sources[n]) - rate) <= 1]
 	disagree = [n for n in tried[1:] if abs(flt(sources[n]) - rate) > 1]
-	if others and not disagree:
+	if disagree:
+		return {
+			"expected": rate,
+			"source": primary,
+			"confidence": CONFIDENCE_AMBIGUOUS,
+			"sources_tried": tried,
+			"disagree": disagree,
+		}
+	if others:
 		confidence = CONFIDENCE_EXACT
 		source = f"{primary}+{others[0]}"
-	elif primary in ("transfer_source", "implied_svd") and not disagree:
+	elif primary in ("transfer_source", "implied_svd"):
 		confidence = CONFIDENCE_EXACT
 		source = primary
 	elif primary == "version":
 		confidence = CONFIDENCE_LIKELY
 		source = primary
-	elif primary in ("previous_healthy_sle", "batch_inward", "manufacture_pool") and not disagree:
+	elif primary in ("previous_healthy_sle", "batch_inward", "manufacture_pool"):
 		confidence = CONFIDENCE_LIKELY
 		source = primary
 	else:

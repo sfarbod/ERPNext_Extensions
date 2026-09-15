@@ -60,6 +60,7 @@ RECONSTRUCTION_PRIORITY = (
 	"previous_healthy_sle",
 	"batch_inward",
 	"transfer_source",
+	"implied_svd",
 	"manufacture_pool",
 	"purchase_receipt",
 	"stock_reconciliation",
