@@ -81,15 +81,86 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	i4_n = int(i4.get("count") or 0) or _i4_leftover()
 
 	def _ready_n(result):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
+
 		return sum(
 			1
 			for r in (result.get("rows") or [])
-			if r.get("planner_status") == "READY" and (r.get("sql_updates") or 0) > 0
+			if (
+				r.get("planner_status") in READY_STATUSES
+				or str(r.get("planner_status") or "").startswith("READY")
+			)
+			and (r.get("sql_updates") or 0) > 0
 		)
 
 	ready_i4 = sum(
 		1 for r in (i4.get("rows") or []) if r.get("eligible") or r.get("i4_status") == "READY_I4"
 	)
+	# Phase 2 maturity KPIs
+	wr_ready = sum(
+		1
+		for r in (wrong.get("rows") or [])
+		if str(r.get("planner_status") or "") == "READY_WRONG_RATE" and (r.get("sql_updates") or 0) > 0
+	)
+	wr_waiting = sum(
+		1
+		for r in (wrong.get("rows") or [])
+		if str(r.get("planner_status") or "")
+		in ("WAITING_PATIENT_ZERO", "WAITING_RATE_DEPENDENCY", "WAITING_RATE_REPAIR")
+	)
+	wr_manual = sum(
+		1
+		for r in (wrong.get("rows") or [])
+		if str(r.get("planner_status") or "") in ("RATE_MANUAL", "RATE_AMBIGUOUS", "MANUAL", "AMBIGUOUS")
+	)
+	riv_by = riv.get("by_status") or {}
+	riv_safe = int(riv_by.get("SAFE_TO_RETRY") or 0)
+	riv_waiting = sum(
+		int(riv_by.get(k) or 0)
+		for k in (
+			"WAITING_RATE",
+			"WAITING_SLE",
+			"WAITING_GL",
+			"WAITING_PATIENT_ZERO",
+			"WAITING_REPLAY",
+			"WAITING_FOR_RATE_REPAIR",
+			"WAITING_FOR_SLE_REPAIR",
+			"WAITING_FOR_GL_REPAIR",
+		)
+	)
+	riv_unsafe = sum(
+		int(riv_by.get(k) or 0)
+		for k in (
+			"NEGATIVE_STOCK",
+			"RAW_MATERIAL_COST",
+			"VALUATION_INTEGRITY",
+			"PERMANENTLY_UNSAFE",
+			"UNSAFE",
+			"UNKNOWN",
+		)
+	)
+	gl_ready = sum(
+		1
+		for r in (gl.get("rows") or [])
+		if r.get("eligible")
+		and str(r.get("planner_status") or "").startswith("READY")
+		and (r.get("sql_updates") or 0) > 0
+		and not r.get("sle_poisoned")
+	)
+	gl_waiting = sum(
+		1
+		for r in (gl.get("rows") or [])
+		if "WAITING" in str(r.get("planner_status") or "")
+		or r.get("gl_role") in ("WAITING_SLE", "WAITING_RATE", "WAITING_REPLAY")
+		or r.get("sle_poisoned")
+	)
+	gl_manual = sum(
+		1
+		for r in (gl.get("rows") or [])
+		if str(r.get("planner_status") or "") in ("MANUAL", "NO_REPAIR_PATH", "BLOCKED")
+		and not r.get("eligible")
+	)
+
 	repairable = (
 		_ready_n(posting)
 		+ _ready_n(zero)
@@ -138,6 +209,15 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"WAITING_I4": int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0),
 		"MANUAL_I4": int(i4_by.get("MANUAL") or 0),
 		"REPLAY_REQUIRED_I4": int(i4_by.get("I4_REPLAY_REQUIRED") or 0),
+		"Wrong Rate READY": wr_ready,
+		"Wrong Rate WAITING": wr_waiting,
+		"Wrong Rate MANUAL": wr_manual,
+		"RIV SAFE": riv_safe,
+		"RIV WAITING": riv_waiting,
+		"RIV UNSAFE": riv_unsafe,
+		"GL READY": gl_ready,
+		"GL WAITING": gl_waiting,
+		"GL MANUAL": gl_manual,
 		"Repairable": repairable,
 		"Manual": (wrong.get("manual") or 0) + likely,
 		"Ambiguous": (wrong.get("ambiguous") or 0) + ambiguous,

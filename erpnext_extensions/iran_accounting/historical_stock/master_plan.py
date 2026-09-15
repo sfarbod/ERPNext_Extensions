@@ -20,13 +20,14 @@ COMPANY_DEFAULT = "اسپاد فارمد دارو"
 FROM_DATE = "2026-03-21"
 
 # Class priority for operator roadmap (lower = earlier).
+# Phase 2: Wrong Rate → Failed RIV → GL after Phase 1 exhausted.
 CLASS_PRIORITY = {
-	"POSTING_ORDER": 1,
-	"I4_LEFTOVER_REPAIR": 2,
-	"ZERO_RATE": 3,
-	"WRONG_RATE": 4,
-	"FAILED_RIV": 5,
-	"GL": 6,
+	"WRONG_RATE": 1,
+	"FAILED_RIV": 2,
+	"GL": 3,
+	"I4_LEFTOVER_REPAIR": 4,
+	"ZERO_RATE": 5,
+	"POSTING_ORDER": 6,
 	"WAREHOUSE_WIDE": 7,
 }
 

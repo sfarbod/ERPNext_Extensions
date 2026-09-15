@@ -793,8 +793,73 @@ def root_cause_explorer(voucher: str, item=None, warehouse=None) -> dict:
 		"replay_order": [n["id"] for n in nodes if n.get("kind") in ("patient_zero", "replay", "current")],
 		"repair_order": [n["id"] for n in nodes if n.get("kind") == "patient_zero"][:1]
 		+ ["Replay identity", "Bin", "Selective GL", "Integrity"],
+		"phase2_repair_plan": _phase2_repair_plan(voucher, item=item, warehouse=warehouse),
 		"dependency_summary": " → ".join(n["id"] for n in nodes[:12]),
 		"message": (found.get("chains") or [{}])[0].get("message") if found.get("chains") else "No patient zero found",
+	}
+
+
+def _phase2_repair_plan(voucher, item=None, warehouse=None) -> dict:
+	"""Operator chain for Wrong Rate / Failed RIV / GL clicks."""
+	steps = []
+	riv_status = None
+	rate_status = None
+	gl_class = None
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.failed_riv import scan_failed_riv
+
+		riv = scan_failed_riv(voucher=voucher, limit=5)
+		if riv.get("rows"):
+			row = riv["rows"][0]
+			riv_status = row.get("riv_status")
+			steps.append({"stage": "Failed RIV", "status": riv_status, "riv": row.get("riv_name")})
+			if riv_status and str(riv_status).startswith("WAITING_RATE"):
+				steps.append({"stage": "Waiting", "status": "WAITING_RATE"})
+				steps.append({"stage": "Required class", "status": "Wrong Rate Patient Zero"})
+				steps.append({"stage": "Repair order", "status": "Repair Rate → Replay → GL → Retry RIV"})
+			elif riv_status == "SAFE_TO_RETRY":
+				steps.append({"stage": "Required class", "status": "SAFE_TO_RETRY"})
+				steps.append({"stage": "Repair order", "status": "Retry RIV (idempotent)"})
+	except Exception:
+		pass
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+
+		wr = scan_wrong_rates(voucher=voucher, item_code=item, warehouse=warehouse, limit=20)
+		if wr.get("rows"):
+			row = wr["rows"][0]
+			rate_status = row.get("planner_status") or row.get("rate_status")
+			steps.append(
+				{
+					"stage": "Wrong Rate",
+					"status": rate_status,
+					"bucket": row.get("mismatch_class") or row.get("rate_bucket"),
+					"patient_zero": (row.get("patient_zero") or {}).get("voucher_no")
+					if isinstance(row.get("patient_zero"), dict)
+					else row.get("patient_zero"),
+				}
+			)
+	except Exception:
+		pass
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import classify_stock_entry_gl
+
+		gl = classify_stock_entry_gl(voucher)
+		gl_class = gl.get("gl_class")
+		steps.append({"stage": "GL", "status": gl_class, "role": gl.get("gl_role")})
+		if gl.get("sle_poisoned") or gl_class == "G4_BUILT_FROM_POISONED_SLE":
+			steps.append({"stage": "Required class", "status": "WAITING_SLE — repair SLE/rate before GL"})
+		elif gl.get("eligible"):
+			steps.append({"stage": "Required class", "status": "Selective GL rebuild"})
+	except Exception:
+		pass
+	return {
+		"selected_anomaly": voucher,
+		"riv_status": riv_status,
+		"rate_status": rate_status,
+		"gl_class": gl_class,
+		"steps": steps,
+		"narrative": " → ".join(f"{s.get('stage')}:{s.get('status')}" for s in steps[:8]),
 	}
 
 

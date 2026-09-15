@@ -23,6 +23,9 @@ const KPI_ORDER = [
 	"Integrity Score",
 	"Posting Order",
 	"Wrong Rate",
+	"Wrong Rate READY",
+	"Wrong Rate WAITING",
+	"Wrong Rate MANUAL",
 	"Zero Rate",
 	"I4 Leftover",
 	"Wrong Amount",
@@ -34,7 +37,13 @@ const KPI_ORDER = [
 	"Broken Bin",
 	"Waiting Downstream Bin",
 	"Broken GL",
+	"GL READY",
+	"GL WAITING",
+	"GL MANUAL",
 	"Failed RIV",
+	"RIV SAFE",
+	"RIV WAITING",
+	"RIV UNSAFE",
 	"Patient Zero",
 	"Zero Rate Patient Zero",
 	"READY_I4",
@@ -882,15 +891,27 @@ this.btn_cluster_explorer = this._btn(
 		else if (/I4 Leftover/i.test(label)) {
 			this.switch_topic("sle");
 			if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
+		} else if (/Wrong Rate READY|Wrong Rate WAITING|Wrong Rate MANUAL/i.test(label)) {
+			this.switch_topic("zero");
+			const token = /READY/i.test(label) ? "READY_WRONG_RATE" : /WAITING/i.test(label) ? "WAITING" : "MANUAL";
+			this.$search.val(token);
 		} else if (/Zero|Wrong|Rate|Amount|Incoming|Outgoing|Average|Repairable|Manual|Ambiguous/i.test(label))
 			this.switch_topic("zero");
 		else if (/Patient Zero/i.test(label)) {
 			this.switch_topic("sle");
 			if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
 		} else if (/Bin|SABB/i.test(label)) this.switch_topic("sle");
-		else if (/GL/i.test(label)) this.switch_topic("gl");
-		else if (/RIV|Replay/i.test(label)) this.switch_topic("riv");
-		else return;
+		else if (/GL READY|GL WAITING|GL MANUAL|^Broken GL$|GL/i.test(label)) {
+			this.switch_topic("gl");
+			if (/READY/i.test(label)) this.$search.val("READY");
+			else if (/WAITING/i.test(label)) this.$search.val("WAITING");
+			else if (/MANUAL/i.test(label)) this.$search.val("MANUAL");
+		} else if (/RIV SAFE|RIV WAITING|RIV UNSAFE|RIV|Replay/i.test(label)) {
+			this.switch_topic("riv");
+			if (/SAFE/i.test(label)) this.$search.val("SAFE_TO_RETRY");
+			else if (/WAITING/i.test(label)) this.$search.val("WAITING");
+			else if (/UNSAFE/i.test(label)) this.$search.val("UNSAFE");
+		} else return;
 		if (/Amount|Valuation|Incoming|Outgoing|Average|Repairable|Manual|Ambiguous/i.test(label)) {
 			this.$search.val(label.replace("Wrong ", "").replace(" Rate", ""));
 		}
