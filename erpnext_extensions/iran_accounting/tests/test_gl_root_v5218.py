@@ -49,7 +49,7 @@ class TestGLClassifier(unittest.TestCase):
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity._voucher_has_poison_sle", return_value=False)
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
 	def test_g1_economically_wrong(self, frappe, _p):
-		frappe.db.get_value.return_value = self._se(total_outgoing_value=500, total_incoming_value=500)
+		frappe.db.get_value.return_value = self._se(total_outgoing_value=500000, total_incoming_value=500000)
 		frappe.db.sql.return_value = [
 			type("R", (), dict(account="Inv", debit=100, credit=0, cost_center="CC", project="P1", against=None, party=None, party_type=None))(),
 			type("R", (), dict(account="Exp", debit=0, credit=100, cost_center="CC", project="P1", against=None, party=None, party_type=None))(),
