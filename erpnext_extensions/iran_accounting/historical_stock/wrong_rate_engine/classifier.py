@@ -74,19 +74,15 @@ def classify_wrong_rate_row(row: dict) -> dict:
 	elif row.get("eligible") and conf == CONFIDENCE_EXACT and (
 		ps.startswith("READY") or ps == "READY" or row.get("status") == "RECONSTRUCTABLE"
 	):
-		if int(row.get("sql_updates") or 0) <= 0 and not ps.startswith("READY"):
-			rate_status = RATE_MANUAL
-		elif int(row.get("sql_updates") or 0) <= 0 and ps.startswith("READY"):
-			# Planner READY without write surface — treat as replay-required, not auto-apply
-			rate_status = RATE_REPLAY_REQUIRED
-		else:
+		# Trust planner READY_* when present; sql_updates gate is planner-owned.
+		if ps.startswith("READY") or int(row.get("sql_updates") or 0) > 0:
 			rate_status = READY_WRONG_RATE
 			if not pz_v or pz_v == voucher:
 				bucket = PATIENT_ZERO_RATE if bucket == DOWNSTREAM_RATE_SYMPTOM else bucket
-	elif ps.startswith("READY") and int(row.get("sql_updates") or 0) > 0:
-		rate_status = READY_WRONG_RATE
+		else:
+			rate_status = RATE_REPLAY_REQUIRED
 	elif ps.startswith("READY"):
-		rate_status = RATE_REPLAY_REQUIRED
+		rate_status = READY_WRONG_RATE
 	else:
 		rate_status = RATE_REPLAY_REQUIRED if row.get("eligible") else RATE_MANUAL
 
