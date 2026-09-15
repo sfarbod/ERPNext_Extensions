@@ -81,10 +81,17 @@ def apply_ready(limit=None):
 	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.campaign import (
 		apply_warehouse_campaign,
 	)
+	from erpnext_extensions.iran_accounting.historical_stock._validation.recovery_wh_joint_apply import (
+		run as joint_apply,
+	)
 
 	disc = discover_warehouse_campaigns(company=COMPANY)
 	ready = list(disc.get("ready_campaigns") or [])
-	# Prefer largest multi-pair Quarantine-style campaigns first
+	# If any campaign was voucher-merged, prefer one joint write
+	if any(c.get("n_merged") or c.get("sibling_campaigns") for c in ready) or len(ready) > 1:
+		# Shared-voucher / multi-ready → joint apply once
+		return joint_apply()
+
 	ready.sort(key=lambda c: (-int(c.get("n_pairs") or 0), -int(c.get("n_moves") or 0)))
 	if limit is not None:
 		ready = ready[: int(limit)]

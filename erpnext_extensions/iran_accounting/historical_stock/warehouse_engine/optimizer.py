@@ -24,6 +24,7 @@ from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine import
 	READY_WAREHOUSE_REPLAY,
 	UNSAFE_CROSS_IDENTITY,
 	WAREHOUSE_AMBIGUOUS,
+	WAREHOUSE_CAMPAIGN_COMPLETE,
 	WAREHOUSE_CAMPAIGN_REQUIRED,
 	WAREHOUSE_REAL_SHORTAGE,
 )
@@ -88,7 +89,15 @@ def discover_warehouse_campaigns(
 	for (item, wh), pairs in sorted(by_id.items(), key=lambda x: (-len(x[1]), x[0][0])):
 		campaigns.append(optimize_identity_campaign(pairs, item=item, warehouse=wh))
 
-	ready = [c for c in campaigns if c.get("planner_status") == READY_WAREHOUSE_CAMPAIGN]
+	# Merge campaigns that share moved vouchers (prevents ±2s oscillation).
+	campaigns = _merge_shared_voucher_campaigns(campaigns)
+
+	ready = [
+		c
+		for c in campaigns
+		if c.get("planner_status") in (READY_WAREHOUSE_CAMPAIGN, READY_WAREHOUSE_REPLAY)
+		and c.get("eligible")
+	]
 	shortage = [c for c in campaigns if c.get("planner_status") == WAREHOUSE_REAL_SHORTAGE]
 	ambiguous = [c for c in campaigns if c.get("planner_status") == WAREHOUSE_AMBIGUOUS]
 	required = [c for c in campaigns if c.get("planner_status") == WAREHOUSE_CAMPAIGN_REQUIRED]
@@ -173,9 +182,37 @@ def optimize_identity_campaign(pairs: list[dict], *, item: str, warehouse: str) 
 	expansion = expand_cross_identity_times(proposed, from_dt, max_rounds=10)
 	proposed = expansion["proposed_times"]
 	move_rows = _moves_from_proposed(proposed, move_rows)
+	# Drop no-op moves already matching live posting_datetime (±0.5s)
+	proposed, move_rows, noop_notes = _drop_noop_moves(proposed, move_rows)
+	synth_notes = list(synth_notes) + list(expansion.get("notes") or []) + noop_notes
 	analysis["affected_vouchers"] = sorted(proposed.keys())
 	analysis["moves"] = move_rows
-	synth_notes = list(synth_notes) + list(expansion.get("notes") or [])
+
+	if not proposed:
+		return _campaign_result(
+			item,
+			warehouse,
+			pairs,
+			graph,
+			analysis,
+			sim={"ok": True, "reason": "already_ordered", "row_count": 0, "final_qty_unchanged": True, "idempotent": True, "negative_qty_vouchers": [], "negative_incoming_vouchers": [], "exploded_rate_vouchers": [], "expected_bin": {}, "expected_gl_impact": "none"},
+			decision={
+				"planner_status": "WAREHOUSE_CAMPAIGN_COMPLETE",
+				"eligible": False,
+				"ok": False,
+				"reason": "proposed times already match live ledger — no warehouse campaign write needed",
+				"required_action": "None",
+				"estimated_sql": 0,
+				"estimated_runtime_seconds": 0,
+				"affected_vouchers": [],
+				"affected_sle": [],
+				"checks": [],
+			},
+			proposed=proposed,
+			move_rows=move_rows,
+			synth_notes=synth_notes,
+			expansion=expansion,
+		)
 
 	sim = simulate_warehouse_replay(item, warehouse, from_dt, proposed_times=proposed)
 	neg = sim.get("negative_qty_vouchers") or []
@@ -301,6 +338,24 @@ def expand_cross_identity_times(proposed: dict, from_dt, *, max_rounds: int = 10
 			for p in pos:
 				if p.voucher_no in proposed:
 					latest = max(latest, proposed[p.voucher_no])
+			# Skip no-op delays: voucher already at/after supply in proposed map
+			# or already at/after supply in the live ledger.
+			existing = proposed.get(vn)
+			if existing and existing >= latest:
+				continue
+			cur_row = frappe.db.sql(
+				"""
+				SELECT posting_datetime FROM `tabStock Ledger Entry`
+				WHERE voucher_no=%s AND is_cancelled=0
+				ORDER BY posting_datetime DESC LIMIT 1
+				""",
+				(vn,),
+			)
+			if cur_row:
+				cur_dt = get_datetime(cur_row[0][0])
+				if cur_dt >= latest:
+					proposed[vn] = cur_dt
+					continue
 			bump += 1
 			new_t = latest + timedelta(seconds=1 + bump)
 			notes.append(f"R{round_i}: delay {vn} on {it}/{wh} → {new_t}")
@@ -391,6 +446,105 @@ def verify_touched_identities_from_times(proposed: dict, from_dt) -> dict:
 		),
 		"blocker_status": None if all_clear else UNSAFE_CROSS_IDENTITY,
 	}
+
+
+def _merge_shared_voucher_campaigns(campaigns: list[dict]) -> list[dict]:
+	"""Union-find merge of eligible campaigns that share proposed voucher keys."""
+	eligible = [
+		c
+		for c in campaigns
+		if c.get("eligible")
+		and c.get("planner_status") in (READY_WAREHOUSE_CAMPAIGN, READY_WAREHOUSE_REPLAY)
+	]
+	others = [c for c in campaigns if c not in eligible]
+	if len(eligible) <= 1:
+		return campaigns
+
+	parent = {i: i for i in range(len(eligible))}
+
+	def find(i):
+		while parent[i] != i:
+			parent[i] = parent[parent[i]]
+			i = parent[i]
+		return i
+
+	def union(a, b):
+		ra, rb = find(a), find(b)
+		if ra != rb:
+			parent[rb] = ra
+
+	voucher_owner: dict[str, int] = {}
+	for i, c in enumerate(eligible):
+		for doc in (c.get("proposed_times") or {}):
+			if doc in voucher_owner:
+				union(i, voucher_owner[doc])
+			else:
+				voucher_owner[doc] = i
+
+	groups: dict[int, list[dict]] = defaultdict(list)
+	for i, c in enumerate(eligible):
+		groups[find(i)].append(c)
+
+	merged = []
+	for members in groups.values():
+		if len(members) == 1:
+			merged.append(members[0])
+			continue
+		# Rebuild from combined pairs
+		all_pairs = []
+		for m in members:
+			all_pairs.extend(m.get("pairs") or [])
+		# Use earliest identity as anchor; optimize_identity_campaign on combined
+		# pairs spanning multiple identities is not supported — keep members but
+		# mark as needing joint apply and attach shared voucher set.
+		shared = sorted({doc for m in members for doc in (m.get("proposed_times") or {})})
+		anchor = members[0]
+		anchor = dict(anchor)
+		anchor["merged_from"] = [m.get("campaign_id") for m in members]
+		anchor["merged_items"] = [m.get("item") for m in members]
+		anchor["shared_vouchers"] = shared
+		anchor["n_merged"] = len(members)
+		anchor["reason"] = (
+			(anchor.get("reason") or "")
+			+ f" | merged {len(members)} campaigns sharing vouchers"
+		)
+		# Attach sibling campaigns for joint apply
+		anchor["sibling_campaigns"] = members[1:]
+		merged.append(anchor)
+		# Drop siblings from top-level ready list (they're under anchor)
+	return merged + others
+
+
+def _drop_noop_moves(proposed: dict, move_rows: list[dict]) -> tuple[dict, list[dict], list[str]]:
+	"""Remove proposed times that already match the live ledger."""
+	import frappe
+
+	kept = {}
+	notes = []
+	for doc, dt in (proposed or {}).items():
+		dt = get_datetime(dt)
+		cur = frappe.db.sql(
+			"""
+			SELECT posting_datetime FROM `tabStock Ledger Entry`
+			WHERE voucher_no=%s AND is_cancelled=0
+			ORDER BY posting_datetime LIMIT 1
+			""",
+			(doc,),
+		)
+		if cur:
+			cur_dt = get_datetime(cur[0][0])
+			if abs((cur_dt - dt).total_seconds()) < 0.5:
+				notes.append(f"noop {doc} already at {cur_dt}")
+				continue
+		kept[doc] = dt
+	by_doc = {m.get("document"): m for m in (move_rows or []) if m.get("document")}
+	moves = []
+	for doc, dt in kept.items():
+		row = dict(by_doc.get(doc) or {"document": doc, "old": None, "synthesized": True})
+		row["document"] = doc
+		row["new"] = dt
+		moves.append(row)
+	return kept, moves, notes
 
 
 def _moves_from_proposed(proposed: dict, prior_moves: list[dict]) -> list[dict]:
