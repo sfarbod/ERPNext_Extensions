@@ -20,15 +20,15 @@ COMPANY_DEFAULT = "اسپاد فارمد دارو"
 FROM_DATE = "2026-03-21"
 
 # Class priority for operator roadmap (lower = earlier).
-# Dependency-first recovery: Posting Order → Zero → Wrong → I4 → Warehouse → downstream.
+# Recovery loop: Warehouse → Posting Order → Zero → Wrong → I4 → GL → Failed RIV.
 CLASS_PRIORITY = {
-	"POSTING_ORDER": 1,
-	"ZERO_RATE": 2,
-	"WRONG_RATE": 3,
-	"I4_LEFTOVER_REPAIR": 4,
-	"WAREHOUSE_WIDE": 5,
-	"FAILED_RIV": 6,
-	"GL": 7,
+	"WAREHOUSE_WIDE": 1,
+	"POSTING_ORDER": 2,
+	"ZERO_RATE": 3,
+	"WRONG_RATE": 4,
+	"I4_LEFTOVER_REPAIR": 5,
+	"GL": 6,
+	"FAILED_RIV": 7,
 }
 
 

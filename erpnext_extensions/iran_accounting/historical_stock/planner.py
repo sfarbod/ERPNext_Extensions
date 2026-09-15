@@ -665,7 +665,7 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 		decision["patient_zero"] = voucher
 		decision["dependency"] = "circular_earliest_root"
 	elif patient and voucher and patient != voucher:
-		if _rate_patient_cleared(patient, cache):
+		if _rate_patient_cleared(patient, cache, row=row):
 			patient = None
 			decision["patient_zero"] = voucher
 		elif _circular_earliest_is_self(voucher, patient, cache, row):
@@ -694,7 +694,7 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	if row.get("surface") == "SLE" and not patient:
 		patient = _lookup_patient(row, cache)
 		if patient and patient != voucher:
-			if _rate_patient_cleared(patient, cache):
+			if _rate_patient_cleared(patient, cache, row=row):
 				patient = None
 			elif _circular_earliest_is_self(voucher, patient, cache, row):
 				patient = None
@@ -744,29 +744,110 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	return _not_ready(decision, fallback, f"Row not eligible ({status or 'unknown'})")
 
 
-def _rate_patient_cleared(patient: str, cache: dict) -> bool:
-	"""True when the named patient-zero no longer needs a rate repair."""
+def _rate_patient_cleared(patient: str, cache: dict, row: dict | None = None) -> bool:
+	"""True when the named patient-zero no longer needs a rate repair.
+
+	Also clears when the patient is an external voucher (Stock Reconciliation /
+	Purchase Receipt / etc.) whose SLE already carries a healthy rate that
+	matches the dependent's EXACT reconstruction — otherwise WAITING chains
+	stall forever on OUT_OF_SCAN roots the Wrong Rate scan cannot classify.
+	"""
 	by_v = cache.get("rows_by_voucher") or {}
 	prow = by_v.get(patient)
-	if not prow:
+	if prow:
+		ps = str(prow.get("planner_status") or "")
+		status = str(prow.get("status") or "")
+		source = str(prow.get("source") or prow.get("source_of_truth") or "")
+		if ps == PLAN_RATE_REPAIR_COMPLETE or status == STATUS_RATE_REBUILD_COMPLETE:
+			return True
+		if source == "already_valued":
+			return True
+		cur = flt(prow.get("current") if prow.get("current") is not None else prow.get("current_rate"))
+		exp = flt(prow.get("expected") if prow.get("expected") is not None else prow.get("proposed_rate"))
+		if abs(exp) > RATE_EPS and abs(cur - exp) <= 1 and prow.get("confidence") == CONFIDENCE_EXACT:
+			# Rates already match — amount-only / complete surface.
+			if status == STATUS_RATE_REBUILD_COMPLETE or source == "already_valued":
+				return True
+			flags = prow.get("flags") or []
+			if flags and set(flags) <= {"WRONG_AMOUNT"}:
+				return True
 		return False
-	ps = str(prow.get("planner_status") or "")
-	status = str(prow.get("status") or "")
-	source = str(prow.get("source") or prow.get("source_of_truth") or "")
-	if ps == PLAN_RATE_REPAIR_COMPLETE or status == STATUS_RATE_REBUILD_COMPLETE:
-		return True
-	if source == "already_valued":
-		return True
-	cur = flt(prow.get("current") if prow.get("current") is not None else prow.get("current_rate"))
-	exp = flt(prow.get("expected") if prow.get("expected") is not None else prow.get("proposed_rate"))
-	if abs(exp) > RATE_EPS and abs(cur - exp) <= 1 and prow.get("confidence") == CONFIDENCE_EXACT:
-		# Rates already match — amount-only / complete surface.
-		if status == STATUS_RATE_REBUILD_COMPLETE or source == "already_valued":
-			return True
-		flags = prow.get("flags") or []
-		if flags and set(flags) <= {"WRONG_AMOUNT"}:
-			return True
-	return False
+	# Patient absent from scan — probe ledger directly (RECO / PRE / PI).
+	return _external_patient_rate_healthy(patient, cache, row=row)
+
+
+def _voucher_type_of(patient: str) -> str | None:
+	import frappe
+
+	vt = frappe.db.sql(
+		"""
+		SELECT voucher_type FROM `tabStock Ledger Entry`
+		WHERE voucher_no=%s AND is_cancelled=0
+		LIMIT 1
+		""",
+		patient,
+	)
+	return (vt[0][0] if vt else None) or None
+
+
+def _sle_rates_for_voucher_item(patient: str, item: str, warehouse: str | None) -> list:
+	import frappe
+
+	params: list = [patient, item]
+	wh_sql = ""
+	if warehouse:
+		wh_sql = " AND warehouse=%s"
+		params.append(warehouse)
+	return list(
+		frappe.db.sql(
+			f"""
+			SELECT actual_qty, incoming_rate, valuation_rate, stock_value_difference
+			FROM `tabStock Ledger Entry`
+			WHERE voucher_no=%s AND item_code=%s AND is_cancelled=0{wh_sql}
+			""",
+			tuple(params),
+			as_dict=True,
+		)
+		or []
+	)
+
+
+def _external_patient_rate_healthy(patient: str, cache: dict, row: dict | None = None) -> bool:
+	"""Healthy non-SE patient zero whose rate matches the dependent expectation."""
+	if not patient or not row:
+		return False
+	item = row.get("item") or row.get("item_code")
+	warehouse = row.get("warehouse") or row.get("s_warehouse") or row.get("t_warehouse")
+	expected = flt(row.get("expected") if row.get("expected") is not None else row.get("proposed_rate"))
+	if not item or abs(expected) <= RATE_EPS:
+		return False
+	key = ("pz_ext_healthy", patient, item, warehouse or "", round(expected, 6))
+	if key in cache:
+		return bool(cache[key])
+	try:
+		voucher_type = _voucher_type_of(patient) or ""
+		# Only clear when the upstream voucher is not a Stock Entry we should
+		# classify/repair inside Wrong Rate. SE roots must appear in-scan.
+		if voucher_type in ("", "Stock Entry"):
+			cache[key] = False
+			return False
+		sles = _sle_rates_for_voucher_item(patient, item, warehouse)
+		ok = False
+		tol = max(1.0, abs(expected) * 1e-6)
+		for s in sles or []:
+			incoming = flt(s.get("incoming_rate") if isinstance(s, dict) else getattr(s, "incoming_rate", 0))
+			valuation = flt(s.get("valuation_rate") if isinstance(s, dict) else getattr(s, "valuation_rate", 0))
+			rate = max(abs(incoming), abs(valuation))
+			if rate <= RATE_EPS:
+				continue
+			if abs(rate - abs(expected)) <= tol:
+				ok = True
+				break
+		cache[key] = ok
+		return ok
+	except Exception:
+		cache[key] = False
+		return False
 
 
 def _row_posting_key(row: dict) -> tuple:
