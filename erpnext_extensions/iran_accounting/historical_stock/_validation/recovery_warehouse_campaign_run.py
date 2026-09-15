@@ -22,7 +22,9 @@ def discover():
 			"n_shortage",
 			"n_ambiguous",
 			"n_campaign_required",
+			"n_oscillation_blocked",
 			"graph_summary",
+			"global_solver",
 			"elapsed_seconds",
 		)
 	}
@@ -33,12 +35,15 @@ def discover():
 			"warehouse": c.get("warehouse"),
 			"n_pairs": c.get("n_pairs"),
 			"n_moves": len(c.get("moves") or []),
+			"solver": c.get("solver"),
+			"global_planner_status": c.get("global_planner_status"),
 			"expansion_rounds": (c.get("expansion") or {}).get("rounds"),
-			"n_identities": (c.get("multi_identity") or {}).get("n_identities"),
+			"n_identities": (c.get("multi_identity") or {}).get("n_identities") or c.get("n_identities"),
 			"expected_sql": c.get("expected_sql"),
 			"expected_replay": c.get("expected_replay"),
 			"planner_status": c.get("planner_status"),
 			"reason": (c.get("reason") or "")[:160],
+			"moves": c.get("moves"),
 		}
 		for c in (out.get("ready_campaigns") or [])
 	]
@@ -47,11 +52,16 @@ def discover():
 			"item": c.get("item"),
 			"warehouse": (c.get("warehouse") or "")[:40],
 			"n_pairs": c.get("n_pairs"),
-			"status": c.get("planner_status"),
+			"status": c.get("planner_status") or c.get("global_planner_status"),
+			"solver": c.get("solver"),
 			"reason": (c.get("reason") or "")[:120],
 		}
 		for c in (out.get("campaigns") or [])
-		if c.get("planner_status") != "READY_WAREHOUSE_CAMPAIGN"
+		if not (
+			c.get("eligible")
+			and c.get("planner_status")
+			in ("READY_WAREHOUSE_CAMPAIGN", "READY_WAREHOUSE_REPLAY", "READY_GLOBAL_WAREHOUSE_SOLVER")
+		)
 	]
 	print(json.dumps(summary, ensure_ascii=False, indent=2, default=str)[:12000])
 	return out
@@ -81,23 +91,29 @@ def apply_ready(limit=None):
 	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.campaign import (
 		apply_warehouse_campaign,
 	)
-	from erpnext_extensions.iran_accounting.historical_stock._validation.recovery_wh_joint_apply import (
-		run as joint_apply,
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.global_solver import (
+		READY_GLOBAL_WAREHOUSE_SOLVER,
+		apply_global_solution,
 	)
 
 	disc = discover_warehouse_campaigns(company=COMPANY)
 	ready = list(disc.get("ready_campaigns") or [])
-	# If any campaign was voucher-merged, prefer one joint write
-	if any(c.get("n_merged") or c.get("sibling_campaigns") for c in ready) or len(ready) > 1:
-		# Shared-voucher / multi-ready → joint apply once
-		return joint_apply()
-
 	ready.sort(key=lambda c: (-int(c.get("n_pairs") or 0), -int(c.get("n_moves") or 0)))
 	if limit is not None:
 		ready = ready[: int(limit)]
+
 	results = []
 	for c in ready:
-		results.append(apply_warehouse_campaign(c, dry_run=False))
+		# Global shared-voucher solutions apply via the global solver path
+		if c.get("solver") == "global_shared_voucher" or c.get("global_planner_status") == READY_GLOBAL_WAREHOUSE_SOLVER:
+			# Restore global status for apply_global_solution eligibility check
+			sol = dict(c)
+			sol["planner_status"] = READY_GLOBAL_WAREHOUSE_SOLVER
+			sol["eligible"] = True
+			results.append(apply_global_solution(sol, dry_run=False))
+		else:
+			results.append(apply_warehouse_campaign(c, dry_run=False))
+
 	out = {
 		"n": len(results),
 		"results": [
@@ -112,13 +128,14 @@ def apply_ready(limit=None):
 					"warehouse",
 					"n_moves",
 					"n_pairs",
+					"n_identities",
 					"sql_updates_executed",
 					"elapsed_seconds",
 					"after_plan_status",
 					"after_eligible",
+					"idempotent",
 					"error",
 					"reason",
-					"idempotent_hint",
 				)
 			}
 			for r in results

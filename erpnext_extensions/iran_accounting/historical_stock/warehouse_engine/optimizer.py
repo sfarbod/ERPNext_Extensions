@@ -20,6 +20,7 @@ from time import perf_counter
 from frappe.utils import get_datetime
 
 from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine import (
+	READY_GLOBAL_WAREHOUSE_SOLVER,
 	READY_WAREHOUSE_CAMPAIGN,
 	READY_WAREHOUSE_REPLAY,
 	UNSAFE_CROSS_IDENTITY,
@@ -57,7 +58,12 @@ def discover_warehouse_campaigns(
 	company: str | None = None,
 	scan: dict | None = None,
 ) -> dict:
-	"""Discover and classify warehouse SAFE_GROUP campaigns (read-only)."""
+	"""Discover and classify warehouse SAFE_GROUP campaigns (read-only).
+
+	Shared-voucher / multi-item Stock Entry clusters are solved by the global
+	solver (one graph, one order). Isolated single-identity pairs still use the
+	per-identity optimizer.
+	"""
 	t0 = perf_counter()
 	company = company or COMPANY_DEFAULT
 	if rows is None:
@@ -81,26 +87,65 @@ def discover_warehouse_campaigns(
 		eligible.append(r)
 
 	graph = build_warehouse_universe_graph(eligible)
+
+	# Global shared-voucher solver first — kills per-item ±2s oscillation.
+	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.global_solver import (
+		solve_shared_voucher_universe,
+	)
+
+	global_out = solve_shared_voucher_universe(eligible, company=company)
+	campaigns = []
+	covered_pairs = set()
+	for sol in global_out.get("solutions") or []:
+		# Track pairs covered by any global component with multi-item link or >1 pair
+		n_multi = len(sol.get("multi_item_vouchers") or [])
+		n_pairs = int(sol.get("n_pairs") or 0)
+		use_global = n_multi > 0 or n_pairs > 1 or sol.get("planner_status") in (
+			READY_GLOBAL_WAREHOUSE_SOLVER,
+			"GLOBAL_WAREHOUSE_OSCILLATION",
+			WAREHOUSE_CAMPAIGN_COMPLETE,
+		)
+		if not use_global and n_pairs == 1 and not n_multi:
+			# Isolated single pair without multi-item voucher — leave for identity optimizer
+			continue
+		for p in sol.get("pairs") or []:
+			covered_pairs.add(
+				(
+					p.get("item") or p.get("item_code"),
+					p.get("warehouse"),
+					p.get("outbound_document"),
+				)
+			)
+		campaigns.append(_global_solution_as_campaign(sol))
+
+	# Per-identity optimizer for uncovered isolated pairs only
 	by_id: dict[tuple[str, str], list[dict]] = defaultdict(list)
 	for r in eligible:
+		key = (
+			r.get("item") or r.get("item_code"),
+			r.get("warehouse"),
+			r.get("outbound_document"),
+		)
+		if key in covered_pairs:
+			continue
 		by_id[(r.get("item") or r.get("item_code"), r.get("warehouse"))].append(r)
 
-	campaigns = []
 	for (item, wh), pairs in sorted(by_id.items(), key=lambda x: (-len(x[1]), x[0][0])):
 		campaigns.append(optimize_identity_campaign(pairs, item=item, warehouse=wh))
-
-	# Merge campaigns that share moved vouchers (prevents ±2s oscillation).
-	campaigns = _merge_shared_voucher_campaigns(campaigns)
 
 	ready = [
 		c
 		for c in campaigns
-		if c.get("planner_status") in (READY_WAREHOUSE_CAMPAIGN, READY_WAREHOUSE_REPLAY)
+		if c.get("planner_status")
+		in (READY_WAREHOUSE_CAMPAIGN, READY_WAREHOUSE_REPLAY, READY_GLOBAL_WAREHOUSE_SOLVER)
 		and c.get("eligible")
 	]
 	shortage = [c for c in campaigns if c.get("planner_status") == WAREHOUSE_REAL_SHORTAGE]
 	ambiguous = [c for c in campaigns if c.get("planner_status") == WAREHOUSE_AMBIGUOUS]
 	required = [c for c in campaigns if c.get("planner_status") == WAREHOUSE_CAMPAIGN_REQUIRED]
+	oscillation = [
+		c for c in campaigns if c.get("planner_status") == "GLOBAL_WAREHOUSE_OSCILLATION"
+	]
 
 	return {
 		"company": company,
@@ -111,20 +156,46 @@ def discover_warehouse_campaigns(
 		"n_shortage": len(shortage),
 		"n_ambiguous": len(ambiguous),
 		"n_campaign_required": len(required),
+		"n_oscillation_blocked": len(oscillation),
 		"graph_summary": {
 			"n_identities": graph.get("n_identities"),
 			"n_multi_root": graph.get("n_multi_root"),
 			"n_independent": graph.get("n_independent"),
 			"n_cross_wh_edges": len(graph.get("cross_warehouse_edges") or []),
 			"n_bridge_nodes": len(graph.get("bridge_nodes") or []),
+			"n_global_components": global_out.get("n_components"),
+		},
+		"global_solver": {
+			"n_components": global_out.get("n_components"),
+			"n_ready": global_out.get("n_ready"),
+			"n_complete": global_out.get("n_complete"),
+			"n_blocked": global_out.get("n_blocked"),
 		},
 		"campaigns": campaigns,
 		"ready_campaigns": ready,
 		"safe_groups": [_as_safe_group(c) for c in ready],
 		"message": (
 			"Warehouse campaigns require joint simulation proof. "
-			"Never replay whole warehouse blindly."
+			"Shared-voucher clusters use the global solver — never per-item ±2s loops."
 		),
+	}
+
+
+def _global_solution_as_campaign(sol: dict) -> dict:
+	"""Adapt a global solver solution to the campaign dict shape."""
+	ps = sol.get("planner_status")
+	# Apply path accepts READY_WAREHOUSE_CAMPAIGN; map global ready to that
+	# while preserving solver metadata.
+	apply_ps = READY_WAREHOUSE_CAMPAIGN if ps == READY_GLOBAL_WAREHOUSE_SOLVER else ps
+	eligible = bool(sol.get("eligible")) and ps == READY_GLOBAL_WAREHOUSE_SOLVER
+	return {
+		**sol,
+		"planner_status": apply_ps if eligible else ps,
+		"eligible": eligible,
+		"solver": sol.get("solver") or "global_shared_voucher",
+		"global_planner_status": ps,
+		"topic": "WAREHOUSE_ENGINE",
+		"repair_class": "WAREHOUSE_VALUATION_REPLAY",
 	}
 
 
