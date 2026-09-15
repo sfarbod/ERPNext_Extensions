@@ -60,6 +60,16 @@ PLAN_WAITING_I4 = I4_WAITING
 PLAN_I4_REPLAY_REQUIRED = I4_REPLAY_REQUIRED
 PLAN_I4_REPAIRED = I4_REPAIRED
 
+# Phase 2 Wrong Rate planner states (no generic BLOCKED for rate rows)
+PLAN_READY_WRONG_RATE = "READY_WRONG_RATE"
+PLAN_WAITING_RATE_DEPENDENCY = "WAITING_RATE_DEPENDENCY"
+PLAN_RATE_REPLAY_REQUIRED = "RATE_REPLAY_REQUIRED"
+PLAN_RATE_REPAIR_COMPLETE = "RATE_REPAIR_COMPLETE"
+PLAN_RATE_AMBIGUOUS = "RATE_AMBIGUOUS"
+PLAN_RATE_MANUAL = "RATE_MANUAL"
+PLAN_RATE_POISONED_OPENING = "RATE_POISONED_OPENING"
+PLAN_RATE_WAREHOUSE_ESCALATION = "RATE_WAREHOUSE_ESCALATION"
+
 PLAN_STATUSES = (
 	PLAN_READY,
 	PLAN_BLOCKED,
@@ -81,6 +91,14 @@ PLAN_STATUSES = (
 	PLAN_WAITING_I4,
 	PLAN_I4_REPLAY_REQUIRED,
 	PLAN_I4_REPAIRED,
+	PLAN_READY_WRONG_RATE,
+	PLAN_WAITING_RATE_DEPENDENCY,
+	PLAN_RATE_REPLAY_REQUIRED,
+	PLAN_RATE_REPAIR_COMPLETE,
+	PLAN_RATE_AMBIGUOUS,
+	PLAN_RATE_MANUAL,
+	PLAN_RATE_POISONED_OPENING,
+	PLAN_RATE_WAREHOUSE_ESCALATION,
 )
 
 READY_STATUSES = (
@@ -90,6 +108,7 @@ READY_STATUSES = (
 	PLAN_READY_WO,
 	PLAN_READY_IDENTITY,
 	PLAN_READY_I4,
+	PLAN_READY_WRONG_RATE,
 )
 
 DATABASE_BACKUP_REQUIRED = "DATABASE BACKUP REQUIRED"
@@ -461,26 +480,32 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	status = str(row.get("status") or "")
 	voucher = row.get("voucher") or row.get("voucher_no")
 	confidence = row.get("confidence")
+	topic = str(row.get("topic") or "")
+	is_wrong_rate = topic in ("WRONG_RATE", "WRONG") or bool(row.get("flags") or row.get("mismatch_class"))
+	# Phase 2: Wrong Rate uses explicit RATE_* / READY_WRONG_RATE (never generic BLOCKED).
+	amb_status = PLAN_RATE_AMBIGUOUS if is_wrong_rate else PLAN_AMBIGUOUS
+	man_status = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_MANUAL
+	wait_dep = PLAN_WAITING_RATE_DEPENDENCY if is_wrong_rate else PLAN_WAITING_RATE_REPAIR
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
-		return _not_ready(decision, PLAN_AMBIGUOUS, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
+		return _not_ready(decision, amb_status, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
 	if status in (STATUS_MANUAL_REVIEW, Z0_LEGITIMATE_ZERO) and confidence == CONFIDENCE_MANUAL:
-		return _not_ready(decision, PLAN_MANUAL, f"MANUAL — {status or 'operator review required'}")
+		return _not_ready(decision, man_status, f"MANUAL — {status or 'operator review required'}")
 	if confidence == CONFIDENCE_MANUAL or status == Z0_LEGITIMATE_ZERO:
-		return _not_ready(decision, PLAN_MANUAL, f"MANUAL — {status or 'operator review required'}")
+		return _not_ready(decision, man_status, f"MANUAL — {status or 'operator review required'}")
 	hit = _rate_poison_hit(row, cache)
 	poison = (hit or {}).get("reason") or _rate_poison_reason(row, cache)
 	poison_voucher = (hit or {}).get("voucher")
 	if (poison or status == STATUS_VALUATION_POISON_DEPENDENCY) and poison_voucher and voucher and poison_voucher != voucher:
 		return _not_ready(
 			decision,
-			PLAN_WAITING_RATE_REPAIR,
+			wait_dep,
 			f"{STATUS_VALUATION_POISON_DEPENDENCY}: {row.get('item') or row.get('item_code')} {row.get('warehouse') or ''} ({poison} on {poison_voucher})".strip(),
 			patient=patient,
 			prerequisite=poison_voucher,
 			dependency=poison or status,
 		)
 	if status == Z0_LEGITIMATE_ZERO:
-		return _not_ready(decision, PLAN_MANUAL, "Z0 legitimate zero — no repair")
+		return _not_ready(decision, man_status, "Z0 legitimate zero — no repair")
 	if status == STATUS_DEPENDENCY_REPAIR_REQUIRED or (patient and voucher and patient != voucher):
 		return _not_ready(
 			decision,
@@ -510,22 +535,26 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 				prerequisite=patient,
 			)
 	if confidence == CONFIDENCE_LIKELY:
-		return _not_ready(decision, PLAN_MANUAL, "LIKELY — preview only; Repair Selected requires EXACT")
+		return _not_ready(decision, man_status, "LIKELY — preview only; Repair Selected requires EXACT")
 	if row.get("confidence") != CONFIDENCE_EXACT:
-		return _not_ready(decision, PLAN_MANUAL, f"{row.get('confidence') or 'unknown'} — Repair Selected requires EXACT")
+		return _not_ready(decision, man_status, f"{row.get('confidence') or 'unknown'} — Repair Selected requires EXACT")
 	if status not in (STATUS_RECONSTRUCTABLE, "") and not row.get("eligible"):
-		return _not_ready(decision, PLAN_BLOCKED, f"Row not eligible ({status or 'unknown'})")
+		fallback = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_NO_REPAIR_PATH
+		return _not_ready(decision, fallback, f"Row not eligible ({status or 'unknown'})")
 	if status == STATUS_RECONSTRUCTABLE or row.get("eligible"):
 		counts = _write_counts(row, cache)
 		sql = counts["sql"]
 		if sql <= 0:
-			return _not_ready(decision, PLAN_BLOCKED, "SQL updates = 0. Repair Selected is disabled.")
+			fallback = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_NO_REPAIR_PATH
+			return _not_ready(decision, fallback, "SQL updates = 0. Repair Selected is disabled.")
+		ready_status = PLAN_READY_WRONG_RATE if is_wrong_rate else PLAN_READY
 		return _ready(
 			decision,
 			sql=sql,
 			replay=1,
 			rebuild=counts["sle"],
-			reason="READY — EXACT reconstructable rate",
+			reason="READY_WRONG_RATE — EXACT reconstructable rate" if is_wrong_rate else "READY — EXACT reconstructable rate",
+			planner_status=ready_status,
 			se_count=counts["se"],
 			sle_count=counts["sle"],
 			sabb_count=counts["sabb"],
@@ -533,7 +562,8 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			bin_count=counts["bin"],
 			patient_zero=patient or voucher,
 		)
-	return _not_ready(decision, PLAN_BLOCKED, f"Row not eligible ({status or 'unknown'})")
+	fallback = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_NO_REPAIR_PATH
+	return _not_ready(decision, fallback, f"Row not eligible ({status or 'unknown'})")
 
 
 def _evaluate_manufacture(row, decision, patient, cache) -> dict:
