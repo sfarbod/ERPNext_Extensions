@@ -101,19 +101,33 @@ def _apply_gl(max_n=20) -> dict:
 			and str(r.get("gl_class") or "") in ("G1_BALANCED_BUT_ECONOMICALLY_WRONG", "G2_MISSING", "G3_UNBALANCED")
 		):
 			ready.append(r)
-	applied, failed = [], []
+	applied, failed, noop = [], [], []
 	for r in ready[: int(max_n)]:
 		vn = r.get("voucher")
 		try:
 			res = rebuild_gl_for_voucher(vn, dry_run=False)
-			ok = bool(res.get("ok") or res.get("rebuilt") or not res.get("error"))
-			entry = {"voucher": vn, "ok": ok, "gl_class": r.get("gl_class"), "reason": res.get("error") or res.get("reason")}
-			(applied if ok else failed).append(entry)
-			if ok:
-				frappe.db.commit()
+			changed = bool(res.get("written")) and not res.get("blocked")
+			if not changed:
+				noop.append(
+					{
+						"voucher": vn,
+						"gl_class": r.get("gl_class"),
+						"reason": res.get("reason") or res.get("blocked_because") or "not_written",
+					}
+				)
+				continue
+			frappe.db.commit()
+			applied.append({"voucher": vn, "ok": True, "gl_class": r.get("gl_class")})
 		except Exception as e:
 			failed.append({"voucher": vn, "ok": False, "reason": f"{type(e).__name__}: {e}"})
-	return {"n_ready": len(ready), "n_repaired": len(applied), "n_failed": len(failed), "applied": applied[:10], "failed": failed[:10]}
+	return {
+		"n_ready": len(ready),
+		"n_repaired": len(applied),
+		"n_failed": len(failed),
+		"n_noop": len(noop),
+		"applied": applied[:10],
+		"failed": failed[:10],
+	}
 
 
 def _apply_svd_residue(max_n=40) -> dict:
@@ -261,15 +275,17 @@ def run_iteration(n: int) -> dict:
 		},
 		"po_by_opt_after": ad.get("po_by_opt"),
 		"worthwhile": bool(
-			(repairs["po"].get("n_ok") or 0) > 0
-			or (repairs["warehouse"].get("n_repaired") or 0) > 0
-			or (repairs["wr"].get("n_repaired") or 0) > 0
-			or (repairs["svd"].get("n_repaired") or 0) > 0
-			or (repairs["gl"].get("n_repaired") or 0) > 0
-			or (repairs["assisted"].get("n_repaired") or 0) > 0
-			or (delta.get("po_actionable") or 0) < 0
+			(delta.get("po_actionable") or 0) < 0
 			or (delta.get("wrong_rate") or 0) < 0
 			or (delta.get("broken_gl") or 0) < 0
+			or (delta.get("zero_rate") or 0) < 0
+			or (delta.get("failed_riv") or 0) < 0
+			or (delta.get("i4_leftover") or 0) < 0
+			or (repairs["po"].get("n_ok") or 0) > 0
+			or (repairs["svd"].get("n_repaired") or 0) > 0
+			or (repairs["wr"].get("n_repaired") or 0) > 0
+			or (repairs["assisted"].get("n_repaired") or 0) > 0
+			# GL only counts when KPI moved or explicit write confirmed elsewhere
 		),
 	}
 	_dump(f"iter_{n:03d}.json", out)
