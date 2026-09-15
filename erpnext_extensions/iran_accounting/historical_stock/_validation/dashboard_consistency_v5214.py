@@ -164,9 +164,17 @@ def collect_kpi_matrix(company=None) -> dict:
 	i4 = scan_i4_leftover(company=company, from_date=FROM_DATE, to_date=nowdate(), limit=5000)
 	bins = scan_bin_mismatches(company=company, limit=500)
 
-	# Planner aggregates
+	# Planner aggregates — align with dashboard _ready_n (READY* + sql_updates>0)
 	def planner_ready(rows):
-		return sum(1 for r in rows or [] if r.get("planner_status") in READY_STATUSES or r.get("eligible"))
+		return sum(
+			1
+			for r in rows or []
+			if (
+				r.get("planner_status") in READY_STATUSES
+				or str(r.get("planner_status") or "").startswith("READY")
+			)
+			and cint(r.get("sql_updates") or 0) > 0
+		)
 
 	def planner_status_counts(rows, key="planner_status"):
 		out = defaultdict(int)
@@ -190,6 +198,7 @@ def collect_kpi_matrix(company=None) -> dict:
 		"posting_ready": planner_ready(posting.get("rows")),
 		"zero_ready": planner_ready(zero.get("rows")),
 		"wrong_ready": planner_ready(wrong.get("rows")),
+		"sle_ready": planner_ready(sle.get("rows")),
 		"i4_ready": sum(1 for r in (i4.get("rows") or []) if r.get("eligible") or r.get("i4_status") == "READY_I4"),
 		"gl_ready": planner_ready(gl.get("rows")),
 		"riv_ready": planner_ready(riv.get("rows")),
