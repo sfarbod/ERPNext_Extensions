@@ -508,21 +508,22 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	wait_dep = PLAN_WAITING_RATE_DEPENDENCY if is_wrong_rate else PLAN_WAITING_RATE_REPAIR
 	# Already-valued / rebuild-complete: rate surface is healthy (amount micro-gaps stay complete).
 	if status == STATUS_RATE_REBUILD_COMPLETE or str(row.get("source") or row.get("source_of_truth") or "") == "already_valued":
-		cur = flt(row.get("current") if row.get("current") is not None else row.get("current_rate"))
-		exp = flt(row.get("expected") if row.get("expected") is not None else row.get("proposed_rate"))
-		if abs(exp) > RATE_EPS and abs(cur - exp) <= 1:
+		# Prefer SE basic_rate (current_rate) — attach_rate_analysis may set current=0 from SLE.
+		cur = flt(
+			row.get("current_rate")
+			if row.get("current_rate") is not None
+			else (row.get("current") if row.get("current") is not None else 0)
+		)
+		exp = flt(
+			row.get("proposed_rate")
+			if row.get("proposed_rate") is not None
+			else (row.get("expected") if row.get("expected") is not None else cur)
+		)
+		if abs(cur) > RATE_EPS or abs(exp) > RATE_EPS:
 			return _not_ready(
 				decision,
 				PLAN_RATE_REPAIR_COMPLETE,
 				"RATE_REPAIR_COMPLETE — already valued / rates match",
-				patient=patient,
-			)
-		if status == STATUS_RATE_REBUILD_COMPLETE and abs(cur) > RATE_EPS and abs(exp) <= RATE_EPS:
-			# SE basic present; treat as complete even when attach_rate_analysis shows SLE current=0.
-			return _not_ready(
-				decision,
-				PLAN_RATE_REPAIR_COMPLETE,
-				"RATE_REPAIR_COMPLETE — already valued on SE",
 				patient=patient,
 			)
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):

@@ -89,6 +89,16 @@ def repair_wr_batch(max_n=10) -> dict:
 	for vn in voucher_order:
 		matches = [r for r in rows if r.get("voucher") == vn]
 		for m in matches:
+			ps = str(m.get("planner_status") or "")
+			if ps not in (
+				"READY",
+				"READY_WRONG_RATE",
+				"READY_LOCAL_REPAIR",
+				"READY_BATCH_SCOPED_REPAIR",
+				"READY_WORK_ORDER_REPAIR",
+				"READY_IDENTITY_REPAIR",
+			) or not m.get("eligible"):
+				continue
 			key = (m.get("voucher"), m.get("item"), m.get("sle") or m.get("voucher_detail"))
 			if key in seen_keys:
 				continue
@@ -100,7 +110,7 @@ def repair_wr_batch(max_n=10) -> dict:
 				"ok": res.get("ok"),
 				"after_rate": res.get("after_rate"),
 				"expected": res.get("expected"),
-				"reason": res.get("reason"),
+				"reason": res.get("reason") or res.get("error") or ((res.get("out") or {}).get("reason")),
 			}
 			if res.get("ok"):
 				repaired.append(entry)
