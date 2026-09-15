@@ -233,12 +233,13 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"posting_order": {
 			"summary": posting.get("summary"),
 			# Actionable defects only — NO_REPAIR_NEEDED is healthy same-time noise.
+			# Do not filter on planner NO_REPAIR_PATH: dependency/resolution also uses
+			# that label for non-healthy residuals and would under-count shortages.
 			"count": len(
 				[
 					r
 					for r in (posting.get("rows") or [])
 					if (r.get("optimizer_status") or r.get("status")) not in ("NO_REPAIR_NEEDED",)
-					and (r.get("planner_status") or "") not in ("NO_REPAIR_PATH",)
 				]
 			),
 			"raw_row_count": len(posting.get("rows") or []),
