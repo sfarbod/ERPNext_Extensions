@@ -106,14 +106,23 @@ def prove_safe_group(rows: list[dict], *, max_n=8) -> dict:
 	group = clusters.get("recommended_first_group") or {}
 	if group.get("group_class") != SAFE_GROUP:
 		return {"ok": False, "reason": "no SAFE_GROUP", "clusters": clusters}
-	order = group.get("repair_order") or []
+	order = group.get("roots") or group.get("repair_order") or []
 	results = []
 	for root in order[:max_n]:
-		# find full row
-		match = next(
-			(r for r in rows if r.get("voucher") == root.get("voucher") and r.get("item") == root.get("item")),
-			root,
-		)
+		if isinstance(root, str):
+			match = next((r for r in rows if r.get("voucher") == root), None)
+			if not match:
+				results.append({"ok": False, "stage": "missing_row", "voucher": root})
+				break
+		else:
+			match = next(
+				(
+					r
+					for r in rows
+					if r.get("voucher") == root.get("voucher") and r.get("item") == root.get("item")
+				),
+				root,
+			)
 		res = prove_single_root(match, dry_run=False)
 		results.append(res)
 		if not res.get("ok"):
