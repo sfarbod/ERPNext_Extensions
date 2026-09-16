@@ -50,7 +50,7 @@ def build_master_repair_plan(company=None) -> dict:
 	return {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
 		"company": company,
-		"version": "5.2.21",
+		"version": "5.2.22",
 		"elapsed_seconds": round(perf_counter() - t0, 2),
 		"classes": classes,
 		"repair_order": [c["repair_class"] for c in classes],

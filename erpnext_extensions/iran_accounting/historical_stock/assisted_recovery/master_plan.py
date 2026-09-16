@@ -82,7 +82,7 @@ def build_assisted_master_plan(
 	return {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
 		"company": company,
-		"version": "5.2.21",
+		"version": "5.2.22",
 		"phase": "ASSISTED_RECOVERY",
 		"threshold": threshold,
 		"elapsed_seconds": round(perf_counter() - t0, 2),
