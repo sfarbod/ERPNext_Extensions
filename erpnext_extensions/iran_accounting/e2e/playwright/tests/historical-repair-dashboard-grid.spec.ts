@@ -26,7 +26,12 @@ async function login(page, loginPage) {
 }
 
 function kpiValue(page, label: string) {
-  return page.locator(".hr-kpi").filter({ hasText: label }).locator(".hr-kpi-value");
+  // Exact label match — "Wrong Rate" must not match "Wrong Rate READY".
+  const re = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  return page
+    .locator(".hr-kpi")
+    .filter({ has: page.locator(".hr-kpi-label", { hasText: re }) })
+    .locator(".hr-kpi-value");
 }
 
 test.describe("5.2.18 Historical Repair Dashboard ↔ Grid consistency @release-blocking", () => {
