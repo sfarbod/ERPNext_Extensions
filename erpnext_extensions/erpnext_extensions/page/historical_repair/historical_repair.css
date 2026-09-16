@@ -133,6 +133,16 @@
 	color: var(--text-color);
 	margin-bottom: 6px;
 }
+.historical-repair-page .hr-empty-unload {
+	border: 1px dashed var(--orange-400, #fb8c00);
+	background: color-mix(in srgb, var(--orange-50, #fff3e0) 80%, transparent);
+	color: var(--text-color);
+}
+.historical-repair-page .hr-empty-kpi {
+	margin-top: 8px;
+	font-weight: 600;
+	color: var(--orange-700, #ef6c00);
+}
 .historical-repair-page .hr-progress {
 	height: 8px;
 	background: var(--bg-light-gray);
