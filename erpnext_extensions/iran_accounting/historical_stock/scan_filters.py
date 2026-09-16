@@ -144,13 +144,30 @@ def filter_rows_by_planner(
 	repair_class=None,
 	planner_status=None,
 	patient_zero=None,
+	kpi_bucket=None,
 ) -> list[dict]:
-	"""Post-plan filters that require stamped planner fields (indexed SQL already applied)."""
+	"""Post-plan filters that require stamped planner fields (indexed SQL already applied).
+
+	planner_status may be a single status or a comma-separated list.
+	kpi_bucket uses the canonical taxonomy in kpi_buckets.py (preferred).
+	"""
+	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import row_matches_kpi_bucket
+
+	wanted = None
+	if planner_status:
+		raw = str(planner_status).strip()
+		if "," in raw:
+			wanted = {s.strip() for s in raw.split(",") if s.strip()}
+		else:
+			wanted = {raw} if raw else None
+
 	out = []
 	for row in rows or []:
 		if repair_class and str(row.get("repair_class") or "") != str(repair_class):
 			continue
-		if planner_status and str(row.get("planner_status") or "") != str(planner_status):
+		if wanted is not None and str(row.get("planner_status") or "") not in wanted:
+			continue
+		if kpi_bucket and not row_matches_kpi_bucket(row, kpi_bucket):
 			continue
 		if patient_zero:
 			pz = row.get("patient_zero")

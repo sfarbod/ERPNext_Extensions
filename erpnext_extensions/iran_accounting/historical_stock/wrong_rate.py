@@ -130,7 +130,7 @@ def classify_rate_flags(*, qty, basic_rate=None, valuation_rate=None, incoming_r
 
 
 def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None, batch=None,
-                     from_date=None, to_date=None, limit=4000) -> dict:
+                     from_date=None, to_date=None, limit=4000, planner_status=None, kpi_bucket=None) -> dict:
 	"""Indexed scan. Read-only. Includes zero and non-zero mismatches."""
 	se_rows = _scan_se_flags(company, voucher, item_code, warehouse, from_date, to_date, limit)
 	sle_rows = _scan_sle_flags(company, voucher, item_code, warehouse, batch, from_date, to_date, limit)
@@ -177,6 +177,11 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 			if f:
 				by_flag[str(f)] += 1
 	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
+	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import (
+		wrong_rate_bucket,
+		count_wrong_rate_buckets,
+	)
+	from erpnext_extensions.iran_accounting.historical_stock.scan_filters import filter_rows_by_planner
 
 	stamped = stamp_scan_result(
 		{
@@ -191,6 +196,21 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 			"manual": sum(1 for r in classified if r.get("confidence") == CONFIDENCE_MANUAL),
 		}
 	)
+	for r in stamped.get("rows") or []:
+		r["kpi_bucket"] = wrong_rate_bucket(r)
+	buckets = count_wrong_rate_buckets(stamped.get("rows") or [])
+	stamped["by_kpi_bucket"] = buckets
+	# Active problem count excludes RATE_REPAIR_COMPLETE / already-valued.
+	stamped["active_count"] = buckets.get("active") or 0
+	stamped["complete_count"] = buckets.get("complete") or 0
+	rows = stamped.get("rows") or []
+	if planner_status or kpi_bucket:
+		rows = filter_rows_by_planner(
+			rows, planner_status=planner_status, kpi_bucket=kpi_bucket
+		)
+		stamped["rows"] = rows
+		stamped["count"] = len(rows)
+		stamped["filtered_by"] = {"planner_status": planner_status, "kpi_bucket": kpi_bucket}
 	return stamped
 
 

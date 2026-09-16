@@ -133,6 +133,23 @@
 	color: var(--text-color);
 	margin-bottom: 6px;
 }
+.historical-repair-page .hr-empty-unload {
+	border: 1px dashed var(--orange-400, #fb8c00);
+	background: color-mix(in srgb, var(--orange-50, #fff3e0) 80%, transparent);
+	color: var(--text-color);
+}
+.historical-repair-page .hr-kpi-filter {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	padding: 8px 12px;
+	margin: 4px 0 8px;
+	border: 1px solid var(--orange-400, #fb8c00);
+	background: color-mix(in srgb, var(--orange-50, #fff3e0) 85%, transparent);
+	border-radius: 4px;
+	font-size: 13px;
+}
 .historical-repair-page .hr-progress {
 	height: 8px;
 	background: var(--bg-light-gray);

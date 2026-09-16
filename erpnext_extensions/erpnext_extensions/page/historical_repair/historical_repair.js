@@ -11,13 +11,48 @@ frappe.pages["historical-repair"].on_page_load = function (wrapper) {
 };
 
 const TOPICS = [
-	{ id: "posting", title: __("Posting Order"), section: "Production Posting Order" },
-	{ id: "zero", title: __("Zero / Lost Rate") },
-	{ id: "manufacture", title: __("Manufacture Valuation") },
-	{ id: "sle", title: __("SLE / Bin Integrity") },
-	{ id: "gl", title: __("GL Integrity") },
-	{ id: "riv", title: __("Failed RIV") },
+	{ id: "posting", title: __("Posting Order"), section: "Production Posting Order", kpi: "Posting Order" },
+	{ id: "wrong", title: __("Wrong Rate"), kpi: "Wrong Rate" },
+	{ id: "zero", title: __("Zero / Lost Rate"), kpi: "Zero Rate" },
+	{ id: "manufacture", title: __("Manufacture Valuation"), kpi: null },
+	{ id: "sle", title: __("SLE / Bin Integrity"), kpi: "Broken Bin" },
+	{ id: "gl", title: __("GL Integrity"), kpi: "Broken GL" },
+	{ id: "riv", title: __("Failed RIV"), kpi: "Failed RIV" },
 ];
+
+/** Dashboard chip → topic id (primary surface for that KPI). */
+const KPI_TOPIC = {
+	"Posting Order": "posting",
+	"Wrong Rate": "wrong",
+	"Wrong Rate READY": "wrong",
+	"Wrong Rate WAITING": "wrong",
+	"Wrong Rate MANUAL": "wrong",
+	"Wrong Rate Complete": "wrong",
+	"Wrong Amount": "wrong",
+	"Wrong Valuation": "wrong",
+	"Wrong Incoming": "wrong",
+	"Wrong Outgoing": "wrong",
+	"Wrong Average": "wrong",
+	"Zero Rate": "zero",
+	"Zero Rate Patient Zero": "zero",
+	"I4 Leftover": "sle",
+	"READY_I4": "sle",
+	"WAITING_I4": "sle",
+	"MANUAL_I4": "sle",
+	"REPLAY_REQUIRED_I4": "sle",
+	"Broken SABB": "sle",
+	"Broken Bin": "sle",
+	"Waiting Downstream Bin": "sle",
+	"Patient Zero": "sle",
+	"Broken GL": "gl",
+	"GL READY": "gl",
+	"GL WAITING": "gl",
+	"GL MANUAL": "gl",
+	"Failed RIV": "riv",
+	"RIV SAFE": "riv",
+	"RIV WAITING": "riv",
+	"RIV UNSAFE": "riv",
+};
 
 const KPI_ORDER = [
 	"Integrity Score",
@@ -26,6 +61,7 @@ const KPI_ORDER = [
 	"Wrong Rate READY",
 	"Wrong Rate WAITING",
 	"Wrong Rate MANUAL",
+	"Wrong Rate Complete",
 	"Zero Rate",
 	"I4 Leftover",
 	"Wrong Amount",
@@ -74,11 +110,167 @@ class HistoricalRepairPage {
 		this.col_filters = {};
 		this.last_impact = null;
 		this.advanced = false;
+		this.last_dashboard = {};
+		this.last_scan_all = null;
+		this.scan_all_job_id = null;
+		this.scan_all_company = null;
+		this._last_company_value = null; // null = not bootstrapped yet
+		this.kpi_bucket = null;
+		this.active_kpi_label = null;
+		this.topic_state = {};
+		this._reset_topic_state();
 		this.access = this._access_from_boot();
 		this.$body = $(page.body);
 		this.render();
 		this._bind_keys();
 		this.scan_all({ auto: true });
+	}
+
+	_reset_topic_state() {
+		this.topic_state = {};
+		TOPICS.forEach((t) => {
+			this.topic_state[t.id] = {
+				loaded: false,
+				rows: [],
+				company: null,
+				filter_fingerprint: null,
+				scan_count: null,
+				source: null,
+			};
+		});
+	}
+
+	_scan_filter_fingerprint() {
+		const f = this.filters();
+		return JSON.stringify({
+			company: f.company || "",
+			item_code: f.item_code || "",
+			warehouse: f.warehouse || "",
+			batch: f.batch || "",
+			work_order: f.work_order || "",
+			voucher: f.voucher || "",
+			serial_and_batch_bundle: f.serial_and_batch_bundle || "",
+			from_date: f.from_date || "",
+			to_date: f.to_date || "",
+			repair_class: f.repair_class || "",
+			planner_status: f.planner_status || "",
+			patient_zero: f.patient_zero || "",
+		});
+	}
+
+	_topic_dashboard_count(topicId) {
+		const dash = this.last_dashboard || {};
+		const exp = (this.last_scan_all && this.last_scan_all.topic_expectations) || {};
+		if (exp[topicId] && exp[topicId].count != null) return Number(exp[topicId].count) || 0;
+		const meta = TOPICS.find((t) => t.id === topicId);
+		if (meta && meta.kpi && dash[meta.kpi] != null) return Number(dash[meta.kpi]) || 0;
+		if (topicId === "sle") {
+			return (
+				(Number(dash["Broken Bin"]) || 0) +
+				(Number(dash["Waiting Downstream Bin"]) || 0) +
+				(Number(dash["I4 Leftover"]) || 0) +
+				(Number(dash["Broken SABB"]) || 0)
+			);
+		}
+		return null;
+	}
+
+	_save_current_topic_state() {
+		if (!this.topic || !this.topic_state[this.topic]) return;
+		const st = this.topic_state[this.topic];
+		st.rows = Array.isArray(this.rows) ? this.rows.slice() : [];
+		st.loaded = !!st.loaded;
+	}
+
+	_restore_topic_state(id) {
+		const st = this.topic_state[id] || { loaded: false, rows: [] };
+		const company = this.company && this.company.get_value();
+		const fp = this._scan_filter_fingerprint();
+		const companyOk = !st.company || st.company === company;
+		const filterOk = !st.filter_fingerprint || st.filter_fingerprint === fp;
+		if (st.loaded && companyOk && filterOk) {
+			this.rows = Array.isArray(st.rows) ? st.rows.slice() : [];
+			return;
+		}
+		this.rows = [];
+		if (st.loaded && (!companyOk || !filterOk)) {
+			st.loaded = false;
+			st.rows = [];
+			st.source = null;
+			st.scan_count = null;
+		}
+	}
+
+	_mark_topic_loaded(rows) {
+		const company = this.company && this.company.get_value();
+		const st = this.topic_state[this.topic] || {};
+		st.loaded = true;
+		st.rows = Array.isArray(rows) ? rows.slice() : [];
+		st.company = company || null;
+		st.filter_fingerprint = this._scan_filter_fingerprint();
+		st.scan_count = st.rows.length;
+		st.source = "topic_scan";
+		this.topic_state[this.topic] = st;
+		this.rows = st.rows.slice();
+	}
+
+	_invalidate_topic_rows(reason) {
+		this._reset_topic_state();
+		this.rows = [];
+		this.dry_run_done = false;
+		this.impact_done = false;
+		if (this.btn_repair) this._lock_writes(true);
+		if (reason) {
+			this.$preview &&
+				this.$preview.text(
+					__("Topic grids cleared ({0}). Click Scan on each tab to load rows for the current filters.", [reason])
+				);
+		}
+	}
+
+	_on_company_change() {
+		const company = (this.company && this.company.get_value()) || "";
+		// Ignore control bootstrap / duplicate change events so auto Scan All is not wiped.
+		if (this._last_company_value === null) {
+			this._last_company_value = company;
+			return;
+		}
+		if (company === this._last_company_value) return;
+		const prev = this._last_company_value;
+		this._last_company_value = company;
+		if (this.scan_all_company && company && company !== this.scan_all_company) {
+			this.last_dashboard = {};
+			this.last_scan_all = null;
+			this.scan_all_job_id = null;
+			this.render_dashboard({});
+		}
+		this._invalidate_topic_rows(__("company changed ({0} → {1})", [prev || "—", company || "—"]));
+		this.render_table();
+		if (company) this.scan_all({ auto: true });
+	}
+
+	_topic_unloaded_message() {
+		const kpi = this._topic_dashboard_count(this.topic);
+		const lines = [
+			"<strong>" + __("Rows are not loaded yet.") + "</strong>",
+			"<div>" + __("Click Scan to load this topic.") + "</div>",
+		];
+		if (kpi != null && kpi > 0) {
+			lines.push(
+				"<div class='hr-empty-kpi'>" +
+					__("Dashboard reports {0} for this topic — the grid is empty only because rows are not loaded.", [kpi]) +
+					"</div>"
+			);
+		} else if (this.topic === "manufacture") {
+			lines.push(
+				"<div class='hr-empty-kpi'>" +
+					__("Scan All does not cache Manufacture rows. Click Scan to load Manufacture Valuation.") +
+					"</div>"
+			);
+		} else if (this.last_scan_all) {
+			lines.push("<div>" + __("Scan All refreshed the dashboard. Topic grids load on demand.") + "</div>");
+		}
+		return lines.join("");
 	}
 
 	_access_from_boot() {
@@ -184,7 +376,7 @@ class HistoricalRepairPage {
 			"btn-primary",
 			__("Preview repair campaigns by class — no bulk apply")
 		);
-				this.btn_warehouse_plan = this._btn(
+		this.btn_warehouse_plan = this._btn(
 			g3,
 			"warehouse-plan",
 			__("Warehouse Plan"),
@@ -192,7 +384,7 @@ class HistoricalRepairPage {
 			"btn-primary",
 			__("Plan warehouse-scoped replay for selected posting-order row")
 		);
-this.btn_cluster_explorer = this._btn(
+		this.btn_cluster_explorer = this._btn(
 			g3,
 			"cluster-explorer",
 			__("Cluster Explorer"),
@@ -254,6 +446,7 @@ this.btn_cluster_explorer = this._btn(
 		this._btn(this.$tools, "export-csv", __("Export CSV"), () => this.export_grid("csv"));
 		this._btn(this.$tools, "export-excel", __("Export Excel"), () => this.export_grid("xlsx"));
 		this._btn(this.$tools, "copy-selected", __("Copy selected"), () => this.copy_selected());
+		this.$kpi_filter = $('<div class="hr-kpi-filter" data-role="kpi-filter" style="display:none">').appendTo(this.$shell);
 		this.$columns = $('<div class="hr-columns" data-role="columns" style="display:none">').appendTo(this.$shell);
 		this.$wizard = $('<div class="hr-wizard" data-role="wizard">').appendTo(this.$shell);
 		this.render_wizard_step(1);
@@ -275,6 +468,14 @@ this.btn_cluster_explorer = this._btn(
 			df: { fieldtype, options, label: __(label) },
 			render_input: true,
 		});
+		if (name === "company") {
+			const ctrl = this.company;
+			const prev = ctrl.df.onchange;
+			ctrl.df.onchange = () => {
+				if (typeof prev === "function") prev();
+				this._on_company_change();
+			};
+		}
 	}
 
 	_lock_writes(lock) {
@@ -311,8 +512,8 @@ this.btn_cluster_explorer = this._btn(
 	}
 
 	switch_topic(id) {
+		this._save_current_topic_state();
 		this.topic = id;
-		this.rows = [];
 		this.dry_run_done = false;
 		this.impact_done = false;
 		this.load_layout();
@@ -323,7 +524,16 @@ this.btn_cluster_explorer = this._btn(
 		});
 		const meta = TOPICS.find((t) => t.id === id);
 		this.$title.text(meta.section || meta.title);
-		this.$preview.text(__("Scan All fills the dashboard. Choose a problem, then Dry Run. No writes until Repair after Dry Run, Impact, and DATABASE BACKUP REQUIRED."));
+		const st = this.topic_state[id] || {};
+		if (st.loaded) {
+			this._restore_topic_state(id);
+			this.$preview.text(__("Showing cached scan for this topic. Re-run Scan if filters changed."));
+		} else {
+			this.rows = [];
+			this.$preview.text(
+				__("Scan All fills the dashboard. Rows for this topic are not loaded yet — click Scan. No writes until Repair after Dry Run, Impact, and DATABASE BACKUP REQUIRED.")
+			);
+		}
 		this.render_table();
 	}
 
@@ -341,8 +551,64 @@ this.btn_cluster_explorer = this._btn(
 			repair_class: this.repair_class && this.repair_class.get_value(),
 			planner_status: this.planner_status && this.planner_status.get_value(),
 			patient_zero: this.patient_zero && this.patient_zero.get_value(),
+			kpi_bucket: this.kpi_bucket || null,
 			include_likely: 1,
 		};
+	}
+
+	_clear_kpi_filter() {
+		this.kpi_bucket = null;
+		this.active_kpi_label = null;
+		if (this.$kpi_filter) this.$kpi_filter.hide().empty();
+	}
+
+	_set_kpi_filter(label, bucket) {
+		this.active_kpi_label = label;
+		this.kpi_bucket = bucket;
+		if (!this.$kpi_filter) return;
+		this.$kpi_filter
+			.show()
+			.empty()
+			.append(
+				$("<strong>").text(__("Active KPI filter: {0}", [label || bucket || "—"]))
+			)
+			.append(
+				$("<span class='text-muted'>").text(" · " + __("bucket={0}", [bucket || "—"]))
+			)
+			.append(
+				$('<button type="button" class="btn btn-xs btn-default">')
+					.text(__("Clear KPI filter"))
+					.on("click", () => {
+						this._clear_kpi_filter();
+						if (this.planner_status) this.planner_status.set_value("");
+						this.$search && this.$search.val("");
+						this.scan();
+					})
+			);
+	}
+
+	_kpi_bucket_for_label(label) {
+		const map = {
+			"Wrong Rate": "wrong_rate_active",
+			"Wrong Rate READY": "wrong_rate_ready",
+			"Wrong Rate WAITING": "wrong_rate_waiting",
+			"Wrong Rate MANUAL": "wrong_rate_manual",
+			"Wrong Rate Complete": "wrong_rate_complete",
+			"READY_I4": "i4_ready",
+			"WAITING_I4": "i4_waiting",
+			"MANUAL_I4": "i4_manual",
+			"REPLAY_REQUIRED_I4": "i4_replay",
+			"I4 Leftover": "i4_all",
+			"GL READY": "gl_ready",
+			"GL WAITING": "gl_waiting",
+			"GL MANUAL": "gl_manual",
+			"Broken GL": "gl_all",
+			"RIV SAFE": "riv_safe",
+			"RIV WAITING": "riv_waiting",
+			"RIV UNSAFE": "riv_unsafe",
+			"Failed RIV": "riv_all",
+		};
+		return map[label] || null;
 	}
 
 	clear_filters() {
@@ -352,6 +618,9 @@ this.btn_cluster_explorer = this._btn(
 		this.$search && this.$search.val("");
 		this.$voucher_quick && this.$voucher_quick.val("");
 		this.col_filters = {};
+		this._clear_kpi_filter();
+		this._invalidate_topic_rows(__("filters cleared"));
+		this.render_table();
 		frappe.show_alert({ message: __("Filters cleared"), indicator: "blue" });
 	}
 
@@ -387,6 +656,8 @@ this.btn_cluster_explorer = this._btn(
 			const ctrl = this[map[fk]];
 			if (ctrl && ctrl.set_value && data[fk] != null) ctrl.set_value(data[fk]);
 		});
+		this._invalidate_topic_rows(__("filter preset loaded"));
+		this.render_table();
 		frappe.show_alert({ message: __("Filter preset loaded"), indicator: "green" });
 	}
 
@@ -418,6 +689,7 @@ this.btn_cluster_explorer = this._btn(
 		const f = this.filters();
 		const map = {
 			posting: [`${this.ppo}.scan_posting_order_anomalies`, f],
+			wrong: [`${this.api}.scan_wrong_rates_api`, f],
 			zero: [`${this.api}.scan_zero_rates`, f],
 			manufacture: [`${this.api}.scan_manufacture`, f],
 			sle: [`${this.api}.scan_sle_bin_api`, f],
@@ -435,13 +707,43 @@ this.btn_cluster_explorer = this._btn(
 				this.end_progress();
 				if (this.cancelled) return;
 				const msg = r.message || {};
-				this.rows = msg.rows || msg || [];
-				if (!Array.isArray(this.rows)) this.rows = [];
+				const rows = msg.rows || msg || [];
+				this._mark_topic_loaded(Array.isArray(rows) ? rows : []);
 				this.dry_run_done = false;
 				this.impact_done = false;
 				if (this.btn_repair) this._lock_writes(true);
 				this.render_table();
-				this.$preview.text(__("Scan complete. Run Dry Run before repairing."));
+				const dashN = this._topic_dashboard_count(this.topic);
+				let note = __("Scan complete. Run Dry Run before repairing.");
+				if (this.kpi_bucket) {
+					note =
+						__("KPI filter {0} (bucket={1}) → {2} row(s).", [
+							this.active_kpi_label || "",
+							this.kpi_bucket,
+							this.rows.length,
+						]) +
+						" " +
+						__("Only rows in this bucket are shown.");
+					const leaked = (this.rows || []).filter((r) => {
+						if (this.kpi_bucket === "wrong_rate_manual") {
+							return String(r.planner_status || "") === "RATE_REPAIR_COMPLETE";
+						}
+						return false;
+					});
+					if (leaked.length) {
+						note += " " + __("INVARIANT FAIL: {0} COMPLETE rows leaked into MANUAL.", [leaked.length]);
+					}
+				} else if (dashN != null && dashN > 0 && this.rows.length === 0) {
+					note =
+						__("Scan returned 0 rows while dashboard reports {0}. Active filters may narrow the topic dataset — clear filters or document the mismatch.", [dashN]);
+				} else if (dashN != null && this.rows.length !== dashN && this.topic !== "sle") {
+					note =
+						__("Scan complete ({0} rows). Dashboard KPI for this topic is {1} (same company snapshot; client filters may differ).", [
+							this.rows.length,
+							dashN,
+						]);
+				}
+				this.$preview.text(note);
 				this._maybe_redirect_downstream(opts);
 				if (opts && opts.select_voucher) this._select_and_show(opts.select_voucher);
 			},
@@ -483,6 +785,10 @@ this.btn_cluster_explorer = this._btn(
 		} else {
 			const map = {
 				posting: [`${this.ppo}.dry_run_posting_order_repair`, rows.length ? { rows } : f],
+				wrong: [
+					`${this.api}.repair_wrong_rates_selected`,
+					{ rows: rows.length ? rows : [], dry_run: 1 },
+				],
 				zero: [`${this.api}.dry_run_zero_rates`, rows.length ? { rows } : f],
 				manufacture: [`${this.api}.dry_run_manufacture`, rows.length ? { rows } : f],
 				sle: [`${this.api}.scan_sle_bin_api`, f],
@@ -490,6 +796,10 @@ this.btn_cluster_explorer = this._btn(
 				riv: [`${this.api}.scan_failed_riv_api`, f],
 			};
 			[method, args] = map[this.topic];
+			if (this.topic === "wrong" && !(args.rows && args.rows.length)) {
+				frappe.msgprint(__("Select Wrong Rate row(s) for Dry Run. Refusing to dry-run the entire scan."));
+				return;
+			}
 		}
 		this.render_wizard_step(2);
 		this.start_progress(__("Dry Run..."));
@@ -501,7 +811,7 @@ this.btn_cluster_explorer = this._btn(
 				this.end_progress();
 				this.dry_run_done = true;
 				const msg = r.message || {};
-				this.rows = msg.rows || this.rows;
+				if (msg.rows && Array.isArray(msg.rows)) this._mark_topic_loaded(msg.rows);
 				this.render_table();
 				this.$preview.text(this.format_preview(msg));
 				this._complete_impact(msg);
@@ -624,8 +934,11 @@ this.btn_cluster_explorer = this._btn(
 		if (this.topic === "posting") {
 			method = `${this.ppo}.repair_posting_order_selected`;
 			args = { rows, dry_run: 0, expected_signatures: rows.map((r) => r.dependency_signature) };
-		} else if (this.topic === "zero") {
+		} else if (this.topic === "wrong") {
 			method = `${this.api}.repair_wrong_rates_selected`;
+			args = { rows, dry_run: 0 };
+		} else if (this.topic === "zero") {
+			method = `${this.api}.repair_zero_rates_selected`;
 			args = { rows, dry_run: 0 };
 		} else if (this.topic === "manufacture") {
 			method = `${this.api}.repair_manufacture_selected_api`;
@@ -749,34 +1062,13 @@ this.btn_cluster_explorer = this._btn(
 		});
 	}
 
-	rebuild_affected_documents() {
-		const rows = this.selected_rows();
-		if (!rows.length) {
-			frappe.msgprint(__("Select the chain to rebuild (inbound + outbound). This is not a global rebuild."));
+	replay_downstream() {
+		if (this.topic !== "posting") {
+			frappe.msgprint(
+				__("Replay Downstream is a Posting Order identity tool. Switch to Posting Order and select the repaired chain.")
+			);
 			return;
 		}
-		frappe.call({
-			method: `${this.ppo}.rebuild_affected_documents`,
-			args: { rows, dry_run: 1 },
-			freeze: true,
-			callback: (r) => {
-				this.$preview.text(this.format_preview(r.message || {}));
-				frappe.confirm(__("DATABASE BACKUP REQUIRED. Apply identity-scoped rebuild?"), () => {
-					frappe.call({
-						method: `${this.ppo}.rebuild_affected_documents`,
-						args: { rows, dry_run: 0 },
-						freeze: true,
-						callback: (rr) => {
-							this._show_write_result(rr.message || {}, __("Rebuild"));
-							this.integrity();
-						},
-					});
-				});
-			},
-		});
-	}
-
-	replay_downstream() {
 		const rows = this.selected_rows();
 		if (!rows.length) {
 			frappe.msgprint(__("Select the repaired chain (item + batch). This is not a global replay."));
@@ -795,6 +1087,39 @@ this.btn_cluster_explorer = this._btn(
 						freeze: true,
 						callback: (rr) => {
 							this._show_write_result(rr.message || {}, __("Replay Downstream"));
+							this.integrity();
+						},
+					});
+				});
+			},
+		});
+	}
+
+	rebuild_affected_documents() {
+		if (this.topic !== "posting") {
+			frappe.msgprint(
+				__("Rebuild Affected Documents is a Posting Order identity tool. Switch to Posting Order and select inbound/outbound rows.")
+			);
+			return;
+		}
+		const rows = this.selected_rows();
+		if (!rows.length) {
+			frappe.msgprint(__("Select the chain to rebuild (inbound + outbound). This is not a global rebuild."));
+			return;
+		}
+		frappe.call({
+			method: `${this.ppo}.rebuild_affected_documents`,
+			args: { rows, dry_run: 1 },
+			freeze: true,
+			callback: (r) => {
+				this.$preview.text(this.format_preview(r.message || {}));
+				frappe.confirm(__("DATABASE BACKUP REQUIRED. Apply identity-scoped rebuild?"), () => {
+					frappe.call({
+						method: `${this.ppo}.rebuild_affected_documents`,
+						args: { rows, dry_run: 0 },
+						freeze: true,
+						callback: (rr) => {
+							this._show_write_result(rr.message || {}, __("Rebuild"));
 							this.integrity();
 						},
 					});
@@ -850,23 +1175,101 @@ this.btn_cluster_explorer = this._btn(
 	scan_all(opts) {
 		const auto = !!(opts && opts.auto);
 		this.start_progress();
-		if (auto) this.$eta.text(__("Scan All… filling dashboard"));
+		if (auto) this.$eta.text(__("Scan All… queued on long worker"));
+		else this.$eta.text(__("Scan All… queued"));
+		// Async path: enqueue on long queue and poll. Avoids HTTP / proxy timeouts
+		// on production-size Scan All (often 20–60s+ synchronously).
 		frappe.call({
-			method: `${this.api}.scan_all`,
+			method: `${this.api}.start_scan_all_job`,
 			args: { company: this.company.get_value() },
-			freeze: !auto,
+			freeze: false,
 			callback: (r) => {
-				this.end_progress();
-				const msg = r.message || {};
-				this.dry_run_done = false;
-				this.impact_done = false;
-				this._lock_writes(true);
-				this.render_dashboard(msg.dashboard || {});
-				this.$preview.text(this.format_preview(msg));
+				const start = r.message || {};
+				const jobId = start.job_id;
+				if (!jobId) {
+					this.end_progress();
+					this.$preview.text(__("Scan All failed to enqueue. No writes were attempted."));
+					return;
+				}
+				if (start.deduplicated) {
+					this.$eta.text(__("Scan All already running — attaching to job {0}", [jobId]));
+				} else {
+					this.$eta.text(__("Scan All queued ({0})", [jobId]));
+				}
+				this._poll_scan_all_job(jobId, auto, 0);
 			},
 			error: () => {
 				this.end_progress();
-				this.$preview.text(__("Scan All failed. Retry Scan All. No writes were attempted."));
+				this.$preview.text(__("Scan All failed to enqueue. Retry Scan All. No writes were attempted."));
+			},
+		});
+	}
+
+	_poll_scan_all_job(jobId, auto, attempt) {
+		const maxAttempts = 900; // ~30 min at 2s
+		frappe.call({
+			method: `${this.api}.get_scan_all_job`,
+			args: { job_id: jobId },
+			freeze: false,
+			callback: (r) => {
+				const job = r.message || {};
+				const status = String(job.status || "");
+				const phase = job.phase || status;
+				const progress = job.progress != null ? job.progress : "";
+				this.$eta.text(
+					__("Scan All {0} — {1}{2}", [
+						status,
+						phase,
+						progress !== "" ? ` (${progress}%)` : "",
+					])
+				);
+				if (status === "COMPLETED") {
+					this.end_progress();
+					const msg = job.result || {};
+					this.dry_run_done = false;
+					this.impact_done = false;
+					this._lock_writes(true);
+					this.scan_all_job_id = jobId;
+					this.scan_all_company = this.company && this.company.get_value();
+					this.last_scan_all = msg;
+					this.last_dashboard = msg.dashboard || {};
+					this._invalidate_topic_rows(null);
+					this.render_dashboard(this.last_dashboard);
+					const unloadNote =
+						__("Scan All complete. Dashboard KPIs are from this snapshot.") +
+						"\n" +
+						__("Topic grids are not loaded yet — click Scan on each tab (or a KPI chip) to bind the same dataset.") +
+						"\n" +
+						this.format_preview(msg);
+					this.$preview.text(unloadNote);
+					// Auto-load the active topic so the visible grid never looks like "no data"
+					// while its dashboard KPI is non-zero.
+					this.scan({ after_scan_all: true });
+					return;
+				}
+				if (status === "FAILED" || status === "CANCELLED") {
+					this.end_progress();
+					this.$preview.text(
+						__("Scan All failed: {0}", [job.error || status]) +
+							" " +
+							__("No writes were attempted.")
+					);
+					return;
+				}
+				if (attempt >= maxAttempts) {
+					this.end_progress();
+					this.$preview.text(__("Scan All polling timed out. Check long worker; job {0}.", [jobId]));
+					return;
+				}
+				setTimeout(() => this._poll_scan_all_job(jobId, auto, attempt + 1), 2000);
+			},
+			error: () => {
+				if (attempt >= 5) {
+					this.end_progress();
+					this.$preview.text(__("Scan All status poll failed. Job {0}.", [jobId]));
+					return;
+				}
+				setTimeout(() => this._poll_scan_all_job(jobId, auto, attempt + 1), 2000);
 			},
 		});
 	}
@@ -887,35 +1290,33 @@ this.btn_cluster_explorer = this._btn(
 	}
 
 	_open_kpi(label) {
-		if (/Posting/i.test(label)) this.switch_topic("posting");
-		else if (/I4 Leftover/i.test(label)) {
-			this.switch_topic("sle");
-			if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
-		} else if (/Wrong Rate READY|Wrong Rate WAITING|Wrong Rate MANUAL/i.test(label)) {
-			this.switch_topic("zero");
-			const token = /READY/i.test(label) ? "READY_WRONG_RATE" : /WAITING/i.test(label) ? "WAITING" : "MANUAL";
-			this.$search.val(token);
-		} else if (/Zero|Wrong|Rate|Amount|Incoming|Outgoing|Average|Repairable|Manual|Ambiguous/i.test(label))
-			this.switch_topic("zero");
-		else if (/Patient Zero/i.test(label)) {
-			this.switch_topic("sle");
-			if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
-		} else if (/Bin|SABB/i.test(label)) this.switch_topic("sle");
-		else if (/GL READY|GL WAITING|GL MANUAL|^Broken GL$|GL/i.test(label)) {
-			this.switch_topic("gl");
-			if (/READY/i.test(label)) this.$search.val("READY");
-			else if (/WAITING/i.test(label)) this.$search.val("WAITING");
-			else if (/MANUAL/i.test(label)) this.$search.val("MANUAL");
-		} else if (/RIV SAFE|RIV WAITING|RIV UNSAFE|RIV|Replay/i.test(label)) {
-			this.switch_topic("riv");
-			if (/SAFE/i.test(label)) this.$search.val("SAFE_TO_RETRY");
-			else if (/WAITING/i.test(label)) this.$search.val("WAITING");
-			else if (/UNSAFE/i.test(label)) this.$search.val("UNSAFE");
-		} else return;
-		if (/Amount|Valuation|Incoming|Outgoing|Average|Repairable|Manual|Ambiguous/i.test(label)) {
-			this.$search.val(label.replace("Wrong ", "").replace(" Rate", ""));
+		const mapped = KPI_TOPIC[label];
+		const bucket = this._kpi_bucket_for_label(label);
+		if (!mapped && !bucket) {
+			if (/Replay/i.test(label)) {
+				this.switch_topic("riv");
+				this.scan();
+			}
+			return;
 		}
-		this.scan();
+		// Exact KPI contract: clear incompatible client search / prior planner chips.
+		this.$search && this.$search.val("");
+		this.col_filters = {};
+		if (this.planner_status) this.planner_status.set_value("");
+		if (this.patient_zero) this.patient_zero.set_value("");
+		if (!(bucket && String(bucket).startsWith("i4")) && this.repair_class) {
+			this.repair_class.set_value("");
+		}
+		const topic = mapped || KPI_TOPIC[label] || this.topic;
+		if (topic && this.topic !== topic) this.switch_topic(topic);
+		else if (mapped) this.switch_topic(mapped);
+
+		if (bucket && String(bucket).startsWith("i4")) {
+			if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
+		}
+		if (bucket) this._set_kpi_filter(label, bucket);
+		else this._clear_kpi_filter();
+		this.scan({ kpi_label: label });
 	}
 
 	select_by(mode) {
@@ -1288,7 +1689,7 @@ this.btn_cluster_explorer = this._btn(
 				__("Status"),
 			];
 		}
-		if (this.topic === "zero") {
+		if (this.topic === "zero" || this.topic === "wrong") {
 			return [
 				"",
 				__("Voucher"),
@@ -1387,7 +1788,7 @@ this.btn_cluster_explorer = this._btn(
 				this.status_label(row),
 			];
 		}
-		if (this.topic === "zero") {
+		if (this.topic === "zero" || this.topic === "wrong") {
 			return [
 				row.voucher,
 				row.idx,
@@ -1539,18 +1940,34 @@ this.btn_cluster_explorer = this._btn(
 		$table.append($body);
 		this.visible_rows = rows.map((x) => x.row);
 		this.$table.empty().append($table);
-		if (!this.rows.length) {
+		const st = this.topic_state[this.topic] || {};
+		if (!st.loaded) {
+			this.$table.append($('<div class="hr-empty hr-empty-unload" data-role="rows-not-loaded">').html(this._topic_unloaded_message()));
+		} else if (!this.rows.length) {
+			const kpi = this._topic_dashboard_count(this.topic);
+			let html =
+				"<strong>" +
+				__("No anomalies in this topic for the current scan filters.") +
+				"</strong>";
+			if (kpi != null && kpi > 0) {
+				html +=
+					"<div class='hr-empty-kpi'>" +
+					__("Dashboard still reports {0}. Clear voucher/date/warehouse filters or re-run Scan All — silent filter mismatch is not allowed.", [kpi]) +
+					"</div>";
+			} else {
+				html += "<div>" + __("Run Scan All, then Scan this tab if filters changed.") + "</div>";
+			}
+			this.$table.append($('<div class="hr-empty">').html(html));
+		} else if (!rows.length) {
 			this.$table.append(
 				$('<div class="hr-empty">').html(
 					"<strong>" +
-						__("No anomalies in this topic.") +
+						__("No rows match the current search or column filters.") +
 						"</strong><div>" +
-						__("Run Scan All, pick a dashboard card, then Scan this tab.") +
+						__("Underlying scan still has {0} row(s). Clear quick search / column filters.", [this.rows.length]) +
 						"</div>"
 				)
 			);
-		} else if (!rows.length) {
-			this.$table.append($('<div class="hr-empty">').text(__("No rows match the current search or column filters.")));
 		}
 	}
 
@@ -1798,13 +2215,15 @@ this.btn_cluster_explorer = this._btn(
 			row.planner_status === "READY_I4" ||
 			row.planner_status === "WAITING_I4" ||
 			/I4|qty_after_zero/i.test(String(row.required_action || row.reason || ""));
-		let topic = "zero";
+		let topic = "wrong";
 		if (row.root_topic === "POSTING_ORDER") topic = "posting";
 		else if (isI4 || this.topic === "sle") topic = "sle";
+		else if (this.topic === "zero" || row.topic === "ZERO_RATE" || /ZERO/i.test(String(row.zero_class || ""))) topic = "zero";
+		else if (this.topic === "wrong" || row.topic === "WRONG_RATE") topic = "wrong";
 		if (this.topic !== topic) this.switch_topic(topic);
 		if (this.voucher) this.voucher.set_value(root);
 		if (topic === "sle" && this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
-		if (topic === "zero") {
+		if (topic === "wrong") {
 			frappe.call({
 				method: `${this.api}.scan_wrong_rates_api`,
 				args: { voucher: root, company: this.company.get_value() },
@@ -1813,7 +2232,7 @@ this.btn_cluster_explorer = this._btn(
 					this.end_progress();
 					const rows = (r.message && r.message.rows) || [];
 					if (rows.length) {
-						this.rows = rows;
+						this._mark_topic_loaded(rows);
 						this.dry_run_done = false;
 						this.impact_done = false;
 						this.render_table();
@@ -2098,7 +2517,76 @@ this.btn_cluster_explorer = this._btn(
 		});
 	}
 
+	show_warehouse_plan() {
+		const row = this.selected_rows()[0] || this.rows[0] || {};
+		const warehouse = row.warehouse || (this.warehouse && this.warehouse.get_value());
+		if (this.topic !== "posting" && !row.outbound_document && !row.inbound_document) {
+			frappe.msgprint(
+				__("Warehouse Plan expects a Posting Order (or warehouse-escalation) row. Switch to Posting Order, Scan, and select a row.")
+			);
+			if (this.topic !== "posting") this.switch_topic("posting");
+			return;
+		}
+		if (!row || (!row.outbound_document && !row.inbound_document && !warehouse)) {
+			frappe.msgprint(__("Select a posting-order row (or set Warehouse) before Warehouse Plan."));
+			return;
+		}
+		this.start_progress(__("Planning warehouse-scoped repair..."));
+		frappe.call({
+			method: `${this.api}.warehouse_plan_api`,
+			args: { row },
+			freeze: true,
+			callback: (r) => {
+				this.end_progress();
+				const plan = r.message || {};
+				this.$preview.text(JSON.stringify(plan, null, 2));
+				const status = plan.planner_status || plan.status || "";
+				if (!plan || plan.error) {
+					frappe.msgprint(plan.error || __("Warehouse Plan failed."));
+					return;
+				}
+				frappe.confirm(
+					__("Run Warehouse Plan dry-run for this row?") +
+						"\n\n" +
+						__("Status: {0}", [status]) +
+						"\n" +
+						__("Warehouse: {0}", [plan.warehouse || warehouse || "—"]),
+					() => {
+						frappe.call({
+							method: `${this.api}.warehouse_dry_run_api`,
+							args: { row },
+							freeze: true,
+							callback: (rr) => {
+								const dry = rr.message || {};
+								this.$preview.text(JSON.stringify({ plan, dry_run: dry }, null, 2));
+								frappe.show_alert({
+									message: __("Warehouse dry-run complete (no writes). Review preview before apply."),
+									indicator: "blue",
+								});
+							},
+						});
+					}
+				);
+			},
+			error: () => {
+				this.end_progress();
+				// Fallback: warehouse dependency analyzer when row is warehouse-only
+				if (!warehouse) return;
+				frappe.call({
+					method: `${this.api}.warehouse_dependency_api`,
+					args: { warehouse, company: this.company.get_value() },
+					freeze: true,
+					callback: (r2) => this.$preview.text(JSON.stringify(r2.message || {}, null, 2)),
+				});
+			},
+		});
+	}
+
 	show_cluster_explorer() {
+		if (this.topic !== "zero") {
+			frappe.msgprint(__("Cluster Explorer classifies Zero Rate SAFE groups. Switching to Zero / Lost Rate."));
+			this.switch_topic("zero");
+		}
 		this.start_progress(__("Classifying Zero Rate clusters..."));
 		frappe.call({
 			method: `${this.api}.classify_zero_clusters_api`,
@@ -2171,7 +2659,10 @@ this.btn_cluster_explorer = this._btn(
 					}
 				});
 				this.$preview.text(lines.join("\n"));
-				if (msg.dashboard) this.render_dashboard(msg.dashboard);
+				if (msg.dashboard) {
+					this.last_dashboard = msg.dashboard;
+					this.render_dashboard(msg.dashboard);
+				}
 				if (!msg.all_pass) {
 					frappe.show_alert({
 						message: __("Dashboard validation FAILED — do not repair until all KPIs PASS"),
@@ -2194,8 +2685,17 @@ this.btn_cluster_explorer = this._btn(
 			callback: (r) => {
 				this.end_progress();
 				const msg = r.message || {};
+				this.last_scan_all = msg;
+				this.last_dashboard = msg.dashboard || {};
+				this.scan_all_company = this.company && this.company.get_value();
+				this._invalidate_topic_rows(null);
 				if (msg.dashboard) this.render_dashboard(msg.dashboard);
-				this.$preview.text(__("Metrics rebuilt from fresh Scan All."));
+				this.$preview.text(
+					__("Metrics rebuilt from fresh Scan All.") +
+						"\n" +
+						__("Topic grids cleared — click Scan to load rows for the current topic.")
+				);
+				this.render_table();
 				frappe.show_alert({ message: __("Dashboard refreshed"), indicator: "green" });
 			},
 			error: () => this.end_progress(),
