@@ -62,11 +62,19 @@ test.describe("5.2.18 Historical Repair Dashboard ↔ Grid consistency @release-
       timeout: 30_000,
     });
 
+    const companyInput = page.locator('.hr-toolbar [data-fieldname="company"] input, .hr-toolbar .frappe-control[data-fieldname="company"] input').first();
+    if (await companyInput.count()) {
+      await companyInput.fill("اسپاد فارمد دارو");
+      await companyInput.press("Tab");
+      await page.waitForTimeout(500);
+    }
+    await page.locator("button[data-action='scan-all']").click();
+
     // Wait for auto Scan All (async long job) — dashboard leaves "—" placeholders.
     await expect
       .poll(
         async () => {
-          const txt = await page.locator(".hr-kpi").filter({ hasText: "Integrity Score" }).locator(".hr-kpi-value").innerText();
+          const txt = await page.locator(".hr-kpi").filter({ has: page.locator(".hr-kpi-label", { hasText: /^Integrity Score$/ }) }).locator(".hr-kpi-value").innerText();
           return txt.trim();
         },
         { timeout: 10 * 60_000, intervals: [2_000, 3_000, 5_000] }
