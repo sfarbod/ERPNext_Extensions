@@ -70,7 +70,12 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	replay = _replay_kpis()
 	zero_n = zero.get("count") or 0
 	wrong_n = wrong.get("count") or 0
-	posting_n = len(posting.get("rows") or [])
+	# Posting Order KPI excludes optimizer-healthy / no-repair rows.
+	posting_n = sum(
+		1
+		for r in (posting.get("rows") or [])
+		if str(r.get("optimizer_status") or r.get("status") or "") != "NO_REPAIR_NEEDED"
+	)
 	gl_n = gl.get("count") or 0
 	bin_rows = sle.get("bin_mismatches") or []
 	bin_waiting = sum(1 for b in bin_rows if b.get("status") == "WAITING_DOWNSTREAM_REPAIR")

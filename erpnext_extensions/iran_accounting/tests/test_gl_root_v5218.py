@@ -28,7 +28,7 @@ class TestGLClassifier(unittest.TestCase):
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
 	def test_g2_missing(self, frappe, _p):
 		frappe.db.get_value.return_value = self._se()
-		frappe.db.sql.return_value = []
+		frappe.db.sql.side_effect = [[], ((0,),)]
 		row = classify_stock_entry_gl("STE-1")
 		self.assertEqual(row["gl_class"], G2_MISSING)
 		self.assertEqual(row["gl_role"], GL_ROOT)
@@ -38,9 +38,12 @@ class TestGLClassifier(unittest.TestCase):
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
 	def test_g3_unbalanced(self, frappe, _p):
 		frappe.db.get_value.return_value = self._se()
-		frappe.db.sql.return_value = [
-			type("R", (), dict(account="A", debit=100, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
-			type("R", (), dict(account="B", debit=0, credit=50, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+		frappe.db.sql.side_effect = [
+			[
+				type("R", (), dict(account="A", debit=100, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+				type("R", (), dict(account="B", debit=0, credit=50, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+			],
+			((100,),),
 		]
 		row = classify_stock_entry_gl("STE-1")
 		self.assertEqual(row["gl_class"], G3_UNBALANCED)
@@ -50,9 +53,13 @@ class TestGLClassifier(unittest.TestCase):
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
 	def test_g1_economically_wrong(self, frappe, _p):
 		frappe.db.get_value.return_value = self._se(total_outgoing_value=500000, total_incoming_value=500000)
-		frappe.db.sql.return_value = [
-			type("R", (), dict(account="Inv", debit=100, credit=0, cost_center="CC", project="P1", against=None, party=None, party_type=None))(),
-			type("R", (), dict(account="Exp", debit=0, credit=100, cost_center="CC", project="P1", against=None, party=None, party_type=None))(),
+		# First SQL = GL rows; second = SLE abs value (mismatched → true G1)
+		frappe.db.sql.side_effect = [
+			[
+				type("R", (), dict(account="Inv", debit=100, credit=0, cost_center="CC", project="P1", against=None, party=None, party_type=None))(),
+				type("R", (), dict(account="Exp", debit=0, credit=100, cost_center="CC", project="P1", against=None, party=None, party_type=None))(),
+			],
+			((50,),),
 		]
 		row = classify_stock_entry_gl("STE-1")
 		self.assertEqual(row["gl_class"], G1_ECONOMICALLY_WRONG)
@@ -60,13 +67,32 @@ class TestGLClassifier(unittest.TestCase):
 		self.assertFalse(row["has_stock_adjustment"])
 		self.assertFalse(row["has_round_off"])
 
+	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity._voucher_has_poison_sle", return_value=False)
+	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
+	def test_g0_when_gl_matches_sle_despite_stale_header(self, frappe, _p):
+		"""SE header stale vs SLE — GL matching SLE is healthy, not G1."""
+		frappe.db.get_value.return_value = self._se(total_outgoing_value=67324065, total_incoming_value=0)
+		frappe.db.sql.side_effect = [
+			[
+				type("R", (), dict(account="Inv", debit=59673777, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+				type("R", (), dict(account="Exp", debit=0, credit=59673777, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+			],
+			((59673777,),),
+		]
+		row = classify_stock_entry_gl("STE-1")
+		self.assertEqual(row["gl_class"], G0_HEALTHY)
+		self.assertFalse(row["eligible"])
+
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity._voucher_has_poison_sle", return_value=True)
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
 	def test_g4_poisoned(self, frappe, _p):
 		frappe.db.get_value.return_value = self._se()
-		frappe.db.sql.return_value = [
-			type("R", (), dict(account="A", debit=100, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
-			type("R", (), dict(account="B", debit=0, credit=100, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+		frappe.db.sql.side_effect = [
+			[
+				type("R", (), dict(account="A", debit=100, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+				type("R", (), dict(account="B", debit=0, credit=100, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+			],
+			((100,),),
 		]
 		row = classify_stock_entry_gl("STE-1")
 		self.assertEqual(row["gl_class"], G4_POISONED_SLE)
@@ -77,9 +103,12 @@ class TestGLClassifier(unittest.TestCase):
 	@patch("erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe")
 	def test_g0_healthy(self, frappe, _p):
 		frappe.db.get_value.return_value = self._se(total_outgoing_value=100, total_incoming_value=100)
-		frappe.db.sql.return_value = [
-			type("R", (), dict(account="A", debit=100, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
-			type("R", (), dict(account="B", debit=0, credit=100, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+		frappe.db.sql.side_effect = [
+			[
+				type("R", (), dict(account="A", debit=100, credit=0, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+				type("R", (), dict(account="B", debit=0, credit=100, cost_center="CC", project=None, against=None, party=None, party_type=None))(),
+			],
+			((100,),),
 		]
 		row = classify_stock_entry_gl("STE-1")
 		self.assertEqual(row["gl_class"], G0_HEALTHY)

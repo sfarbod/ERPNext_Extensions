@@ -21,6 +21,19 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import sle_poison_reason
 
 
+def _sle_abs_inventory_value(voucher_no: str) -> float:
+	"""Absolute SLE economic magnitude for a Stock Entry (truth for GL G1)."""
+	row = frappe.db.sql(
+		"""
+		SELECT COALESCE(SUM(ABS(stock_value_difference)), 0)
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
+		""",
+		voucher_no,
+	)
+	return flt(row[0][0] if row else 0)
+
+
 def classify_stock_entry_gl(voucher_no: str) -> dict:
 	se = frappe.db.get_value(
 		"Stock Entry",
@@ -56,18 +69,29 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		expected = gl_inventory  # balanced transfer with matching GL → not G1 vs SE header
 	else:
 		expected = se_header
+	sle_abs = _sle_abs_inventory_value(voucher_no)
+
+	def _near(a, b) -> bool:
+		diff = abs(flt(a) - flt(b))
+		scale = max(abs(flt(a)), abs(flt(b)), 1.0)
+		if diff / scale <= 1e-6:
+			return True
+		# Micro IRR tolerance only for large economic magnitudes (not tiny GL stubs).
+		return scale >= 10_000 and diff <= 1000
+
 	if se.docstatus == 1 and not gl:
 		klass = G2_MISSING
 	elif abs(debit - credit) > VALUE_EPS:
 		klass = G3_UNBALANCED
 	elif poisoned:
 		klass = G4_POISONED_SLE
-	elif (not transferish) and abs(gl_inventory - expected) > VALUE_EPS and expected > VALUE_EPS:
-		rel = abs(gl_inventory - expected) / max(expected, 1.0)
-		if rel <= 1e-6 or abs(gl_inventory - expected) <= 1000:
-			klass = G0_HEALTHY
-		else:
-			klass = G1_ECONOMICALLY_WRONG
+	elif sle_abs > VALUE_EPS and _near(gl_inventory, sle_abs):
+		# GL matches SLE economic truth even when SE header totals are stale.
+		klass = G0_HEALTHY
+	elif transferish:
+		klass = G0_HEALTHY
+	elif expected > VALUE_EPS and not _near(gl_inventory, expected):
+		klass = G1_ECONOMICALLY_WRONG
 	else:
 		klass = G0_HEALTHY
 
@@ -100,7 +124,8 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		"stored_credit": credit,
 		"expected_debit": expected,
 		"expected_credit": expected,
-		"difference": abs(debit - credit) if klass == G3_UNBALANCED else abs(gl_inventory - expected),
+		"sle_abs_value": sle_abs,
+		"difference": abs(debit - credit) if klass == G3_UNBALANCED else abs(gl_inventory - (sle_abs if sle_abs > VALUE_EPS else expected)),
 		"reason": klass,
 		"eligible": klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED) and not poisoned,
 		"confidence": CONFIDENCE_LIKELY if klass == G1_ECONOMICALLY_WRONG else CONFIDENCE_EXACT,
