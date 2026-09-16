@@ -28,7 +28,7 @@ from collections import defaultdict
 from time import perf_counter
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, get_datetime
 
 from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_EXACT,
@@ -47,6 +47,18 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	VALUE_EPS,
 )
 from erpnext_extensions.iran_accounting.historical_stock.audit import append_entry, finish_run, start_run
+from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
+	_fetch_previous,
+	_fetch_sles,
+	sle_poison_reason,
+)
+
+# Poisons that make ``replay_from_patient_zero`` refuse to rewrite an identity.
+HARD_REPLAY_POISONS = (
+	"negative_incoming_rate",
+	"sign_inverted_incoming_svd",
+	"exploded_rate",
+)
 
 SE_ROW_FIELDS = (
 	"name",
@@ -253,6 +265,32 @@ def classify_i1_voucher(voucher_no: str) -> dict:
 			),
 		}
 
+	# Readiness needs a replayable chain, not just a solvable pool. The apply must rewrite
+	# running balances on every touched identity; when one is poisoned by other vouchers the
+	# replay refuses, and writing only the Stock Entry would leave SE and SLE disagreeing.
+	identities = [(fg["item_code"], fg.get("t_warehouse"))] + [
+		(r["item"], r["warehouse"]) for r in proposed_secondary
+	]
+	replay_blockers = []
+	for item_code, warehouse in identities:
+		replay_blockers.extend(
+			f"{item_code}: {reason}"
+			for reason in _replay_blockers(item_code, warehouse, common["posting_datetime"])
+		)
+	if replay_blockers:
+		return {
+			**common,
+			"status": I1_WAITING,
+			"i1_status": I1_WAITING,
+			"confidence": CONFIDENCE_LIKELY,
+			"replay_blockers": replay_blockers,
+			"message": (
+				"WAITING_I1 — the pool is solvable but identity replay is blocked by upstream "
+				f"poison ({replay_blockers[0]}). Repair that chain first; a Stock-Entry-only "
+				"write would leave SE and SLE disagreeing."
+			),
+		}
+
 	proposed_fg_rate = corrected_fg_amount / fg_qty
 	sql_updates = len(proposed_secondary) + 1  # secondary rows + FG row
 	sql_updates += 1  # Stock Entry header totals
@@ -435,11 +473,19 @@ def repair_i1_selected(rows: list[dict], *, dry_run=True) -> dict:
 		frappe.db.savepoint(savepoint)
 		sql_executed = 0
 		for merged in prepared:
+			# Capture before-images first so rollback_run can restore this voucher.
+			from erpnext_extensions.iran_accounting.historical_stock.snapshot import (
+				capture_identity_snapshot,
+			)
+
+			snapshot = capture_identity_snapshot(merged["voucher"])
 			result = apply_i1_voucher(merged["voucher"])
 			sql_executed += int(result.get("sql_updates") or 0)
 			row_out = {
 				**merged,
 				**result,
+				"snapshot_before": snapshot,
+				"full_rollback_possible": snapshot.get("full_rollback_possible"),
 				"written": True,
 				"status": STATUS_REPAIRED,
 				"i1_status": I1_REPAIRED,
@@ -471,12 +517,101 @@ def repair_i1_selected(rows: list[dict], *, dry_run=True) -> dict:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = False
 
 
+def _replay_blockers(item_code, warehouse, from_dt) -> list[str]:
+	"""``replay_from_patient_zero``'s own refusal predicate, evaluated before any write.
+
+	That function scans the identity and returns ``ok=False`` without writing when it meets a
+	hard poison. Calling it and ignoring the flag is how a Stock-Entry-only half-repair gets
+	committed, so readiness is decided here instead.
+	"""
+	if not item_code or not warehouse or not from_dt:
+		return ["missing identity or posting datetime"]
+	try:
+		from_dt = get_datetime(from_dt)
+	except Exception:
+		return ["unparsable posting datetime"]
+	blockers: list[str] = []
+	previous = _fetch_previous(item_code, warehouse, from_dt)
+	if previous:
+		reason = sle_poison_reason(previous)
+		if (
+			reason
+			and reason != "qty_after_zero_nonzero_value"
+			and abs(flt(previous.qty_after_transaction)) > QTY_EPS
+		):
+			blockers.append(f"opening SLE {previous.voucher_no} is {reason}")
+	for row in _fetch_sles(item_code, warehouse, from_dt, before=False):
+		reason = sle_poison_reason(row)
+		if reason in HARD_REPLAY_POISONS:
+			blockers.append(f"{row.voucher_no} is {reason}")
+			break
+	return blockers
+
+
+def _write_inbound_sle_from_se(voucher_no: str) -> int:
+	"""Carry corrected Stock Entry amounts onto the inbound SLE legs.
+
+	Matched 1:1 through ``voucher_detail_no``, so the outgoing leg of an item that is both
+	issued and returned in the same voucher is never touched. ``valuation_rate`` is left to
+	the replay: it is the warehouse moving average after the movement, not this row's rate.
+
+	``write_sle_transaction_rates`` cannot be used here — it derives the rate from the SLE's
+	existing ``stock_value_difference``, so it can never carry a corrected Stock Entry amount.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT sle.name, sle.actual_qty, sed.amount
+		FROM `tabStock Ledger Entry` sle
+		JOIN `tabStock Entry Detail` sed ON sed.name = sle.voucher_detail_no
+		WHERE sle.voucher_type='Stock Entry' AND sle.voucher_no=%s
+		  AND sle.is_cancelled=0 AND sle.actual_qty > %s
+		""",
+		(voucher_no, QTY_EPS),
+		as_dict=True,
+	)
+	written = 0
+	for row in rows:
+		qty = flt(row.actual_qty)
+		amount = flt(row.amount)
+		frappe.db.set_value(
+			"Stock Ledger Entry",
+			row.name,
+			{
+				"incoming_rate": amount / qty,
+				"outgoing_rate": 0,
+				"stock_value_difference": amount,
+			},
+			update_modified=False,
+		)
+		written += 1
+	return written
+
+
 def apply_i1_voucher(voucher_no: str) -> dict:
-	"""Write the corrected pool for one voucher, then replay each touched identity."""
+	"""Write the corrected pool, rewrite the SLE legs, replay, then rebuild GL.
+
+	Fail-closed at every step: refuses before any write when an identity cannot replay, and
+	raises (rolling back the caller's savepoint) when the replay, the GL rebuild, or the
+	post-write verification does not hold.
+	"""
 	plan = classify_i1_voucher(voucher_no)
 	if plan.get("i1_status") != I1_READY:
 		raise frappe.ValidationError(
 			f"Cannot apply I1 on {voucher_no}: status={plan.get('i1_status')} — {plan.get('message')}"
+		)
+
+	# Re-check immediately before writing: the scan that produced this row may be stale.
+	preflight = []
+	for item_code, warehouse in [(plan["item"], plan["warehouse"])] + [
+		(r["item"], r["warehouse"]) for r in plan.get("secondary_rows") or []
+	]:
+		preflight.extend(
+			f"{item_code}: {reason}"
+			for reason in _replay_blockers(item_code, warehouse, plan.get("posting_datetime"))
+		)
+	if preflight:
+		raise frappe.ValidationError(
+			f"Cannot apply I1 on {voucher_no}: identity replay is blocked — {preflight[0]}"
 		)
 
 	touched_identities = []
@@ -512,35 +647,47 @@ def apply_i1_voucher(voucher_no: str) -> dict:
 
 	sql_updates += _refresh_header_totals(voucher_no)
 
-	# SLE transaction rates + SABB follow the Stock Entry rows for every touched item.
-	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
-		sync_sabb_from_sle,
-		write_sle_transaction_rates,
-	)
+	# Carry the corrected amounts onto the inbound SLE legs, then re-derive SABB from them.
+	sql_updates += _write_inbound_sle_from_se(voucher_no)
+
+	from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import sync_sabb_from_sle
 
 	for item_code, _warehouse in touched_identities:
-		write_sle_transaction_rates(voucher_no, item_code)
 		sync_sabb_from_sle(voucher_no, item_code)
 		sql_updates += 1
 
-	# Forward identity replay from this voucher only — never global.
+	# Forward identity replay from this voucher only — never global. Honour the ok flag:
+	# a refusal here means the running balances were NOT rewritten, so the write must abort.
 	from erpnext_extensions.iran_accounting.historical_stock.replay import replay_from_patient_zero
 
 	replays = []
 	for item_code, warehouse in touched_identities:
 		if not item_code or not warehouse:
 			continue
-		replays.append(
-			{
-				"item": item_code,
-				"warehouse": warehouse,
-				"replay": replay_from_patient_zero(
-					item_code, warehouse, None, from_dt=plan.get("posting_datetime")
-				),
-			}
+		result = replay_from_patient_zero(
+			item_code, warehouse, None, from_dt=plan.get("posting_datetime")
 		)
+		if not result.get("ok"):
+			raise frappe.ValidationError(
+				f"I1 replay refused on {item_code} @ {warehouse}: "
+				f"{result.get('status')} {result.get('reason') or ''} "
+				f"{result.get('voucher') or ''}".strip()
+			)
+		replays.append({"item": item_code, "warehouse": warehouse, "replay": result})
+		sql_updates += int(result.get("rows") or 0)
 
-	verify = _verify_no_negative_incoming(voucher_no)
+	# Selective GL last: ERPNext builds the Stock Entry GL map from SLE stock_value_difference,
+	# so rebuilding before the SLE legs are correct would post the poisoned magnitude.
+	from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import rebuild_gl_for_voucher
+
+	gl = rebuild_gl_for_voucher(voucher_no, dry_run=False)
+	if not gl.get("written"):
+		raise frappe.ValidationError(
+			f"I1 GL rebuild refused on {voucher_no}: {gl.get('reason') or gl.get('gl_class')}"
+		)
+	sql_updates += 1
+
+	verify = _verify_repair(voucher_no, touched_identities)
 	if not verify["ok"]:
 		raise frappe.ValidationError(
 			f"I1 apply failed post-write check on {voucher_no}: {verify['message']}"
@@ -553,6 +700,8 @@ def apply_i1_voucher(voucher_no: str) -> dict:
 		"touched_vouchers": [voucher_no],
 		"touched_identities": [{"item": i, "warehouse": w} for i, w in touched_identities],
 		"replays": replays,
+		"gl": gl,
+		"verification": verify,
 		"fg_rate": flt(plan["proposed_rate"]),
 		"fg_amount": flt(plan["proposed_amount"]),
 		"negative_incoming_cleared": True,
@@ -583,25 +732,70 @@ def _refresh_header_totals(voucher_no: str) -> int:
 	return 1
 
 
-def _verify_no_negative_incoming(voucher_no: str) -> dict:
-	"""Post-write gate: the guard invariant must now hold for this voucher."""
-	bad = frappe.db.sql(
+def _verify_repair(voucher_no: str, identities) -> dict:
+	"""Post-write gate across every layer this repair touched.
+
+	Checks ``valuation_rate`` as well as ``incoming_rate``: an inbound leg can carry a positive
+	incoming rate while its moving-average valuation is still negative, which is exactly the
+	state that made an earlier incoming-rate-only check report a false pass.
+	"""
+	for sle in frappe.db.sql(
 		"""
-		SELECT name, item_code, actual_qty, incoming_rate
+		SELECT name, item_code, actual_qty, incoming_rate, valuation_rate, stock_value_difference
 		FROM `tabStock Ledger Entry`
-		WHERE voucher_no=%s AND is_cancelled=0 AND actual_qty > %s AND incoming_rate < 0
-		LIMIT 5
+		WHERE voucher_no=%s AND is_cancelled=0 AND actual_qty > %s
 		""",
 		(voucher_no, QTY_EPS),
 		as_dict=True,
-	)
-	if bad:
-		return {
-			"ok": False,
-			"message": f"{len(bad)} inbound SLE still negative (e.g. {bad[0].name} {bad[0].item_code})",
-			"rows": bad,
-		}
-	return {"ok": True, "message": "no negative incoming rate remains", "rows": []}
+	):
+		if flt(sle.incoming_rate) < 0:
+			return {"ok": False, "message": f"{sle.name} ({sle.item_code}) incoming_rate is still negative"}
+		if flt(sle.valuation_rate) < 0:
+			return {
+				"ok": False,
+				"message": (
+					f"{sle.name} ({sle.item_code}) valuation_rate is still negative "
+					f"({flt(sle.valuation_rate)})"
+				),
+			}
+		if flt(sle.stock_value_difference) < -VALUE_EPS:
+			return {"ok": False, "message": f"{sle.name} ({sle.item_code}) inbound SVD is negative"}
+
+	for item_code, warehouse in identities or []:
+		if not item_code or not warehouse:
+			continue
+		last = frappe.db.sql(
+			"""
+			SELECT qty_after_transaction, stock_value FROM `tabStock Ledger Entry`
+			WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+			ORDER BY posting_datetime DESC, creation DESC LIMIT 1
+			""",
+			(item_code, warehouse),
+			as_dict=True,
+		)
+		binrow = frappe.db.sql(
+			"SELECT actual_qty, stock_value FROM `tabBin` WHERE item_code=%s AND warehouse=%s",
+			(item_code, warehouse),
+			as_dict=True,
+		)
+		if not last or not binrow:
+			continue
+		if abs(flt(binrow[0].actual_qty) - flt(last[0].qty_after_transaction)) > 0.5:
+			return {"ok": False, "message": f"Bin qty disagrees with last SLE on {item_code} @ {warehouse}"}
+		if abs(flt(binrow[0].stock_value) - flt(last[0].stock_value)) > 1:
+			return {"ok": False, "message": f"Bin value disagrees with last SLE on {item_code} @ {warehouse}"}
+
+	gl = frappe.db.sql(
+		"""
+		SELECT IFNULL(SUM(debit),0) d, IFNULL(SUM(credit),0) c FROM `tabGL Entry`
+		WHERE voucher_no=%s AND IFNULL(is_cancelled,0)=0
+		""",
+		voucher_no,
+		as_dict=True,
+	)[0]
+	if abs(flt(gl.d) - flt(gl.c)) > VALUE_EPS:
+		return {"ok": False, "message": f"GL is unbalanced after rebuild (debit {gl.d} credit {gl.c})"}
+	return {"ok": True, "message": "SLE rates, Bin and GL verified"}
 
 
 def i1_root_for_identity(item_code, warehouse):
