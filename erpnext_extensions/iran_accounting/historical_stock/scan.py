@@ -69,7 +69,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 
 	replay = _replay_kpis()
 	zero_n = zero.get("count") or 0
-	wrong_n = wrong.get("count") or 0
+	wrong_raw_n = wrong.get("count") or 0
 	# Posting Order KPI excludes optimizer-healthy / no-repair rows.
 	posting_n = sum(
 		1
@@ -101,23 +101,16 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	ready_i4 = sum(
 		1 for r in (i4.get("rows") or []) if r.get("eligible") or r.get("i4_status") == "READY_I4"
 	)
-	# Phase 2 maturity KPIs
-	wr_ready = sum(
-		1
-		for r in (wrong.get("rows") or [])
-		if str(r.get("planner_status") or "") == "READY_WRONG_RATE" and (r.get("sql_updates") or 0) > 0
-	)
-	wr_waiting = sum(
-		1
-		for r in (wrong.get("rows") or [])
-		if str(r.get("planner_status") or "")
-		in ("WAITING_PATIENT_ZERO", "WAITING_RATE_DEPENDENCY", "WAITING_RATE_REPAIR")
-	)
-	wr_manual = sum(
-		1
-		for r in (wrong.get("rows") or [])
-		if str(r.get("planner_status") or "") in ("RATE_MANUAL", "RATE_AMBIGUOUS", "MANUAL", "AMBIGUOUS")
-	)
+	# Phase 2 maturity KPIs — canonical Wrong Rate buckets (exclude COMPLETE from active).
+	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets
+
+	wr_buckets = count_wrong_rate_buckets(wrong.get("rows") or [])
+	wr_ready = wr_buckets.get("ready") or 0
+	wr_waiting = wr_buckets.get("waiting") or 0
+	wr_manual = wr_buckets.get("manual") or 0
+	wr_complete = wr_buckets.get("complete") or 0
+	# Active Wrong Rate problem count (excludes RATE_REPAIR_COMPLETE / already-valued).
+	wrong_n = wr_buckets.get("active") or 0
 	riv_by = riv.get("by_status") or {}
 	riv_safe = int(riv_by.get("SAFE_TO_RETRY") or 0)
 	riv_waiting = sum(
@@ -196,6 +189,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Integrity Score": integrity_score,
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
+		"Wrong Rate Complete": wr_complete,
 		"Zero Rate": zero_n,
 		"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
 		"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
@@ -260,8 +254,11 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 			"ambiguous": ambiguous,
 		},
 		"wrong_rate": {
-			"count": wrong.get("count"),
+			"count": wrong_n,
+			"raw_count": wrong_raw_n,
+			"complete": wr_complete,
 			"by_flag": wrong.get("by_flag"),
+			"by_kpi_bucket": wr_buckets,
 			"exact": wrong.get("exact"),
 			"likely": wrong.get("likely"),
 			"ambiguous": wrong.get("ambiguous"),
@@ -292,6 +289,12 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 			"wrong": {
 				"count": wrong_n,
 				"kpi": "Wrong Rate",
+				"covered_by_scan_all": True,
+				"note": "Active only — excludes RATE_REPAIR_COMPLETE / already-valued.",
+			},
+			"wrong_complete": {
+				"count": wr_complete,
+				"kpi": "Wrong Rate Complete",
 				"covered_by_scan_all": True,
 			},
 			"zero": {

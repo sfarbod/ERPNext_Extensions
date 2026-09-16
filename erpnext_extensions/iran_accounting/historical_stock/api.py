@@ -172,7 +172,17 @@ def repair_zero_rates_selected(rows=None, dry_run=True):
 
 
 @frappe.whitelist()
-def scan_wrong_rates_api(company=None, voucher=None, item_code=None, warehouse=None, batch=None, from_date=None, to_date=None):
+def scan_wrong_rates_api(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	batch=None,
+	from_date=None,
+	to_date=None,
+	planner_status=None,
+	kpi_bucket=None,
+):
 	_guard()
 	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
 
@@ -184,6 +194,8 @@ def scan_wrong_rates_api(company=None, voucher=None, item_code=None, warehouse=N
 		batch=batch or None,
 		from_date=from_date or None,
 		to_date=to_date or None,
+		planner_status=planner_status or None,
+		kpi_bucket=kpi_bucket or None,
 	)
 
 
@@ -257,9 +269,10 @@ def scan_sle_bin_api(
 	repair_class=None,
 	planner_status=None,
 	patient_zero=None,
+	kpi_bucket=None,
 ):
 	_guard()
-	return scan_sle_bin(
+	result = scan_sle_bin(
 		company=company or None,
 		item_code=item_code or None,
 		warehouse=warehouse or None,
@@ -273,6 +286,15 @@ def scan_sle_bin_api(
 		planner_status=planner_status or None,
 		patient_zero=patient_zero or None,
 	)
+	if kpi_bucket:
+		from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import filter_rows_by_kpi_bucket
+
+		rows = filter_rows_by_kpi_bucket(result.get("rows") or [], kpi_bucket)
+		result = dict(result)
+		result["rows"] = rows
+		result["count"] = len(rows)
+		result["filtered_by"] = {"kpi_bucket": kpi_bucket}
+	return result
 
 
 @frappe.whitelist()
@@ -284,9 +306,10 @@ def scan_gl_api(
 	work_order=None,
 	from_date=None,
 	to_date=None,
+	kpi_bucket=None,
 ):
 	_guard()
-	return scan_gl_integrity(
+	result = scan_gl_integrity(
 		company=company or None,
 		voucher=voucher or None,
 		item_code=item_code or None,
@@ -295,6 +318,15 @@ def scan_gl_api(
 		from_date=from_date or None,
 		to_date=to_date or None,
 	)
+	if kpi_bucket:
+		from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import filter_rows_by_kpi_bucket
+
+		rows = filter_rows_by_kpi_bucket(result.get("rows") or [], kpi_bucket)
+		result = dict(result)
+		result["rows"] = rows
+		result["count"] = len(rows)
+		result["filtered_by"] = {"kpi_bucket": kpi_bucket}
+	return result
 
 
 @frappe.whitelist()
@@ -322,9 +354,10 @@ def scan_failed_riv_api(
 	from_date=None,
 	to_date=None,
 	company=None,
+	kpi_bucket=None,
 ):
 	_guard()
-	return scan_failed_riv(
+	result = scan_failed_riv(
 		item_code=item_code or None,
 		warehouse=warehouse or None,
 		voucher=voucher or None,
@@ -332,6 +365,15 @@ def scan_failed_riv_api(
 		to_date=to_date or None,
 		company=company or None,
 	)
+	if kpi_bucket:
+		from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import filter_rows_by_kpi_bucket
+
+		rows = filter_rows_by_kpi_bucket(result.get("rows") or [], kpi_bucket)
+		result = dict(result)
+		result["rows"] = rows
+		result["count"] = len(rows)
+		result["filtered_by"] = {"kpi_bucket": kpi_bucket}
+	return result
 
 
 @frappe.whitelist()

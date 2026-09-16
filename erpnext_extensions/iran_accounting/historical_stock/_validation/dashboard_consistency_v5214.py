@@ -258,19 +258,47 @@ def collect_kpi_matrix(company=None) -> dict:
 		rows[-1]["status"] = "PASS"
 		rows[-1]["difference"] = {}
 
+	wr_active = wrong.get("active_count")
+	if wr_active is None:
+		from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets
+
+		wr_active = count_wrong_rate_buckets(wrong.get("rows") or []).get("active")
 	add(
 		"Wrong Rate",
 		dash.get("Wrong Rate"),
-		wrong.get("count"),
+		wr_active,
 		planner_ready(wrong.get("rows")),
-		wrong.get("count"),
+		wr_active,
 		queue["wrong_ready"],
-		reason="Dashboard=scan count (capped limit=4000); Queue=READY subset",
+		reason="Dashboard=active Wrong Rate (excludes RATE_REPAIR_COMPLETE); Queue=READY subset",
 		expect_match=False,
 	)
 	if rows[-1]["dashboard"] == rows[-1]["scan"] == rows[-1]["sql"]:
 		rows[-1]["status"] = "PASS"
 		rows[-1]["difference"] = {}
+
+	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets
+
+	wrb = wrong.get("by_kpi_bucket") or count_wrong_rate_buckets(wrong.get("rows") or [])
+	for metric, key in (
+		("Wrong Rate READY", "ready"),
+		("Wrong Rate WAITING", "waiting"),
+		("Wrong Rate MANUAL", "manual"),
+		("Wrong Rate Complete", "complete"),
+	):
+		add(
+			metric,
+			dash.get(metric),
+			wrb.get(key),
+			None,
+			wrb.get(key),
+			None,
+			reason="Canonical kpi_buckets taxonomy",
+			expect_match=True,
+		)
+		if rows[-1]["dashboard"] == rows[-1]["scan"] == rows[-1]["sql"]:
+			rows[-1]["status"] = "PASS"
+			rows[-1]["difference"] = {}
 
 	add(
 		"Zero Rate",
