@@ -112,6 +112,7 @@ class HistoricalRepairPage {
 		this.last_scan_all = null;
 		this.scan_all_job_id = null;
 		this.scan_all_company = null;
+		this._last_company_value = null; // null = not bootstrapped yet
 		this.topic_state = {};
 		this._reset_topic_state();
 		this.access = this._access_from_boot();
@@ -224,15 +225,24 @@ class HistoricalRepairPage {
 	}
 
 	_on_company_change() {
-		const company = this.company && this.company.get_value();
+		const company = (this.company && this.company.get_value()) || "";
+		// Ignore control bootstrap / duplicate change events so auto Scan All is not wiped.
+		if (this._last_company_value === null) {
+			this._last_company_value = company;
+			return;
+		}
+		if (company === this._last_company_value) return;
+		const prev = this._last_company_value;
+		this._last_company_value = company;
 		if (this.scan_all_company && company && company !== this.scan_all_company) {
 			this.last_dashboard = {};
 			this.last_scan_all = null;
 			this.scan_all_job_id = null;
 			this.render_dashboard({});
 		}
-		this._invalidate_topic_rows(__("company changed"));
+		this._invalidate_topic_rows(__("company changed ({0} → {1})", [prev || "—", company || "—"]));
 		this.render_table();
+		if (company) this.scan_all({ auto: true });
 	}
 
 	_topic_unloaded_message() {
@@ -362,7 +372,7 @@ class HistoricalRepairPage {
 			"btn-primary",
 			__("Preview repair campaigns by class — no bulk apply")
 		);
-				this.btn_warehouse_plan = this._btn(
+		this.btn_warehouse_plan = this._btn(
 			g3,
 			"warehouse-plan",
 			__("Warehouse Plan"),
@@ -370,7 +380,7 @@ class HistoricalRepairPage {
 			"btn-primary",
 			__("Plan warehouse-scoped replay for selected posting-order row")
 		);
-this.btn_cluster_explorer = this._btn(
+		this.btn_cluster_explorer = this._btn(
 			g3,
 			"cluster-explorer",
 			__("Cluster Explorer"),
@@ -697,7 +707,7 @@ this.btn_cluster_explorer = this._btn(
 				posting: [`${this.ppo}.dry_run_posting_order_repair`, rows.length ? { rows } : f],
 				wrong: [
 					`${this.api}.repair_wrong_rates_selected`,
-					{ rows: rows.length ? rows : this.rows || [], dry_run: 1 },
+					{ rows: rows.length ? rows : [], dry_run: 1 },
 				],
 				zero: [`${this.api}.dry_run_zero_rates`, rows.length ? { rows } : f],
 				manufacture: [`${this.api}.dry_run_manufacture`, rows.length ? { rows } : f],
@@ -707,7 +717,7 @@ this.btn_cluster_explorer = this._btn(
 			};
 			[method, args] = map[this.topic];
 			if (this.topic === "wrong" && !(args.rows && args.rows.length)) {
-				frappe.msgprint(__("Load Wrong Rate rows with Scan, then select rows for Dry Run."));
+				frappe.msgprint(__("Select Wrong Rate row(s) for Dry Run. Refusing to dry-run the entire scan."));
 				return;
 			}
 		}
@@ -972,34 +982,13 @@ this.btn_cluster_explorer = this._btn(
 		});
 	}
 
-	rebuild_affected_documents() {
-		const rows = this.selected_rows();
-		if (!rows.length) {
-			frappe.msgprint(__("Select the chain to rebuild (inbound + outbound). This is not a global rebuild."));
+	replay_downstream() {
+		if (this.topic !== "posting") {
+			frappe.msgprint(
+				__("Replay Downstream is a Posting Order identity tool. Switch to Posting Order and select the repaired chain.")
+			);
 			return;
 		}
-		frappe.call({
-			method: `${this.ppo}.rebuild_affected_documents`,
-			args: { rows, dry_run: 1 },
-			freeze: true,
-			callback: (r) => {
-				this.$preview.text(this.format_preview(r.message || {}));
-				frappe.confirm(__("DATABASE BACKUP REQUIRED. Apply identity-scoped rebuild?"), () => {
-					frappe.call({
-						method: `${this.ppo}.rebuild_affected_documents`,
-						args: { rows, dry_run: 0 },
-						freeze: true,
-						callback: (rr) => {
-							this._show_write_result(rr.message || {}, __("Rebuild"));
-							this.integrity();
-						},
-					});
-				});
-			},
-		});
-	}
-
-	replay_downstream() {
 		const rows = this.selected_rows();
 		if (!rows.length) {
 			frappe.msgprint(__("Select the repaired chain (item + batch). This is not a global replay."));
@@ -1018,6 +1007,39 @@ this.btn_cluster_explorer = this._btn(
 						freeze: true,
 						callback: (rr) => {
 							this._show_write_result(rr.message || {}, __("Replay Downstream"));
+							this.integrity();
+						},
+					});
+				});
+			},
+		});
+	}
+
+	rebuild_affected_documents() {
+		if (this.topic !== "posting") {
+			frappe.msgprint(
+				__("Rebuild Affected Documents is a Posting Order identity tool. Switch to Posting Order and select inbound/outbound rows.")
+			);
+			return;
+		}
+		const rows = this.selected_rows();
+		if (!rows.length) {
+			frappe.msgprint(__("Select the chain to rebuild (inbound + outbound). This is not a global rebuild."));
+			return;
+		}
+		frappe.call({
+			method: `${this.ppo}.rebuild_affected_documents`,
+			args: { rows, dry_run: 1 },
+			freeze: true,
+			callback: (r) => {
+				this.$preview.text(this.format_preview(r.message || {}));
+				frappe.confirm(__("DATABASE BACKUP REQUIRED. Apply identity-scoped rebuild?"), () => {
+					frappe.call({
+						method: `${this.ppo}.rebuild_affected_documents`,
+						args: { rows, dry_run: 0 },
+						freeze: true,
+						callback: (rr) => {
+							this._show_write_result(rr.message || {}, __("Rebuild"));
 							this.integrity();
 						},
 					});
@@ -2417,7 +2439,76 @@ this.btn_cluster_explorer = this._btn(
 		});
 	}
 
+	show_warehouse_plan() {
+		const row = this.selected_rows()[0] || this.rows[0] || {};
+		const warehouse = row.warehouse || (this.warehouse && this.warehouse.get_value());
+		if (this.topic !== "posting" && !row.outbound_document && !row.inbound_document) {
+			frappe.msgprint(
+				__("Warehouse Plan expects a Posting Order (or warehouse-escalation) row. Switch to Posting Order, Scan, and select a row.")
+			);
+			if (this.topic !== "posting") this.switch_topic("posting");
+			return;
+		}
+		if (!row || (!row.outbound_document && !row.inbound_document && !warehouse)) {
+			frappe.msgprint(__("Select a posting-order row (or set Warehouse) before Warehouse Plan."));
+			return;
+		}
+		this.start_progress(__("Planning warehouse-scoped repair..."));
+		frappe.call({
+			method: `${this.api}.warehouse_plan_api`,
+			args: { row },
+			freeze: true,
+			callback: (r) => {
+				this.end_progress();
+				const plan = r.message || {};
+				this.$preview.text(JSON.stringify(plan, null, 2));
+				const status = plan.planner_status || plan.status || "";
+				if (!plan || plan.error) {
+					frappe.msgprint(plan.error || __("Warehouse Plan failed."));
+					return;
+				}
+				frappe.confirm(
+					__("Run Warehouse Plan dry-run for this row?") +
+						"\n\n" +
+						__("Status: {0}", [status]) +
+						"\n" +
+						__("Warehouse: {0}", [plan.warehouse || warehouse || "—"]),
+					() => {
+						frappe.call({
+							method: `${this.api}.warehouse_dry_run_api`,
+							args: { row },
+							freeze: true,
+							callback: (rr) => {
+								const dry = rr.message || {};
+								this.$preview.text(JSON.stringify({ plan, dry_run: dry }, null, 2));
+								frappe.show_alert({
+									message: __("Warehouse dry-run complete (no writes). Review preview before apply."),
+									indicator: "blue",
+								});
+							},
+						});
+					}
+				);
+			},
+			error: () => {
+				this.end_progress();
+				// Fallback: warehouse dependency analyzer when row is warehouse-only
+				if (!warehouse) return;
+				frappe.call({
+					method: `${this.api}.warehouse_dependency_api`,
+					args: { warehouse, company: this.company.get_value() },
+					freeze: true,
+					callback: (r2) => this.$preview.text(JSON.stringify(r2.message || {}, null, 2)),
+				});
+			},
+		});
+	}
+
 	show_cluster_explorer() {
+		if (this.topic !== "zero") {
+			frappe.msgprint(__("Cluster Explorer classifies Zero Rate SAFE groups. Switching to Zero / Lost Rate."));
+			this.switch_topic("zero");
+		}
 		this.start_progress(__("Classifying Zero Rate clusters..."));
 		frappe.call({
 			method: `${this.api}.classify_zero_clusters_api`,
