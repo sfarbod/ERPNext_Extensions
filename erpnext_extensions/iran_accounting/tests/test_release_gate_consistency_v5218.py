@@ -49,7 +49,7 @@ class TestScanAllTopicConsistencyV5218(unittest.TestCase):
 
 		checks = [
 			("posting", dash["Posting Order"], exp["posting"]["count"], posting_n),
-			("wrong", dash["Wrong Rate"], exp["wrong"]["count"], wrong.get("count")),
+			("wrong", dash["Wrong Rate"], exp["wrong"]["count"], wrong.get("active_count")),
 			("zero", dash["Zero Rate"], exp["zero"]["count"], zero.get("count")),
 			("gl", dash["Broken GL"], exp["gl"]["count"], gl.get("count")),
 			("riv", dash["Failed RIV"], exp["riv"]["count"], riv.get("count")),
