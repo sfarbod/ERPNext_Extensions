@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from frappe.utils import flt
 
+import frappe
+
+import frappe
+
 
 def apply_svd_residue(row: dict, *, dry_run: bool = True) -> dict:
 	"""When observed rate ≈ expected but stock_value_difference drifts, restore SVD.
@@ -10,7 +14,6 @@ def apply_svd_residue(row: dict, *, dry_run: bool = True) -> dict:
 	Typical transfer-out: incoming_rate=0, valuation_rate correct, SVD off by pennies
 	or zeroed by a prior MA replay. Never changes posting order.
 	"""
-	import frappe
 	from erpnext_extensions.iran_accounting.stock_posting_order.replay import sync_transfer_incoming_rates
 
 	vn = row.get("voucher") or row.get("outbound_document")
