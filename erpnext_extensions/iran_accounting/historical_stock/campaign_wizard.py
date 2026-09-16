@@ -31,7 +31,7 @@ def campaign_wizard(company=None) -> dict:
 	gl = classify_gl_campaign(company=company)
 	out = {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
-		"version": "5.2.18",
+		"version": "5.2.19",
 		"company": company,
 		"master_plan": {
 			"repair_order": plan.get("repair_order"),
