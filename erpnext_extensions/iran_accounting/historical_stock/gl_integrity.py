@@ -22,16 +22,20 @@ from erpnext_extensions.iran_accounting.stock_posting_order.replay import sle_po
 
 
 def _sle_abs_inventory_value(voucher_no: str) -> float:
-	"""Absolute SLE economic magnitude for a Stock Entry (truth for GL G1)."""
+	"""SLE economic magnitude for GL G1 comparison.
+
+	Uses absolute net SVD (not gross sum of abs) so Manufacture / Repack
+	vouchers that post both outbound RM and inbound FG are not double-counted.
+	"""
 	row = frappe.db.sql(
 		"""
-		SELECT COALESCE(SUM(ABS(stock_value_difference)), 0)
+		SELECT COALESCE(SUM(stock_value_difference), 0)
 		FROM `tabStock Ledger Entry`
 		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
 		""",
 		voucher_no,
 	)
-	return flt(row[0][0] if row else 0)
+	return abs(flt(row[0][0] if row else 0))
 
 
 def classify_stock_entry_gl(voucher_no: str) -> dict:

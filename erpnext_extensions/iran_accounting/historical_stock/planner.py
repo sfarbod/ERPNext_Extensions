@@ -676,12 +676,15 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	if status == Z0_LEGITIMATE_ZERO:
 		return _not_ready(decision, man_status, "Z0 legitimate zero — no repair")
 	# Resolve patient-zero waits that are only engine limitations.
+	pz_cleared_via_healthy_sle = False
 	if str(row.get("dependency") or row.get("blocked_because") or "") == "circular_earliest_root":
 		patient = None
 		decision["patient_zero"] = voucher
 		decision["dependency"] = "circular_earliest_root"
 	elif patient and voucher and patient != voucher:
+		upstream = patient
 		if _rate_patient_cleared(patient, cache, row=row):
+			pz_cleared_via_healthy_sle = _patient_rate_healthy(upstream, cache, row=row)
 			patient = None
 			decision["patient_zero"] = voucher
 		elif _circular_earliest_is_self(voucher, patient, cache, row):
@@ -710,7 +713,11 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	if row.get("surface") == "SLE" and not patient:
 		patient = _lookup_patient(row, cache)
 		if patient and patient != voucher:
+			upstream = patient
 			if _rate_patient_cleared(patient, cache, row=row):
+				pz_cleared_via_healthy_sle = pz_cleared_via_healthy_sle or _patient_rate_healthy(
+					upstream, cache, row=row
+				)
 				patient = None
 			elif _circular_earliest_is_self(voucher, patient, cache, row):
 				patient = None
@@ -722,6 +729,12 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 					patient=patient,
 					prerequisite=patient,
 				)
+	# Promote LIKELY → EXACT when upstream SLE uniquely matches expected rate.
+	if pz_cleared_via_healthy_sle and confidence == CONFIDENCE_LIKELY:
+		confidence = CONFIDENCE_EXACT
+		row = dict(row)
+		row["confidence"] = CONFIDENCE_EXACT
+		decision["confidence"] = CONFIDENCE_EXACT
 	if confidence == CONFIDENCE_LIKELY:
 		return _not_ready(decision, man_status, "LIKELY — preview only; Repair Selected requires EXACT")
 	if row.get("confidence") != CONFIDENCE_EXACT:
