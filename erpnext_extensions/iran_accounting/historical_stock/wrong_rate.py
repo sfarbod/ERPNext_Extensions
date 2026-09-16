@@ -57,16 +57,28 @@ def pick_reconstruction(sources: dict[str, float], *, corroborating: dict[str, f
 	rate = flt(sources[primary])
 	others = [n for n in tried[1:] if abs(flt(sources[n]) - rate) <= 1]
 	disagree = [n for n in tried[1:] if abs(flt(sources[n]) - rate) > 1]
-	if others and not disagree:
+	if disagree:
+		return {
+			"expected": rate,
+			"source": primary,
+			"confidence": CONFIDENCE_AMBIGUOUS,
+			"sources_tried": tried,
+			"disagree": disagree,
+		}
+	if others:
 		confidence = CONFIDENCE_EXACT
 		source = f"{primary}+{others[0]}"
-	elif primary in ("transfer_source", "implied_svd") and not disagree:
+	elif primary in ("transfer_source", "implied_svd"):
 		confidence = CONFIDENCE_EXACT
 		source = primary
 	elif primary == "version":
 		confidence = CONFIDENCE_LIKELY
 		source = primary
-	elif primary in ("previous_healthy_sle", "batch_inward", "manufacture_pool") and not disagree:
+	elif primary in ("previous_healthy_sle", "batch_inward"):
+		# Single strong warehouse/batch provenance with no disagree → EXACT.
+		confidence = CONFIDENCE_EXACT
+		source = primary
+	elif primary in ("manufacture_pool",):
 		confidence = CONFIDENCE_LIKELY
 		source = primary
 	else:
@@ -158,6 +170,7 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 		classified.append(_classify_sle_mismatch(sle, cache=cache))
 		if len(classified) >= int(limit):
 			break
+	_force_include_patient_zeros(classified, seen, cache, company=company, limit=limit)
 	by_flag = defaultdict(int)
 	for r in classified:
 		for f in r.get("flags") or [r.get("mismatch_class")]:
@@ -339,6 +352,102 @@ def _classify_sle_mismatch(sle, cache=None) -> dict:
 			"reconstruction_sources": {"implied_svd": implied} if abs(implied) > RATE_EPS else {},
 		},
 		sle,
+	)
+
+
+def _force_include_patient_zeros(classified: list, seen: set, cache: dict, *, company=None, limit=4000) -> None:
+	"""Pull patient-zero vouchers missing from the scan so WAITING can resolve.
+
+	Missing roots are always appended even when ``limit`` is already reached —
+	otherwise WAITING_PATIENT_ZERO chains stay stuck forever on PZ_NOT_IN_SCAN.
+	"""
+	present = {r.get("voucher") for r in classified if r.get("voucher")}
+	missing = []
+	for row in classified:
+		pz = row.get("patient_zero")
+		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
+		if pz_v and pz_v not in present and pz_v not in missing:
+			missing.append(pz_v)
+	# Hard cap on extra roots so a pathological graph cannot explode memory.
+	extra_budget = max(200, min(800, len(missing)))
+	added = 0
+	for pz_v in missing:
+		if added >= extra_budget:
+			break
+		raws = _scan_se_flags(company, pz_v, None, None, None, None, 50)
+		if not raws:
+			raws = _fetch_se_details(pz_v, company=company, limit=50)
+		for raw in raws:
+			row = classify_zero_row(raw, _cache=cache)
+			row["topic"] = "WRONG_RATE"
+			row["surface"] = "SE"
+			flags = classify_rate_flags(
+				qty=row.get("qty"),
+				basic_rate=g(raw, "basic_rate"),
+				valuation_rate=g(raw, "valuation_rate"),
+				amount=g(raw, "amount"),
+				expected=row.get("proposed_rate"),
+				allow_zero=g(raw, "allow_zero_valuation_rate"),
+			)
+			row["flags"] = flags
+			row["mismatch_class"] = flags[0] if flags else row.get("zero_class")
+			row["current"] = row.get("current_rate")
+			row["expected"] = row.get("proposed_rate")
+			row["difference"] = flt(row.get("proposed_rate")) - flt(row.get("current_rate"))
+			row["source"] = row.get("source_of_truth")
+			from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+			row = attach_rate_analysis(row, raw)
+			key = ("SE", row.get("voucher_detail") or row.get("voucher"))
+			if key in seen:
+				continue
+			seen.add(key)
+			classified.append(row)
+			present.add(row.get("voucher"))
+			added += 1
+			if added >= extra_budget:
+				break
+		if pz_v in present:
+			continue
+		sles = _scan_sle_flags(company, pz_v, None, None, None, None, None, 50)
+		for sle in sles:
+			key = ("SLE", sle.name)
+			if key in seen:
+				continue
+			seen.add(key)
+			classified.append(_classify_sle_mismatch(sle, cache=cache))
+			present.add(pz_v)
+			added += 1
+			if added >= extra_budget:
+				break
+
+
+def _fetch_se_details(voucher, *, company=None, limit=50):
+	"""Load SE details for a voucher even when rate flags are clean."""
+	if not voucher:
+		return []
+	conds = ["se.docstatus=1", "se.name=%s", "ABS(sed.qty) > %s", "i.is_stock_item=1"]
+	args: list = [voucher, QTY_EPS]
+	if company:
+		conds.append("se.company=%s")
+		args.append(company)
+	return frappe.db.sql(
+		f"""
+		SELECT sed.name, sed.idx, sed.parent, se.purpose, se.posting_date, se.posting_time,
+		       se.company, se.work_order, se.job_card,
+		       sed.item_code, sed.qty, sed.transfer_qty, sed.s_warehouse, sed.t_warehouse,
+		       sed.basic_rate, sed.valuation_rate, sed.amount, sed.basic_amount,
+		       sed.batch_no, sed.serial_and_batch_bundle, sed.is_finished_item,
+		       sed.secondary_item_type, sed.is_scrap_item, sed.allow_zero_valuation_rate
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		JOIN `tabItem` i ON i.name = sed.item_code
+		WHERE {" AND ".join(conds)}
+		ORDER BY sed.idx
+		LIMIT {int(limit)}
+		""",
+		args,
+		as_dict=True,
 	)
 
 

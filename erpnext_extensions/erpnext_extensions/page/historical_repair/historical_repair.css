@@ -342,3 +342,45 @@
 	z-index: 3;
 	background: var(--subtle-fg);
 }
+.historical-repair-page .hr-wizard {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	margin: 8px 0;
+	padding: 8px 10px;
+	background: var(--bg-color);
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	font-size: 12px;
+}
+.historical-repair-page .hr-wizard-step {
+	color: var(--text-muted);
+}
+.historical-repair-page .hr-wizard-active {
+	color: var(--primary);
+	font-weight: 600;
+}
+.historical-repair-page .hr-wizard-done {
+	color: var(--green-500, #28a745);
+}
+.historical-repair-page .hr-health-panel,
+.historical-repair-page .hr-explorer-box {
+	margin: 8px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	background: var(--fg-color);
+}
+.historical-repair-page .hr-health-score {
+	margin-top: 8px;
+	font-weight: 600;
+}
+.historical-repair-page .hr-voucher-quick {
+	max-width: 220px;
+	display: inline-block;
+	margin-right: 8px;
+}
+.historical-repair-page .hr-row-exact[data-repair-class="I4_LEFTOVER_REPAIR"] td:nth-child(5) {
+	font-weight: 600;
+}

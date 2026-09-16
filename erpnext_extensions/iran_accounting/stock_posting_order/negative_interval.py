@@ -206,13 +206,20 @@ def _occupied_seconds(series: list, exclude_vouchers: set) -> set:
 
 
 def _next_free(inbound_dt, occupied: set, outbound_dt):
-	"""Outbound must be strictly after inbound; same-second would still invert on creation."""
+	"""Outbound must be strictly after inbound; same-second would still invert on creation.
+
+	Moving outbound onto the inbound's later calendar date is allowed — that is the
+	classic CROSS_TIME repair when the inbound already posts on a later day.
+
+	True MIDNIGHT_REVIEW only when searching free seconds would leave the *inbound*
+	posting date (e.g. inbound at 23:59:59 with no free second that day).
+	"""
 	dt = add_seconds(inbound_dt.replace(microsecond=0), 1)
-	if crosses_posting_date(outbound_dt, dt) or crosses_posting_date(inbound_dt, dt):
+	if crosses_posting_date(inbound_dt, dt):
 		return None, True
 	while dt in occupied:
 		dt = add_seconds(dt, 1)
-		if crosses_posting_date(outbound_dt, dt) or crosses_posting_date(inbound_dt, dt):
+		if crosses_posting_date(inbound_dt, dt):
 			return None, True
 	return dt, False
 
@@ -324,6 +331,74 @@ def classify_interval(
 		}
 
 	if _unrelated(confidence, inbound, outbound):
+		# Ambiguous relationship — still attempt deterministic quantity repair when
+		# the recovering inbound is an external stock source (Purchase / RECO).
+		in_vt = str(_g(inbound, "voucher_type") or "")
+		external = in_vt in ("Purchase Receipt", "Stock Reconciliation", "Purchase Invoice")
+		if external:
+			proposal = propose_outbound_after_inbound(interval, series)
+			if proposal.get("ok"):
+				if by_voucher_all and by_identity:
+					if not _cross_item_safe(_g(outbound, "voucher_no"), proposal["times"], by_voucher_all, by_identity):
+						return {
+							**base,
+							"status": STATUS_CROSS_ITEM_CONFLICT,
+							"confidence": confidence,
+							"dependency_reason": reason,
+							"eligible": False,
+						}
+				return {
+					**base,
+					"status": "CROSS_TIME_REPAIRABLE",
+					"optimizer_status": "CROSS_TIME_REPAIRABLE",
+					"confidence": CONFIDENCE_LIKELY,
+					"dependency_reason": reason or "external_inbound_recovers",
+					"eligible": False,
+					"moves": proposal["moves"],
+					"seconds_shifted": proposal["seconds_shifted"],
+					"minimum_seconds_required": proposal["seconds_shifted"],
+					"minimum_seconds_label": minimum_seconds_label(
+						"REPAIRABLE_SECONDS", proposal["seconds_shifted"]
+					),
+					"proposed_outbound": format_datetime(proposal["proposed_outbound"]),
+					"proposed_inbound": format_datetime(proposal["proposed_inbound"]),
+					"min_qty_before": str(proposal["current"]["min_qty"]),
+					"min_qty_after": str(proposal["proposed"]["min_qty"]),
+					"final_qty_before": str(proposal["current"]["final_qty"]),
+					"final_qty_after": str(proposal["proposed"]["final_qty"]),
+					"docs_changed": proposal["docs_changed"],
+					"current": proposal["current"],
+					"proposed": proposal["proposed"],
+				}
+			# Single-move failed — try shifting every deficit outbound after the inbound.
+			from erpnext_extensions.iran_accounting.stock_posting_order.multi_move import (
+				try_external_multi_move,
+			)
+
+			multi = try_external_multi_move(
+				interval,
+				series=series,
+				confidence=confidence,
+				reason=reason,
+				by_voucher_all=by_voucher_all,
+				by_identity=by_identity,
+				base=base,
+			)
+			if multi is not None:
+				return multi
+			# Do not mask a failed quantity proposal as "unrelated" — surface the
+			# real optimizer blocker (usually REAL_STOCK_SHORTAGE needing multi-move).
+			fail_status = proposal.get("status") or "LATER_INBOUND_UNRELATED"
+			return {
+				**base,
+				"status": fail_status,
+				"optimizer_status": fail_status,
+				"confidence": confidence,
+				"dependency_reason": reason or "external_inbound_proposal_failed",
+				"eligible": False,
+				"current": proposal.get("current"),
+				"proposed": proposal.get("proposed"),
+			}
 		return {
 			**base,
 			"status": "LATER_INBOUND_UNRELATED",
@@ -343,6 +418,21 @@ def classify_interval(
 
 	proposal = propose_outbound_after_inbound(interval, series)
 	if not proposal.get("ok"):
+		from erpnext_extensions.iran_accounting.stock_posting_order.multi_move import (
+			try_external_multi_move,
+		)
+
+		multi = try_external_multi_move(
+			interval,
+			series=series,
+			confidence=confidence,
+			reason=reason,
+			by_voucher_all=by_voucher_all,
+			by_identity=by_identity,
+			base=base,
+		)
+		if multi is not None:
+			return multi
 		status = proposal.get("status") or STATUS_REAL_STOCK_SHORTAGE
 		return {
 			**base,
@@ -402,7 +492,11 @@ def interval_to_scan_row(interval: dict, classified: dict) -> dict:
 	out_dt = _dt(outbound)
 	in_dt = _dt(inbound) if inbound is not None else None
 	ui_status = classified.get("status")
-	if classified.get("eligible") and ui_status in ("CROSS_TIME_REPAIRABLE", "SAME_TIME_REPAIRABLE"):
+	if classified.get("eligible") and ui_status in (
+		"CROSS_TIME_REPAIRABLE",
+		"SAME_TIME_REPAIRABLE",
+		"MULTI_MOVE_REPAIRABLE",
+	):
 		ui_status = "ELIGIBLE"
 	payload = {
 		"topic": "POSTING_ORDER",

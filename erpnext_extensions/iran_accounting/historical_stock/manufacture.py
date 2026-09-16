@@ -19,20 +19,48 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 from erpnext_extensions.iran_accounting.scrap_costing import apply_iran_manufacture_output_contract
 
 
-def scan_manufacture_anomalies(company=None, voucher=None, limit=400) -> dict:
-	conds = ["docstatus=1", "purpose='Manufacture'"]
+def scan_manufacture_anomalies(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+	limit=400,
+) -> dict:
+	conds = ["se.docstatus=1", "se.purpose='Manufacture'"]
 	args: list = []
+	join = ""
 	if company:
-		conds.append("company=%s")
+		conds.append("se.company=%s")
 		args.append(company)
 	if voucher:
-		conds.append("name=%s")
+		conds.append("se.name=%s")
 		args.append(voucher)
+	if work_order:
+		conds.append("se.work_order=%s")
+		args.append(work_order)
+	if from_date:
+		conds.append("se.posting_date>=%s")
+		args.append(from_date)
+	if to_date:
+		conds.append("se.posting_date<=%s")
+		args.append(to_date)
+	if item_code or warehouse:
+		join = " JOIN `tabStock Entry Detail` sed ON sed.parent=se.name "
+		if item_code:
+			conds.append("sed.item_code=%s")
+			args.append(item_code)
+		if warehouse:
+			conds.append("(sed.s_warehouse=%s OR sed.t_warehouse=%s)")
+			args.extend([warehouse, warehouse])
 	names = frappe.db.sql(
 		f"""
-		SELECT name FROM `tabStock Entry`
+		SELECT DISTINCT se.name FROM `tabStock Entry` se
+		{join}
 		WHERE {" AND ".join(conds)}
-		ORDER BY posting_date, creation
+		ORDER BY se.posting_date, se.creation
 		LIMIT {int(limit)}
 		""",
 		args,

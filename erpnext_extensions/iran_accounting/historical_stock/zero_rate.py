@@ -16,6 +16,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	RATE_EPS,
 	STATUS_DEPENDENCY_REPAIR_REQUIRED,
 	STATUS_MANUAL_REVIEW,
+	STATUS_RATE_REBUILD_COMPLETE,
 	STATUS_RECONSTRUCTABLE,
 	STATUS_VALUATION_POISON_DEPENDENCY,
 	VALUE_EPS,
@@ -51,7 +52,41 @@ def _is_incoming(row) -> bool:
 	return bool(g(row, "t_warehouse")) and not g(row, "s_warehouse")
 
 
-def scan_zero_rate_rows(company=None, voucher=None, limit=8000) -> dict:
+def scan_zero_rate_rows(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	batch=None,
+	serial_and_batch_bundle=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+	repair_class=None,
+	planner_status=None,
+	patient_zero=None,
+	limit=8000,
+) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.scan_filters import (
+		append_stock_entry_scope,
+		filter_rows_by_planner,
+		normalize_scope,
+	)
+
+	scope = normalize_scope(
+		company=company,
+		voucher=voucher,
+		item_code=item_code,
+		warehouse=warehouse,
+		batch=batch,
+		serial_and_batch_bundle=serial_and_batch_bundle,
+		work_order=work_order,
+		from_date=from_date,
+		to_date=to_date,
+		repair_class=repair_class,
+		planner_status=planner_status,
+		patient_zero=patient_zero,
+	)
 	conds = [
 		"se.docstatus=1",
 		"ABS(sed.qty) > %s",
@@ -61,12 +96,7 @@ def scan_zero_rate_rows(company=None, voucher=None, limit=8000) -> dict:
 		"i.is_stock_item=1",
 	]
 	args: list = [QTY_EPS, RATE_EPS, RATE_EPS]
-	if company:
-		conds.append("se.company=%s")
-		args.append(company)
-	if voucher:
-		conds.append("se.name=%s")
-		args.append(voucher)
+	append_stock_entry_scope(conds, args, scope)
 	rows = frappe.db.sql(
 		f"""
 		SELECT sed.name, sed.idx, sed.parent, se.purpose, se.posting_date, se.posting_time,
@@ -92,7 +122,7 @@ def scan_zero_rate_rows(company=None, voucher=None, limit=8000) -> dict:
 		out.append(classify_zero_row(row, _cache=cache))
 	from erpnext_extensions.iran_accounting.historical_stock.planner import stamp_scan_result
 
-	return stamp_scan_result(
+	stamped = stamp_scan_result(
 		{
 			"count": len(out),
 			"rows": out,
@@ -101,6 +131,14 @@ def scan_zero_rate_rows(company=None, voucher=None, limit=8000) -> dict:
 			"by_status": _count(out, "status"),
 		}
 	)
+	stamped["rows"] = filter_rows_by_planner(
+		stamped["rows"],
+		repair_class=scope.get("repair_class"),
+		planner_status=scope.get("planner_status"),
+		patient_zero=scope.get("patient_zero"),
+	)
+	stamped["count"] = len(stamped["rows"])
+	return stamped
 
 
 def classify_zero_row(row, _cache=None) -> dict:
@@ -160,6 +198,46 @@ def classify_zero_row(row, _cache=None) -> dict:
 		doc = frappe.get_doc("Stock Entry", parent)
 		issued = flt(_issued_rate_for_component(doc, row))
 
+	# Idempotent: already has a non-zero basic rate → not a zero-rate defect.
+	current_basic = flt(g(row, "basic_rate"))
+	if abs(current_basic) > RATE_EPS:
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		return attach_rate_analysis(
+			{
+				"topic": "ZERO_RATE",
+				"voucher": parent,
+				"voucher_detail": detail,
+				"idx": g(row, "idx"),
+				"purpose": purpose,
+				"item": item,
+				"warehouse": warehouse,
+				"s_warehouse": g(row, "s_warehouse"),
+				"t_warehouse": g(row, "t_warehouse"),
+				"batch": batch,
+				"sabb": g(row, "serial_and_batch_bundle"),
+				"qty": qty,
+				"current_rate": current_basic,
+				"current_amount": flt(g(row, "amount")),
+				"historical_rate": current_basic,
+				"proposed_rate": current_basic,
+				"proposed_amount": current_basic * qty,
+				"source_of_truth": "already_valued",
+				"confidence": CONFIDENCE_EXACT,
+				"zero_class": Z0_LEGITIMATE_ZERO,
+				"status": STATUS_RATE_REBUILD_COMPLETE,
+				"patient_zero": None,
+				"eligible": False,
+				"work_order": g(row, "work_order"),
+				"job_card": g(row, "job_card"),
+				"is_finished_item": g(row, "is_finished_item"),
+				"secondary_item_type": g(row, "secondary_item_type"),
+				"reconstruction_sources": {},
+				"rate_source": "already_valued",
+			},
+			row,
+		)
+
 	zero_class = Z6_UNKNOWN
 	proposed = 0.0
 	source = None
@@ -193,10 +271,14 @@ def classify_zero_row(row, _cache=None) -> dict:
 			proposed, source, confidence = issued, "same_voucher_issued_rate", CONFIDENCE_EXACT
 			zero_class = Z1_HISTORICAL_RATE_LOST
 	elif abs(batch_rate) > RATE_EPS:
-		proposed, source, confidence = batch_rate, "batch_inward", CONFIDENCE_LIKELY
-		zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
+		if abs(prev_sle_rate) > RATE_EPS and abs(batch_rate - prev_sle_rate) > 1:
+			proposed, source, confidence = batch_rate, "batch_vs_previous_mismatch", CONFIDENCE_AMBIGUOUS
+			zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
+		else:
+			proposed, source, confidence = batch_rate, "batch_inward", CONFIDENCE_EXACT
+			zero_class = Z4_BATCH_SABB_LOOKUP_ZERO
 	elif abs(prev_sle_rate) > RATE_EPS:
-		proposed, source, confidence = prev_sle_rate, "previous_healthy_sle", CONFIDENCE_LIKELY
+		proposed, source, confidence = prev_sle_rate, "previous_healthy_sle", CONFIDENCE_EXACT
 		zero_class = Z3_MISSING_INCOMING_VALUATION
 	else:
 		zero_class = Z3_MISSING_INCOMING_VALUATION

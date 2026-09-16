@@ -739,6 +739,9 @@ def _stop(root_status, circular, actionable, walked):
 
 def _required_action(*, root_status, root_voucher, circular, stop_reason, actionable, waiting, immediate=None):
 	from erpnext_extensions.iran_accounting.historical_stock.planner import (
+		PLAN_I4_REPLAY_REQUIRED,
+		PLAN_READY_I4,
+		PLAN_WAITING_I4,
 		PLAN_WAITING_GL_REPAIR,
 		PLAN_WAITING_SLE_REPAIR,
 	)
@@ -746,24 +749,43 @@ def _required_action(*, root_status, root_voucher, circular, stop_reason, action
 
 	target = (actionable or {}).get("voucher") or immediate or root_voucher
 	because = (actionable or {}).get("blocked_because") or ""
+	topic = (actionable or {}).get("topic") or ""
 	if circular:
 		if target:
 			return (
-				f"NO REPAIR PATH: {STOP_CIRCULAR} — Repair Wrong Rate {immediate or target} first "
+				f"NO REPAIR PATH: {STOP_CIRCULAR} — Repair I4 Patient Zero {immediate or target} first "
 				"(warehouse poison and leftover patient-zero wait on each other; not auto)"
+				if "qty_after_zero" in str(because) or topic in ("I4_LEFTOVER", "SLE_BIN")
+				else (
+					f"NO REPAIR PATH: {STOP_CIRCULAR} — Repair Wrong Rate {immediate or target} first "
+					"(warehouse poison and leftover patient-zero wait on each other; not auto)"
+				)
 			)
 		return f"NO REPAIR PATH: {STOP_CIRCULAR}"
+	if root_status in (PLAN_READY_I4,) or root_status == "READY_I4":
+		return f"Repair I4 Patient Zero {root_voucher or target}"
+	if root_status == PLAN_WAITING_I4 or waiting == PLAN_WAITING_I4:
+		return f"Repair I4 Patient Zero {target} first"
+	if root_status == PLAN_I4_REPLAY_REQUIRED or waiting == PLAN_I4_REPLAY_REQUIRED:
+		return "Finish I4 identity replay first"
 	if root_status in READY_SCOPES and root_voucher:
 		return f"Repair {root_voucher} first"
 	if waiting == PLAN_WAITING_SLE_REPAIR:
 		return "Replay Downstream first"
 	if waiting == PLAN_WAITING_GL_REPAIR:
 		return "Run Rebuild Documents first"
-	if because in ("negative_incoming_rate", "WRONG_INCOMING_RATE", "WRONG_BASIC_RATE") or "incoming" in str(because):
+	if because in ("negative_incoming_rate", "WRONG_INCOMING_RATE", "WRONG_BASIC_RATE") or (
+		"incoming" in str(because) and "qty_after_zero" not in str(because)
+	):
 		return f"Repair Wrong Rate {target} first" if target else "Repair Wrong Rate first"
+	if because in ("qty_after_zero_nonzero_value", "qty_zero_nonzero_value") or "qty_after_zero" in str(because):
+		return f"Repair I4 Patient Zero {target}" if target else "Repair I4 Patient Zero"
 	if stop_reason == STOP_AMBIGUOUS:
 		return f"NO REPAIR PATH: {STOP_AMBIGUOUS}"
 	if stop_reason == STOP_MANUAL:
+		# Do not default I4 / SLE leftover to Wrong Rate.
+		if topic in ("I4_LEFTOVER", "SLE_BIN") or "qty_after_zero" in str(because):
+			return f"Repair I4 Patient Zero {target} first (manual — not auto)" if target else "Repair I4 Patient Zero (manual — not auto)"
 		if target:
 			return f"Repair Wrong Rate {target} first (manual — not auto)"
 		return f"NO REPAIR PATH: {STOP_MANUAL}"

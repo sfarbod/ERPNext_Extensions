@@ -33,10 +33,52 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 			try:
 				classified = classify_zero_row(_load_detail(raw))
 				merged = {**classified, **{k: v for k, v in raw.items() if v not in (None, "")}}
-				from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+				from erpnext_extensions.iran_accounting.historical_stock import STATUS_RECONSTRUCTABLE
+				from erpnext_extensions.iran_accounting.historical_stock.planner import (
+					_patient_name,
+					_rate_patient_cleared,
+					assert_ready,
+				)
 
-				assert_ready(merged)
+				# Circular earliest-root election is a planner stamp; re-classify alone
+				# would re-block as DEPENDENCY_REPAIR_REQUIRED without the peer row.
+				if str(raw.get("dependency") or raw.get("blocked_because") or "") == "circular_earliest_root":
+					pz = raw.get("patient_zero") if isinstance(raw.get("patient_zero"), dict) else {}
+					merged["patient_zero"] = {
+						"voucher_no": merged.get("voucher"),
+						"posting_datetime": (
+							(pz or {}).get("posting_datetime")
+							or merged.get("posting_datetime")
+							or f"{merged.get('posting_date') or ''} {merged.get('posting_time') or ''}".strip()
+						),
+						"item_code": merged.get("item"),
+						"warehouse": merged.get("warehouse"),
+						"batch": merged.get("batch"),
+						"reason": "circular_earliest_root",
+					}
+					merged["status"] = STATUS_RECONSTRUCTABLE
+					merged["eligible"] = True
+					merged["dependency"] = "circular_earliest_root"
+					merged["confidence"] = merged.get("confidence") or raw.get("confidence")
+				voucher = merged.get("voucher")
+				cache = {"rows_by_voucher": {voucher: merged}} if voucher else {}
+				# Ensure already-valued patient-zeros are visible to assert_ready.
+				pz_name = _patient_name(merged)
+				if pz_name and pz_name != voucher:
+					_ensure_pz_row_in_cache(pz_name, cache)
+					if _rate_patient_cleared(pz_name, cache, row=merged):
+						merged["patient_zero"] = {
+							"voucher_no": voucher,
+							"posting_datetime": merged.get("posting_datetime")
+							or f"{merged.get('posting_date') or ''} {merged.get('posting_time') or ''}".strip(),
+							"reason": "patient_already_valued",
+						}
+						merged["status"] = STATUS_RECONSTRUCTABLE
+						merged["eligible"] = True
+				assert_ready(merged, cache=cache)
 				patient = merged.get("patient_zero") or {}
+				if isinstance(patient, str):
+					patient = {"voucher_no": patient}
 				classified_rows.append((raw, merged, patient))
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
@@ -190,6 +232,26 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 		"applied": applied,
 		"blocked": blocked,
 	}
+
+
+def _ensure_pz_row_in_cache(pz_voucher: str, cache: dict) -> None:
+	"""Load a patient-zero voucher into rows_by_voucher for clearance checks."""
+	by_v = cache.setdefault("rows_by_voucher", {})
+	if not pz_voucher or pz_voucher in by_v:
+		return
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import _fetch_se_details
+		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import classify_zero_row
+
+		raws = _fetch_se_details(pz_voucher, limit=5)
+		if not raws:
+			by_v[pz_voucher] = {"voucher": pz_voucher, "status": "UNKNOWN"}
+			return
+		row = classify_zero_row(raws[0])
+		row["source"] = row.get("source_of_truth")
+		by_v[pz_voucher] = row
+	except Exception:
+		by_v[pz_voucher] = {"voucher": pz_voucher, "status": "UNKNOWN"}
 
 
 def _load_detail(raw) -> dict:

@@ -1037,7 +1037,8 @@ class TestNegativeIntervalDetector(unittest.TestCase):
 		self.assertEqual(rows[0]["optimizer_status"], "CROSS_ITEM_CONFLICT")
 		self.assertFalse(rows[0]["eligible"])
 
-	def test_cross_date_proposal_is_midnight_review(self):
+	def test_cross_date_proposal_is_cross_time_repairable(self):
+		"""Outbound may move onto a later inbound's posting date — classic CROSS_TIME."""
 		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
 
 		out, inn = self._farvardin_pair()
@@ -1046,8 +1047,86 @@ class TestNegativeIntervalDetector(unittest.TestCase):
 		inn["posting_datetime"] = "2026-04-15 18:03:41"
 		inn["posting_date"] = "2026-04-15"
 		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(rows[0]["proposed_outbound_time"], "2026-04-15 18:03:42")
+		self.assertEqual(rows[0]["min_qty_after"], "0")
+		self.assertTrue(rows[0]["eligible"])
+
+	def test_true_end_of_inbound_day_is_midnight_review(self):
+		"""No free second remains on the inbound posting date → MIDNIGHT_REVIEW."""
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out, inn = self._farvardin_pair()
+		out["posting_datetime"] = "2026-04-14 18:03:50"
+		out["posting_date"] = "2026-04-14"
+		inn["posting_datetime"] = "2026-04-15 23:59:59"
+		inn["posting_date"] = "2026-04-15"
+		rows = scan_series([out, inn], skip_same_second=True)
 		self.assertEqual(rows[0]["optimizer_status"], "MIDNIGHT_REVIEW")
 		self.assertFalse(rows[0]["eligible"])
+
+	def test_purchase_receipt_later_inbound_promoted_to_cross_time(self):
+		"""External Purchase Receipt that recovers qty is deterministic CROSS_TIME LIKELY."""
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out = self._sle("o", "OUT", -10, "2026-04-06 18:01:45", purpose="Material Issue", work_order="WO-A")
+		inn = self._sle(
+			"i",
+			"PR-1",
+			10,
+			"2026-04-06 18:05:00",
+			purpose=None,
+			work_order=None,
+			voucher_type="Purchase Receipt",
+			creation="2026-09-12 02:00:00",
+		)
+		rows = scan_series([out, inn], skip_same_second=True)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["optimizer_status"], "CROSS_TIME_REPAIRABLE")
+		self.assertEqual(rows[0]["confidence"], "LIKELY")
+		self.assertEqual(rows[0]["min_qty_after"], "0")
+		self.assertFalse(rows[0]["eligible"])  # LIKELY needs planner promote
+
+	def test_multi_move_clears_two_outs_after_purchase_receipt(self):
+		"""Two Material Issues before a PRE — both shift after PRE to clear deficit."""
+		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series
+
+		out1 = self._sle(
+			"o1", "OUT-1", -6, "2026-04-06 10:00:00", purpose="Material Issue", work_order="WO-A"
+		)
+		out2 = self._sle(
+			"o2",
+			"OUT-2",
+			-5,
+			"2026-04-06 11:00:00",
+			purpose="Material Issue",
+			work_order="WO-B",
+			creation="2026-09-12 01:00:00",
+		)
+		inn = self._sle(
+			"i",
+			"PR-MULTI",
+			20,
+			"2026-04-07 09:00:00",
+			purpose=None,
+			work_order=None,
+			voucher_type="Purchase Receipt",
+			creation="2026-09-12 02:00:00",
+		)
+		rows = scan_series([out1, out2, inn], skip_same_second=True)
+		self.assertGreaterEqual(len(rows), 1)
+		# At least one interval should become MULTI_MOVE or CROSS_TIME with cleared qty
+		statuses = {r.get("optimizer_status") for r in rows}
+		self.assertTrue(
+			statuses & {"MULTI_MOVE_REPAIRABLE", "CROSS_TIME_REPAIRABLE"},
+			msg=f"unexpected statuses={statuses}",
+		)
+		cleared = [r for r in rows if r.get("min_qty_after") == "0" and r.get("moves")]
+		self.assertTrue(cleared, msg=rows)
+		# Multi-move path should move more than one document when both outs are in deficit
+		multi = [r for r in cleared if (r.get("docs_changed") or 0) >= 2 or len(r.get("moves") or []) >= 2]
+		if "MULTI_MOVE_REPAIRABLE" in statuses:
+			self.assertTrue(multi)
 
 	def test_valuation_poison_blocks_classify(self):
 		from erpnext_extensions.iran_accounting.stock_posting_order.negative_interval import scan_series

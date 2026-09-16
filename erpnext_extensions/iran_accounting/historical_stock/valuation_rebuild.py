@@ -380,9 +380,23 @@ def rebuild_chain_valuation(
 
 	from_dt = None
 	if inbound_document:
-		from_dt = frappe.db.get_value("Stock Entry", inbound_document, ["posting_date", "posting_time"], as_dict=True)
-		from_dt = get_datetime(f"{from_dt.posting_date} {from_dt.posting_time}")
+		from_dt = frappe.db.get_value(
+			"Stock Entry", inbound_document, ["posting_date", "posting_time"], as_dict=True
+		)
+		if from_dt:
+			from_dt = get_datetime(f"{from_dt.posting_date} {from_dt.posting_time}")
+		else:
+			sle_dt = frappe.db.get_value(
+				"Stock Ledger Entry",
+				{"voucher_no": inbound_document, "is_cancelled": 0},
+				"posting_datetime",
+				order_by="posting_datetime asc",
+			)
+			from_dt = get_datetime(sle_dt) if sle_dt else None
 	write = {v for v in (inbound_document, outbound_document) if v}
+	# Only rewrite Stock Entry valuation; external inbounds are quantity anchors.
+	if inbound_document and not frappe.db.exists("Stock Entry", inbound_document):
+		write.discard(inbound_document)
 	replay = []
 	if item and warehouse and from_dt:
 		replay.append(
