@@ -239,6 +239,9 @@ def _class_gl(company):
 	out["by_class"] = scan.get("by_class")
 	out["promotion_status"] = "LIMITED_PROVEN"
 	return out
+
+
+def _class_warehouse_placeholder(company):
 	"""Live warehouse campaign discovery via Warehouse Engine optimizer."""
 	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
 		discover_warehouse_campaigns,

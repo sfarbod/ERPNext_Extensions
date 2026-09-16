@@ -950,32 +950,51 @@ def _evaluate_gl(row, decision) -> dict:
 			prerequisite=voucher,
 		)
 	if klass == G2_MISSING and voucher:
-		# Material Transfer / empty GL map cannot be auto-rebuilt — MANUAL
-		if not _gl_expected_map_nonempty(voucher):
+		# Material Transfer / empty or unbalanced GL map cannot be auto-rebuilt — MANUAL
+		map_state = _gl_expected_map_state(voucher)
+		if not map_state.get("nonempty"):
 			return _not_ready(
 				decision,
 				PLAN_MANUAL,
 				"MANUAL — G2_MISSING but Stock Entry produced empty expected GL map",
+			)
+		if not map_state.get("balanced"):
+			return _not_ready(
+				decision,
+				PLAN_MANUAL,
+				f"MANUAL — G2_MISSING but SE GL map unbalanced (diff {map_state.get('diff')})",
 			)
 	if klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED):
 		return _ready(decision, sql=max(_gl_row_count(voucher), 1), rebuild=1, reason=f"READY — rebuild {klass}")
 	return _not_ready(decision, PLAN_BLOCKED, f"GL class {klass} is not repairable")
 
 
-def _gl_expected_map_nonempty(voucher) -> bool:
+def _gl_expected_map_state(voucher) -> dict:
 	if not voucher:
-		return False
+		return {"nonempty": False, "balanced": False, "diff": None}
 	try:
 		import frappe
 		from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+		from frappe.utils import flt
 
 		if not frappe.db.exists("Stock Entry", voucher):
-			return False
+			return {"nonempty": False, "balanced": False, "diff": None}
 		se = frappe.get_doc("Stock Entry", voucher)
 		expected = toggle_debit_credit_if_negative(se.get_gl_entries(se.get_inventory_account_map()))
-		return bool(expected)
+		if not expected:
+			return {"nonempty": False, "balanced": False, "diff": None}
+		deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
+		cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
+		diff = abs(deb - cre)
+		from erpnext_extensions.iran_accounting.historical_stock import VALUE_EPS
+
+		return {"nonempty": True, "balanced": diff <= VALUE_EPS, "diff": diff}
 	except Exception:
-		return False
+		return {"nonempty": False, "balanced": False, "diff": None}
+
+
+def _gl_expected_map_nonempty(voucher) -> bool:
+	return bool(_gl_expected_map_state(voucher).get("nonempty"))
 
 
 def _evaluate_riv(row, decision) -> dict:
