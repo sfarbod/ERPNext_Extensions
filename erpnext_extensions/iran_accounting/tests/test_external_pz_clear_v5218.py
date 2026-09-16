@@ -62,11 +62,30 @@ class TestExternalPatientZeroClear(unittest.TestCase):
 			self.assertFalse(_external_patient_rate_healthy("MAT-PRE-1", cache, row=row))
 			self.assertFalse(_rate_patient_cleared("MAT-PRE-1", cache, row=row))
 
-	def test_stock_entry_patient_not_cleared_via_external(self):
-		row = {"item": "X", "warehouse": "WH", "expected": 10.0}
+	def test_stock_entry_patient_not_cleared_via_external_helper(self):
+		row = {"item": "X", "warehouse": "WH", "expected": 10.0, "confidence": "EXACT"}
 		cache = {}
 		with patch(f"{PLANNER}._voucher_type_of", return_value="Stock Entry"):
-			self.assertFalse(_rate_patient_cleared("MAT-STE-1", cache, row=row))
+			self.assertFalse(_external_patient_rate_healthy("MAT-STE-1", cache, row=row))
+
+	def test_stock_entry_patient_cleared_when_sle_matches(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import _patient_rate_healthy
+
+		row = {"item": "18200046", "warehouse": "WH", "expected": 17374247.0, "confidence": "LIKELY"}
+		cache = {}
+		sle_rows = [
+			{
+				"actual_qty": -100.0,
+				"incoming_rate": 0.0,
+				"valuation_rate": 17374247.0,
+				"stock_value_difference": -1737424700.0,
+			}
+		]
+		with patch(f"{PLANNER}._voucher_type_of", return_value="Stock Entry"), patch(
+			f"{PLANNER}._sle_rates_for_voucher_item", return_value=sle_rows
+		):
+			self.assertTrue(_patient_rate_healthy("MAT-STE-31064", cache, row=row))
+			self.assertTrue(_rate_patient_cleared("MAT-STE-31064", cache, row=row))
 
 	def test_unknown_stub_falls_through_to_external(self):
 		row = {

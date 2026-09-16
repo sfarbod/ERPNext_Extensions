@@ -763,10 +763,9 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 def _rate_patient_cleared(patient: str, cache: dict, row: dict | None = None) -> bool:
 	"""True when the named patient-zero no longer needs a rate repair.
 
-	Also clears when the patient is an external voucher (Stock Reconciliation /
-	Purchase Receipt / etc.) whose SLE already carries a healthy rate that
+	Also clears when the patient voucher's SLE already carries a healthy rate that
 	matches the dependent's EXACT reconstruction — otherwise WAITING chains
-	stall forever on OUT_OF_SCAN roots the Wrong Rate scan cannot classify.
+	stall forever on OUT_OF_SCAN or already-valued roots.
 	"""
 	by_v = cache.get("rows_by_voucher") or {}
 	prow = by_v.get(patient)
@@ -787,14 +786,16 @@ def _rate_patient_cleared(patient: str, cache: dict, row: dict | None = None) ->
 			flags = prow.get("flags") or []
 			if flags and set(flags) <= {"WRONG_AMOUNT"}:
 				return True
-		# Apply-time stubs (UNKNOWN / empty SE fetch) must not suppress the
-		# external SLE probe for RECO/PRE roots.
+		# Apply-time stubs must not suppress the SLE probe.
 		stub = status in ("", "UNKNOWN") and not prow.get("confidence") and not source
 		if stub:
-			return _external_patient_rate_healthy(patient, cache, row=row)
+			return _patient_rate_healthy(patient, cache, row=row)
+		# In-scan SE/RECO/PRE whose SLE rates already match this dependent.
+		if _patient_rate_healthy(patient, cache, row=row):
+			return True
 		return False
-	# Patient absent from scan — probe ledger directly (RECO / PRE / PI).
-	return _external_patient_rate_healthy(patient, cache, row=row)
+	# Patient absent from scan — probe ledger directly (RECO / PRE / PI / SE).
+	return _patient_rate_healthy(patient, cache, row=row)
 
 
 def _voucher_type_of(patient: str) -> str | None:
@@ -833,23 +834,31 @@ def _sle_rates_for_voucher_item(patient: str, item: str, warehouse: str | None) 
 	)
 
 
-def _external_patient_rate_healthy(patient: str, cache: dict, row: dict | None = None) -> bool:
-	"""Healthy non-SE patient zero whose rate matches the dependent expectation."""
+def _patient_rate_healthy(
+	patient: str,
+	cache: dict,
+	row: dict | None = None,
+	*,
+	allow_stock_entry: bool = True,
+) -> bool:
+	"""Healthy patient zero whose SLE rate matches the dependent EXACT expectation."""
 	if not patient or not row:
+		return False
+	# EXACT always; LIKELY only when SLE rate uniquely matches expected (proven).
+	conf = row.get("confidence")
+	if conf and conf not in (CONFIDENCE_EXACT, CONFIDENCE_LIKELY):
 		return False
 	item = row.get("item") or row.get("item_code")
 	warehouse = row.get("warehouse") or row.get("s_warehouse") or row.get("t_warehouse")
 	expected = flt(row.get("expected") if row.get("expected") is not None else row.get("proposed_rate"))
 	if not item or abs(expected) <= RATE_EPS:
 		return False
-	key = ("pz_ext_healthy", patient, item, warehouse or "", round(expected, 6))
+	key = ("pz_healthy", patient, item, warehouse or "", round(expected, 6), allow_stock_entry)
 	if key in cache:
 		return bool(cache[key])
 	try:
 		voucher_type = _voucher_type_of(patient) or ""
-		# Only clear when the upstream voucher is not a Stock Entry we should
-		# classify/repair inside Wrong Rate. SE roots must appear in-scan.
-		if voucher_type in ("", "Stock Entry"):
+		if not voucher_type or (voucher_type == "Stock Entry" and not allow_stock_entry):
 			cache[key] = False
 			return False
 		sles = _sle_rates_for_voucher_item(patient, item, warehouse)
@@ -869,6 +878,11 @@ def _external_patient_rate_healthy(patient: str, cache: dict, row: dict | None =
 	except Exception:
 		cache[key] = False
 		return False
+
+
+def _external_patient_rate_healthy(patient: str, cache: dict, row: dict | None = None) -> bool:
+	"""Back-compat: non-SE patient zeros only."""
+	return _patient_rate_healthy(patient, cache, row=row, allow_stock_entry=False)
 
 
 def _row_posting_key(row: dict) -> tuple:

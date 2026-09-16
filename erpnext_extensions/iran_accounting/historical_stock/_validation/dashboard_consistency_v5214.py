@@ -238,19 +238,24 @@ def collect_kpi_matrix(company=None) -> dict:
 		reason="Derived formula from other KPIs (not a SQL count)",
 		expect_match=True,
 	)
+	po_actionable = sum(
+		1
+		for r in (posting.get("rows") or [])
+		if str(r.get("optimizer_status") or r.get("status") or "") != "NO_REPAIR_NEEDED"
+	)
 	add(
 		"Posting Order",
 		dash.get("Posting Order"),
-		len(posting.get("rows") or []),
+		po_actionable,
 		planner_ready(posting.get("rows")),
-		len(posting.get("rows") or []),
+		po_actionable,
 		queue["posting_ready"],
-		reason="Dashboard=scan row count; Planner/Queue=READY only (expected lower)",
+		reason="Dashboard/scan/sql = actionable optimizer rows (excludes NO_REPAIR_NEEDED); Planner/Queue=READY only",
 		expect_match=False,  # planner/queue intentionally subset
 	)
-	# Force PASS for posting if dash==scan
-	if rows[-1]["dashboard"] == rows[-1]["scan"]:
-		rows[-1]["status"] = "PASS" if abs(flt(rows[-1]["dashboard"]) - flt(rows[-1]["sql"] or 0)) < 0.5 else "FAIL"
+	# Force PASS for posting if dash==scan==sql actionable
+	if rows[-1]["dashboard"] == rows[-1]["scan"] and abs(flt(rows[-1]["dashboard"]) - flt(rows[-1]["sql"] or 0)) < 0.5:
+		rows[-1]["status"] = "PASS"
 		rows[-1]["difference"] = {}
 
 	add(
