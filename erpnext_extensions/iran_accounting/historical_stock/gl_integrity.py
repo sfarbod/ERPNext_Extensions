@@ -264,9 +264,12 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 			"blocked": True,
 			"reason": "NO_EXPECTED_GL — Stock Entry produced empty GL map (not auto-rebuilt)",
 		}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import _gl_expected_map_state
+
+	map_state = _gl_expected_map_state(voucher_no)
 	exp_debit = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
 	exp_credit = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
-	if abs(exp_debit - exp_credit) > VALUE_EPS:
+	if not map_state.get("postable"):
 		return {
 			**preview,
 			"dry_run": dry_run,
@@ -274,9 +277,11 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 			"blocked": True,
 			"eligible": False,
 			"reason": (
-				f"UNBALANCED_EXPECTED_GL — SE GL map debit {exp_debit} credit {exp_credit} "
-				f"(diff {abs(exp_debit - exp_credit)}); refuse auto-rebuild"
+				f"UNBALANCED_EXPECTED_GL — SE GL map not postable at currency precision "
+				f"(raw debit {exp_debit} credit {exp_credit}; precision-diff {map_state.get('diff')}; "
+				f"allowance {map_state.get('allowance')}); refuse auto-rebuild"
 			),
+			"map_state": map_state,
 		}
 	if dry_run:
 		return {
@@ -285,9 +290,21 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 			"written": False,
 			"expected_debit": exp_debit,
 			"expected_credit": exp_credit,
+			"map_state": map_state,
 		}
 	_delete_accounting_ledger_entries("Stock Entry", voucher_no)
-	se.make_gl_entries(gl_entries=expected, from_repost=True)
+	try:
+		se.make_gl_entries(gl_entries=expected, from_repost=True)
+	except frappe.ValidationError as exc:
+		return {
+			**preview,
+			"dry_run": False,
+			"written": False,
+			"blocked": True,
+			"eligible": False,
+			"reason": f"GL_POST_REFUSED — {exc}",
+			"map_state": map_state,
+		}
 	after = classify_stock_entry_gl(voucher_no)
 	if after["gl_class"] == G3_UNBALANCED:
 		frappe.throw(f"GL rebuild failed: {voucher_no} still unbalanced")

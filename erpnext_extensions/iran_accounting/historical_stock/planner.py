@@ -949,20 +949,24 @@ def _evaluate_gl(row, decision) -> dict:
 			f"WAITING_SLE_REPAIR — GL rebuild blocked until SLE is healthy ({voucher})",
 			prerequisite=voucher,
 		)
-	if klass == G2_MISSING and voucher:
-		# Material Transfer / empty or unbalanced GL map cannot be auto-rebuilt — MANUAL
+	if klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED) and voucher:
+		# Empty / currency-precision-unpostable SE GL maps cannot be auto-rebuilt — MANUAL
 		map_state = _gl_expected_map_state(voucher)
 		if not map_state.get("nonempty"):
 			return _not_ready(
 				decision,
 				PLAN_MANUAL,
-				"MANUAL — G2_MISSING but Stock Entry produced empty expected GL map",
+				f"MANUAL — {klass} but Stock Entry produced empty expected GL map",
 			)
-		if not map_state.get("balanced"):
+		if not map_state.get("postable"):
 			return _not_ready(
 				decision,
 				PLAN_MANUAL,
-				f"MANUAL — G2_MISSING but SE GL map unbalanced (diff {map_state.get('diff')})",
+				(
+					f"MANUAL — {klass} but SE GL map not postable at currency precision "
+					f"(diff {map_state.get('diff')}, precision {map_state.get('precision')}, "
+					f"allowance {map_state.get('allowance')})"
+				),
 			)
 	if klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED):
 		return _ready(decision, sql=max(_gl_row_count(voucher), 1), rebuild=1, reason=f"READY — rebuild {klass}")
@@ -970,27 +974,61 @@ def _evaluate_gl(row, decision) -> dict:
 
 
 def _gl_expected_map_state(voucher) -> dict:
+	"""Mirror ERPNext process_debit_credit_difference postability for Stock Entry maps."""
+	empty = {
+		"nonempty": False,
+		"balanced": False,
+		"postable": False,
+		"diff": None,
+		"precision": None,
+		"allowance": None,
+	}
 	if not voucher:
-		return {"nonempty": False, "balanced": False, "diff": None}
+		return empty
 	try:
 		import frappe
-		from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+		from erpnext.accounts.general_ledger import (
+			get_debit_credit_allowance,
+			get_debit_credit_difference,
+			toggle_debit_credit_if_negative,
+		)
+		from frappe.model.meta import get_field_precision
 		from frappe.utils import flt
 
 		if not frappe.db.exists("Stock Entry", voucher):
-			return {"nonempty": False, "balanced": False, "diff": None}
+			return empty
 		se = frappe.get_doc("Stock Entry", voucher)
 		expected = toggle_debit_credit_if_negative(se.get_gl_entries(se.get_inventory_account_map()))
 		if not expected:
-			return {"nonempty": False, "balanced": False, "diff": None}
-		deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
-		cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
-		diff = abs(deb - cre)
-		from erpnext_extensions.iran_accounting.historical_stock import VALUE_EPS
-
-		return {"nonempty": True, "balanced": diff <= VALUE_EPS, "diff": diff}
+			return empty
+		# Normalize to _dict rows so ERPNext helpers can mutate debit/credit in place.
+		gl_map = []
+		for e in expected:
+			if isinstance(e, dict):
+				row = frappe._dict(e)
+			else:
+				row = frappe._dict(e.as_dict() if hasattr(e, "as_dict") else dict(e))
+			row.setdefault("company", se.company)
+			row.setdefault("voucher_type", "Stock Entry")
+			row.setdefault("voucher_no", voucher)
+			gl_map.append(row)
+		currency = frappe.get_cached_value("Company", se.company, "default_currency")
+		precision = get_field_precision(frappe.get_meta("GL Entry").get_field("debit"), currency=currency)
+		diff, _trx = get_debit_credit_difference(gl_map, precision)
+		allowance = get_debit_credit_allowance("Stock Entry", precision)
+		raw_deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
+		raw_cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
+		return {
+			"nonempty": True,
+			"balanced": abs(raw_deb - raw_cre) <= abs(flt(allowance)),
+			"postable": abs(flt(diff)) <= abs(flt(allowance)),
+			"diff": abs(flt(diff)),
+			"precision": precision,
+			"allowance": allowance,
+			"raw_diff": abs(raw_deb - raw_cre),
+		}
 	except Exception:
-		return {"nonempty": False, "balanced": False, "diff": None}
+		return empty
 
 
 def _gl_expected_map_nonempty(voucher) -> bool:
