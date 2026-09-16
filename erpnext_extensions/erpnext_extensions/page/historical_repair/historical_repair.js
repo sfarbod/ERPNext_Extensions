@@ -27,6 +27,7 @@ const KPI_TOPIC = {
 	"Wrong Rate READY": "wrong",
 	"Wrong Rate WAITING": "wrong",
 	"Wrong Rate MANUAL": "wrong",
+	"Wrong Rate Complete": "wrong",
 	"Wrong Amount": "wrong",
 	"Wrong Valuation": "wrong",
 	"Wrong Incoming": "wrong",
@@ -60,6 +61,7 @@ const KPI_ORDER = [
 	"Wrong Rate READY",
 	"Wrong Rate WAITING",
 	"Wrong Rate MANUAL",
+	"Wrong Rate Complete",
 	"Zero Rate",
 	"I4 Leftover",
 	"Wrong Amount",
@@ -113,6 +115,8 @@ class HistoricalRepairPage {
 		this.scan_all_job_id = null;
 		this.scan_all_company = null;
 		this._last_company_value = null; // null = not bootstrapped yet
+		this.kpi_bucket = null;
+		this.active_kpi_label = null;
 		this.topic_state = {};
 		this._reset_topic_state();
 		this.access = this._access_from_boot();
@@ -442,6 +446,7 @@ class HistoricalRepairPage {
 		this._btn(this.$tools, "export-csv", __("Export CSV"), () => this.export_grid("csv"));
 		this._btn(this.$tools, "export-excel", __("Export Excel"), () => this.export_grid("xlsx"));
 		this._btn(this.$tools, "copy-selected", __("Copy selected"), () => this.copy_selected());
+		this.$kpi_filter = $('<div class="hr-kpi-filter" data-role="kpi-filter" style="display:none">').appendTo(this.$shell);
 		this.$columns = $('<div class="hr-columns" data-role="columns" style="display:none">').appendTo(this.$shell);
 		this.$wizard = $('<div class="hr-wizard" data-role="wizard">').appendTo(this.$shell);
 		this.render_wizard_step(1);
@@ -546,8 +551,64 @@ class HistoricalRepairPage {
 			repair_class: this.repair_class && this.repair_class.get_value(),
 			planner_status: this.planner_status && this.planner_status.get_value(),
 			patient_zero: this.patient_zero && this.patient_zero.get_value(),
+			kpi_bucket: this.kpi_bucket || null,
 			include_likely: 1,
 		};
+	}
+
+	_clear_kpi_filter() {
+		this.kpi_bucket = null;
+		this.active_kpi_label = null;
+		if (this.$kpi_filter) this.$kpi_filter.hide().empty();
+	}
+
+	_set_kpi_filter(label, bucket) {
+		this.active_kpi_label = label;
+		this.kpi_bucket = bucket;
+		if (!this.$kpi_filter) return;
+		this.$kpi_filter
+			.show()
+			.empty()
+			.append(
+				$("<strong>").text(__("Active KPI filter: {0}", [label || bucket || "—"]))
+			)
+			.append(
+				$("<span class='text-muted'>").text(" · " + __("bucket={0}", [bucket || "—"]))
+			)
+			.append(
+				$('<button type="button" class="btn btn-xs btn-default">')
+					.text(__("Clear KPI filter"))
+					.on("click", () => {
+						this._clear_kpi_filter();
+						if (this.planner_status) this.planner_status.set_value("");
+						this.$search && this.$search.val("");
+						this.scan();
+					})
+			);
+	}
+
+	_kpi_bucket_for_label(label) {
+		const map = {
+			"Wrong Rate": "wrong_rate_active",
+			"Wrong Rate READY": "wrong_rate_ready",
+			"Wrong Rate WAITING": "wrong_rate_waiting",
+			"Wrong Rate MANUAL": "wrong_rate_manual",
+			"Wrong Rate Complete": "wrong_rate_complete",
+			"READY_I4": "i4_ready",
+			"WAITING_I4": "i4_waiting",
+			"MANUAL_I4": "i4_manual",
+			"REPLAY_REQUIRED_I4": "i4_replay",
+			"I4 Leftover": "i4_all",
+			"GL READY": "gl_ready",
+			"GL WAITING": "gl_waiting",
+			"GL MANUAL": "gl_manual",
+			"Broken GL": "gl_all",
+			"RIV SAFE": "riv_safe",
+			"RIV WAITING": "riv_waiting",
+			"RIV UNSAFE": "riv_unsafe",
+			"Failed RIV": "riv_all",
+		};
+		return map[label] || null;
 	}
 
 	clear_filters() {
@@ -557,6 +618,7 @@ class HistoricalRepairPage {
 		this.$search && this.$search.val("");
 		this.$voucher_quick && this.$voucher_quick.val("");
 		this.col_filters = {};
+		this._clear_kpi_filter();
 		this._invalidate_topic_rows(__("filters cleared"));
 		this.render_table();
 		frappe.show_alert({ message: __("Filters cleared"), indicator: "blue" });
@@ -653,7 +715,25 @@ class HistoricalRepairPage {
 				this.render_table();
 				const dashN = this._topic_dashboard_count(this.topic);
 				let note = __("Scan complete. Run Dry Run before repairing.");
-				if (dashN != null && dashN > 0 && this.rows.length === 0) {
+				if (this.kpi_bucket) {
+					note =
+						__("KPI filter {0} (bucket={1}) → {2} row(s).", [
+							this.active_kpi_label || "",
+							this.kpi_bucket,
+							this.rows.length,
+						]) +
+						" " +
+						__("Only rows in this bucket are shown.");
+					const leaked = (this.rows || []).filter((r) => {
+						if (this.kpi_bucket === "wrong_rate_manual") {
+							return String(r.planner_status || "") === "RATE_REPAIR_COMPLETE";
+						}
+						return false;
+					});
+					if (leaked.length) {
+						note += " " + __("INVARIANT FAIL: {0} COMPLETE rows leaked into MANUAL.", [leaked.length]);
+					}
+				} else if (dashN != null && dashN > 0 && this.rows.length === 0) {
 					note =
 						__("Scan returned 0 rows while dashboard reports {0}. Active filters may narrow the topic dataset — clear filters or document the mismatch.", [dashN]);
 				} else if (dashN != null && this.rows.length !== dashN && this.topic !== "sle") {
@@ -1211,34 +1291,32 @@ class HistoricalRepairPage {
 
 	_open_kpi(label) {
 		const mapped = KPI_TOPIC[label];
-		if (mapped) {
-			if (mapped === "sle" && /I4|Patient Zero/i.test(label)) {
-				this.switch_topic("sle");
-				if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
-			} else {
-				this.switch_topic(mapped);
+		const bucket = this._kpi_bucket_for_label(label);
+		if (!mapped && !bucket) {
+			if (/Replay/i.test(label)) {
+				this.switch_topic("riv");
+				this.scan();
 			}
-			if (/Wrong Rate READY/i.test(label)) this.$search.val("READY_WRONG_RATE");
-			else if (/Wrong Rate WAITING/i.test(label)) this.$search.val("WAITING");
-			else if (/Wrong Rate MANUAL/i.test(label)) this.$search.val("MANUAL");
-			else if (/GL READY/i.test(label)) this.$search.val("READY");
-			else if (/GL WAITING/i.test(label)) this.$search.val("WAITING");
-			else if (/GL MANUAL/i.test(label)) this.$search.val("MANUAL");
-			else if (/RIV SAFE/i.test(label)) this.$search.val("SAFE_TO_RETRY");
-			else if (/RIV WAITING/i.test(label)) this.$search.val("WAITING");
-			else if (/RIV UNSAFE/i.test(label)) this.$search.val("UNSAFE");
-			else if (/Amount|Valuation|Incoming|Outgoing|Average/i.test(label)) {
-				this.$search.val(label.replace("Wrong ", "").replace(" Rate", ""));
-			} else if (/Repairable|Manual|Ambiguous/i.test(label) && mapped === "wrong") {
-				this.$search.val(label);
-			}
-			this.scan();
 			return;
 		}
-		if (/Replay/i.test(label)) {
-			this.switch_topic("riv");
-			this.scan();
+		// Exact KPI contract: clear incompatible client search / prior planner chips.
+		this.$search && this.$search.val("");
+		this.col_filters = {};
+		if (this.planner_status) this.planner_status.set_value("");
+		if (this.patient_zero) this.patient_zero.set_value("");
+		if (!(bucket && String(bucket).startsWith("i4")) && this.repair_class) {
+			this.repair_class.set_value("");
 		}
+		const topic = mapped || KPI_TOPIC[label] || this.topic;
+		if (topic && this.topic !== topic) this.switch_topic(topic);
+		else if (mapped) this.switch_topic(mapped);
+
+		if (bucket && String(bucket).startsWith("i4")) {
+			if (this.repair_class) this.repair_class.set_value("I4_LEFTOVER_REPAIR");
+		}
+		if (bucket) this._set_kpi_filter(label, bucket);
+		else this._clear_kpi_filter();
+		this.scan({ kpi_label: label });
 	}
 
 	select_by(mode) {
