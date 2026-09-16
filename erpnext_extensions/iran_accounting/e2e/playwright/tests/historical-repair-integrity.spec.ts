@@ -4,6 +4,7 @@ import { captureStep } from "../src/utils/screenshots";
 
 const TABS = [
   "Posting Order",
+  "Wrong Rate",
   "Zero / Lost Rate",
   "Manufacture Valuation",
   "SLE / Bin Integrity",
