@@ -246,5 +246,50 @@ class TestFailedRIVRoutesToI1(unittest.TestCase):
 		self.assertFalse(decision["eligible"])
 
 
+class TestI1ScopeRegistration(unittest.TestCase):
+	"""READY_STATUSES alone is not enough — stamp_dependency re-checks READY_SCOPES.
+
+	dependency.stamp_dependency zeroes sql_updates and forces eligible=False for any
+	planner_status outside READY_SCOPES, which silently demotes an otherwise READY row.
+	"""
+
+	def test_ready_i1_is_registered_in_ready_scopes(self):
+		from erpnext_extensions.iran_accounting.historical_stock.scope import READY_SCOPES
+
+		self.assertIn("READY_I1", READY_SCOPES)
+
+	def test_ready_i1_is_registered_in_ready_statuses(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
+
+		self.assertIn("READY_I1", READY_STATUSES)
+
+
+class TestI1RootLookup(unittest.TestCase):
+	"""The guard message is the only reliable root for an Item-and-Warehouse repost."""
+
+	def test_root_is_parsed_from_guard_error_log(self):
+		from erpnext_extensions.iran_accounting.historical_stock.failed_riv import _lookup_i1_root
+
+		err = (
+			"Stock valuation integrity (I1).\n"
+			"riv_name=jq5rt2vos0\n"
+			"voucher_type=Stock Entry\n"
+			"voucher_no=MAT-STE-2026-25087\n"
+			"detail=incoming_rate is negative on an incoming movement"
+		)
+		# Identity args deliberately unrelated: the repost identity is a raw material,
+		# while the negative incoming rate sits on the finished-good identity.
+		self.assertEqual(
+			_lookup_i1_root("13200040", "WH-Quarantine", None, err),
+			"MAT-STE-2026-25087",
+		)
+
+	def test_root_parsing_survives_trailing_whitespace(self):
+		from erpnext_extensions.iran_accounting.historical_stock.failed_riv import _lookup_i1_root
+
+		err = "Stock valuation integrity (I1).\nvoucher_no=MAT-STE-2026-24967 \ndetail=x"
+		self.assertEqual(_lookup_i1_root(None, None, None, err), "MAT-STE-2026-24967")
+
+
 if __name__ == "__main__":
 	unittest.main()

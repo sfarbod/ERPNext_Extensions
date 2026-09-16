@@ -118,7 +118,7 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 	# root so the planner can route WAITING_I1 instead of parking the RIV as MANUAL forever.
 	i1_root = None
 	if valuation and ("(I1)" in err_l or "negative on an incoming movement" in err_l):
-		i1_root = _lookup_i1_root(item, warehouse, voucher)
+		i1_root = _lookup_i1_root(item, warehouse, voucher, err_l)
 
 	patient_zero = None
 	if sle_state == SLE_PATIENT_ZERO_REQUIRED:
@@ -247,14 +247,26 @@ def _has_wrong_rate_dependency(item, warehouse) -> bool:
 	return n > 0
 
 
-def _lookup_i1_root(item, warehouse, voucher=None):
-	"""Earliest Manufacture voucher carrying a negative incoming rate for this identity."""
+def _lookup_i1_root(item, warehouse, voucher=None, error_log=None):
+	"""Manufacture voucher carrying the negative incoming rate.
+
+	The guard message names the offending voucher directly, and that is the only reliable
+	root: these reposts are ``based_on="Item and Warehouse"`` with no ``voucher_no``, and the
+	negative incoming rate sits on the finished-good identity — not on the raw-material
+	identity being reposted. Identity lookup is only a fallback.
+	"""
+	import re
+
+	if error_log:
+		match = re.search(r"voucher_no=(\S+)", error_log)
+		if match:
+			return match.group(1).strip()
 	try:
 		from erpnext_extensions.iran_accounting.historical_stock.i1_repair import i1_root_for_identity
 
 		return i1_root_for_identity(item, warehouse) or voucher
 	except Exception:
-		return None
+		return voucher
 
 
 def _lookup_patient_zero(item, warehouse):
