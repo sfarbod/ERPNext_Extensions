@@ -15,6 +15,7 @@ const TOPICS = [
 	{ id: "wrong", title: __("Wrong Rate"), kpi: "Wrong Rate" },
 	{ id: "zero", title: __("Zero / Lost Rate"), kpi: "Zero Rate" },
 	{ id: "manufacture", title: __("Manufacture Valuation"), kpi: null },
+	{ id: "i1", title: __("I1 Negative Rate"), kpi: "I1 Negative Rate" },
 	{ id: "sle", title: __("SLE / Bin Integrity"), kpi: "Broken Bin" },
 	{ id: "gl", title: __("GL Integrity"), kpi: "Broken GL" },
 	{ id: "riv", title: __("Failed RIV"), kpi: "Failed RIV" },
@@ -40,6 +41,10 @@ const KPI_TOPIC = {
 	"WAITING_I4": "sle",
 	"MANUAL_I4": "sle",
 	"REPLAY_REQUIRED_I4": "sle",
+	"I1 Negative Rate": "i1",
+	"READY_I1": "i1",
+	"WAITING_I1": "i1",
+	"MANUAL_I1": "i1",
 	"Broken SABB": "sle",
 	"Broken Bin": "sle",
 	"Waiting Downstream Bin": "sle",
@@ -64,6 +69,10 @@ const KPI_ORDER = [
 	"Wrong Rate Complete",
 	"Zero Rate",
 	"I4 Leftover",
+	"I1 Negative Rate",
+	"READY_I1",
+	"WAITING_I1",
+	"MANUAL_I1",
 	"Wrong Amount",
 	"Wrong Valuation",
 	"Wrong Incoming",
@@ -323,7 +332,7 @@ class HistoricalRepairPage {
 			df: {
 				fieldtype: "Select",
 				label: __("Repair Class"),
-				options: ["", "I4_LEFTOVER_REPAIR", "ZERO_RATE", "WRONG_RATE", "POSTING_ORDER", "SLE_BIN", "GL", "FAILED_RIV"],
+				options: ["", "I4_LEFTOVER_REPAIR", "I1_NEGATIVE_RATE_REPAIR", "ZERO_RATE", "WRONG_RATE", "POSTING_ORDER", "SLE_BIN", "GL", "FAILED_RIV"],
 			},
 			render_input: true,
 		});
@@ -332,7 +341,7 @@ class HistoricalRepairPage {
 			df: {
 				fieldtype: "Select",
 				label: __("Planner Status"),
-				options: ["", "READY", "READY_I4", "WAITING_I4", "WAITING_PATIENT_ZERO", "BLOCKED", "NO_REPAIR_PATH", "MANUAL"],
+				options: ["", "READY", "READY_I4", "WAITING_I4", "READY_I1", "WAITING_I1", "MANUAL_I1", "WAITING_PATIENT_ZERO", "BLOCKED", "NO_REPAIR_PATH", "MANUAL"],
 			},
 			render_input: true,
 		});
@@ -353,6 +362,7 @@ class HistoricalRepairPage {
 			const g2 = $('<div class="hr-action-group" data-group="repair">').appendTo($actions);
 			this.btn_repair = this._btn(g2, "repair", __("Repair Selected"), () => this.repair_bulk("selected"), "btn-danger", __("Repair checked EXACT rows"));
 			this.btn_repair_i4 = this._btn(g2, "repair-i4", __("Repair I4 Patient Zero"), () => this.repair_i4_patient_zero(), "btn-danger", __("Identity-scoped I4 leftover repair from Patient Zero"));
+			this.btn_repair_i1 = this._btn(g2, "repair-i1", __("Repair I1 Negative Rate"), () => this.repair_i1_negative_rate(), "btn-danger", __("Reprice secondary inbound from this document's issue rate"));
 			this.btn_repair_filter = this._btn(g2, "repair-filter", __("Repair Current Filter"), () => this.repair_bulk("filter"), "btn-danger", __("Repair EXACT rows matching search and column filters"));
 			this.btn_repair_page = this._btn(g2, "repair-page", __("Repair Current Page"), () => this.repair_bulk("page"), "btn-danger", __("Repair visible EXACT rows"));
 			this.btn_repair_scope = this._btn(g2, "repair-scope", __("Repair Current Scope"), () => this.repair_bulk("scope"), "btn-danger", __("Repair every EXACT row in this topic scan"));
@@ -479,7 +489,7 @@ class HistoricalRepairPage {
 	}
 
 	_lock_writes(lock) {
-		["btn_repair", "btn_repair_filter", "btn_repair_page", "btn_repair_scope", "btn_repair_i4"].forEach((k) => {
+		["btn_repair", "btn_repair_filter", "btn_repair_page", "btn_repair_scope", "btn_repair_i4", "btn_repair_i1"].forEach((k) => {
 			this[k] && this[k].prop("disabled", !!lock);
 		});
 		if (this.btn_repair_chain && lock) this.btn_repair_chain.prop("disabled", true);
@@ -599,6 +609,10 @@ class HistoricalRepairPage {
 			"MANUAL_I4": "i4_manual",
 			"REPLAY_REQUIRED_I4": "i4_replay",
 			"I4 Leftover": "i4_all",
+			"READY_I1": "i1_ready",
+			"WAITING_I1": "i1_waiting",
+			"MANUAL_I1": "i1_manual",
+			"I1 Negative Rate": "i1_all",
 			"GL READY": "gl_ready",
 			"GL WAITING": "gl_waiting",
 			"GL MANUAL": "gl_manual",
@@ -692,6 +706,7 @@ class HistoricalRepairPage {
 			wrong: [`${this.api}.scan_wrong_rates_api`, f],
 			zero: [`${this.api}.scan_zero_rates`, f],
 			manufacture: [`${this.api}.scan_manufacture`, f],
+			i1: [`${this.api}.scan_i1_api`, f],
 			sle: [`${this.api}.scan_sle_bin_api`, f],
 			gl: [`${this.api}.scan_gl_api`, f],
 			riv: [`${this.api}.scan_failed_riv_api`, f],
@@ -791,6 +806,7 @@ class HistoricalRepairPage {
 				],
 				zero: [`${this.api}.dry_run_zero_rates`, rows.length ? { rows } : f],
 				manufacture: [`${this.api}.dry_run_manufacture`, rows.length ? { rows } : f],
+				i1: [`${this.api}.dry_run_i1_api`, { rows }],
 				sle: [`${this.api}.scan_sle_bin_api`, f],
 				gl: [`${this.api}.scan_gl_api`, f],
 				riv: [`${this.api}.scan_failed_riv_api`, f],
@@ -798,6 +814,10 @@ class HistoricalRepairPage {
 			[method, args] = map[this.topic];
 			if (this.topic === "wrong" && !(args.rows && args.rows.length)) {
 				frappe.msgprint(__("Select Wrong Rate row(s) for Dry Run. Refusing to dry-run the entire scan."));
+				return;
+			}
+			if (this.topic === "i1" && !(args.rows && args.rows.length)) {
+				frappe.msgprint(__("Select I1 voucher row(s) for Dry Run. Refusing to dry-run the entire scan."));
 				return;
 			}
 		}
@@ -943,6 +963,9 @@ class HistoricalRepairPage {
 		} else if (this.topic === "manufacture") {
 			method = `${this.api}.repair_manufacture_selected_api`;
 			args = { rows, dry_run: 0 };
+		} else if (this.topic === "i1") {
+			method = `${this.api}.repair_i1_selected_api`;
+			args = { rows, dry_run: 0 };
 		} else if (this.topic === "sle" && i4Rows.length) {
 			method = `${this.api}.repair_i4_patient_zero_api`;
 			args = { rows: i4Rows, dry_run: 0 };
@@ -972,6 +995,31 @@ class HistoricalRepairPage {
 				this.integrity();
 			},
 		});
+	}
+
+	repair_i1_negative_rate() {
+		let rows = this.selected_rows().filter(
+			(r) => r.repair_class === "I1_NEGATIVE_RATE_REPAIR" || r.planner_status === "READY_I1" || r.topic === "I1_NEGATIVE_RATE"
+		);
+		if (!rows.length) {
+			rows = (this.rows || []).filter((r) => this._is_ready(r) && r.planner_status === "READY_I1");
+		}
+		if (!rows.length) {
+			frappe.msgprint(__("Select READY_I1 voucher row(s) on I1 Negative Rate first."));
+			if (this.topic !== "i1") this.switch_topic("i1");
+			return;
+		}
+		if (!this.dry_run_done || !this.impact_done) {
+			frappe.msgprint(__("Run Dry Run and Impact Analysis before Repair I1 Negative Rate."));
+			return;
+		}
+		this.render_wizard_step(1);
+		frappe.confirm(
+			__(
+				"DATABASE BACKUP REQUIRED\n\nRepair I1 Negative Rate will:\n- Dry Run (already done)\n- Impact Analysis\n- Savepoint\n- Reprice secondary inbound rows from this document's issue rate\n- Restore the finished-good residual\n- Refresh Stock Entry totals\n- Rewrite SLE incoming rate + SABB\n- Replay only the touched identities\n- Integrity\n- Re-scan\n\nWAITING_I1 rows are never written. Never global replay.\n\nContinue?"
+			),
+			() => this._execute_repair(rows)
+		);
 	}
 
 	repair_i4_patient_zero() {

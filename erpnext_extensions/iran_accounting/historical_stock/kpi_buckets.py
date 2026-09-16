@@ -25,6 +25,10 @@ from erpnext_extensions.iran_accounting.historical_stock.planner import (
 	PLAN_READY_I4,
 	PLAN_WAITING_I4,
 	PLAN_I4_REPLAY_REQUIRED,
+	PLAN_READY_I1,
+	PLAN_WAITING_I1,
+	PLAN_I1_MANUAL,
+	PLAN_I1_REPAIRED,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,6 +72,15 @@ I4_READY_STATUSES = frozenset({PLAN_READY_I4, "READY_I4"})
 I4_WAITING_STATUSES = frozenset({PLAN_WAITING_I4, "WAITING_I4", "I4_WAITING"})
 I4_MANUAL_STATUSES = frozenset({PLAN_MANUAL, "MANUAL"})
 I4_REPLAY_STATUSES = frozenset({PLAN_I4_REPLAY_REQUIRED, "I4_REPLAY_REQUIRED"})
+
+# ---------------------------------------------------------------------------
+# I1 (Manufacture negative incoming rate)
+# ---------------------------------------------------------------------------
+
+I1_READY_STATUSES = frozenset({PLAN_READY_I1, "READY_I1"})
+I1_WAITING_STATUSES = frozenset({PLAN_WAITING_I1, "WAITING_I1"})
+I1_MANUAL_STATUSES = frozenset({PLAN_I1_MANUAL, "MANUAL_I1"})
+I1_COMPLETE_STATUSES = frozenset({PLAN_I1_REPAIRED, "I1_REPAIRED"})
 
 # ---------------------------------------------------------------------------
 # GL
@@ -117,6 +130,10 @@ KPI_BUCKETS = {
 	"MANUAL_I4": "i4_manual",
 	"REPLAY_REQUIRED_I4": "i4_replay",
 	"I4 Leftover": "i4_all",
+	"READY_I1": "i1_ready",
+	"WAITING_I1": "i1_waiting",
+	"MANUAL_I1": "i1_manual",
+	"I1 Negative Rate": "i1_all",
 	"GL READY": "gl_ready",
 	"GL WAITING": "gl_waiting",
 	"GL MANUAL": "gl_manual",
@@ -188,6 +205,22 @@ def row_matches_kpi_bucket(row: dict, bucket: str) -> bool:
 			or ps in I4_REPLAY_STATUSES
 			or (row or {}).get("repair_class") == "I4_LEFTOVER_REPAIR"
 			or topic == "I4_LEFTOVER"
+		)
+
+	if bucket == "i1_ready":
+		return ps in I1_READY_STATUSES and int((row or {}).get("sql_updates") or 0) > 0
+	if bucket == "i1_waiting":
+		return ps in I1_WAITING_STATUSES
+	if bucket == "i1_manual":
+		return ps in I1_MANUAL_STATUSES and not (row or {}).get("eligible")
+	if bucket == "i1_all":
+		return (
+			ps in I1_READY_STATUSES
+			or ps in I1_WAITING_STATUSES
+			or ps in I1_MANUAL_STATUSES
+			or ps in I1_COMPLETE_STATUSES
+			or (row or {}).get("repair_class") == "I1_NEGATIVE_RATE_REPAIR"
+			or topic == "I1_NEGATIVE_RATE"
 		)
 
 	if bucket == "gl_ready":
@@ -294,6 +327,9 @@ def statuses_for_bucket(bucket: str) -> list[str]:
 		"i4_waiting": sorted(I4_WAITING_STATUSES),
 		"i4_manual": sorted(I4_MANUAL_STATUSES),
 		"i4_replay": sorted(I4_REPLAY_STATUSES),
+		"i1_ready": sorted(I1_READY_STATUSES),
+		"i1_waiting": sorted(I1_WAITING_STATUSES),
+		"i1_manual": sorted(I1_MANUAL_STATUSES),
 		"riv_safe": sorted(RIV_SAFE_STATUSES),
 		"riv_waiting": sorted(RIV_WAITING_STATUSES),
 		"riv_unsafe": sorted(RIV_UNSAFE_STATUSES),

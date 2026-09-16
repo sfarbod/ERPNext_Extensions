@@ -689,6 +689,60 @@ def identity_health_api(item_code=None, warehouse=None):
 
 
 @frappe.whitelist()
+def scan_i1_api(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	work_order=None,
+	from_date=None,
+	to_date=None,
+):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import scan_i1_negative_rate
+
+	return scan_i1_negative_rate(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		work_order=work_order or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+	)
+
+
+@frappe.whitelist()
+def dry_run_i1_api(rows=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import dry_run_i1_repair
+
+	return dry_run_i1_repair(_parse(rows))
+
+
+@frappe.whitelist()
+def repair_i1_selected_api(rows=None, dry_run=True):
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import repair_i1_selected
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact I1 rows are required")
+	return repair_i1_selected(parsed, dry_run=is_dry)
+
+
+@frappe.whitelist()
+def i1_root_cause_api(voucher=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import i1_root_cause
+
+	if not voucher:
+		frappe.throw("Voucher is required")
+	return i1_root_cause(voucher)
+
+
+@frappe.whitelist()
 def master_repair_plan_api(company=None):
 	_guard()
 	from erpnext_extensions.iran_accounting.historical_stock.master_plan import build_master_repair_plan
