@@ -850,23 +850,87 @@ this.btn_cluster_explorer = this._btn(
 	scan_all(opts) {
 		const auto = !!(opts && opts.auto);
 		this.start_progress();
-		if (auto) this.$eta.text(__("Scan All… filling dashboard"));
+		if (auto) this.$eta.text(__("Scan All… queued on long worker"));
+		else this.$eta.text(__("Scan All… queued"));
+		// Async path: enqueue on long queue and poll. Avoids HTTP / proxy timeouts
+		// on production-size Scan All (often 20–60s+ synchronously).
 		frappe.call({
-			method: `${this.api}.scan_all`,
+			method: `${this.api}.start_scan_all_job`,
 			args: { company: this.company.get_value() },
-			freeze: !auto,
+			freeze: false,
 			callback: (r) => {
-				this.end_progress();
-				const msg = r.message || {};
-				this.dry_run_done = false;
-				this.impact_done = false;
-				this._lock_writes(true);
-				this.render_dashboard(msg.dashboard || {});
-				this.$preview.text(this.format_preview(msg));
+				const start = r.message || {};
+				const jobId = start.job_id;
+				if (!jobId) {
+					this.end_progress();
+					this.$preview.text(__("Scan All failed to enqueue. No writes were attempted."));
+					return;
+				}
+				if (start.deduplicated) {
+					this.$eta.text(__("Scan All already running — attaching to job {0}", [jobId]));
+				} else {
+					this.$eta.text(__("Scan All queued ({0})", [jobId]));
+				}
+				this._poll_scan_all_job(jobId, auto, 0);
 			},
 			error: () => {
 				this.end_progress();
-				this.$preview.text(__("Scan All failed. Retry Scan All. No writes were attempted."));
+				this.$preview.text(__("Scan All failed to enqueue. Retry Scan All. No writes were attempted."));
+			},
+		});
+	}
+
+	_poll_scan_all_job(jobId, auto, attempt) {
+		const maxAttempts = 900; // ~30 min at 2s
+		frappe.call({
+			method: `${this.api}.get_scan_all_job`,
+			args: { job_id: jobId },
+			freeze: false,
+			callback: (r) => {
+				const job = r.message || {};
+				const status = String(job.status || "");
+				const phase = job.phase || status;
+				const progress = job.progress != null ? job.progress : "";
+				this.$eta.text(
+					__("Scan All {0} — {1}{2}", [
+						status,
+						phase,
+						progress !== "" ? ` (${progress}%)` : "",
+					])
+				);
+				if (status === "COMPLETED") {
+					this.end_progress();
+					const msg = job.result || {};
+					this.dry_run_done = false;
+					this.impact_done = false;
+					this._lock_writes(true);
+					this.render_dashboard(msg.dashboard || {});
+					this.$preview.text(this.format_preview(msg));
+					return;
+				}
+				if (status === "FAILED" || status === "CANCELLED") {
+					this.end_progress();
+					this.$preview.text(
+						__("Scan All failed: {0}", [job.error || status]) +
+							" " +
+							__("No writes were attempted.")
+					);
+					return;
+				}
+				if (attempt >= maxAttempts) {
+					this.end_progress();
+					this.$preview.text(__("Scan All polling timed out. Check long worker; job {0}.", [jobId]));
+					return;
+				}
+				setTimeout(() => this._poll_scan_all_job(jobId, auto, attempt + 1), 2000);
+			},
+			error: () => {
+				if (attempt >= 5) {
+					this.end_progress();
+					this.$preview.text(__("Scan All status poll failed. Job {0}.", [jobId]));
+					return;
+				}
+				setTimeout(() => this._poll_scan_all_job(jobId, auto, attempt + 1), 2000);
 			},
 		});
 	}

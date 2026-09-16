@@ -83,9 +83,30 @@ def session_info_api():
 
 @frappe.whitelist()
 def scan_all(company=None):
+	"""Synchronous Scan All (compat / small tenants). Prefer start_scan_all_job on UI."""
 	_guard()
 	# Dashboard Scan All skips manufacture get_doc loops; Manufacture tab still scans itself.
 	return run_full_integrity_scan(company=company or None, include_manufacture=False)
+
+
+@frappe.whitelist()
+def start_scan_all_job(company=None, force=0):
+	"""Enqueue Scan All on the long queue; returns immediately with job_id."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.scan_job import start_scan_all_job as _start
+
+	return _start(company=company or None, force=force)
+
+
+@frappe.whitelist()
+def get_scan_all_job(job_id=None):
+	"""Poll Scan All job status / result."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.scan_job import get_scan_all_job as _get
+
+	if not job_id:
+		frappe.throw("job_id required")
+	return _get(job_id)
 
 
 @frappe.whitelist()

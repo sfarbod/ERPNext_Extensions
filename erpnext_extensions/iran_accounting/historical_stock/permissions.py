@@ -17,6 +17,8 @@ ADMIN_IDENTITIES = ("Administrator",)
 FEATURE_MATURITY = {
 	"scan": "A",
 	"scan_all": "A",
+	"start_scan_all_job": "A",
+	"get_scan_all_job": "A",
 	"dry_run": "A",
 	"dashboard": "A",
 	"expected_rate": "A",
@@ -99,6 +101,8 @@ def session_info() -> dict:
 		"visible": {
 			"scan": True,
 			"scan_all": True,
+			"start_scan_all_job": True,
+			"get_scan_all_job": True,
 			"dry_run": True,
 			"dashboard": True,
 			"expected_rate": True,
