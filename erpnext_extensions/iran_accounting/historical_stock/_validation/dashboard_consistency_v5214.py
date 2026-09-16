@@ -112,7 +112,7 @@ def sql_patient_zeros_union(company=None) -> dict:
 			union[vn] = True
 			sources[vn].append({"topic": "ZERO_RATE", "item": r.get("item"), "warehouse": r.get("warehouse")})
 
-	wrong = scan_wrong_rates(company=company, limit=2000)
+	wrong = scan_wrong_rates(company=company, limit=4000)
 	for r in wrong.get("rows") or []:
 		pz = r.get("patient_zero") or {}
 		vn = pz.get("voucher_no") if isinstance(pz, dict) else None
@@ -143,7 +143,7 @@ def collect_kpi_matrix(company=None) -> dict:
 	# Independent scans
 	posting = run_full_history_scan(company=company)
 	zero = scan_zero_rate_rows(company=company)
-	wrong = scan_wrong_rates(company=company, limit=2000)
+	wrong = scan_wrong_rates(company=company, limit=4000)
 	sle = scan_sle_bin(company=company, limit=2000)
 	gl = scan_gl_integrity(company=company, limit=500)
 	riv = scan_failed_riv(limit=2000)
@@ -265,7 +265,7 @@ def collect_kpi_matrix(company=None) -> dict:
 		planner_ready(wrong.get("rows")),
 		wrong.get("count"),
 		queue["wrong_ready"],
-		reason="Dashboard=scan count (capped limit=2000); Queue=READY subset",
+		reason="Dashboard=scan count (capped limit=4000); Queue=READY subset",
 		expect_match=False,
 	)
 	if rows[-1]["dashboard"] == rows[-1]["scan"] == rows[-1]["sql"]:

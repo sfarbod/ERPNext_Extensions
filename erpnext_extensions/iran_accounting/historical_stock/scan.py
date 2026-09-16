@@ -28,7 +28,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 
 	posting = _mark("posting_order", lambda: run_full_history_scan(company=company))
 	zero = _mark("zero_rate", lambda: scan_zero_rate_rows(company=company))
-	wrong = _mark("wrong_rate", lambda: scan_wrong_rates(company=company, limit=2000))
+	wrong = _mark("wrong_rate", lambda: scan_wrong_rates(company=company, limit=4000))
 	mfg = {"count": 0, "rows": [], "scanned": 0}
 	if include_manufacture:
 		mfg = _mark("manufacture", lambda: scan_manufacture_anomalies(company=company, limit=5000))
@@ -280,6 +280,48 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"patient_zero_count": len(patients),
 		"patient_zero_by_topic": {k: len(v) for k, v in patients_by_topic.items()},
 		"dashboard": dashboard,
+		# Explicit topic ↔ dashboard contract for UI + Validate Dashboard.
+		# Grid row counts must match these after an unfiltered topic Scan
+		# (same company). Manufacture is optional in Scan All.
+		"topic_expectations": {
+			"posting": {
+				"count": posting_n,
+				"kpi": "Posting Order",
+				"covered_by_scan_all": True,
+			},
+			"wrong": {
+				"count": wrong_n,
+				"kpi": "Wrong Rate",
+				"covered_by_scan_all": True,
+			},
+			"zero": {
+				"count": zero_n,
+				"kpi": "Zero Rate",
+				"covered_by_scan_all": True,
+			},
+			"manufacture": {
+				"count": mfg.get("count") if include_manufacture else None,
+				"kpi": None,
+				"covered_by_scan_all": bool(include_manufacture),
+				"note": "Click Scan on Manufacture Valuation — not cached as dashboard KPI rows.",
+			},
+			"sle": {
+				"count": sle.get("count") or 0,
+				"kpi": "Broken Bin",
+				"covered_by_scan_all": True,
+				"note": "Dashboard also splits Broken Bin / Waiting Downstream Bin / I4 / SABB chips.",
+			},
+			"gl": {
+				"count": gl_n,
+				"kpi": "Broken GL",
+				"covered_by_scan_all": True,
+			},
+			"riv": {
+				"count": riv_n,
+				"kpi": "Failed RIV",
+				"covered_by_scan_all": True,
+			},
+		},
 	}
 
 
