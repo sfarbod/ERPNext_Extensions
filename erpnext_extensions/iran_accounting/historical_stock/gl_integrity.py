@@ -248,8 +248,6 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 
 	if planned["planner_status"] not in READY_STATUSES and planned["planner_status"] != "READY":
 		return {**planned, "dry_run": dry_run, "written": False, "blocked": True}
-	if dry_run:
-		return {**planned, "dry_run": True, "written": False}
 	# Capture before rows for dimension verify
 	before_dims = list(preview.get("dimensions") or [])
 	se = frappe.get_doc("Stock Entry", voucher_no)
@@ -261,10 +259,32 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 	if not expected:
 		return {
 			**preview,
-			"dry_run": False,
+			"dry_run": dry_run,
 			"written": False,
 			"blocked": True,
 			"reason": "NO_EXPECTED_GL — Stock Entry produced empty GL map (not auto-rebuilt)",
+		}
+	exp_debit = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
+	exp_credit = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
+	if abs(exp_debit - exp_credit) > VALUE_EPS:
+		return {
+			**preview,
+			"dry_run": dry_run,
+			"written": False,
+			"blocked": True,
+			"eligible": False,
+			"reason": (
+				f"UNBALANCED_EXPECTED_GL — SE GL map debit {exp_debit} credit {exp_credit} "
+				f"(diff {abs(exp_debit - exp_credit)}); refuse auto-rebuild"
+			),
+		}
+	if dry_run:
+		return {
+			**planned,
+			"dry_run": True,
+			"written": False,
+			"expected_debit": exp_debit,
+			"expected_credit": exp_credit,
 		}
 	_delete_accounting_ledger_entries("Stock Entry", voucher_no)
 	se.make_gl_entries(gl_entries=expected, from_repost=True)
