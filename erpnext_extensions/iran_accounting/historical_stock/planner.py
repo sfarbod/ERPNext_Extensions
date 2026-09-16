@@ -19,6 +19,11 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	G2_MISSING,
 	G3_UNBALANCED,
 	G4_POISONED_SLE,
+	I1_MANUAL,
+	I1_NEGATIVE_RATE_REPAIR,
+	I1_READY,
+	I1_REPAIRED,
+	I1_WAITING,
 	I4_LEFTOVER_REPAIR,
 	I4_READY,
 	I4_REPAIRED,
@@ -37,6 +42,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	STATUS_RATE_REBUILD_COMPLETE,
 	STATUS_RECONSTRUCTABLE,
 	STATUS_VALUATION_POISON_DEPENDENCY,
+	TOPIC_I1,
 	TOPIC_I4,
 	Z0_LEGITIMATE_ZERO,
 )
@@ -61,6 +67,12 @@ PLAN_READY_I4 = I4_READY
 PLAN_WAITING_I4 = I4_WAITING
 PLAN_I4_REPLAY_REQUIRED = I4_REPLAY_REQUIRED
 PLAN_I4_REPAIRED = I4_REPAIRED
+
+# I1 negative incoming rate (Manufacture pool) planner states
+PLAN_READY_I1 = I1_READY
+PLAN_WAITING_I1 = I1_WAITING
+PLAN_I1_MANUAL = I1_MANUAL
+PLAN_I1_REPAIRED = I1_REPAIRED
 
 # Phase 2 Wrong Rate planner states (no generic BLOCKED for rate rows)
 PLAN_READY_WRONG_RATE = "READY_WRONG_RATE"
@@ -98,6 +110,10 @@ PLAN_STATUSES = (
 	PLAN_WAITING_I4,
 	PLAN_I4_REPLAY_REQUIRED,
 	PLAN_I4_REPAIRED,
+	PLAN_READY_I1,
+	PLAN_WAITING_I1,
+	PLAN_I1_MANUAL,
+	PLAN_I1_REPAIRED,
 	PLAN_READY_WRONG_RATE,
 	PLAN_WAITING_RATE_DEPENDENCY,
 	PLAN_RATE_REPLAY_REQUIRED,
@@ -118,6 +134,7 @@ READY_STATUSES = (
 	PLAN_READY_WO,
 	PLAN_READY_IDENTITY,
 	PLAN_READY_I4,
+	PLAN_READY_I1,
 	PLAN_READY_WRONG_RATE,
 	"READY_WAREHOUSE_REPLAY",
 	"READY_WAREHOUSE_CAMPAIGN",
@@ -162,6 +179,8 @@ def evaluate_row(row: dict | None, *, cache: dict | None = None) -> dict:
 		return _evaluate_riv(row, decision)
 	if topic in ("GL",) or (row.get("gl_class") and not row.get("inbound_document")):
 		return _evaluate_gl(row, decision)
+	if topic in (TOPIC_I1, "I1_NEGATIVE_RATE") or row.get("repair_class") == I1_NEGATIVE_RATE_REPAIR:
+		return _evaluate_i1(row, decision, patient)
 	if topic in (TOPIC_I4, "I4_LEFTOVER") or row.get("repair_class") == I4_LEFTOVER_REPAIR:
 		return _evaluate_i4(row, decision, patient)
 	if topic == "SLE_BIN":
@@ -1066,7 +1085,19 @@ def _evaluate_riv(row, decision) -> dict:
 		)
 	if st == RIV_WAITING_REPLAY:
 		return _not_ready(decision, PLAN_WAITING_SLE_REPAIR, "WAITING_REPLAY — identity replay incomplete")
-	if st in (RIV_NEGATIVE_STOCK, RIV_RAW_MATERIAL_COST, RIV_VALUATION_INTEGRITY, RIV_PERMANENTLY_UNSAFE, "UNSAFE"):
+	if st == RIV_VALUATION_INTEGRITY:
+		# I1 is repairable from its own document — name the root instead of parking as MANUAL.
+		i1_root = row.get("i1_root")
+		if i1_root:
+			return _not_ready(
+				decision,
+				PLAN_WAITING_I1,
+				f"WAITING_I1 — repair negative Manufacture valuation {i1_root} first",
+				patient=i1_root,
+				prerequisite=i1_root,
+			)
+		return _not_ready(decision, PLAN_MANUAL, f"{st} — Failed RIV must not be auto-retried")
+	if st in (RIV_NEGATIVE_STOCK, RIV_RAW_MATERIAL_COST, RIV_PERMANENTLY_UNSAFE, "UNSAFE"):
 		return _not_ready(decision, PLAN_MANUAL, f"{st} — Failed RIV must not be auto-retried")
 	if st in (RIV_UNKNOWN,):
 		return _not_ready(decision, PLAN_MANUAL, "UNKNOWN — Failed RIV needs operator review")
@@ -1111,6 +1142,44 @@ def _evaluate_sle_bin(row, decision, patient) -> dict:
 			prerequisite=patient,
 		)
 	return _not_ready(decision, PLAN_WAITING_SLE_REPAIR, "WAITING_SLE_REPAIR — use Replay Downstream / Rebuild after rate repair")
+
+
+def _evaluate_i1(row, decision, patient) -> dict:
+	"""READY_I1 only when every secondary inbound row is repriceable from its own document."""
+	status = str(row.get("i1_status") or row.get("status") or "")
+	voucher = row.get("voucher") or row.get("voucher_no")
+	sql = cint(row.get("sql_updates") or row.get("sql_updates_estimate") or 0)
+	replay = cint(row.get("replay_count") or 0)
+	if status == I1_REPAIRED:
+		return _not_ready(decision, PLAN_I1_REPAIRED, "I1_REPAIRED — negative incoming rate already cleared")
+	if status == I1_WAITING:
+		return _not_ready(
+			decision,
+			PLAN_WAITING_I1,
+			row.get("message") or "WAITING_I1 — secondary inbound rate has no in-document source",
+			patient=patient or voucher,
+			prerequisite=row.get("blocked_item"),
+		)
+	if status == I1_MANUAL:
+		return _not_ready(
+			decision,
+			PLAN_I1_MANUAL,
+			row.get("message") or "MANUAL_I1 — single-FG pool contract does not apply",
+			patient=patient or voucher,
+		)
+	if status == I1_READY and sql > 0 and flt(row.get("proposed_rate")) > 0:
+		return _ready(
+			decision,
+			sql=sql,
+			replay=max(replay, 1),
+			rebuild=1,
+			reason=row.get("message") or "READY_I1 — secondary inbound repriced from document issue rate",
+			planner_status=PLAN_READY_I1,
+			sle_count=replay or sql,
+			bin_count=1,
+			se_count=1,
+		)
+	return _not_ready(decision, PLAN_NO_REPAIR_PATH, "NO_REPAIR_PATH — not an I1 negative incoming rate")
 
 
 def _evaluate_i4(row, decision, patient) -> dict:

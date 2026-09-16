@@ -114,6 +114,11 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 	negative = "The stock for the item" in err_l or "NegativeStock" in err_l or "negative stock" in err_l.lower()
 	raw_mat = "Get Raw Materials Cost from Consumption Entry" in err_l
 	valuation = "I1" in err_l or "I4" in err_l or "Stock valuation integrity" in err_l
+	# I1 (negative incoming rate) is repairable from its own Manufacture document — name that
+	# root so the planner can route WAITING_I1 instead of parking the RIV as MANUAL forever.
+	i1_root = None
+	if valuation and ("(I1)" in err_l or "negative on an incoming movement" in err_l):
+		i1_root = _lookup_i1_root(item, warehouse, voucher)
 
 	patient_zero = None
 	if sle_state == SLE_PATIENT_ZERO_REQUIRED:
@@ -170,6 +175,7 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 		"zero_rate_dependency": zero_dep,
 		"wrong_rate_dependency": wrong_dep,
 		"patient_zero": patient_zero,
+		"i1_root": i1_root,
 		"rate_status": RIV_WAITING_RATE if (zero_dep or wrong_dep) else "HEALTHY",
 		"sle_status": sle_state,
 		"gl_status": gl_class,
@@ -239,6 +245,16 @@ def _has_wrong_rate_dependency(item, warehouse) -> bool:
 		(item, warehouse),
 	)[0][0]
 	return n > 0
+
+
+def _lookup_i1_root(item, warehouse, voucher=None):
+	"""Earliest Manufacture voucher carrying a negative incoming rate for this identity."""
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.i1_repair import i1_root_for_identity
+
+		return i1_root_for_identity(item, warehouse) or voucher
+	except Exception:
+		return None
 
 
 def _lookup_patient_zero(item, warehouse):

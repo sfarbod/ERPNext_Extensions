@@ -21,12 +21,13 @@ from erpnext_extensions.iran_accounting.historical_stock.util import resolve_com
 # Recovery loop: Warehouse → Posting Order → Zero → Wrong → I4 → GL → Failed RIV.
 CLASS_PRIORITY = {
 	"WAREHOUSE_WIDE": 1,
-	"POSTING_ORDER": 2,
-	"ZERO_RATE": 3,
-	"WRONG_RATE": 4,
-	"I4_LEFTOVER_REPAIR": 5,
-	"GL": 6,
-	"FAILED_RIV": 7,
+	"I1_NEGATIVE_RATE_REPAIR": 2,
+	"POSTING_ORDER": 3,
+	"ZERO_RATE": 4,
+	"WRONG_RATE": 5,
+	"I4_LEFTOVER_REPAIR": 6,
+	"GL": 7,
+	"FAILED_RIV": 8,
 }
 
 
@@ -36,6 +37,7 @@ def build_master_repair_plan(company=None) -> dict:
 	t0 = perf_counter()
 	classes = []
 	classes.append(_class_posting(company))
+	classes.append(_class_i1(company))
 	classes.append(_class_i4(company))
 	classes.append(_class_zero(company))
 	classes.append(_class_wrong(company))
@@ -48,7 +50,7 @@ def build_master_repair_plan(company=None) -> dict:
 	return {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
 		"company": company,
-		"version": "5.2.19",
+		"version": "5.2.20",
 		"elapsed_seconds": round(perf_counter() - t0, 2),
 		"classes": classes,
 		"repair_order": [c["repair_class"] for c in classes],
@@ -148,6 +150,26 @@ def _class_posting(company):
 		notes="Only READY_BATCH_SCOPED may auto-apply; others preview-only",
 	)
 	out["promotion_status"] = "LIMITED_PROVEN"  # 2 roots proven earlier
+	return out
+
+
+def _class_i1(company):
+	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import scan_i1_negative_rate
+
+	scan = scan_i1_negative_rate(company=company, limit=2000)
+	rows = scan.get("rows") or []
+	out = _agg(
+		rows,
+		"I1_NEGATIVE_RATE_REPAIR",
+		risk="LOW",
+		expected_kpi={"I1 Negative Rate": f"-{sum(1 for r in rows if r.get('eligible'))}"},
+		notes=(
+			"EXACT in-document repair: secondary inbound repriced from this document's issue rate. "
+			"WAITING rows need Zero/Wrong Rate upstream first. Blocks Failed RIV VALUATION_INTEGRITY."
+		),
+	)
+	out["by_status"] = scan.get("by_status")
+	out["promotion_status"] = "NOT_PROVEN"
 	return out
 
 

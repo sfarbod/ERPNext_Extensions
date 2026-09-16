@@ -43,6 +43,10 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"i4",
 		lambda: scan_i4_leftover(company=company, from_date="2026-03-21", to_date=str(nowdate()), limit=5000),
 	)
+	# I1 negative incoming rate — Manufacture pool roots that block Failed RIV retry.
+	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import scan_i1_negative_rate
+
+	i1 = _mark("i1", lambda: scan_i1_negative_rate(company=company, limit=2000))
 	end = datetime.now()
 	exact = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "EXACT")
 	likely = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "LIKELY")
@@ -185,6 +189,9 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 
 	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
 	i4_by = i4.get("by_status") or {}
+	i1_by = i1.get("by_status") or {}
+	i1_n = int(i1.get("count") or 0)
+	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
 		"Posting Order": posting_n,
@@ -197,6 +204,10 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
 		"Wrong Average": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
 		"I4 Leftover": i4_n,
+		"I1 Negative Rate": i1_n,
+		"READY_I1": ready_i1,
+		"WAITING_I1": int(i1_by.get("WAITING_I1") or 0),
+		"MANUAL_I1": int(i1_by.get("MANUAL_I1") or 0),
 		"Broken SABB": sabb_n,
 		"Broken Bin": bin_n,
 		"Waiting Downstream Bin": bin_waiting,
@@ -273,6 +284,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"gl": {"count": gl.get("count"), "by_class": gl.get("by_class")},
 		"failed_riv": {"count": riv.get("count"), "by_status": riv.get("by_status")},
 		"i4": {"count": i4.get("count"), "by_status": i4_by, "ready": ready_i4},
+		"i1": {"count": i1_n, "by_status": i1_by, "ready": ready_i1},
 		"patient_zero_vouchers": patients,
 		"patient_zero_count": len(patients),
 		"patient_zero_by_topic": {k: len(v) for k, v in patients_by_topic.items()},
@@ -318,6 +330,12 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 				"count": gl_n,
 				"kpi": "Broken GL",
 				"covered_by_scan_all": True,
+			},
+			"i1": {
+				"count": i1_n,
+				"kpi": "I1 Negative Rate",
+				"covered_by_scan_all": True,
+				"note": "Manufacture negative incoming rate; READY_I1 is repriceable in-document.",
 			},
 			"riv": {
 				"count": riv_n,
