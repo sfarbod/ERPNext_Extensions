@@ -40,7 +40,6 @@ class TestMultiMoveOptimizer(unittest.TestCase):
 
 class TestSvdResidue(unittest.TestCase):
 	def test_dry_run_detects_drift(self):
-		import frappe
 		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine import svd_residue as mod
 
 		row = {"voucher": "V1", "item": "I1", "expected": 100.0}
@@ -53,14 +52,11 @@ class TestSvdResidue(unittest.TestCase):
 			stock_value_difference = -150
 			warehouse = "WH"
 
-		with patch.object(frappe, "db") as db:
-			db.sql.return_value = [Sle()]
-			# ensure module uses same frappe
-			with patch.object(mod, "frappe", frappe, create=True):
-				# re-bind apply to use patched frappe via import inside function
-				out = mod.apply_svd_residue(row, dry_run=True)
-		# If import-inside prevents patch, at least function is callable
-		self.assertIn("ok", out)
+		with patch.object(mod.frappe.db, "sql", return_value=[Sle()]):
+			out = mod.apply_svd_residue(row, dry_run=True)
+		self.assertTrue(out.get("ok"), out)
+		self.assertEqual(out.get("changed"), 1)
+		self.assertTrue(out.get("dry_run"))
 
 
 if __name__ == "__main__":

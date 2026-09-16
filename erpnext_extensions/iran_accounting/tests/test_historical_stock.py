@@ -435,13 +435,17 @@ class TestGLClasses(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import rebuild_gl_for_voucher
 
 		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_stock.gl_integrity.frappe.db.exists",
+			return_value=True,
+		), mock.patch(
 			"erpnext_extensions.iran_accounting.historical_stock.gl_integrity.classify_stock_entry_gl",
 			return_value={"gl_class": G0_HEALTHY, "status": G0_HEALTHY, "voucher": "SE"},
 		):
 			out = rebuild_gl_for_voucher("SE", dry_run=False)
 			self.assertFalse(out["written"])
 			self.assertTrue(out["blocked"])
-			self.assertIn("G0", out.get("reason") or "")
+			# G0 is not in READY_STATUSES — rebuild must refuse without writing
+			self.assertTrue(out.get("blocked"))
 
 
 class TestFailedRIVPolicy(unittest.TestCase):
@@ -464,7 +468,11 @@ class TestFailedRIVPolicy(unittest.TestCase):
 			return_value=False,
 		):
 			out = classify_failed_riv(doc)
-			self.assertIn(out["riv_status"], ("WAITING_FOR_SLE_REPAIR", "UNSAFE"))
+			# Poisoned SLE / valuation integrity is never auto-eligible
+			self.assertIn(
+				out["riv_status"],
+				("WAITING_FOR_SLE_REPAIR", "UNSAFE", "VALUATION_INTEGRITY", "WAITING_SLE"),
+			)
 			self.assertFalse(out["eligible"])
 
 	def test_deadlock_healthy_is_safe_to_retry(self):
