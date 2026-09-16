@@ -17,6 +17,7 @@ from collections import defaultdict
 from datetime import timedelta
 from time import perf_counter
 
+from erpnext_extensions.iran_accounting.historical_stock.util import resolve_company
 from frappe.utils import get_datetime
 
 from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine import (
@@ -49,7 +50,6 @@ CAMPAIGN_ELIGIBLE_OPTS = (
 	"CROSS_ITEM_CONFLICT",
 )
 
-COMPANY_DEFAULT = "اسپاد فارمد دارو"
 
 
 def discover_warehouse_campaigns(
@@ -65,7 +65,7 @@ def discover_warehouse_campaigns(
 	per-identity optimizer.
 	"""
 	t0 = perf_counter()
-	company = company or COMPANY_DEFAULT
+	company = resolve_company(company)
 	if rows is None:
 		rows = _load_posting_order_rows(company, scan=scan)
 

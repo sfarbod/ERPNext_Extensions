@@ -31,9 +31,9 @@ from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine import
 	WAREHOUSE_CAMPAIGN_COMPLETE,
 	WAREHOUSE_REAL_SHORTAGE,
 )
+from erpnext_extensions.iran_accounting.historical_stock.util import resolve_company
 from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
 	CAMPAIGN_ELIGIBLE_OPTS,
-	COMPANY_DEFAULT,
 	merge_proposed_times,
 	verify_touched_identities_from_times,
 	_drop_noop_moves,
@@ -55,7 +55,7 @@ def solve_shared_voucher_universe(
 ) -> dict:
 	"""Discover connected shared-voucher components and solve each globally."""
 	t0 = perf_counter()
-	company = company or COMPANY_DEFAULT
+	company = resolve_company(company)
 	if rows is None:
 		from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
 			_load_posting_order_rows,

@@ -12,11 +12,6 @@ from erpnext_extensions.iran_accounting.historical_stock import RIV_SAFE_TO_RETR
 from erpnext_extensions.iran_accounting.historical_stock.campaign_clusters import SAFE_GROUP, cluster_independent_roots
 from erpnext_extensions.iran_accounting.historical_stock.failed_riv import scan_failed_riv
 
-ARTIFACT = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/campaigns_v5215/failed_riv"
-)
-COMPANY = "اسپاد فارمد دارو"
 
 RIV_BUCKETS = (
 	"SAFE_TO_RETRY",
@@ -31,13 +26,9 @@ RIV_BUCKETS = (
 	"UNSAFE",
 )
 
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 
-def _dump(name, data):
-	os.makedirs(ARTIFACT, exist_ok=True)
-	path = os.path.join(ARTIFACT, name)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	return path
+
 
 
 def _bucket(row) -> str:
@@ -65,7 +56,7 @@ def _bucket(row) -> str:
 
 
 def classify_failed_riv_campaign(company=None, max_cluster=12) -> dict:
-	company = company or COMPANY
+	company = resolve_company(company)
 	scan = scan_failed_riv(company=company, limit=2000)
 	rows = scan.get("rows") or []
 	by_bucket = defaultdict(list)
@@ -90,5 +81,5 @@ def classify_failed_riv_campaign(company=None, max_cluster=12) -> dict:
 		"promotion_status": "NOT_PROVEN",
 		"message": "Only SAFE_TO_RETRY may enter a repair campaign. Never retry all Failed RIV.",
 	}
-	_dump("classification.json", out)
+	dump_artifact("failed_riv", "classification.json", out)
 	return out

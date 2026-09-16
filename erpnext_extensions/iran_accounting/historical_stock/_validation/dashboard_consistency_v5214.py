@@ -12,22 +12,8 @@ from time import perf_counter
 import frappe
 from frappe.utils import cint, flt, nowdate
 
-COMPANY = "اسپاد فارمد دارو"
-FROM_DATE = "2026-03-21"
-AUDIT_BASE = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/validation_v5214"
-)
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 
-
-def _dump(name, data):
-	os.makedirs(AUDIT_BASE, exist_ok=True)
-	path = os.path.join(AUDIT_BASE, name)
-	os.makedirs(os.path.dirname(path) or AUDIT_BASE, exist_ok=True)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	print(f"wrote {path}")
-	return path
 
 
 def sql_i4_leftover(limit=5000) -> int:
@@ -109,7 +95,7 @@ def sql_patient_zeros_union(company=None) -> dict:
 	union = {}
 	sources = defaultdict(list)
 
-	i4 = scan_i4_leftover(company=company, from_date=FROM_DATE, to_date=nowdate(), limit=5000)
+	i4 = scan_i4_leftover(company=company, from_date=None, to_date=nowdate(), limit=5000)
 	for r in i4.get("rows") or []:
 		pz = r.get("patient_zero") or {}
 		vn = pz.get("voucher_no") if isinstance(pz, dict) else None
@@ -149,7 +135,7 @@ def collect_kpi_matrix(company=None) -> dict:
 	from erpnext_extensions.iran_accounting.stock_posting_order.scanner import run_full_history_scan
 	from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
 
-	company = company or COMPANY
+	company = resolve_company(company)
 	t0 = perf_counter()
 	full = run_full_integrity_scan(company=company, include_manufacture=False)
 	dash = full.get("dashboard") or {}
@@ -161,7 +147,7 @@ def collect_kpi_matrix(company=None) -> dict:
 	sle = scan_sle_bin(company=company, limit=2000)
 	gl = scan_gl_integrity(company=company, limit=500)
 	riv = scan_failed_riv(limit=2000)
-	i4 = scan_i4_leftover(company=company, from_date=FROM_DATE, to_date=nowdate(), limit=5000)
+	i4 = scan_i4_leftover(company=company, from_date=None, to_date=nowdate(), limit=5000)
 	bins = scan_bin_mismatches(company=company, limit=500)
 
 	# Planner aggregates — align with dashboard _ready_n (READY* + sql_updates>0)
@@ -519,13 +505,13 @@ def collect_kpi_matrix(company=None) -> dict:
 		},
 		"all_pass": len(fail) == 0,
 	}
-	_dump("kpi_matrix.json", out)
+	dump_artifact("validation", "kpi_matrix.json", out)
 	return out
 
 
 def audit_patient_zero_delta(previous_count=93, company=None) -> dict:
 	"""Explain dashboard Patient Zero movement vs prior report."""
-	company = company or COMPANY
+	company = resolve_company(company)
 	from erpnext_extensions.iran_accounting.historical_stock.scan import run_full_integrity_scan
 
 	live = run_full_integrity_scan(company=company, include_manufacture=False)
@@ -533,25 +519,20 @@ def audit_patient_zero_delta(previous_count=93, company=None) -> dict:
 	pz = sql_patient_zeros_zero_rate_only(company)
 	union = sql_patient_zeros_union(company)
 
-	# Load prior campaign artifact if present
-	prior_path = (
-		"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-		".local-backups/restore_20260915_133438/session200/repairs/final.json"
-	)
+	# Load prior campaign artifact if present (optional operator export only)
+	base = (os.environ.get("HISTORICAL_REPAIR_ARTIFACT_DIR") or "").strip()
+	prior_path = os.path.join(base, "session200/repairs/final.json") if base else ""
 	prior_dash = None
 	checkpoint110_pz = None
-	if os.path.exists(prior_path):
+	if prior_path and os.path.exists(prior_path):
 		prev = json.load(open(prior_path))
 		prior_dash = prev.get("final_dashboard") or {}
 		for cp in prev.get("checkpoints") or []:
 			if cp.get("after_success") == 110:
 				checkpoint110_pz = (cp.get("dashboard") or {}).get("Patient Zero")
-	session_baseline = (
-		"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-		".local-backups/restore_20260915_133438/session200/baseline/pre200_baseline.json"
-	)
+	session_baseline = os.path.join(base, "session200/baseline/pre200_baseline.json") if base else ""
 	baseline_pz = None
-	if os.path.exists(session_baseline):
+	if session_baseline and os.path.exists(session_baseline):
 		baseline_pz = (json.load(open(session_baseline)).get("dashboard") or {}).get("Patient Zero")
 
 	out = {
@@ -617,7 +598,7 @@ def audit_patient_zero_delta(previous_count=93, company=None) -> dict:
 		{"patient_zero": k, "contributing_zero_rows": len(v), "examples": v[:3]} for k, v in sorted(by_pz.items())
 	]
 	out["unique_pz_from_details"] = len(by_pz)
-	_dump("patient_zero_audit.json", out)
+	dump_artifact("validation", "patient_zero_audit.json", out)
 	return out
 
 
@@ -643,11 +624,14 @@ def audit_repair_history() -> dict:
 			limit_page_length=5000,
 		)
 
-	# Campaign artifacts
-	paths = [
-		"/workspace/development/frappe-bench/apps/erpnext_extensions/.local-backups/restore_20260915_133438/repairs/successful_slim.json",
-		"/workspace/development/frappe-bench/apps/erpnext_extensions/.local-backups/restore_20260915_133438/session200/repairs/successful_slim.json",
-	]
+	# Optional campaign artifacts (only when HISTORICAL_REPAIR_ARTIFACT_DIR is set)
+	base = (os.environ.get("HISTORICAL_REPAIR_ARTIFACT_DIR") or "").strip()
+	paths = []
+	if base:
+		paths = [
+			os.path.join(base, "repairs/successful_slim.json"),
+			os.path.join(base, "session200/repairs/successful_slim.json"),
+		]
 	campaign = []
 	for p in paths:
 		if os.path.exists(p):
@@ -656,10 +640,6 @@ def audit_repair_history() -> dict:
 	# Spot-check sample of I4 repairs still cleared in SQL
 	checks = []
 	sample = [c for c in campaign if c.get("repair_class") == "I4_LEFTOVER_REPAIR"][:40]
-	# also include first/last/largest if present
-	for c in campaign:
-		if c.get("voucher") in ("MAT-STE-2026-25791", "MAT-STE-2026-25102"):
-			sample.append(c)
 	seen = set()
 	uniq = []
 	for c in sample:
@@ -742,7 +722,7 @@ def audit_repair_history() -> dict:
 
 	out["campaign_by_class"] = dict(Counter(c.get("repair_class") for c in campaign))
 	out["log_by_status"] = dict(Counter(str(l.get("status")) for l in logs))
-	_dump("repair_history_audit.json", out)
+	dump_artifact("validation", "repair_history_audit.json", out)
 	return out
 
 
@@ -757,12 +737,12 @@ def audit_cache() -> dict:
 		"invalidation": "Must re-run Scan All after repair; UI does call rescan after I4 repair paths",
 		"risk": "If operator views dashboard without re-Scan All, chips show stale last response — not SQL drift",
 	}
-	_dump("cache_audit.json", out)
+	dump_artifact("validation", "cache_audit.json", out)
 	return out
 
 
 def run_full_validation(company=None, previous_pz=93) -> dict:
-	company = company or COMPANY
+	company = resolve_company(company)
 	matrix = collect_kpi_matrix(company=company)
 	pz = audit_patient_zero_delta(previous_count=previous_pz, company=company)
 	hist = audit_repair_history()
@@ -884,7 +864,7 @@ def run_full_validation(company=None, previous_pz=93) -> dict:
 			"Still require Validate Dashboard before each session."
 		)
 
-	_dump("validation_report.json", report)
+	dump_artifact("validation", "validation_report.json", report)
 	print(
 		json.dumps(
 			{

@@ -20,3 +20,5 @@ __pycache__
 # Local PDC party pollution recovery analysis outputs (generated, site-specific)
 erpnext_extensions/cheque_management/release_reports/PDC_PARTY_POLLUTION_RECOVERY_ANALYSIS.json
 erpnext_extensions/cheque_management/release_reports/PDC_PARTY_POLLUTION_RECOVERY_ANALYSIS.md
+# Local Historical Repair campaign / recovery artifacts (never publish)
+.local-backups/

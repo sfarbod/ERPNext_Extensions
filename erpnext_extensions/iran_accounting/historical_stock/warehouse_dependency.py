@@ -11,26 +11,17 @@ from datetime import datetime
 import frappe
 from frappe.utils import flt
 
-ARTIFACT = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/campaigns_v5215/warehouse"
-)
-COMPANY = "اسپاد فارمد دارو"
+
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 
 
-def _dump(name, data):
-	os.makedirs(ARTIFACT, exist_ok=True)
-	path = os.path.join(ARTIFACT, name)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	return path
 
 
 def analyze_warehouse_dependencies(warehouse: str, company=None, *, limit=5000) -> dict:
 	"""Detect MA / cross-batch / cross-WO / cross-WH / identity / replay / batch deps."""
 	if not warehouse:
 		frappe.throw("warehouse is required")
-	company = company or COMPANY
+	company = resolve_company(company)
 	sles = frappe.db.sql(
 		"""
 		SELECT name, item_code, warehouse, batch_no, voucher_type, voucher_no,
@@ -124,13 +115,13 @@ def analyze_warehouse_dependencies(warehouse: str, company=None, *, limit=5000) 
 		"promotion_status": "ENGINE_SCAFFOLD",
 		"message": "Never replay whole warehouse unless proven necessary",
 	}
-	_dump(f"warehouse_{warehouse.replace('/', '_')}.json", out)
+	dump_artifact("warehouse", f"warehouse_{warehouse.replace('/', '_')}.json", out)
 	return out
 
 
 def simulate_warehouse_replay_scope(warehouse: str, item_code: str, company=None) -> dict:
 	"""Replay Scope Simulator — estimate impact without writing."""
-	company = company or COMPANY
+	company = resolve_company(company)
 	n = frappe.db.sql(
 		"""
 		SELECT COUNT(*) FROM `tabStock Ledger Entry`

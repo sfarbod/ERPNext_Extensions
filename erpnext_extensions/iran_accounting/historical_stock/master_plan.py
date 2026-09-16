@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""v5.2.15 Master Repair Plan — per-class metrics from live scans (read-only)."""
+"""v5.2.18 Master Repair Plan — per-class metrics from live scans (read-only)."""
 
 from __future__ import annotations
 
@@ -15,9 +15,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	RIV_SAFE_TO_RETRY,
 )
 from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
-
-COMPANY_DEFAULT = "اسپاد فارمد دارو"
-FROM_DATE = "2026-03-21"
+from erpnext_extensions.iran_accounting.historical_stock.util import resolve_company
 
 # Class priority for operator roadmap (lower = earlier).
 # Recovery loop: Warehouse → Posting Order → Zero → Wrong → I4 → GL → Failed RIV.
@@ -34,7 +32,7 @@ CLASS_PRIORITY = {
 
 def build_master_repair_plan(company=None) -> dict:
 	"""Full per-class roadmap with READY/WAITING/MANUAL/AMBIGUOUS and dependency stats."""
-	company = company or COMPANY_DEFAULT
+	company = resolve_company(company)
 	t0 = perf_counter()
 	classes = []
 	classes.append(_class_posting(company))
@@ -50,7 +48,7 @@ def build_master_repair_plan(company=None) -> dict:
 	return {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
 		"company": company,
-		"version": "5.2.15",
+		"version": "5.2.18",
 		"elapsed_seconds": round(perf_counter() - t0, 2),
 		"classes": classes,
 		"repair_order": [c["repair_class"] for c in classes],
@@ -156,7 +154,7 @@ def _class_posting(company):
 def _class_i4(company):
 	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import scan_i4_leftover
 
-	scan = scan_i4_leftover(company=company, from_date=FROM_DATE, to_date=nowdate(), limit=5000)
+	scan = scan_i4_leftover(company=company, from_date=None, to_date=nowdate(), limit=5000)
 	rows = scan.get("rows") or []
 	out = _agg(
 		rows,
@@ -201,6 +199,11 @@ def _class_wrong(company):
 		notes="Own patient-zero graph; never reuse Zero Rate logic",
 	)
 	out["by_flag"] = scan.get("by_flag")
+	out["promotion_status"] = "PRODUCTION_PROVEN_SMALL_CLUSTER"
+	out["notes"] = (
+		"EXACT/SAFE_GROUP proven on lab; residual MANUAL/AMBIGUOUS/WAITING require roots. "
+		"Own patient-zero graph; never reuse Zero Rate logic; never Bin as truth."
+	)
 	return out
 
 
@@ -234,10 +237,8 @@ def _class_gl(company):
 		notes="G1–G4 only; SLE is truth; never rebuild from poisoned SLE",
 	)
 	out["by_class"] = scan.get("by_class")
+	out["promotion_status"] = "LIMITED_PROVEN"
 	return out
-
-
-def _class_warehouse_placeholder(company):
 	"""Live warehouse campaign discovery via Warehouse Engine optimizer."""
 	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
 		discover_warehouse_campaigns,

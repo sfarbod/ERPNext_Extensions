@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from erpnext_extensions.iran_accounting.historical_stock.util import resolve_company
+
 from collections import Counter
 from time import perf_counter
 
@@ -267,7 +269,7 @@ def reclassify_row(
 
 def run_assisted_campaign(
 	*,
-	company: str = "اسپاد فارمد دارو",
+	company: str | None = None,
 	threshold: float = DEFAULT_ASSISTED_THRESHOLD,
 	max_rate: int = 400,
 	max_shortage: int = 80,
@@ -276,6 +278,7 @@ def run_assisted_campaign(
 	include_warehouse: bool = True,
 ) -> dict:
 	"""Scan residuals and reclassify; return AUTO-promoted READY rows + wizard cards."""
+	company = resolve_company(company)
 	t0 = perf_counter()
 	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
 	from erpnext_extensions.iran_accounting.historical_stock.zero_rate import scan_zero_rate_rows

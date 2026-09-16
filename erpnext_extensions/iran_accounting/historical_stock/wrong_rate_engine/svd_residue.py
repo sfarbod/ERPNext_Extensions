@@ -5,8 +5,6 @@ from frappe.utils import flt
 
 import frappe
 
-import frappe
-
 
 def apply_svd_residue(row: dict, *, dry_run: bool = True) -> dict:
 	"""When observed rate ≈ expected but stock_value_difference drifts, restore SVD.

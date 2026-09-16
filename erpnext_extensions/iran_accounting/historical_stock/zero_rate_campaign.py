@@ -26,25 +26,14 @@ from erpnext_extensions.iran_accounting.historical_stock.zero_rate import (
 )
 
 RATE_EPS = 0.0001
-ARTIFACT = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/campaigns_v5215/zero_rate"
-)
-COMPANY = "اسپاد فارمد دارو"
 
 
-def _dump(name, data):
-	os.makedirs(ARTIFACT, exist_ok=True)
-	path = os.path.join(ARTIFACT, name)
-	os.makedirs(os.path.dirname(path) or ARTIFACT, exist_ok=True)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	print(f"wrote {path}")
-	return path
+
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 
 
 def classify_zero_clusters(company=None, max_cluster=15) -> dict:
-	company = company or COMPANY
+	company = resolve_company(company)
 	scan = scan_zero_rate_rows(company=company)
 	rows = scan.get("rows") or []
 	from erpnext_extensions.iran_accounting.historical_stock.planner import READY_STATUSES
@@ -75,7 +64,7 @@ def classify_zero_clusters(company=None, max_cluster=15) -> dict:
 		"by_confidence": scan.get("by_confidence"),
 		"promotion_status": "NOT_PROVEN",
 	}
-	_dump("clusters.json", out)
+	dump_artifact("zero_rate", "clusters.json", out)
 	return out
 
 
@@ -106,7 +95,7 @@ def preview_zero_campaign(company=None, max_roots=15) -> dict:
 		"blocked": blocked,
 		"database_backup_required": True,
 	}
-	_dump("preview.json", out)
+	dump_artifact("zero_rate", "preview.json", out)
 	return out
 
 
@@ -120,7 +109,7 @@ def run_zero_safe_cluster_campaign(company=None, max_roots=12, *, apply=False) -
 		collect_kpi_matrix,
 	)
 
-	company = company or COMPANY
+	company = resolve_company(company)
 	t0 = perf_counter()
 	before = run_full_integrity_scan(company=company, include_manufacture=False)
 	cls = classify_zero_clusters(company=company, max_cluster=max_roots)
@@ -167,7 +156,7 @@ def run_zero_safe_cluster_campaign(company=None, max_roots=12, *, apply=False) -
 		result["promotion_status"] = "PREVIEW_ONLY"
 		result["before"] = before.get("dashboard")
 		result["elapsed_seconds"] = round(perf_counter() - t0, 2)
-		_dump("campaign_preview_only.json", result)
+		dump_artifact("zero_rate", "campaign_preview_only.json", result)
 		return result
 
 	# Apply one root at a time with savepoint + residual verification
@@ -254,7 +243,7 @@ def run_zero_safe_cluster_campaign(company=None, max_roots=12, *, apply=False) -
 			),
 		}
 	)
-	_dump("campaign_result.json", result)
+	dump_artifact("zero_rate", "campaign_result.json", result)
 	return result
 
 

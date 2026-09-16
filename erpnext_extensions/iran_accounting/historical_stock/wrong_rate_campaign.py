@@ -18,24 +18,15 @@ from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.class
 	classify_wrong_rate_universe,
 )
 
-ARTIFACT = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/campaigns_v5218/wrong_rate"
-)
-COMPANY = "اسپاد فارمد دارو"
+
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 
 
-def _dump(name, data):
-	os.makedirs(ARTIFACT, exist_ok=True)
-	path = os.path.join(ARTIFACT, name)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	return path
 
 
 def inventory(company=None, limit=2000) -> dict:
-	out = classify_wrong_rate_universe(company=company or COMPANY, limit=limit)
-	_dump("inventory.json", {k: v for k, v in out.items() if k != "rows"})
+	out = classify_wrong_rate_universe(company=resolve_company(company), limit=limit)
+	dump_artifact("wrong_rate", "inventory.json", {k: v for k, v in out.items() if k != "rows"})
 	# Prefer smallest sql among READY with sql>0
 	ready = sorted(
 		[r for r in (out.get("ready_rows") or []) if int(r.get("sql_updates") or 0) > 0],
@@ -59,7 +50,7 @@ def inventory(company=None, limit=2000) -> dict:
 		}
 		for r in ready[:30]
 	]
-	_dump("ordered_ready.json", out["ordered_ready"])
+	dump_artifact("wrong_rate", "ordered_ready.json", out["ordered_ready"])
 	return out
 
 
@@ -95,7 +86,7 @@ def prove_single_root(row: dict, *, dry_run=False) -> dict:
 		"second": {k: second.get(k) for k in ("ok", "reason", "after_rate", "aborted")},
 		"elapsed": round(perf_counter() - t0, 3),
 	}
-	_dump(f"proof_{applied.get('voucher')}.json", out)
+	dump_artifact("wrong_rate", f"proof_{applied.get('voucher')}.json", out)
 	return out
 
 
@@ -135,7 +126,7 @@ def prove_safe_group(rows: list[dict], *, max_n=8) -> dict:
 				"results": results,
 				"elapsed": round(perf_counter() - t0, 3),
 			}
-			_dump("safe_group.json", out)
+			dump_artifact("wrong_rate", "safe_group.json", out)
 			return out
 	out = {
 		"ok": True,
@@ -146,7 +137,7 @@ def prove_safe_group(rows: list[dict], *, max_n=8) -> dict:
 		"results": results,
 		"elapsed": round(perf_counter() - t0, 3),
 	}
-	_dump("safe_group.json", out)
+	dump_artifact("wrong_rate", "safe_group.json", out)
 	return out
 
 
@@ -157,7 +148,7 @@ def run_controlled_campaign(company=None, *, max_group=8) -> dict:
 	ready = sorted(ready, key=lambda r: (int(r.get("sql_updates") or 99), str(r.get("voucher") or "")))
 	if not ready:
 		out = {"ok": False, "reason": "no READY_WRONG_RATE", "inventory": {k: inv.get(k) for k in ("count", "by_rate_status", "ready_wrong_rate")}}
-		_dump("campaign.json", out)
+		dump_artifact("wrong_rate", "campaign.json", out)
 		return out
 	proof1 = prove_single_root(ready[0], dry_run=False)
 	proof2 = None
@@ -174,7 +165,7 @@ def run_controlled_campaign(company=None, *, max_group=8) -> dict:
 			group = prove_safe_group(rest, max_n=max_group)
 	out = {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
-		"company": company or COMPANY,
+		"company": resolve_company(company),
 		"ready_wrong_rate": inv.get("ready_wrong_rate"),
 		"by_rate_status": inv.get("by_rate_status"),
 		"by_bucket": inv.get("by_bucket"),
@@ -187,5 +178,5 @@ def run_controlled_campaign(company=None, *, max_group=8) -> dict:
 			else "PARTIAL" if (proof1 or {}).get("ok") else "NOT_PROVEN"
 		),
 	}
-	_dump("campaign.json", out)
+	dump_artifact("wrong_rate", "campaign.json", out)
 	return out

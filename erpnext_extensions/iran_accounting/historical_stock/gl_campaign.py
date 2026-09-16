@@ -10,11 +10,6 @@ from datetime import datetime
 
 from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import scan_gl_integrity
 
-ARTIFACT = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/campaigns_v5215/gl"
-)
-COMPANY = "اسپاد فارمد دارو"
 
 GL_BUCKETS = (
 	"G1",
@@ -28,17 +23,13 @@ GL_BUCKETS = (
 	"WAITING_RATE",
 )
 
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 
-def _dump(name, data):
-	os.makedirs(ARTIFACT, exist_ok=True)
-	path = os.path.join(ARTIFACT, name)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	return path
+
 
 
 def classify_gl_campaign(company=None) -> dict:
-	company = company or COMPANY
+	company = resolve_company(company)
 	scan = scan_gl_integrity(company=company, limit=500)
 	rows = scan.get("rows") or []
 	by_bucket = defaultdict(list)
@@ -83,5 +74,5 @@ def classify_gl_campaign(company=None) -> dict:
 		"promotion_status": "NOT_PROVEN",
 		"message": "Never rebuild GL from poisoned SLE. SLE remains source of truth.",
 	}
-	_dump("classification.json", out)
+	dump_artifact("gl", "classification.json", out)
 	return out

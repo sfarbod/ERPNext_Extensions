@@ -89,3 +89,42 @@ def last_nonzero_from_version(changes: dict) -> float:
 		if abs(new) > 0.0001:
 			return new
 	return 0.0
+
+
+def resolve_company(company=None) -> str:
+	"""Resolve company for Historical Repair.
+
+	Never falls back to a hard-coded tenant name. Empty string is treated as missing.
+	Order: explicit arg → user default → Global Defaults → throw.
+	"""
+	import frappe
+
+	company = (company or "").strip() if isinstance(company, str) else company
+	if company:
+		return company
+	company = frappe.defaults.get_user_default("Company")
+	if company:
+		return company
+	company = frappe.db.get_single_value("Global Defaults", "default_company")
+	if company:
+		return company
+	frappe.throw("Company is required for Historical Repair", frappe.ValidationError)
+
+
+def dump_artifact(subdir: str, name: str, data) -> str | None:
+	"""Optionally write JSON under HISTORICAL_REPAIR_ARTIFACT_DIR.
+
+	No-op in published runtime unless the operator explicitly sets the env var.
+	Never writes under the app tree or .local-backups by default.
+	"""
+	import json
+	import os
+
+	base = (os.environ.get("HISTORICAL_REPAIR_ARTIFACT_DIR") or "").strip()
+	if not base:
+		return None
+	path = os.path.join(base, subdir, name)
+	os.makedirs(os.path.dirname(path) or base, exist_ok=True)
+	with open(path, "w", encoding="utf-8") as f:
+		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
+	return path

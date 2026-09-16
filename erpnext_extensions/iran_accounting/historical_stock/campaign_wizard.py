@@ -1,15 +1,14 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""v5.2.15 Repair Campaign Wizard — preview / health / resume / metrics / export."""
+"""Repair Campaign Wizard — preview / health / resume / metrics / export."""
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime
 
 from erpnext_extensions.iran_accounting.historical_stock.failed_riv_campaign import classify_failed_riv_campaign
 from erpnext_extensions.iran_accounting.historical_stock.gl_campaign import classify_gl_campaign
 from erpnext_extensions.iran_accounting.historical_stock.master_plan import build_master_repair_plan
+from erpnext_extensions.iran_accounting.historical_stock.util import dump_artifact, resolve_company
 from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_campaign import (
 	classify_wrong_clusters,
 	preview_wrong_campaign,
@@ -19,18 +18,12 @@ from erpnext_extensions.iran_accounting.historical_stock.zero_rate_campaign impo
 	preview_zero_campaign,
 )
 
-ARTIFACT = (
-	"/workspace/development/frappe-bench/apps/erpnext_extensions/"
-	".local-backups/restore_20260915_133438/campaigns_v5215"
-)
-COMPANY = "اسپاد فارمد دارو"
-
 _HISTORY: list[dict] = []
 
 
 def campaign_wizard(company=None) -> dict:
 	"""Operator entry: Master Plan + available campaign previews (read-only)."""
-	company = company or COMPANY
+	company = resolve_company(company)
 	plan = build_master_repair_plan(company=company)
 	zr = classify_zero_clusters(company=company, max_cluster=15)
 	wr = classify_wrong_clusters(company=company, max_cluster=15)
@@ -38,7 +31,7 @@ def campaign_wizard(company=None) -> dict:
 	gl = classify_gl_campaign(company=company)
 	out = {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
-		"version": "5.2.15",
+		"version": "5.2.18",
 		"company": company,
 		"master_plan": {
 			"repair_order": plan.get("repair_order"),
@@ -95,12 +88,12 @@ def campaign_wizard(company=None) -> dict:
 		],
 	}
 	_record("wizard", out)
-	_dump("wizard/latest.json", out)
+	dump_artifact("campaigns", "wizard/latest.json", out)
 	return out
 
 
 def campaign_preview(topic: str, company=None) -> dict:
-	company = company or COMPANY
+	company = resolve_company(company)
 	topic = (topic or "ZERO_RATE").upper()
 	if topic == "ZERO_RATE":
 		out = preview_zero_campaign(company=company)
@@ -121,7 +114,7 @@ def campaign_health(company=None) -> dict:
 		collect_kpi_matrix,
 	)
 
-	company = company or COMPANY
+	company = resolve_company(company)
 	matrix = collect_kpi_matrix(company=company)
 	return {
 		"all_pass": matrix.get("all_pass"),
@@ -139,7 +132,11 @@ def campaign_history() -> dict:
 
 def campaign_export(company=None) -> dict:
 	wiz = campaign_wizard(company=company)
-	path = _dump(f"export/campaign_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json", wiz)
+	path = dump_artifact(
+		"campaigns",
+		f"export/campaign_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json",
+		wiz,
+	)
 	return {"path": path, "summary": wiz.get("campaigns")}
 
 
@@ -171,11 +168,3 @@ def _summarize_group(g):
 
 def _record(kind, payload):
 	_HISTORY.append({"ts": datetime.utcnow().isoformat() + "Z", "kind": kind, "payload": payload})
-
-
-def _dump(rel, data):
-	path = os.path.join(ARTIFACT, rel)
-	os.makedirs(os.path.dirname(path), exist_ok=True)
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-	return path

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from erpnext_extensions.iran_accounting.historical_stock.util import resolve_company
+
 from collections import defaultdict
 from datetime import datetime
 from time import perf_counter
@@ -22,12 +24,13 @@ from erpnext_extensions.iran_accounting.historical_stock.assisted_recovery.impac
 
 
 def build_assisted_master_plan(
-	company: str = "اسپاد فارمد دارو",
+	company: str | None = None,
 	*,
 	threshold: float = DEFAULT_ASSISTED_THRESHOLD,
 	campaign: dict | None = None,
 ) -> dict:
 	"""Produce AUTO / ASSISTED / OPERATOR / NO_EVIDENCE plan ranked by impact."""
+	company = resolve_company(company)
 	t0 = perf_counter()
 	campaign = campaign or run_assisted_campaign(company=company, threshold=threshold)
 	results = list(campaign.get("results") or [])
