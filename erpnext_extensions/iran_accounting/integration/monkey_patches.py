@@ -37,6 +37,8 @@ def apply_monkey_patches():
 	_patch_stock_ledger_engine()
 	# Idempotent: UVR regional hook must stay bound even if apply is re-entered.
 	_patch_buying_regional_valuation_rate()
+	# Idempotent: Pattern A must not post ERPNext product-first precision-loss Round Off.
+	_patch_pattern_a_precision_loss()
 
 
 def _patch_buying_regional_valuation_rate():
@@ -671,37 +673,137 @@ def _patch_general_ledger():
 def _patch_accounts_controller():
 	from erpnext.controllers import accounts_controller as ac
 
-	if getattr(ac, "_iran_patched_set_balance", None):
+	if not getattr(ac, "_iran_patched_set_balance", None):
+		_orig = ac.set_balance_in_account_currency
+
+		def set_balance_in_account_currency(
+			gl_dict, account_currency=None, conversion_rate=None, company_currency=None
+		):
+			_orig(gl_dict, account_currency, conversion_rate, company_currency)
+			if not company_currency and gl_dict.get("company"):
+				company_currency = erpnext.get_company_currency(gl_dict.company)
+			if not account_currency:
+				account_currency = gl_dict.get("account_currency") or company_currency
+			acct_precision = get_currency_precision(account_currency)
+
+			if flt(gl_dict.debit) and not flt(gl_dict.debit_in_account_currency):
+				gl_dict.debit_in_account_currency = (
+					gl_dict.debit
+					if account_currency == company_currency
+					else flt(gl_dict.debit / conversion_rate, acct_precision)
+				)
+
+			if flt(gl_dict.credit) and not flt(gl_dict.credit_in_account_currency):
+				gl_dict.credit_in_account_currency = (
+					gl_dict.credit
+					if account_currency == company_currency
+					else flt(gl_dict.credit / conversion_rate, acct_precision)
+				)
+
+		ac.set_balance_in_account_currency = set_balance_in_account_currency
+		ac._iran_patched_set_balance = True
+
+
+# Fingerprint of vanilla AccountsController.make_precision_loss_gl_entry on
+# ERPNext 16.35.0 (normalized AST hash via riv_rate_guard helpers). Fail-closed
+# if the upstream method changes — do not silently wrap an unknown body.
+_PRECISION_LOSS_FINGERPRINT = {
+	"signature": "(self, gl_entries)",
+	"source_sha256": "4ed33c31cb63e100de245a6c2a7d44c72baf4c541cd0a877164b5c98d5aa345f",
+	"must_contain": ("precision_loss", "base_net_total", "conversion_rate"),
+}
+
+
+def assert_pattern_a_precision_loss_patch_supported(original_fn) -> None:
+	"""Fail-closed: only wrap a known ERPNext make_precision_loss_gl_entry body."""
+	from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+		_SUPPORTED_ERPNEXT_MINOR,
+		_SUPPORTED_FRAPPE_MINOR,
+		major_minor,
+		normalize_callable_signature,
+		normalize_function_source,
+		source_sha256,
+	)
+
+	erp_ver = getattr(erpnext, "__version__", "")
+	fr_ver = getattr(frappe, "__version__", "")
+	erp_mm, fr_mm = major_minor(erp_ver), major_minor(fr_ver)
+	if erp_mm not in _SUPPORTED_ERPNEXT_MINOR:
+		raise RuntimeError(
+			f"Pattern A precision-loss guard: ERPNext {erp_ver} is not on the "
+			f"explicit support allow-list ({', '.join(sorted(_SUPPORTED_ERPNEXT_MINOR))}). "
+			"Wrapper not installed."
+		)
+	if fr_mm not in _SUPPORTED_FRAPPE_MINOR:
+		raise RuntimeError(
+			f"Pattern A precision-loss guard: Frappe {fr_ver} is not on the "
+			f"explicit support allow-list ({', '.join(sorted(_SUPPORTED_FRAPPE_MINOR))}). "
+			"Wrapper not installed."
+		)
+
+	sig = normalize_callable_signature(original_fn)
+	if sig != _PRECISION_LOSS_FINGERPRINT["signature"]:
+		raise RuntimeError(
+			"Pattern A precision-loss guard: make_precision_loss_gl_entry signature "
+			f"{sig!r} != {_PRECISION_LOSS_FINGERPRINT['signature']!r}. Wrapper not installed."
+		)
+	digest = source_sha256(original_fn)
+	if digest != _PRECISION_LOSS_FINGERPRINT["source_sha256"]:
+		raise RuntimeError(
+			"Pattern A precision-loss guard: make_precision_loss_gl_entry fingerprint "
+			f"{digest} != allow-list {_PRECISION_LOSS_FINGERPRINT['source_sha256']}. "
+			"Wrapper not installed (fail-closed)."
+		)
+	norm = normalize_function_source(original_fn)
+	for token in _PRECISION_LOSS_FINGERPRINT["must_contain"]:
+		if token not in norm:
+			raise RuntimeError(
+				"Pattern A precision-loss guard: make_precision_loss_gl_entry missing "
+				f"required token {token!r}. Wrapper not installed."
+			)
+
+
+def _patch_pattern_a_precision_loss():
+	"""Skip ERPNext product-first precision-loss GLE for RATE-FIRST Pattern A PIs.
+
+	ERPNext posts Round Off when base_net_total != net_total × conversion_rate.
+	Under Pattern A that difference is the composition policy, not a precision loss.
+
+	Fail-closed: skip only after RATE-FIRST invariants hold. Invalid Pattern A
+	throws — never delegates to vanilla (vanilla would glue the hybrid residual).
+	"""
+	from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import PurchaseInvoice
+	from erpnext.controllers.accounts_controller import AccountsController
+
+	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+		is_pattern_a_fx_purchase_invoice,
+		validate_pattern_a_rate_first_invariants,
+	)
+
+	# Already on the fail-closed wrapper — idempotent no-op.
+	if getattr(PurchaseInvoice.make_precision_loss_gl_entry, "_iran_pattern_a_fail_closed", False):
 		return
 
-	_orig = ac.set_balance_in_account_currency
+	_orig = AccountsController.make_precision_loss_gl_entry
+	# Unwrap any prior Pattern A skip (identity-only 5.2.24) to the true original.
+	if getattr(_orig, "_iran_pattern_a_skip", False):
+		_orig = getattr(AccountsController, "_iran_original_precision_loss", _orig)
 
-	def set_balance_in_account_currency(
-		gl_dict, account_currency=None, conversion_rate=None, company_currency=None
-	):
-		_orig(gl_dict, account_currency, conversion_rate, company_currency)
-		if not company_currency and gl_dict.get("company"):
-			company_currency = erpnext.get_company_currency(gl_dict.company)
-		if not account_currency:
-			account_currency = gl_dict.get("account_currency") or company_currency
-		acct_precision = get_currency_precision(account_currency)
+	assert_pattern_a_precision_loss_patch_supported(_orig)
 
-		if flt(gl_dict.debit) and not flt(gl_dict.debit_in_account_currency):
-			gl_dict.debit_in_account_currency = (
-				gl_dict.debit
-				if account_currency == company_currency
-				else flt(gl_dict.debit / conversion_rate, acct_precision)
-			)
+	def make_precision_loss_gl_entry(self, gl_entries):
+		if not is_pattern_a_fx_purchase_invoice(self):
+			return AccountsController._iran_original_precision_loss(self, gl_entries)
+		validate_pattern_a_rate_first_invariants(self)
+		return
 
-		if flt(gl_dict.credit) and not flt(gl_dict.credit_in_account_currency):
-			gl_dict.credit_in_account_currency = (
-				gl_dict.credit
-				if account_currency == company_currency
-				else flt(gl_dict.credit / conversion_rate, acct_precision)
-			)
-
-	ac.set_balance_in_account_currency = set_balance_in_account_currency
-	ac._iran_patched_set_balance = True
+	make_precision_loss_gl_entry._iran_pattern_a_skip = True
+	make_precision_loss_gl_entry._iran_pattern_a_fail_closed = True
+	AccountsController._iran_original_precision_loss = _orig
+	AccountsController.make_precision_loss_gl_entry = make_precision_loss_gl_entry
+	PurchaseInvoice.make_precision_loss_gl_entry = make_precision_loss_gl_entry
+	AccountsController._iran_patched_precision_loss = True
+	PurchaseInvoice._iran_patched_precision_loss = True
 
 
 def _patch_stock_ledger_engine():

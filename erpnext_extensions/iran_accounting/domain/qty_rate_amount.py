@@ -243,7 +243,249 @@ def _row_has_distributed_discount(row) -> bool:
 	return abs(flt(row.get("distributed_discount_amount"))) > 0
 
 
-def _align_po_pi_si_row(row, company_currency: str, transaction_currency: str) -> None:
+def _fx_company_rate(tx_rate, conversion_rate, company_currency: str):
+	"""ROUND_HALF_UP(rate × conversion_rate) via Decimal — no binary float product."""
+	from decimal import Decimal
+
+	if tx_rate in (None, "") or conversion_rate in (None, ""):
+		return None
+	product = Decimal(str(tx_rate)) * Decimal(str(conversion_rate))
+	return rounding.round_monetary_rate(product, company_currency)
+
+
+def invoice_has_distributed_discount(doc) -> bool:
+	"""True when additional/distributed discount is present (Pattern B — not Pattern A)."""
+	if abs(flt(doc.get("discount_amount"))) > 0:
+		return True
+	if abs(flt(doc.get("additional_discount_percentage"))) > 0:
+		return True
+	return any(
+		abs(flt(row.get("distributed_discount_amount"))) > 0 for row in doc.get("items") or []
+	)
+
+
+def is_pattern_a_fx_purchase_invoice(doc) -> bool:
+	"""FX Purchase Invoice on an IRR company with no additional/distributed discount."""
+	if getattr(doc, "doctype", None) != "Purchase Invoice":
+		return False
+	if not rounding.is_irr_company(doc.company):
+		return False
+	company_currency = rounding.get_company_currency(doc.company)
+	transaction_currency = doc.currency or company_currency
+	if not transaction_currency or transaction_currency == company_currency:
+		return False
+	if invoice_has_distributed_discount(doc):
+		return False
+	return True
+
+
+def _pattern_a_amounts_equal(actual, expected, company_currency: str) -> bool:
+	"""Compare company-currency amounts via ROUND_HALF_UP — no binary float equality."""
+	return rounding.round_currency(actual, company_currency) == rounding.round_currency(
+		expected, company_currency
+	)
+
+
+def _pattern_a_total_category_base_tax(doc, company_currency: str):
+	"""Σ Total / Valuation-and-Total tax bases — same semantics as header re-aggregation."""
+	base_tax = 0.0
+	for tax in doc.get("taxes") or []:
+		if tax.get("category") not in ("Total", "Valuation and Total"):
+			continue
+		amt = flt(
+			tax.get("base_tax_amount_after_discount_amount")
+			if tax.get("base_tax_amount_after_discount_amount") not in (None, "")
+			else tax.get("base_tax_amount")
+		)
+		if tax.get("add_deduct_tax") == "Deduct":
+			base_tax -= amt
+		else:
+			base_tax += amt
+	return rounding.round_currency(base_tax, company_currency)
+
+
+def _raise_pattern_a_invariant_failure(doc, invariant: str, expected, actual) -> None:
+	import frappe
+	from frappe import _
+
+	frappe.throw(
+		_(
+			"RATE-FIRST accounting invariant failed for Purchase Invoice {0}: {1}. "
+			"Expected {2}, got {3}. Refusing to apply FX precision-loss override."
+		).format(doc.get("name") or _("(new)"), invariant, expected, actual),
+		title=_("RATE-FIRST Invariant Failed"),
+	)
+
+
+def validate_pattern_a_rate_first_invariants(doc) -> None:
+	"""Fail-closed: Pattern A docs must already satisfy RATE-FIRST header/item invariants.
+
+	Called only when ``is_pattern_a_fx_purchase_invoice(doc)`` is True, immediately before
+	skipping ERPNext product-first ``make_precision_loss_gl_entry``. Does not repair the
+	document and does not inspect in-progress GL (taxes / invoice rounding GLE may follow).
+	"""
+	company_currency = rounding.get_company_currency(doc.company)
+	conversion_rate = doc.get("conversion_rate")
+	items = doc.get("items") or []
+
+	sum_base_amount = 0.0
+	sum_base_net_amount = 0.0
+	for row in items:
+		qty = flt(row.get("qty"))
+		if row.get("rate") is not None:
+			expected_base_rate = _fx_company_rate(row.rate, conversion_rate, company_currency)
+			if expected_base_rate is None:
+				_raise_pattern_a_invariant_failure(
+					doc,
+					"item base_rate could not be derived from rate × conversion_rate",
+					"derived RATE-FIRST base_rate",
+					row.get("base_rate"),
+				)
+			if not _pattern_a_amounts_equal(row.get("base_rate"), expected_base_rate, company_currency):
+				_raise_pattern_a_invariant_failure(
+					doc,
+					f"item row {cint(row.get('idx') or 0)} base_rate != ROUND_HALF_UP(rate × conversion_rate)",
+					expected_base_rate,
+					row.get("base_rate"),
+				)
+			expected_base_amount = rounding.round_row_amount(
+				qty, expected_base_rate, company_currency
+			)
+			if not _pattern_a_amounts_equal(row.get("base_amount"), expected_base_amount, company_currency):
+				_raise_pattern_a_invariant_failure(
+					doc,
+					f"item row {cint(row.get('idx') or 0)} base_amount != ROUND_HALF_UP(qty × base_rate)",
+					expected_base_amount,
+					row.get("base_amount"),
+				)
+
+		if row.get("net_rate") is not None and not _row_has_distributed_discount(row):
+			expected_base_net_rate = _fx_company_rate(row.net_rate, conversion_rate, company_currency)
+			if expected_base_net_rate is None:
+				_raise_pattern_a_invariant_failure(
+					doc,
+					"item base_net_rate could not be derived from net_rate × conversion_rate",
+					"derived RATE-FIRST base_net_rate",
+					row.get("base_net_rate"),
+				)
+			if not _pattern_a_amounts_equal(
+				row.get("base_net_rate"), expected_base_net_rate, company_currency
+			):
+				_raise_pattern_a_invariant_failure(
+					doc,
+					f"item row {cint(row.get('idx') or 0)} base_net_rate != ROUND_HALF_UP(net_rate × conversion_rate)",
+					expected_base_net_rate,
+					row.get("base_net_rate"),
+				)
+			expected_base_net_amount = rounding.round_row_amount(
+				qty, expected_base_net_rate, company_currency
+			)
+			if not _pattern_a_amounts_equal(
+				row.get("base_net_amount"), expected_base_net_amount, company_currency
+			):
+				_raise_pattern_a_invariant_failure(
+					doc,
+					f"item row {cint(row.get('idx') or 0)} base_net_amount != ROUND_HALF_UP(qty × base_net_rate)",
+					expected_base_net_amount,
+					row.get("base_net_amount"),
+				)
+
+		sum_base_amount += flt(row.get("base_amount"))
+		sum_base_net_amount += flt(row.get("base_net_amount"))
+
+	expected_base_total = rounding.round_currency(sum_base_amount, company_currency)
+	if not _pattern_a_amounts_equal(doc.get("base_total"), expected_base_total, company_currency):
+		_raise_pattern_a_invariant_failure(
+			doc,
+			"base_total does not equal the sum of aligned item base_amount values",
+			expected_base_total,
+			doc.get("base_total"),
+		)
+
+	expected_base_net_total = rounding.round_currency(sum_base_net_amount, company_currency)
+	if not _pattern_a_amounts_equal(doc.get("base_net_total"), expected_base_net_total, company_currency):
+		_raise_pattern_a_invariant_failure(
+			doc,
+			"base_net_total does not equal the sum of aligned item base_net_amount values",
+			expected_base_net_total,
+			doc.get("base_net_total"),
+		)
+
+	expected_base_tax = _pattern_a_total_category_base_tax(doc, company_currency)
+	if doc.get("base_total_taxes_and_charges") is not None and not _pattern_a_amounts_equal(
+		doc.get("base_total_taxes_and_charges"), expected_base_tax, company_currency
+	):
+		_raise_pattern_a_invariant_failure(
+			doc,
+			"base_total_taxes_and_charges does not equal Total-category base tax sum",
+			expected_base_tax,
+			doc.get("base_total_taxes_and_charges"),
+		)
+
+	expected_base_grand_total = rounding.round_currency(
+		flt(expected_base_net_total) + flt(expected_base_tax), company_currency
+	)
+	if not _pattern_a_amounts_equal(
+		doc.get("base_grand_total"), expected_base_grand_total, company_currency
+	):
+		_raise_pattern_a_invariant_failure(
+			doc,
+			"base_grand_total does not equal base_net_total + applicable Total-category base taxes",
+			expected_base_grand_total,
+			doc.get("base_grand_total"),
+		)
+
+	if not flt(doc.get("rounding_adjustment")):
+		if flt(doc.get("base_rounding_adjustment")):
+			_raise_pattern_a_invariant_failure(
+				doc,
+				"base_rounding_adjustment must be 0 when transaction rounding_adjustment is 0",
+				0,
+				doc.get("base_rounding_adjustment"),
+			)
+		if flt(doc.get("rounded_total")):
+			if not _pattern_a_amounts_equal(
+				doc.get("base_rounded_total"), expected_base_grand_total, company_currency
+			):
+				_raise_pattern_a_invariant_failure(
+					doc,
+					"base_rounded_total must equal base_grand_total when transaction rounding_adjustment is 0",
+					expected_base_grand_total,
+					doc.get("base_rounded_total"),
+				)
+	else:
+		from decimal import Decimal
+
+		expected_base_rounding = rounding.round_currency(
+			Decimal(str(doc.rounding_adjustment)) * Decimal(str(doc.conversion_rate or 0)),
+			company_currency,
+		)
+		if not _pattern_a_amounts_equal(
+			doc.get("base_rounding_adjustment"), expected_base_rounding, company_currency
+		):
+			_raise_pattern_a_invariant_failure(
+				doc,
+				"base_rounding_adjustment != ROUND_HALF_UP(rounding_adjustment × conversion_rate)",
+				expected_base_rounding,
+				doc.get("base_rounding_adjustment"),
+			)
+		expected_base_rounded_total = rounding.round_currency(
+			flt(expected_base_grand_total) + flt(expected_base_rounding), company_currency
+		)
+		if not _pattern_a_amounts_equal(
+			doc.get("base_rounded_total"), expected_base_rounded_total, company_currency
+		):
+			_raise_pattern_a_invariant_failure(
+				doc,
+				"base_rounded_total != base_grand_total + base_rounding_adjustment",
+				expected_base_rounded_total,
+				doc.get("base_rounded_total"),
+			)
+
+
+def _align_po_pi_si_row(
+	row, company_currency: str, transaction_currency: str, conversion_rate=None
+) -> None:
 	qty = flt(row.qty)
 	if row.get("rate") is not None:
 		row.rate = rounding.round_monetary_rate(row.rate, transaction_currency)
@@ -257,28 +499,36 @@ def _align_po_pi_si_row(row, company_currency: str, transaction_currency: str) -
 			row.net_amount = rounding.round_currency(row.net_amount, transaction_currency)
 		else:
 			row.net_amount = rounding.round_row_amount(qty, row.net_rate, transaction_currency)
-	for base_field, tx_field in (
-		("base_rate", "rate"),
-		("base_amount", "amount"),
-		("base_net_rate", "net_rate"),
-		("base_net_amount", "net_amount"),
-	):
-		if row.get(tx_field) is not None and row.get(base_field) is not None:
-			if transaction_currency == company_currency:
+
+	if transaction_currency == company_currency:
+		for base_field, tx_field in (
+			("base_rate", "rate"),
+			("base_amount", "amount"),
+			("base_net_rate", "net_rate"),
+			("base_net_amount", "net_amount"),
+		):
+			if row.get(tx_field) is not None and row.get(base_field) is not None:
 				row.set(base_field, row.get(tx_field))
-			else:
-				br = row.get("base_rate") if base_field.endswith("rate") else None
-				if base_field.endswith("amount"):
-					if "net" in base_field and _row_has_distributed_discount(row):
-						row.set(
-							base_field,
-							rounding.round_currency(row.get(base_field), company_currency),
-						)
-					else:
-						src_rate = row.get("base_net_rate" if "net" in base_field else "base_rate")
-						row.set(base_field, rounding.round_row_amount(qty, src_rate, company_currency))
-				elif br is not None:
-					row.set(base_field, rounding.round_monetary_rate(br, company_currency))
+		return
+
+	use_conv = conversion_rate not in (None, "") and flt(conversion_rate)
+	if row.get("rate") is not None:
+		if use_conv:
+			row.base_rate = _fx_company_rate(row.rate, conversion_rate, company_currency)
+		elif row.get("base_rate") is not None:
+			row.base_rate = rounding.round_monetary_rate(row.base_rate, company_currency)
+		if row.get("base_rate") is not None:
+			row.base_amount = rounding.round_row_amount(qty, row.base_rate, company_currency)
+
+	if row.get("net_rate") is not None:
+		if use_conv:
+			row.base_net_rate = _fx_company_rate(row.net_rate, conversion_rate, company_currency)
+		elif row.get("base_net_rate") is not None:
+			row.base_net_rate = rounding.round_monetary_rate(row.base_net_rate, company_currency)
+		if _row_has_distributed_discount(row) and row.get("base_net_amount") is not None:
+			row.base_net_amount = rounding.round_currency(row.get("base_net_amount"), company_currency)
+		elif row.get("base_net_rate") is not None:
+			row.base_net_amount = rounding.round_row_amount(qty, row.base_net_rate, company_currency)
 
 
 def align_purchase_order_item_amounts(doc) -> None:
@@ -286,8 +536,112 @@ def align_purchase_order_item_amounts(doc) -> None:
 		return
 	ccy = rounding.get_company_currency(doc.company)
 	tx = doc.currency or ccy
+	conversion_rate = doc.get("conversion_rate")
 	for row in doc.get("items") or []:
-		_align_po_pi_si_row(row, ccy, tx)
+		_align_po_pi_si_row(row, ccy, tx, conversion_rate=conversion_rate)
+
+
+def reaggregate_fx_purchase_invoice_base_totals(doc) -> None:
+	"""Derive IRR header totals from aligned RATE-FIRST item bases (Pattern A only).
+
+	Must not run on Sales Invoice, same-currency IRR invoices, submitted docs, or
+	Pattern B additional-discount invoices.
+	"""
+	if cint(doc.get("docstatus")) == 1 and getattr(doc, "_action", None) not in ("save", "submit"):
+		return
+	if not is_pattern_a_fx_purchase_invoice(doc):
+		return
+
+	company_currency = rounding.get_company_currency(doc.company)
+	items = doc.get("items") or []
+	base_total = 0.0
+	base_net_total = 0.0
+	for row in items:
+		base_total += flt(row.get("base_amount"))
+		base_net_total += flt(row.get("base_net_amount"))
+
+	doc.base_total = rounding.round_currency(base_total, company_currency)
+	doc.base_net_total = rounding.round_currency(base_net_total, company_currency)
+
+	base_tax = 0.0
+	for tax in doc.get("taxes") or []:
+		if tax.get("category") not in ("Total", "Valuation and Total"):
+			continue
+		amt = flt(
+			tax.get("base_tax_amount_after_discount_amount")
+			if tax.get("base_tax_amount_after_discount_amount") not in (None, "")
+			else tax.get("base_tax_amount")
+		)
+		if tax.get("add_deduct_tax") == "Deduct":
+			base_tax -= amt
+		else:
+			base_tax += amt
+	doc.base_total_taxes_and_charges = rounding.round_currency(base_tax, company_currency)
+	doc.base_grand_total = rounding.round_currency(
+		flt(doc.base_net_total) + flt(doc.base_total_taxes_and_charges), company_currency
+	)
+
+	if not flt(doc.get("rounding_adjustment")):
+		doc.base_rounding_adjustment = 0
+		if flt(doc.get("rounded_total")):
+			doc.base_rounded_total = doc.base_grand_total
+		elif doc.get("base_rounded_total") is not None:
+			doc.base_rounded_total = 0
+	else:
+		from decimal import Decimal
+
+		raw_adj = Decimal(str(doc.rounding_adjustment)) * Decimal(str(doc.conversion_rate or 0))
+		doc.base_rounding_adjustment = rounding.round_currency(raw_adj, company_currency)
+		doc.base_rounded_total = rounding.round_currency(
+			flt(doc.base_grand_total) + flt(doc.base_rounding_adjustment), company_currency
+		)
+
+	authoritative_base = flt(doc.get("base_rounded_total") or doc.base_grand_total)
+	_update_payment_schedule_base(doc, authoritative_base, company_currency)
+	_update_outstanding_after_rate_first(doc, company_currency)
+	if callable(getattr(doc, "set_total_in_words", None)):
+		doc.set_total_in_words()
+
+
+def _update_payment_schedule_base(doc, authoritative_base, company_currency: str) -> None:
+	rows = doc.get("payment_schedule") or []
+	if not rows:
+		return
+	for d in rows:
+		portion = flt(d.get("invoice_portion"))
+		if portion:
+			base_payment = rounding.round_currency(
+				flt(authoritative_base) * portion / 100.0, company_currency
+			)
+			d.base_payment_amount = base_payment
+			if d.get("base_outstanding") is not None or hasattr(d, "base_outstanding"):
+				d.base_outstanding = base_payment
+		elif len(rows) == 1:
+			d.base_payment_amount = rounding.round_currency(authoritative_base, company_currency)
+			if d.get("base_outstanding") is not None or hasattr(d, "base_outstanding"):
+				d.base_outstanding = d.base_payment_amount
+
+
+def _update_outstanding_after_rate_first(doc, company_currency: str) -> None:
+	if doc.get("is_return") and doc.get("return_against") and not doc.get("update_outstanding_for_self"):
+		return
+	party_ccy = doc.get("party_account_currency")
+	if party_ccy == doc.currency:
+		total_to_pay = (
+			flt(doc.get("rounded_total") or doc.get("grand_total"))
+			- flt(doc.get("total_advance"))
+			- flt(doc.get("write_off_amount"))
+		)
+		paid = flt(doc.get("paid_amount"))
+		doc.outstanding_amount = rounding.round_currency(total_to_pay - paid, doc.currency)
+	else:
+		total_to_pay = (
+			flt(doc.get("base_rounded_total") or doc.get("base_grand_total"))
+			- flt(doc.get("total_advance"))
+			- flt(doc.get("base_write_off_amount"))
+		)
+		paid = flt(doc.get("base_paid_amount"))
+		doc.outstanding_amount = rounding.round_currency(total_to_pay - paid, company_currency)
 
 
 def align_purchase_invoice_item_amounts(doc) -> None:
