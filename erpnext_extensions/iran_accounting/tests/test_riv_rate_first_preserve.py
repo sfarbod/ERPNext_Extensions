@@ -95,14 +95,49 @@ class TestRivRateGuardUnit(unittest.TestCase):
 		assert_erpnext_riv_rate_patch_supported()
 		report = collect_fingerprint_report()
 		self.assertIn(
-			report["erpnext_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"}
+			report["erpnext_major_minor"],
+			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35"},
 		)
-		self.assertIn(report["frappe_major_minor"], {"16.29", "16.30", "16.31", "16.32", "16.33"})
+		self.assertIn(
+			report["frappe_major_minor"],
+			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"},
+		)
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
 			self.assertEqual(got["signature"], expected["signature"], name)
 			accepted = {expected["source_sha256"], *expected.get("source_sha256_alternates", ())}
 			self.assertIn(got["source_sha256"], accepted, name)
+
+	def test_erpnext_16_35_x_allowed_16_36_blocked(self):
+		import erpnext
+
+		from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+			_SUPPORTED_ERPNEXT_MINOR,
+			_SUPPORTED_FRAPPE_MINOR,
+		)
+
+		self.assertTrue(
+			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"}.issubset(_SUPPORTED_ERPNEXT_MINOR)
+		)
+		self.assertIn("16.35", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertNotIn("16.36", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.34", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.35", _SUPPORTED_FRAPPE_MINOR)
+
+		with mock.patch.object(erpnext, "__version__", "16.35.0"), mock.patch.object(
+			frappe, "__version__", "16.34.0"
+		):
+			assert_erpnext_riv_rate_patch_supported()
+		with mock.patch.object(erpnext, "__version__", "16.35.9"), mock.patch.object(
+			frappe, "__version__", "16.34.1"
+		):
+			assert_erpnext_riv_rate_patch_supported()
+		with mock.patch.object(erpnext, "__version__", "16.36.0"), mock.patch.object(
+			frappe, "__version__", "16.34.0"
+		):
+			with self.assertRaises(RuntimeError) as ctx:
+				assert_erpnext_riv_rate_patch_supported()
+			self.assertIn("16.36.0", str(ctx.exception))
 
 	def test_wrapper_skips_set_value_for_irr(self):
 		calls = []

@@ -149,6 +149,32 @@ class TestStockEntryGLDelegation(unittest.TestCase):
 			zvt.iran_stock_entry_get_gl_entries(Doc())
 		self.assertEqual(calls["n"], 2)
 
+	def test_preview_gl_columns_passes_currency_when_required(self):
+		calls = []
+
+		def two_arg(raw_columns, fields):
+			calls.append(("two", raw_columns, fields))
+			return ["ok2"]
+
+		def three_arg(raw_columns, fields, currency):
+			calls.append(("three", raw_columns, fields, currency))
+			return ["ok3"]
+
+		filters = type("F", (), {"company": "ESPAD"})()
+		self.assertEqual(
+			monkey_patches._preview_gl_columns(two_arg, ["c"], ["f"], filters),
+			["ok2"],
+		)
+		with mock.patch.object(
+			monkey_patches.erpnext, "get_company_currency", return_value="IRR"
+		):
+			self.assertEqual(
+				monkey_patches._preview_gl_columns(three_arg, ["c"], ["f"], filters),
+				["ok3"],
+			)
+		self.assertEqual(calls[0][0], "two")
+		self.assertEqual(calls[1], ("three", ["c"], ["f"], "IRR"))
+
 	def test_patch_installation_idempotent(self):
 		from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 
