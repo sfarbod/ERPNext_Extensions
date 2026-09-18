@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import erpnext
 import frappe
 from frappe.model.meta import get_field_precision
@@ -226,6 +228,18 @@ def _patch_repost_compatibility():
 		ral_mod._iran_ral_hook_unavailable_logged = True
 
 
+def _preview_gl_columns(get_columns, columns, fields, filters):
+	"""Build GL preview columns for ERPNext 16.29–16.35.
+
+	16.35 made ``currency`` required on ``get_columns``; older minors still
+	accept ``(raw_columns, fields)`` only. Inspect the live signature so the
+	allow-list does not break 16.34.x while 16.35.x gets company currency.
+	"""
+	if len(inspect.signature(get_columns).parameters) >= 3:
+		return get_columns(columns, fields, erpnext.get_company_currency(filters.company))
+	return get_columns(columns, fields)
+
+
 def _patch_stock_controller():
 	from erpnext.controllers import stock_controller as sc
 	from erpnext.controllers.stock_controller import StockController
@@ -379,7 +393,8 @@ def _patch_stock_controller():
 		columns = get_gl_columns(filters)
 		gl_entries = get_gl_entries_for_preview(doc.doctype, doc.name, fields)
 
-		gl_columns = get_columns(columns, fields)
+		# ERPNext 16.35+ requires currency; 16.29–16.34 still use two args.
+		gl_columns = _preview_gl_columns(get_columns, columns, fields, filters)
 		gl_data = get_data(fields, gl_entries)
 
 		return gl_columns, gl_data
