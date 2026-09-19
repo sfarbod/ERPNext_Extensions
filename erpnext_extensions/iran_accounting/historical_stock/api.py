@@ -24,6 +24,12 @@ from erpnext_extensions.iran_accounting.historical_stock.reconstruct import (
 from erpnext_extensions.iran_accounting.historical_stock.repost import preview_repost_selected, repost_selected
 from erpnext_extensions.iran_accounting.historical_stock.scan import run_full_integrity_scan
 from erpnext_extensions.iran_accounting.historical_stock.sle_bin import scan_sle_bin
+from erpnext_extensions.iran_accounting.historical_stock.sle_gl_drift import (
+	classify_sle_gl_drift,
+	dry_run_sle_gl_drift,
+	repair_sle_gl_drift_selected,
+	scan_sle_gl_drift,
+)
 from erpnext_extensions.iran_accounting.historical_stock.zero_rate import scan_zero_rate_rows
 from erpnext_extensions.iran_accounting.stock_posting_order.api import (
 	dry_run_posting_order_repair,
@@ -338,6 +344,75 @@ def rebuild_gl_selected(vouchers=None, dry_run=True):
 		frappe.throw("Exact vouchers are required")
 	out = [rebuild_gl_for_voucher(v if isinstance(v, str) else v.get("voucher"), dry_run=is_dry) for v in parsed]
 	return {"dry_run": is_dry, "rows": out}
+
+
+@frappe.whitelist()
+def scan_sle_gl_drift_api(
+	company=None,
+	voucher=None,
+	item_code=None,
+	warehouse=None,
+	from_date=None,
+	to_date=None,
+	vouchers=None,
+	limit=500,
+):
+	"""Discover SLE↔GL drift. Does not write. False G0 transfers are included."""
+	_guard()
+	parsed = _parse(vouchers) if vouchers else None
+	return scan_sle_gl_drift(
+		company=company or None,
+		voucher=voucher or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		from_date=from_date or None,
+		to_date=to_date or None,
+		vouchers=parsed,
+		limit=cint(limit) or 500,
+	)
+
+
+@frappe.whitelist()
+def classify_sle_gl_drift_api(voucher_no):
+	_guard()
+	return classify_sle_gl_drift(voucher_no)
+
+
+@frappe.whitelist()
+def dry_run_sle_gl_drift_api(vouchers=None, company=None, item_code=None, limit=500):
+	_guard()
+	parsed = _parse(vouchers) if vouchers else None
+	return dry_run_sle_gl_drift(
+		vouchers=parsed,
+		company=company or None,
+		item_code=item_code or None,
+		limit=cint(limit) or 500,
+	)
+
+
+@frappe.whitelist()
+def repair_sle_gl_drift_selected_api(
+	vouchers=None,
+	dry_run=True,
+	batch_size=50,
+	stop_on_error=True,
+	resume_cursor=0,
+):
+	"""GL-only repair. Default dry_run=True. Never modifies SLE."""
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	_guard_repair()
+	parsed = _parse(vouchers)
+	if not parsed:
+		frappe.throw("Exact vouchers are required for SLE_GL_DRIFT repair")
+	rows = [{"voucher": v} if isinstance(v, str) else v for v in parsed]
+	return repair_sle_gl_drift_selected(
+		rows,
+		dry_run=is_dry,
+		batch_size=cint(batch_size) or 50,
+		stop_on_error=_dry(stop_on_error, True) if not isinstance(stop_on_error, bool) else stop_on_error,
+		resume_cursor=cint(resume_cursor) or 0,
+	)
 
 
 @frappe.whitelist()

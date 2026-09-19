@@ -14,6 +14,8 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_EXACT,
 	CONFIDENCE_LIKELY,
 	CONFIDENCE_MANUAL,
+	CONFLICTING_RIV,
+	EXPECTED_GL_ERROR,
 	G0_HEALTHY,
 	G1_ECONOMICALLY_WRONG,
 	G2_MISSING,
@@ -29,12 +31,16 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	I4_REPAIRED,
 	I4_REPLAY_REQUIRED,
 	I4_WAITING,
+	MANUAL_REVIEW,
+	NO_DRIFT,
 	RATE_EPS,
+	READY_GL_ONLY,
 	RIV_SAFE_TO_RETRY,
 	RIV_UNSAFE,
 	RIV_WAITING_GL,
 	RIV_WAITING_RATE,
 	RIV_WAITING_SLE,
+	SLE_GL_DRIFT_REPAIR,
 	SLE_PATIENT_ZERO_REQUIRED,
 	SLE_POISONED_CHAIN,
 	STATUS_DEPENDENCY_REPAIR_REQUIRED,
@@ -44,6 +50,9 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	STATUS_VALUATION_POISON_DEPENDENCY,
 	TOPIC_I1,
 	TOPIC_I4,
+	TOPIC_SLE_GL_DRIFT,
+	UNBALANCED_EXPECTED_GL,
+	WAITING_SLE_REPAIR,
 	Z0_LEGITIMATE_ZERO,
 )
 
@@ -136,6 +145,7 @@ READY_STATUSES = (
 	PLAN_READY_I4,
 	PLAN_READY_I1,
 	PLAN_READY_WRONG_RATE,
+	READY_GL_ONLY,
 	"READY_WAREHOUSE_REPLAY",
 	"READY_WAREHOUSE_CAMPAIGN",
 	"READY_GLOBAL_WAREHOUSE_SOLVER",
@@ -177,7 +187,9 @@ def evaluate_row(row: dict | None, *, cache: dict | None = None) -> dict:
 		return _evaluate_posting(row, decision, cache)
 	if topic in ("FAILED_RIV",) or row.get("riv_name"):
 		return _evaluate_riv(row, decision)
-	if topic in ("GL",) or (row.get("gl_class") and not row.get("inbound_document")):
+	if topic in (TOPIC_SLE_GL_DRIFT, "SLE_GL_DRIFT") or row.get("repair_class") == SLE_GL_DRIFT_REPAIR:
+		return _evaluate_sle_gl_drift(row, decision)
+	if topic in ("GL",) or (row.get("gl_class") and not row.get("inbound_document") and not row.get("drift_status")):
 		return _evaluate_gl(row, decision)
 	if topic in (TOPIC_I1, "I1_NEGATIVE_RATE") or row.get("repair_class") == I1_NEGATIVE_RATE_REPAIR:
 		return _evaluate_i1(row, decision, patient)
@@ -199,7 +211,14 @@ def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
 	out["blocked"] = bool(decision["blocked"])
 	out["reason"] = decision["reason"]
 	out["skip_reason"] = decision["reason"]
-	out["blocker"] = decision["reason"]
+	# Preserve structured integrity blocker codes for SLE_GL_DRIFT (I1/I4/…).
+	if out.get("topic") in (TOPIC_SLE_GL_DRIFT, "SLE_GL_DRIFT") or out.get("repair_class") == SLE_GL_DRIFT_REPAIR:
+		out["integrity_blocker"] = row.get("blocker") or row.get("integrity_blocker")
+		out["blocker"] = row.get("blocker") if not decision["eligible"] else None
+		if decision["blocked"] and not out.get("blocker"):
+			out["blocker"] = decision["reason"]
+	else:
+		out["blocker"] = decision["reason"]
 	out["repair_required"] = bool(decision["eligible"])
 	out["sql_updates"] = int(decision["sql_updates"] or 0)
 	out["replay_count"] = int(decision["replay_count"] or 0)
@@ -954,6 +973,36 @@ def _evaluate_manufacture(row, decision, patient, cache) -> dict:
 	counts = _write_counts(row, cache)
 	sql = max(counts["sql"], 1)
 	return _ready(decision, sql=sql, replay=1, rebuild=counts["sle"], reason="READY — manufacture contract EXACT")
+
+
+def _evaluate_sle_gl_drift(row, decision) -> dict:
+	"""Planner for SLE_GL_DRIFT — does not trust false G0; uses drift_status."""
+	status = str(row.get("drift_status") or row.get("status") or "")
+	voucher = row.get("voucher") or row.get("voucher_no")
+	if status == READY_GL_ONLY and row.get("eligible"):
+		return _ready(
+			decision,
+			sql=max(_gl_row_count(voucher), 1),
+			rebuild=1,
+			planner_status=READY_GL_ONLY,
+			reason="READY_GL_ONLY — SLE healthy; rebuild GL from current SLE (false G0 ignored)",
+		)
+	if status == NO_DRIFT:
+		return _not_ready(decision, PLAN_NO_REPAIR_PATH, "NO_DRIFT — posted GL already matches expected")
+	if status == WAITING_SLE_REPAIR:
+		return _not_ready(
+			decision,
+			PLAN_WAITING_SLE_REPAIR,
+			row.get("message") or f"WAITING_SLE_REPAIR — {row.get('blocker')}",
+			prerequisite=voucher,
+		)
+	if status == CONFLICTING_RIV:
+		return _not_ready(decision, PLAN_WAITING_RIV, row.get("message") or "CONFLICTING_RIV")
+	if status in (EXPECTED_GL_ERROR, UNBALANCED_EXPECTED_GL):
+		return _not_ready(decision, PLAN_MANUAL, row.get("message") or status)
+	if status == MANUAL_REVIEW:
+		return _not_ready(decision, PLAN_MANUAL, row.get("message") or "MANUAL_REVIEW")
+	return _not_ready(decision, PLAN_BLOCKED, f"SLE_GL_DRIFT status {status} is not repairable")
 
 
 def _evaluate_gl(row, decision) -> dict:

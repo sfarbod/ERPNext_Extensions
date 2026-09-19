@@ -230,7 +230,121 @@ def scan_gl_integrity(
 	return stamp_scan_result({"count": len(rows), "rows": rows, "by_class": _count(rows, "gl_class")})
 
 
+def apply_gl_rebuild_from_current_sle(voucher_no: str, *, dry_run=True) -> dict:
+	"""GL-only rebuild from current Stock Entry / SLE state.
+
+	Does **not** consult G0/G1 classification. Caller must enforce SLE integrity.
+	Never writes SLE.
+	"""
+	if not frappe.db.exists("Stock Entry", voucher_no):
+		return {
+			"voucher": voucher_no,
+			"dry_run": dry_run,
+			"written": False,
+			"blocked": True,
+			"reason": "not_stock_entry",
+		}
+	se = frappe.get_doc("Stock Entry", voucher_no)
+	from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+	from erpnext.accounts.utils import _delete_accounting_ledger_entries
+
+	inventory_account_map = se.get_inventory_account_map()
+	expected = toggle_debit_credit_if_negative(se.get_gl_entries(inventory_account_map)) or []
+	if not expected:
+		return {
+			"voucher": voucher_no,
+			"dry_run": dry_run,
+			"written": False,
+			"blocked": True,
+			"reason": "NO_EXPECTED_GL — Stock Entry produced empty GL map (not auto-rebuilt)",
+		}
+	from erpnext_extensions.iran_accounting.historical_stock.planner import _gl_expected_map_state
+
+	map_state = _gl_expected_map_state(voucher_no)
+	exp_debit = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
+	exp_credit = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
+	if not map_state.get("postable"):
+		return {
+			"voucher": voucher_no,
+			"dry_run": dry_run,
+			"written": False,
+			"blocked": True,
+			"eligible": False,
+			"reason": (
+				f"UNBALANCED_EXPECTED_GL — SE GL map not postable at currency precision "
+				f"(raw debit {exp_debit} credit {exp_credit}; precision-diff {map_state.get('diff')}; "
+				f"allowance {map_state.get('allowance')}); refuse auto-rebuild"
+			),
+			"map_state": map_state,
+			"expected_debit": exp_debit,
+			"expected_credit": exp_credit,
+		}
+	if dry_run:
+		return {
+			"voucher": voucher_no,
+			"dry_run": True,
+			"written": False,
+			"blocked": False,
+			"eligible": True,
+			"expected_debit": exp_debit,
+			"expected_credit": exp_credit,
+			"map_state": map_state,
+		}
+	before = classify_stock_entry_gl(voucher_no)
+	before_dims = list(before.get("dimensions") or [])
+	_delete_accounting_ledger_entries("Stock Entry", voucher_no)
+	try:
+		se.make_gl_entries(gl_entries=expected, from_repost=True)
+	except frappe.ValidationError as exc:
+		return {
+			"voucher": voucher_no,
+			"dry_run": False,
+			"written": False,
+			"blocked": True,
+			"eligible": False,
+			"reason": f"GL_POST_REFUSED — {exc}",
+			"map_state": map_state,
+			"before": before,
+		}
+	after = classify_stock_entry_gl(voucher_no)
+	if after["gl_class"] == G3_UNBALANCED:
+		frappe.throw(f"GL rebuild failed: {voucher_no} still unbalanced")
+	if before.get("gl_class") == G2_MISSING and after["gl_class"] == G2_MISSING:
+		return {
+			**after,
+			"written": False,
+			"blocked": True,
+			"reason": "G2_STILL_MISSING — repost produced no GL rows",
+			"before": before,
+		}
+	if after["gl_class"] in (G2_MISSING, G4_POISONED_SLE):
+		return {
+			**after,
+			"written": False,
+			"blocked": True,
+			"reason": f"rebuild residual {after['gl_class']}",
+			"before": before,
+		}
+	return {
+		**after,
+		"voucher": voucher_no,
+		"written": True,
+		"blocked": False,
+		"before": before,
+		"before_dimensions": before_dims,
+		"expected_debit": exp_debit,
+		"expected_credit": exp_credit,
+		"map_state": map_state,
+		"dimension_cost_centers_preserved": _dims_field_ok(before_dims, after.get("dimensions"), "cost_center"),
+		"no_unexpected_stock_adjustment": not after.get("has_stock_adjustment")
+		or any("Stock Adjustment" in str(d.get("account") or "") for d in before_dims),
+		"no_unexpected_round_off": not after.get("has_round_off")
+		or any("Round Off" in str(d.get("account") or "") for d in before_dims),
+	}
+
+
 def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
+	"""Classic G1–G3 GL rebuild. G0 remains refused (use SLE_GL_DRIFT for false-G0 drift)."""
 	if not frappe.db.exists("Stock Entry", voucher_no):
 		return {
 			"voucher": voucher_no,
@@ -248,93 +362,8 @@ def rebuild_gl_for_voucher(voucher_no: str, *, dry_run=True) -> dict:
 
 	if planned["planner_status"] not in READY_STATUSES and planned["planner_status"] != "READY":
 		return {**planned, "dry_run": dry_run, "written": False, "blocked": True}
-	# Capture before rows for dimension verify
-	before_dims = list(preview.get("dimensions") or [])
-	se = frappe.get_doc("Stock Entry", voucher_no)
-	from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
-	from erpnext.accounts.utils import _delete_accounting_ledger_entries
-
-	inventory_account_map = se.get_inventory_account_map()
-	expected = toggle_debit_credit_if_negative(se.get_gl_entries(inventory_account_map))
-	if not expected:
-		return {
-			**preview,
-			"dry_run": dry_run,
-			"written": False,
-			"blocked": True,
-			"reason": "NO_EXPECTED_GL — Stock Entry produced empty GL map (not auto-rebuilt)",
-		}
-	from erpnext_extensions.iran_accounting.historical_stock.planner import _gl_expected_map_state
-
-	map_state = _gl_expected_map_state(voucher_no)
-	exp_debit = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
-	exp_credit = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
-	if not map_state.get("postable"):
-		return {
-			**preview,
-			"dry_run": dry_run,
-			"written": False,
-			"blocked": True,
-			"eligible": False,
-			"reason": (
-				f"UNBALANCED_EXPECTED_GL — SE GL map not postable at currency precision "
-				f"(raw debit {exp_debit} credit {exp_credit}; precision-diff {map_state.get('diff')}; "
-				f"allowance {map_state.get('allowance')}); refuse auto-rebuild"
-			),
-			"map_state": map_state,
-		}
-	if dry_run:
-		return {
-			**planned,
-			"dry_run": True,
-			"written": False,
-			"expected_debit": exp_debit,
-			"expected_credit": exp_credit,
-			"map_state": map_state,
-		}
-	_delete_accounting_ledger_entries("Stock Entry", voucher_no)
-	try:
-		se.make_gl_entries(gl_entries=expected, from_repost=True)
-	except frappe.ValidationError as exc:
-		return {
-			**preview,
-			"dry_run": False,
-			"written": False,
-			"blocked": True,
-			"eligible": False,
-			"reason": f"GL_POST_REFUSED — {exc}",
-			"map_state": map_state,
-		}
-	after = classify_stock_entry_gl(voucher_no)
-	if after["gl_class"] == G3_UNBALANCED:
-		frappe.throw(f"GL rebuild failed: {voucher_no} still unbalanced")
-	if preview.get("gl_class") == G2_MISSING and after["gl_class"] == G2_MISSING:
-		return {
-			**after,
-			"written": False,
-			"blocked": True,
-			"reason": "G2_STILL_MISSING — repost produced no GL rows",
-			"before": preview,
-		}
-	if after["gl_class"] in (G2_MISSING, G4_POISONED_SLE):
-		return {
-			**after,
-			"written": False,
-			"blocked": True,
-			"reason": f"rebuild residual {after['gl_class']}",
-			"before": preview,
-		}
-	return {
-		**after,
-		"written": True,
-		"before": preview,
-		"before_dimensions": before_dims,
-		"dimension_cost_centers_preserved": _dims_field_ok(before_dims, after.get("dimensions"), "cost_center"),
-		"no_unexpected_stock_adjustment": not after.get("has_stock_adjustment")
-		or any("Stock Adjustment" in str(d.get("account") or "") for d in before_dims),
-		"no_unexpected_round_off": not after.get("has_round_off")
-		or any("Round Off" in str(d.get("account") or "") for d in before_dims),
-	}
+	result = apply_gl_rebuild_from_current_sle(voucher_no, dry_run=dry_run)
+	return {**planned, **result}
 
 
 def _dims_field_ok(before, after, field) -> bool:

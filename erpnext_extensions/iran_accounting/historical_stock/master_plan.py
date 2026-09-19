@@ -18,7 +18,7 @@ from erpnext_extensions.iran_accounting.historical_stock.planner import READY_ST
 from erpnext_extensions.iran_accounting.historical_stock.util import resolve_company
 
 # Class priority for operator roadmap (lower = earlier).
-# Recovery loop: Warehouse → Posting Order → Zero → Wrong → I4 → GL → Failed RIV.
+# Recovery loop: Warehouse → Posting Order → Zero → Wrong → I4 → GL → SLE_GL_DRIFT → Failed RIV.
 CLASS_PRIORITY = {
 	"WAREHOUSE_WIDE": 1,
 	"I1_NEGATIVE_RATE_REPAIR": 2,
@@ -27,7 +27,8 @@ CLASS_PRIORITY = {
 	"WRONG_RATE": 5,
 	"I4_LEFTOVER_REPAIR": 6,
 	"GL": 7,
-	"FAILED_RIV": 8,
+	"SLE_GL_DRIFT": 8,
+	"FAILED_RIV": 9,
 }
 
 
@@ -43,6 +44,7 @@ def build_master_repair_plan(company=None) -> dict:
 	classes.append(_class_wrong(company))
 	classes.append(_class_riv(company))
 	classes.append(_class_gl(company))
+	classes.append(_class_sle_gl_drift(company))
 	classes.append(_class_warehouse_placeholder(company))
 
 	classes.sort(key=lambda c: c.get("priority") or 99)
@@ -63,9 +65,16 @@ def build_master_repair_plan(company=None) -> dict:
 
 
 def _status_bucket(row) -> str:
-	ps = str(row.get("planner_status") or row.get("i4_status") or row.get("riv_status") or row.get("status") or "")
+	ps = str(
+		row.get("planner_status")
+		or row.get("drift_status")
+		or row.get("i4_status")
+		or row.get("riv_status")
+		or row.get("status")
+		or ""
+	)
 	conf = str(row.get("confidence") or "")
-	if ps in READY_STATUSES or ps == "READY_I4" or (row.get("eligible") and "READY" in ps):
+	if ps in READY_STATUSES or ps == "READY_I4" or ps == "READY_GL_ONLY" or (row.get("eligible") and "READY" in ps):
 		return "READY"
 	if "WAITING" in ps or "WAITING" in str(row.get("status") or ""):
 		return "WAITING"
@@ -263,6 +272,29 @@ def _class_gl(company):
 	return out
 
 
+def _class_sle_gl_drift(company):
+	"""GL-only drift: healthy SLE, stale posted GL (covers false G0 transfers)."""
+	from erpnext_extensions.iran_accounting.historical_stock.sle_gl_drift import scan_sle_gl_drift
+
+	scan = scan_sle_gl_drift(company=company, limit=200)
+	rows = scan.get("rows") or []
+	out = _agg(
+		rows,
+		"SLE_GL_DRIFT",
+		risk="MEDIUM",
+		expected_kpi={"SLE↔GL drift": "GL-only; SLE fingerprint frozen"},
+		notes=(
+			"Rebuild GL from current healthy SLE only. Refuses when SLE integrity is unhealthy. "
+			"False G0 transfers are discoverable. Never full RIV / SLE mutation."
+		),
+	)
+	out["by_status"] = scan.get("by_status")
+	out["ready_gl_only"] = scan.get("ready_gl_only")
+	out["waiting_sle_repair"] = scan.get("waiting_sle_repair")
+	out["promotion_status"] = "NEW"
+	return out
+
+
 def _class_warehouse_placeholder(company):
 	"""Live warehouse campaign discovery via Warehouse Engine optimizer."""
 	from erpnext_extensions.iran_accounting.historical_stock.warehouse_engine.optimizer import (
@@ -341,7 +373,11 @@ def _dependency_graph_summary(classes) -> dict:
 			{"from": "I4_LEFTOVER_REPAIR", "to": "ZERO_RATE", "kind": "soft"},
 			{"from": "ZERO_RATE", "to": "WRONG_RATE", "kind": "soft"},
 			{"from": "WRONG_RATE", "to": "GL", "kind": "hard_before"},
+			{"from": "GL", "to": "SLE_GL_DRIFT", "kind": "soft"},
+			{"from": "I1_NEGATIVE_RATE_REPAIR", "to": "SLE_GL_DRIFT", "kind": "hard_before"},
+			{"from": "I4_LEFTOVER_REPAIR", "to": "SLE_GL_DRIFT", "kind": "hard_before"},
 			{"from": "I4_LEFTOVER_REPAIR", "to": "FAILED_RIV", "kind": "hard_before"},
+			{"from": "SLE_GL_DRIFT", "to": "FAILED_RIV", "kind": "soft"},
 			{"from": "GL", "to": "FAILED_RIV", "kind": "hard_before"},
 			{"from": "WAREHOUSE_WIDE", "to": "FAILED_RIV", "kind": "after_warehouse_campaigns"},
 			{"from": "POSTING_ORDER", "to": "WAREHOUSE_WIDE", "kind": "escalate_multi_pair"},
