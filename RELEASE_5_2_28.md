@@ -68,6 +68,16 @@ Supports `batch_size`, `resume_cursor`, `stop_on_error` (default stop on failure
 
 ---
 
+## Operational safety
+
+**Upgrading to v5.2.28 does not repair any historical SLE↔GL mismatches.**
+
+Existing drift remains until an operator runs an explicit `SLE_GL_DRIFT` dry-run and then a controlled apply (with backup). Class D / `WAITING_SLE_REPAIR` vouchers require SLE integrity repair first and must not be GL-rebuilt from poisoned SLE.
+
+Checkpoint / resume / audit use the existing Historical Stock Repair Log. GL rebuild reuses ERPNext/`make_gl_entries` so **v5.2.27 IRR precision alignment** remains active on every rebuild.
+
+---
+
 ## Development dry-run baseline (read-only)
 
 Against the `13100134` target-chain mismatch set (103 Stock Entries):
@@ -79,7 +89,7 @@ Against the `13100134` target-chain mismatch set (103 Stock Entries):
 
 `MAT-STE-2026-34391` (outside that item set): `READY_GL_ONLY` under v5.2.27 precision alignment.
 
-**No production/development vouchers were repaired in this release.**
+**No production/development vouchers were repaired in this release.** These counts are validation facts only — a separate controlled repair scenario is required after upgrade.
 
 ---
 
