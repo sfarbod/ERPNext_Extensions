@@ -304,6 +304,11 @@ def _patch_stock_controller():
 
 				if is_irr_company(self.company) and gl_entries is not None:
 					apply_irr_rate_rounding_residual_gl(self, gl_entries)
+					from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
+						align_irr_gl_map_to_currency_precision,
+					)
+
+					align_irr_gl_map_to_currency_precision(self, gl_entries)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":
