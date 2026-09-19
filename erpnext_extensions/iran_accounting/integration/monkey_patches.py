@@ -304,6 +304,11 @@ def _patch_stock_controller():
 
 				if is_irr_company(self.company) and gl_entries is not None:
 					apply_irr_rate_rounding_residual_gl(self, gl_entries)
+					from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
+						align_irr_gl_map_to_currency_precision,
+					)
+
+					align_irr_gl_map_to_currency_precision(self, gl_entries)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":
@@ -853,28 +858,32 @@ def _patch_stock_ledger_engine():
 			company = getattr(self, "company", None) or (
 				sle.get("company") if hasattr(sle, "get") else None
 			)
-			if company and is_irr_company(company):
-				assert_sle_valuation_integrity_before_vanilla(self, sle)
-			_orig_process_sle(self, sle)
-			if company and is_irr_company(company):
-				# I4 leftover-value is only valid after vanilla copied running qty.
-				# Early return / insert-default qty_after=0 is not a final warehouse balance.
-				mark_sle_running_balance_processed_after_vanilla(self, sle)
-				vanilla_qty_after = flt(
-					sle.get("qty_after_transaction") if hasattr(sle, "get") else sle.qty_after_transaction
-				)
-				vanilla_stock_value = flt(
-					sle.get("stock_value") if hasattr(sle, "get") else sle.stock_value
-				)
-				sync_irr_sle_from_stock_reconciliation_row(sle)
-				sync_irr_sle_from_stock_entry_row(sle)
-				round_sle_monetary_fields(sle, company)
-				sync_irr_sle_from_stock_entry_row(sle)
-				restore_vanilla_zero_qty_terminal_stock_value(
-					sle, vanilla_stock_value, vanilla_qty_after
-				)
-				assert_sle_valuation_integrity_after_sync(sle)
-				persist_processed_sle_if_possible(sle)
+			frappe.local.iran_riv_update_entries_after = self
+			try:
+				if company and is_irr_company(company):
+					assert_sle_valuation_integrity_before_vanilla(self, sle)
+				_orig_process_sle(self, sle)
+				if company and is_irr_company(company):
+					# I4 leftover-value is only valid after vanilla copied running qty.
+					# Early return / insert-default qty_after=0 is not a final warehouse balance.
+					mark_sle_running_balance_processed_after_vanilla(self, sle)
+					vanilla_qty_after = flt(
+						sle.get("qty_after_transaction") if hasattr(sle, "get") else sle.qty_after_transaction
+					)
+					vanilla_stock_value = flt(
+						sle.get("stock_value") if hasattr(sle, "get") else sle.stock_value
+					)
+					sync_irr_sle_from_stock_reconciliation_row(sle)
+					sync_irr_sle_from_stock_entry_row(sle)
+					round_sle_monetary_fields(sle, company)
+					sync_irr_sle_from_stock_entry_row(sle)
+					restore_vanilla_zero_qty_terminal_stock_value(
+						sle, vanilla_stock_value, vanilla_qty_after
+					)
+					assert_sle_valuation_integrity_after_sync(sle, engine=self)
+					persist_processed_sle_if_possible(sle)
+			finally:
+				frappe.local.iran_riv_update_entries_after = None
 
 		sl.update_entries_after.process_sle = process_sle
 		sl._iran_patched_update_entries_after = True
