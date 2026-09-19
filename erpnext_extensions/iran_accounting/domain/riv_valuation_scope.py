@@ -112,30 +112,55 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 	if repost_doc is not None:
 		item = _entry_get(repost_doc, "item_code")
 		if item:
+			# Item-and-Warehouse RIV: declared target is only item_code.
+			# Do NOT merge items_to_be_repost — ERPNext expands that list with
+			# dependant_sle_voucher_detail_no hops (other items).
 			targets.add(cstr(item))
-		raw_items = _entry_get(repost_doc, "items_to_be_repost")
-		if raw_items:
+		else:
+			# Transaction-based RIV (no single item_code): use the JSON list.
+			# Prefer a frozen declaration cached on flags for this RIV name.
+			raw_items = _entry_get(repost_doc, "items_to_be_repost")
+			riv_name = cstr(_entry_get(repost_doc, "name") or "")
+			cached = None
 			try:
-				payload = json.loads(raw_items) if isinstance(raw_items, str) else raw_items
+				cache = frappe.flags.setdefault("iran_riv_declared_target_items", {})
+				cached = cache.get(riv_name) if riv_name else None
 			except Exception:
-				payload = None
-			if isinstance(payload, list):
-				for row in payload:
-					if isinstance(row, dict) and row.get("item_code"):
-						targets.add(cstr(row["item_code"]))
+				cache = None
+			if cached:
+				targets.update(cached)
+			elif raw_items:
+				try:
+					payload = json.loads(raw_items) if isinstance(raw_items, str) else raw_items
+				except Exception:
+					payload = None
+				if isinstance(payload, list):
+					for row in payload:
+						if isinstance(row, dict) and row.get("item_code"):
+							targets.add(cstr(row["item_code"]))
+					if riv_name and cache is not None and targets:
+						# Freeze first-seen list before dependant expansion mutates it.
+						cache[riv_name] = set(targets)
 
 	args = getattr(engine, "args", None)
-	if args is not None:
-		item = args.get("item_code") if hasattr(args, "get") else getattr(args, "item_code", None)
-		if item:
-			targets.add(cstr(item))
+	if args is not None and not targets:
+		# Fallback only when repost_doc did not declare targets. Never use the
+		# current args.item_code once dependant walking has started — that field
+		# is the SLE under process, not the RIV declaration.
 		items_to_be_repost = (
 			args.get("items_to_be_repost") if hasattr(args, "get") else getattr(args, "items_to_be_repost", None)
 		)
-		if isinstance(items_to_be_repost, list):
-			for row in items_to_be_repost:
-				if isinstance(row, dict) and row.get("item_code"):
-					targets.add(cstr(row["item_code"]))
+		# If the list has a single seed row matching a stable declaration, use it;
+		# otherwise fail-closed (None) rather than treating the expanded closure
+		# as targets.
+		if isinstance(items_to_be_repost, list) and items_to_be_repost:
+			seed = items_to_be_repost[0] if isinstance(items_to_be_repost[0], dict) else None
+			if seed and seed.get("item_code") and len(items_to_be_repost) == 1:
+				targets.add(cstr(seed["item_code"]))
+			elif not getattr(engine, "distinct_item_and_warehouse", None):
+				item = args.get("item_code") if hasattr(args, "get") else getattr(args, "item_code", None)
+				if item:
+					targets.add(cstr(item))
 
 	if targets:
 		return targets
@@ -332,11 +357,22 @@ def log_out_of_scope_integrity_anomaly(
 		seen = _FALLBACK_LOGGED
 	if dedupe_key not in seen:
 		seen.add(dedupe_key)
+		message = json.dumps(payload, default=str, ensure_ascii=False, indent=2)
+		title = "RIV out-of-scope integrity (non-blocking)"
+		# Site file log survives RIV rollback (Error Log rows do not).
 		try:
-			frappe.log_error(
-				title="RIV out-of-scope integrity (non-blocking)",
-				message=json.dumps(payload, default=str, ensure_ascii=False, indent=2),
-			)
+			from frappe.utils import get_site_path
+
+			log_path = get_site_path("logs", "iran_riv_out_of_scope.log")
+			with open(log_path, "a", encoding="utf-8") as fh:
+				fh.write(f"{title}\n{message}\n---\n")
+		except Exception:
+			pass
+		try:
+			frappe.log_error(title=title, message=message)
+			# Persist audit independently of a later repost() rollback.
+			if not frappe.in_test:
+				frappe.db.commit()
 		except Exception:
 			pass
 

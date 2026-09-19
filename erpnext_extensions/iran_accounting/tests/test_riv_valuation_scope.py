@@ -92,6 +92,20 @@ class TestRIVValuationScopeHelpers(unittest.TestCase):
 		sle = _sle(item_code="20100064", warehouse="WH-FG")
 		self.assertFalse(is_sle_in_riv_blocking_scope(engine, sle))
 
+	def test_dependant_args_item_code_does_not_expand_targets(self):
+		"""ERPNext mutates args.item_code while walking dependants — must not widen scope."""
+		engine = _engine(item_code="13100134", warehouse="WH-Q")
+		engine.args.item_code = "20100064"
+		engine.args.items_to_be_repost = [
+			{"item_code": "13100134", "warehouse": "WH-Q"},
+			{"item_code": "20100064", "warehouse": "WH-FG"},
+			{"item_code": "30100033", "warehouse": "WH-FG"},
+		]
+		self.assertEqual(get_riv_target_item_codes(engine), {"13100134"})
+		self.assertFalse(
+			is_sle_in_riv_blocking_scope(engine, _sle(item_code="20100064", warehouse="WH-FG"))
+		)
+
 	def test_stock_entry_scope_requires_target_item_on_voucher(self):
 		engine = _engine(item_code="13100134")
 		doc_unrelated = SimpleNamespace(
