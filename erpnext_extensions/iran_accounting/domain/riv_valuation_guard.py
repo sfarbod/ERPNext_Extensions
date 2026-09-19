@@ -42,7 +42,10 @@ def _quantum(company: str | None) -> float:
 
 
 def _current_riv_name() -> str | None:
-	if not frappe.flags.get("through_repost_item_valuation"):
+	try:
+		if not frappe.flags.get("through_repost_item_valuation"):
+			return None
+	except Exception:
 		return None
 	try:
 		return frappe.db.get_value(
@@ -449,86 +452,132 @@ def assert_manufacture_value_pool(doc) -> None:
 		)
 
 
-def assert_stock_entry_valuation_integrity(doc) -> None:
-	"""SE-level I2 + I5. Transfer/MTfM skip Manufacture pool rules."""
+def assert_stock_entry_valuation_integrity(doc, engine=None) -> None:
+	"""SE-level I2 + I5. Transfer/MTfM skip Manufacture pool rules.
+
+	During Item-scoped RIV, integrity failures on Stock Entries that do not
+	contain any declared target item are logged and non-blocking.
+	"""
 	if not doc or _entry_get(doc, "doctype") != "Stock Entry":
 		return
 	company = _entry_get(doc, "company")
 	if not company or not is_irr_company(company):
 		return
-	assert_manufacture_repack_incoming_amounts(doc)
-	assert_manufacture_value_pool(doc)
+
+	def _run():
+		assert_manufacture_repack_incoming_amounts(doc)
+		assert_manufacture_value_pool(doc)
+
+	if engine is None:
+		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
+
+	if engine is None:
+		_run()
+		return
+
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
+		run_integrity_assert_in_riv_scope,
+	)
+
+	run_integrity_assert_in_riv_scope(engine, sle=None, assert_fn=_run, doc=doc)
 
 
 def assert_sle_valuation_integrity_before_vanilla(engine, sle) -> None:
-	"""L2: knowable invalid state must not enter vanilla process_sle."""
+	"""L2: knowable invalid state must not enter vanilla process_sle.
+
+	Out-of-scope legacy anomalies (different item than the RIV target) are
+	logged and do not abort the target RIV.
+	"""
 	if not sle:
 		return
 	company = getattr(engine, "company", None) or _entry_get(sle, "company")
 	if company and not is_irr_company(company):
 		return
-	assert_incoming_rate_not_negative(sle)
-	if _entry_get(sle, "voucher_type") != "Stock Entry":
-		return
-	detail_no = _entry_get(sle, "voucher_detail_no")
-	if not detail_no:
-		return
-	row = frappe.db.get_value(
-		"Stock Entry Detail",
-		detail_no,
-		[
-			"name",
-			"idx",
-			"item_code",
-			"qty",
-			"transfer_qty",
-			"amount",
-			"basic_amount",
-			"basic_rate",
-			"valuation_rate",
-			"additional_cost",
-			"landed_cost_voucher_amount",
-			"t_warehouse",
-			"s_warehouse",
-			"is_finished_item",
-			"secondary_item_type",
-			"valuation_type",
-			"parent",
-		],
-		as_dict=True,
+
+	def _run():
+		assert_incoming_rate_not_negative(sle)
+		if _entry_get(sle, "voucher_type") != "Stock Entry":
+			return
+		detail_no = _entry_get(sle, "voucher_detail_no")
+		if not detail_no:
+			return
+		row = frappe.db.get_value(
+			"Stock Entry Detail",
+			detail_no,
+			[
+				"name",
+				"idx",
+				"item_code",
+				"qty",
+				"transfer_qty",
+				"amount",
+				"basic_amount",
+				"basic_rate",
+				"valuation_rate",
+				"additional_cost",
+				"landed_cost_voucher_amount",
+				"t_warehouse",
+				"s_warehouse",
+				"is_finished_item",
+				"secondary_item_type",
+				"valuation_type",
+				"parent",
+			],
+			as_dict=True,
+		)
+		if not row:
+			return
+		purpose = frappe.db.get_value("Stock Entry", row.parent, "purpose")
+		if purpose in ("Manufacture", "Repack") and _incoming_se_row(row) and _row_qty(row) > 0:
+			if flt(row.amount) < 0:
+				throw_valuation_integrity(
+					"I2",
+					detail="incoming Stock Entry row.amount is negative before SLE write",
+					sle=sle,
+					row=row,
+					purpose=purpose,
+				)
+			if flt(row.valuation_rate) < 0 and flt(_entry_get(sle, "actual_qty")) > 0:
+				throw_valuation_integrity(
+					"I1",
+					detail="incoming Stock Entry valuation_rate is negative before SLE write",
+					sle=sle,
+					row=row,
+					purpose=purpose,
+				)
+
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
+		run_integrity_assert_in_riv_scope,
 	)
-	if not row:
-		return
-	purpose = frappe.db.get_value("Stock Entry", row.parent, "purpose")
-	if purpose in ("Manufacture", "Repack") and _incoming_se_row(row) and _row_qty(row) > 0:
-		if flt(row.amount) < 0:
-			throw_valuation_integrity(
-				"I2",
-				detail="incoming Stock Entry row.amount is negative before SLE write",
-				sle=sle,
-				row=row,
-				purpose=purpose,
-			)
-		if flt(row.valuation_rate) < 0 and flt(_entry_get(sle, "actual_qty")) > 0:
-			throw_valuation_integrity(
-				"I1",
-				detail="incoming Stock Entry valuation_rate is negative before SLE write",
-				sle=sle,
-				row=row,
-				purpose=purpose,
-			)
+
+	run_integrity_assert_in_riv_scope(engine, sle, _run)
 
 
-def assert_sle_valuation_integrity_after_sync(sle) -> None:
+def assert_sle_valuation_integrity_after_sync(sle, engine=None) -> None:
 	"""L3: after Iran SLE sync, before persist_processed_sle."""
 	if not sle:
 		return
 	company = _entry_get(sle, "company")
 	if not company or not is_irr_company(company):
 		return
-	assert_incoming_rate_not_negative(sle)
-	assert_svd_direction(sle)
-	assert_zero_qty_stock_value(sle)
+
+	def _run():
+		assert_incoming_rate_not_negative(sle)
+		assert_svd_direction(sle)
+		assert_zero_qty_stock_value(sle)
+
+	if engine is None:
+		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
+
+	if engine is None:
+		_run()
+		return
+
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
+		run_integrity_assert_in_riv_scope,
+	)
+
+	run_integrity_assert_in_riv_scope(engine, sle, _run)
 
 
 def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
@@ -551,7 +600,8 @@ def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
 		align_manufacture_finished_good_residual(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
-	assert_stock_entry_valuation_integrity(doc)
+	engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
+	assert_stock_entry_valuation_integrity(doc, engine=engine)
 
 
 def persist_stock_entry_after_recalculate(stock_entry, voucher_detail_no) -> None:
