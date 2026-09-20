@@ -105,9 +105,19 @@ negative/exploded rates, and manufacture preview is EXACT:
 
 ## Posting Order / Zero / I4
 
-- Posting Order planner path unchanged; Master Plan V2 groups roots vs downstream.
-- Zero Rate: authoritative-rate gate on “already valued” idempotent path (preflight for poison).
+- Posting Order planner path unchanged; Master Plan V2 groups roots vs downstream
+  and exposes **8 campaign phases** (negative-rate → … → residual manual).
+- Zero Rate:
+  - **Rule 1** — receipt into Scrap/Reject/Waste warehouse with rate≈0 →
+    `LEGITIMATE_SCRAP_ZERO_RATE` / `NO_ACTION_REQUIRED` (not corruption).
+  - **Rule 6** — actionable zeros carry precise `zero_reason`
+    (`TRUE_ZERO_RATE_CORRUPTION`, `MISSING_SOURCE_RATE`, `UPSTREAM_POISONED`, …).
+  - Dashboard exposes **Zero Rate** (actionable), **Zero Rate Raw**,
+    **Legitimate Scrap Zero Rate**.
+- Wrong Rate: `MATCHED_BUT_CORRUPT` when SE Detail rate == SLE rate but both
+  disagree with independently reconstructed expected rate.
 - I4: unchanged apply guards; benefits from healthier upstream Wrong/Manufacture classification.
+- Negative Stock Root Report (`negative_stock_report.py`) for operator investigation.
 
 ---
 
@@ -159,6 +169,9 @@ Never mass-promotes historical Failed rows to SAFE.
 | RIV preflight | New hard refuse on poison closure / unpostable expected GL |
 | False COMPLETE | Reclassified; not treated as healthy root |
 | Manufacture EXACT | Only when AFTER rates pass authoritative checks |
+| Legitimate scrap zero | `NO_ACTION_REQUIRED` — does not inflate actionable Zero KPI |
+| MATCHED_BUT_CORRUPT | SE==SLE is not health proof vs native expected |
+| RIV preflight on scrap/FG poison | Refuses cascade seen in 13100134 incident class |
 
 **Upgrading to v5.3.0 does not repair any vouchers.** Operators must run
 explicit dry-run → controlled apply after backup.
@@ -179,20 +192,40 @@ Existing scan/repair APIs remain.
 
 `erpnext_extensions.iran_accounting.tests.test_historical_repair_v530` covers:
 
-- authoritative rate / poison / false COMPLETE
+- authoritative rate / poison / false COMPLETE / MATCHED_BUT_CORRUPT
 - manufacture EXACT on healthy AFTER despite fg_neg BEFORE
 - planner refuses poison COMPLETE
 - root-vs-downstream + cycle detection
 - RIV preflight poison + unbalanced GL blocks
 - GL map state calls IRR align
 - I1 cycle → Manufacture routing
-- Master Plan V2 shape / safety flags
+- Master Plan V2 shape / safety flags / 8 phases
+- legitimate Scrap/Reject/Waste zero → NO_ACTION_REQUIRED
+- normal incoming zero remains actionable
+- input-material vs manufacture scrap valuation roles
+- negative-stock chain classification helpers
 
 Also retain v5.2.28 `test_sle_gl_drift_v5228` regression suite.
 
 ---
 
-## Incident regressions addressed (dev campaign)
+## Business rules (restore review addendum)
+
+Validated against restored pre-deep-pass DB (`20260919_221747`):
+
+1. **Scrap/Reject/Waste zero** → `LEGITIMATE_SCRAP_ZERO_RATE` / `NO_ACTION_REQUIRED`
+   (`scrap_warehouse.py`). Six company warehouses discovered by name tokens.
+2. **Input-material vs manufacture scrap roles** distinguished (Rule 2).
+3. **Manufacture FG** reconstructs via native Iran output contract; negative FG
+   + healthy AFTER → EXACT even when another RM row is zero (Rule 3).
+4. **MATCHED_BUT_CORRUPT** when SE==SLE but both disagree with expected.
+5. **Negative Stock Root Report** for operator investigation.
+6. **Failed RIV reconcile** skips expensive preflight when SLE identity is
+   already unhealthy (scan performance + HISTORICAL_ONLY KPI semantics).
+7. Dashboard KPI: actionable Zero Rate excludes legitimate scrap zeros.
+
+Master Plan V2 exposes **8 campaign phases** derived from dependency order.
+
 
 | Incident | v5.3.0 fix |
 |----------|------------|

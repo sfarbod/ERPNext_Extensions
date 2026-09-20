@@ -117,7 +117,10 @@ def preview_manufacture_voucher(voucher_no: str) -> dict:
 		flt(r["qty"]) and abs(flt(r["basic_rate"])) < RATE_EPS and r["s_warehouse"]
 		for r in before["rows"]
 	)
-	if zero_rm and needs:
+	# v5.3.0: zero RM blocks EXACT only when AFTER rates are NOT healthy.
+	# When the native contract already yields healthy AFTER (incl. repairing
+	# negative FG), keep EXACT/RECONSTRUCTABLE — zero RM is noted, not a veto.
+	if zero_rm and needs and not after_healthy:
 		status = STATUS_DEPENDENCY_REPAIR_REQUIRED
 		confidence = CONFIDENCE_AMBIGUOUS
 	return {
@@ -128,6 +131,7 @@ def preview_manufacture_voucher(voucher_no: str) -> dict:
 		"changed_rows": changed,
 		"fg_negative": fg_neg,
 		"after_rates_healthy": after_healthy,
+		"zero_rm_present": zero_rm,
 		"confidence": confidence,
 		"status": status,
 		"eligible": status == STATUS_RECONSTRUCTABLE,
@@ -136,7 +140,11 @@ def preview_manufacture_voucher(voucher_no: str) -> dict:
 		"planner_note": (
 			"EXACT via healthy AFTER contract despite fg_negative BEFORE"
 			if needs and confidence == CONFIDENCE_EXACT and fg_neg
-			else None
+			else (
+				"WAITING zero-RM dependency — AFTER not yet healthy"
+				if zero_rm and needs and not after_healthy
+				else None
+			)
 		),
 	}
 

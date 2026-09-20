@@ -288,7 +288,6 @@ def classify_failed_riv_current_impact(doc) -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock import SLE_HEALTHY
 
 	sle_state = classify_identity(item, warehouse)
-	preflight = riv_preflight_gate(item, warehouse, posting_date=posting_date)
 
 	if later_ok:
 		return {
@@ -298,8 +297,25 @@ def classify_failed_riv_current_impact(doc) -> dict:
 			"riv_reconcile_status": "SUPERSEDED_BY_SUCCESSFUL_REPAIR",
 			"later_completed": later_ok[0][0],
 			"sle_state": sle_state,
-			"preflight": preflight,
+			"preflight": None,
 		}
+
+	# Cheap path: unhealthy SLE → current impact WITHOUT full RIV preflight
+	# (preflight's expected-GL closure is O(vouchers) and made Failed-RIV scan unusable).
+	if sle_state != SLE_HEALTHY:
+		return {
+			"riv": name,
+			"item": item,
+			"warehouse": warehouse,
+			"riv_reconcile_status": "CURRENT_LEDGER_IMPACT",
+			"sle_state": sle_state,
+			"preflight": None,
+			"reason": f"SLE identity not healthy ({sle_state}); repair roots before RIV retry",
+		}
+
+	# Healthy SLE — run preflight only for SAFE vs HISTORICAL / BLOCKED_GL discrimination.
+	preflight = riv_preflight_gate(item, warehouse, posting_date=posting_date)
+
 	if sle_state == SLE_HEALTHY and preflight.get("eligible"):
 		# Chain looks healthy — Failed row is historical noise unless error proves otherwise.
 		if "Debit and Credit not equal" in err or "Difference is" in err:

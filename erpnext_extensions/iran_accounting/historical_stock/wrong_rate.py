@@ -139,6 +139,9 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 	seen = set()
 	for raw in se_rows:
 		row = classify_zero_row(raw, _cache=cache)
+		# Rule 1 — legitimate scrap zeros are not Wrong Rate defects.
+		if row.get("no_action_required") or row.get("status") == "NO_ACTION_REQUIRED":
+			continue
 		row["topic"] = "WRONG_RATE"
 		row["surface"] = "SE"
 		flags = classify_rate_flags(
@@ -149,6 +152,28 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 			expected=row.get("proposed_rate"),
 			allow_zero=g(raw, "allow_zero_valuation_rate"),
 		)
+		# MATCHED_BUT_CORRUPT: SE basic_rate == SLE incoming/outgoing but both disagree with expected.
+		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+			detect_matched_but_corrupt,
+			is_authoritative_healthy_rate,
+		)
+
+		sle_rate = _paired_sle_rate(raw)
+		matched = detect_matched_but_corrupt(
+			se_rate=g(raw, "basic_rate") or g(raw, "valuation_rate"),
+			sle_rate=sle_rate if sle_rate is not None else g(raw, "basic_rate"),
+			expected_rate=row.get("proposed_rate"),
+		)
+		if matched and row.get("proposed_rate") and abs(flt(row.get("proposed_rate"))) > RATE_EPS:
+			flags = list(flags or [])
+			if "MATCHED_BUT_CORRUPT" not in flags:
+				flags.insert(0, "MATCHED_BUT_CORRUPT")
+			row["matched_but_corrupt"] = True
+			row.update({k: matched[k] for k in ("se_rate", "sle_rate", "expected_rate", "difference", "message") if k in matched})
+			# Keep actionable even when SE==SLE if expected differs.
+			if not is_authoritative_healthy_rate(g(raw, "basic_rate"), allow_zero=False):
+				row["status"] = STATUS_RECONSTRUCTABLE if row.get("confidence") == CONFIDENCE_EXACT else STATUS_MANUAL_REVIEW
+				row["eligible"] = row.get("confidence") == CONFIDENCE_EXACT
 		row["flags"] = flags
 		row["mismatch_class"] = flags[0] if flags else row.get("zero_class")
 		row["current"] = row.get("current_rate")
@@ -317,6 +342,44 @@ def _scan_sle_flags(company, voucher, item_code, warehouse, batch, from_date, to
 		args,
 		as_dict=True,
 	)
+
+
+def _paired_sle_rate(raw) -> float | None:
+	"""SLE rate for the same Stock Entry Detail (incoming or outgoing)."""
+	detail = g(raw, "name")
+	parent = g(raw, "parent")
+	if not detail and not parent:
+		return None
+	conds = ["sle.is_cancelled=0", "sle.voucher_type='Stock Entry'"]
+	args: list = []
+	if detail:
+		conds.append("sle.voucher_detail_no=%s")
+		args.append(detail)
+	elif parent:
+		conds.append("sle.voucher_no=%s")
+		args.append(parent)
+		conds.append("sle.item_code=%s")
+		args.append(g(raw, "item_code"))
+	row = frappe.db.sql(
+		f"""
+		SELECT sle.actual_qty, sle.incoming_rate, sle.outgoing_rate, sle.valuation_rate
+		FROM `tabStock Ledger Entry` sle
+		WHERE {" AND ".join(conds)}
+		ORDER BY sle.posting_datetime, sle.creation
+		LIMIT 1
+		""",
+		args,
+		as_dict=True,
+	)
+	if not row:
+		return None
+	sle = row[0]
+	qty = flt(sle.actual_qty)
+	if qty > 0:
+		return flt(sle.incoming_rate or sle.valuation_rate)
+	if qty < 0:
+		return flt(sle.outgoing_rate or sle.valuation_rate)
+	return flt(sle.valuation_rate)
 
 
 def _classify_sle_mismatch(sle, cache=None) -> dict:

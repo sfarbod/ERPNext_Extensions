@@ -181,6 +181,54 @@ class TestManufactureConfidenceV530(unittest.TestCase):
 		self.assertEqual(out.get("status"), STATUS_RECONSTRUCTABLE)
 		self.assertTrue(out.get("eligible"))
 
+	def test_zero_rm_does_not_veto_healthy_after(self):
+		"""Rule 3 — negative FG with healthy AFTER stays EXACT even if another RM row is zero."""
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
+			preview_manufacture_voucher,
+		)
+
+		class Row:
+			def __init__(self, **kw):
+				self.__dict__.update(kw)
+
+		class Doc:
+			def __init__(self):
+				self.items = [
+					Row(
+						idx=1, name="fg", item_code="FG", qty=10, basic_rate=-50, basic_amount=-500,
+						valuation_rate=-50, amount=-500, additional_cost=0, is_finished_item=1,
+						secondary_item_type=None, s_warehouse=None, t_warehouse="WH-FG",
+					),
+					Row(
+						idx=2, name="rm", item_code="RM", qty=1, basic_rate=0, basic_amount=0,
+						valuation_rate=0, amount=0, additional_cost=0, is_finished_item=0,
+						secondary_item_type=None, s_warehouse="WH-RM", t_warehouse=None,
+					),
+				]
+
+			def get(self, key, default=None):
+				return self.items if key == "items" else default
+
+		def fake_contract(doc):
+			doc.items[0].basic_rate = 200
+			doc.items[0].basic_amount = 2000
+			doc.items[0].valuation_rate = 200
+			doc.items[0].amount = 2000
+			return True
+
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.manufacture.frappe"
+		) as frappe_mod, patch(
+			"erpnext_extensions.iran_accounting.historical_stock.manufacture.apply_iran_manufacture_output_contract",
+			side_effect=fake_contract,
+		):
+			frappe_mod.get_doc.return_value = Doc()
+			out = preview_manufacture_voucher("MAT-STE-ZERO-RM")
+		self.assertTrue(out.get("after_rates_healthy"))
+		self.assertTrue(out.get("zero_rm_present"))
+		self.assertEqual(out.get("confidence"), CONFIDENCE_EXACT)
+		self.assertEqual(out.get("status"), STATUS_RECONSTRUCTABLE)
+
 
 class TestPlannerFalseComplete(unittest.TestCase):
 	@patch(
@@ -366,8 +414,221 @@ class TestMasterPlanV2Shape(unittest.TestCase):
 		self.assertEqual(plan.get("version"), "5.3.0")
 		self.assertEqual(plan.get("master_plan"), "V2")
 		self.assertIn("root_cause_graph", plan)
+		self.assertIn("phases", plan)
+		self.assertEqual(len(plan.get("phases") or []), 8)
 		self.assertTrue(plan.get("safety", {}).get("riv_preflight_required"))
 		self.assertTrue(plan.get("safety", {}).get("false_rate_rebuild_complete_refused"))
+		self.assertTrue(plan.get("safety", {}).get("legitimate_scrap_zero_no_action"))
+		self.assertTrue(plan.get("safety", {}).get("matched_but_corrupt_detected"))
+
+
+class TestScrapZeroBusinessRules(unittest.TestCase):
+	def test_warehouse_token_match(self):
+		from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+			warehouse_matches_scrap_reject_waste,
+		)
+
+		self.assertTrue(warehouse_matches_scrap_reject_waste("انبار Reject مواد اولیه اسپاد"))
+		self.assertTrue(warehouse_matches_scrap_reject_waste("انبار ضایعات اقلام اسپاد"))
+		self.assertFalse(warehouse_matches_scrap_reject_waste("انبار محصولات هولد نیمه ساخته اسپاد"))
+
+	def test_legitimate_scrap_zero_no_action(self):
+		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import classify_zero_row
+		from erpnext_extensions.iran_accounting.historical_stock import (
+			NO_ACTION_REQUIRED,
+			Z0_LEGITIMATE_SCRAP_ZERO,
+		)
+
+		row = {
+			"name": "d1",
+			"idx": 1,
+			"parent": "MAT-STE-SCRAP-ZERO",
+			"purpose": "Manufacture",
+			"item_code": "13200400",
+			"qty": 5,
+			"basic_rate": 0,
+			"valuation_rate": 0,
+			"amount": 0,
+			"s_warehouse": None,
+			"t_warehouse": "انبار ضایعات اقلام اسپاد",
+			"secondary_item_type": "Scrap",
+			"is_scrap_item": 0,
+			"allow_zero_valuation_rate": 0,
+			"is_finished_item": 0,
+			"company": "Espad",
+			"posting_date": "2026-06-01",
+			"posting_time": "10:00:00",
+		}
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_scrap_reject_waste_warehouse",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.expected.attach_rate_analysis",
+			side_effect=lambda d, *_a, **_k: d,
+		):
+			out = classify_zero_row(row)
+		self.assertEqual(out.get("zero_class"), Z0_LEGITIMATE_SCRAP_ZERO)
+		self.assertEqual(out.get("status"), NO_ACTION_REQUIRED)
+		self.assertFalse(out.get("eligible"))
+		self.assertTrue(out.get("no_action_required"))
+
+	def test_normal_incoming_zero_still_actionable(self):
+		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import classify_zero_row
+		from erpnext_extensions.iran_accounting.historical_stock import NO_ACTION_REQUIRED
+
+		row = {
+			"name": "d2",
+			"idx": 1,
+			"parent": "MAT-STE-ZERO-CORRUPT",
+			"purpose": "Material Receipt",
+			"item_code": "RM1",
+			"qty": 10,
+			"basic_rate": 0,
+			"valuation_rate": 0,
+			"amount": 0,
+			"s_warehouse": None,
+			"t_warehouse": "Stores - E",
+			"secondary_item_type": None,
+			"is_scrap_item": 0,
+			"allow_zero_valuation_rate": 0,
+			"is_finished_item": 0,
+			"company": "Espad",
+			"posting_date": "2026-06-01",
+			"posting_time": "10:00:00",
+			"batch_no": None,
+			"serial_and_batch_bundle": None,
+			"work_order": None,
+			"job_card": None,
+		}
+
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_legitimate_scrap_zero_rate",
+			return_value=False,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._version_rate",
+			return_value=(1500.0, 15000.0),
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._batch_inward_rate",
+			return_value=1500.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._previous_healthy_sle_rate",
+			return_value=0.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._source_transfer_sle_rate",
+			return_value=0.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._patient_for_identity",
+			return_value=None,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._identity_poisoned",
+			return_value=False,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.expected.attach_rate_analysis",
+			side_effect=lambda d, *_a, **_k: d,
+		):
+			out = classify_zero_row(row)
+		self.assertNotEqual(out.get("status"), NO_ACTION_REQUIRED)
+		self.assertTrue(out.get("eligible") or out.get("actionable", True))
+		self.assertEqual(out.get("zero_reason"), "TRUE_ZERO_RATE_CORRUPTION")
+
+
+class TestMatchedButCorrupt(unittest.TestCase):
+	def test_detect_matched_but_corrupt(self):
+		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+			detect_matched_but_corrupt,
+		)
+
+		hit = detect_matched_but_corrupt(
+			se_rate=-5e9,
+			sle_rate=-5e9,
+			expected_rate=3944832.0,
+		)
+		self.assertIsNotNone(hit)
+		self.assertTrue(hit["matched_but_corrupt"])
+		self.assertEqual(hit["flag"], "MATCHED_BUT_CORRUPT")
+
+	def test_healthy_match_not_flagged(self):
+		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+			detect_matched_but_corrupt,
+		)
+
+		self.assertIsNone(
+			detect_matched_but_corrupt(se_rate=100.0, sle_rate=100.0, expected_rate=100.0)
+		)
+
+
+class TestInputMaterialScrapRole(unittest.TestCase):
+	def test_input_material_vs_product_reject(self):
+		from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+			SCRAP_ROLE_INPUT_MATERIAL,
+			SCRAP_ROLE_MANUFACTURE_BYPRODUCT,
+			scrap_valuation_role,
+		)
+
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_scrap_row",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_product_reject",
+			return_value=False,
+		):
+			role = scrap_valuation_role(
+				{"item_code": "13200400", "secondary_item_type": "Scrap", "t_warehouse": "WH"},
+				finished_item="30300014",
+			)
+		self.assertEqual(role, SCRAP_ROLE_INPUT_MATERIAL)
+
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_scrap_row",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_product_reject",
+			return_value=True,
+		):
+			role2 = scrap_valuation_role(
+				{"item_code": "30300014", "secondary_item_type": "Scrap", "t_warehouse": "WH"},
+				finished_item="30300014",
+			)
+		self.assertEqual(role2, SCRAP_ROLE_MANUFACTURE_BYPRODUCT)
+
+
+class TestNegativeStockClassification(unittest.TestCase):
+	def test_chronology_vs_user(self):
+		from erpnext_extensions.iran_accounting.historical_stock.negative_stock_report import (
+			HISTORICAL_NEGATIVE_REQUIRES_USER,
+			POSTING_ORDER_REPAIRABLE,
+			_classify_chain,
+		)
+
+		self.assertEqual(
+			_classify_chain(
+				chronology_candidate=True,
+				bin_merely_stale=False,
+				next_inbound=True,
+				gap=30,
+				qty_before=5,
+				txn_qty=-10,
+			),
+			POSTING_ORDER_REPAIRABLE,
+		)
+		self.assertEqual(
+			_classify_chain(
+				chronology_candidate=False,
+				bin_merely_stale=False,
+				next_inbound=False,
+				gap=None,
+				qty_before=0,
+				txn_qty=-5,
+			),
+			HISTORICAL_NEGATIVE_REQUIRES_USER,
+		)
+
+
+class TestZeroQtyNonzeroValueConstant(unittest.TestCase):
+	def test_constant_present(self):
+		from erpnext_extensions.iran_accounting.historical_stock import ZERO_QTY_NONZERO_VALUE
+
+		self.assertEqual(ZERO_QTY_NONZERO_VALUE, "ZERO_QTY_NONZERO_VALUE")
 
 
 if __name__ == "__main__":

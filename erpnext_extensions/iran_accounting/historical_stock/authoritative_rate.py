@@ -142,6 +142,44 @@ def reclassify_false_complete_row(row: dict) -> dict:
 	return out
 
 
+def detect_matched_but_corrupt(
+	*,
+	se_rate,
+	sle_rate,
+	expected_rate,
+	rate_eps: float | None = None,
+) -> dict | None:
+	"""Rule / MATCHED_BUT_CORRUPT — SE Detail rate == SLE rate, but both disagree with native expected.
+
+	Critical v5.3.0 behaviour: agreement between SE and SLE is not proof of health
+	when an independently reconstructed expected rate differs.
+	"""
+	eps = float(rate_eps if rate_eps is not None else RATE_EPS)
+	se_v = flt(se_rate)
+	sle_v = flt(sle_rate)
+	exp_v = flt(expected_rate) if expected_rate is not None else None
+	if exp_v is None:
+		return None
+	if abs(se_v - sle_v) > max(1.0, eps):
+		return None
+	# Both agree — check whether that agreed rate is corrupt vs expected.
+	if abs(se_v - exp_v) <= max(1.0, eps):
+		return None
+	agreed_reason = rate_integrity_reason(se_v, allow_zero=False, allow_negative=False)
+	return {
+		"matched_but_corrupt": True,
+		"flag": "MATCHED_BUT_CORRUPT",
+		"se_rate": se_v,
+		"sle_rate": sle_v,
+		"expected_rate": exp_v,
+		"difference": se_v - exp_v,
+		"agreed_integrity": agreed_reason,
+		"message": (
+			f"MATCHED_BUT_CORRUPT — SE and SLE agree on {se_v} but native expected is {exp_v}"
+		),
+	}
+
+
 def manufacture_after_rates_healthy(changed_rows: list, *, fg_negative_before: bool) -> bool:
 	"""True when manufacture contract produces finite non-poison after-rates for changed rows.
 

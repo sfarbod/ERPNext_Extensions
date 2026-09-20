@@ -72,7 +72,11 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		_add_pz("WRONG_RATE", r)
 
 	replay = _replay_kpis()
-	zero_n = zero.get("count") or 0
+	# KPI semantics (v5.3.0): actionable Zero Rate excludes legitimate scrap zeros.
+	zero_raw_n = int(zero.get("raw_count") or zero.get("count") or 0)
+	zero_n = int(zero.get("actionable_count") if zero.get("actionable_count") is not None else zero.get("count") or 0)
+	zero_no_action = int(zero.get("no_action_required_count") or 0)
+	zero_scrap_legit = int(zero.get("legitimate_scrap_zero_count") or 0)
 	wrong_raw_n = wrong.get("count") or 0
 	# Posting Order KPI excludes optimizer-healthy / no-repair rows.
 	posting_n = sum(
@@ -201,11 +205,15 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Wrong Rate": wrong_n,
 		"Wrong Rate Complete": wr_complete,
 		"Zero Rate": zero_n,
+		"Zero Rate Raw": zero_raw_n,
+		"Zero Rate No Action": zero_no_action,
+		"Legitimate Scrap Zero Rate": zero_scrap_legit,
 		"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
 		"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
 		"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
 		"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
 		"Wrong Average": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+		"Matched But Corrupt": (wrong.get("by_flag") or {}).get("MATCHED_BUT_CORRUPT", 0),
 		"I4 Leftover": i4_n,
 		"I1 Negative Rate": i1_n,
 		"READY_I1": ready_i1,

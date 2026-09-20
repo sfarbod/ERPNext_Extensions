@@ -80,6 +80,7 @@ def build_master_repair_plan(company=None) -> dict:
 		"repair_order": [c["repair_class"] for c in classes],
 		"dependency_graph": graph,
 		"root_cause_graph": root_cause,
+		"phases": _build_v2_phases(classes, root_cause),
 		"safety": {
 			"no_global_riv": True,
 			"no_weaken_integrity_guards": True,
@@ -87,13 +88,133 @@ def build_master_repair_plan(company=None) -> dict:
 			"false_rate_rebuild_complete_refused": True,
 			"manufacture_exact_on_healthy_after": True,
 			"irr_align_before_expected_gl_gate": True,
+			"legitimate_scrap_zero_no_action": True,
+			"matched_but_corrupt_detected": True,
 		},
 		"message": (
 			"Master Plan V2 — prove each class with small SAFE clusters before bulk. "
 			"Repair roots before downstream. Never Global Replay / Global RIV / Global GL. "
-			"Run RIV preflight before any controlled repost."
+			"Run RIV preflight before any controlled repost. "
+			"Legitimate Scrap/Reject/Waste zero-rate receipts are NO_ACTION_REQUIRED."
 		),
 	}
+
+
+def _build_v2_phases(classes: list, root_cause: dict) -> list:
+	"""Dependency-ordered campaign phases (read-only roadmap)."""
+	by = {c["repair_class"]: c for c in classes or []}
+
+	def _n(key, field="ready"):
+		c = by.get(key) or {}
+		if field == "ready":
+			return int((c.get("ready") if c.get("ready") is not None else c.get("READY")) or 0)
+		if field == "total":
+			return int(c.get("total") or c.get("count") or 0)
+		return int(c.get(field) or 0)
+
+	i1_total = _n("I1_NEGATIVE_RATE_REPAIR", "total")
+	po_total = _n("POSTING_ORDER", "total")
+	zero_total = _n("ZERO_RATE", "total")
+	wrong_total = _n("WRONG_RATE", "total")
+	i4_total = _n("I4_LEFTOVER_REPAIR", "total")
+	gl_total = _n("GL", "total")
+	drift_total = _n("SLE_GL_DRIFT", "total")
+	riv_total = _n("FAILED_RIV", "total")
+	cycles = int((root_cause or {}).get("cycle_count") or 0)
+
+	return [
+		{
+			"phase": 1,
+			"name": "Negative-rate patient-zero roots",
+			"repair_classes": ["I1_NEGATIVE_RATE_REPAIR"],
+			"candidate_count": i1_total,
+			"root_chain_count": i1_total,
+			"expected_downstream_healed": "manufacture + dependent Wrong/Zero",
+			"repost_requirement": "min-scope after root cleared",
+			"risk": "HIGH",
+			"blocking_dependencies": [],
+		},
+		{
+			"phase": 2,
+			"name": "Posting-order / chronology roots",
+			"repair_classes": ["POSTING_ORDER", "WAREHOUSE_WIDE"],
+			"candidate_count": po_total,
+			"root_chain_count": po_total,
+			"expected_downstream_healed": "negative stock / zero-rate chronology",
+			"repost_requirement": "often none if pure timestamp shift",
+			"risk": "MEDIUM",
+			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR"] if i1_total else [],
+		},
+		{
+			"phase": 3,
+			"name": "I4 / zero-qty-nonzero-value roots",
+			"repair_classes": ["I4_LEFTOVER_REPAIR"],
+			"candidate_count": i4_total,
+			"root_chain_count": i4_total,
+			"expected_downstream_healed": "Bin leftover + downstream SVD",
+			"repost_requirement": "selective after patient-zero",
+			"risk": "MEDIUM",
+			"blocking_dependencies": ["POSTING_ORDER"],
+		},
+		{
+			"phase": 4,
+			"name": "Wrong/Zero authoritative-rate reconstruction",
+			"repair_classes": ["ZERO_RATE", "WRONG_RATE"],
+			"candidate_count": zero_total + wrong_total,
+			"root_chain_count": zero_total + wrong_total,
+			"expected_downstream_healed": "SLE rates + manufacture inputs",
+			"repost_requirement": "controlled min-scope RIV after preflight",
+			"risk": "HIGH",
+			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR", "POSTING_ORDER"],
+			"notes": "LEGITIMATE_SCRAP_ZERO_RATE excluded from actionable Zero KPI",
+		},
+		{
+			"phase": 5,
+			"name": "Manufacture deterministic reconstruction",
+			"repair_classes": ["I1_NEGATIVE_RATE_REPAIR", "WRONG_RATE"],
+			"candidate_count": i1_total,
+			"root_chain_count": i1_total,
+			"expected_downstream_healed": "FG + scrap/by-product + pool balance",
+			"repost_requirement": "yes after EXACT/RECONSTRUCTABLE preview",
+			"risk": "CRITICAL",
+			"blocking_dependencies": ["ZERO_RATE", "WRONG_RATE"],
+			"notes": f"dependency_cycles_detected={cycles}",
+		},
+		{
+			"phase": 6,
+			"name": "Controlled repost waves",
+			"repair_classes": ["FAILED_RIV"],
+			"candidate_count": riv_total,
+			"root_chain_count": int((by.get("FAILED_RIV") or {}).get("safe_to_retry") or 0),
+			"expected_downstream_healed": "moving-average + dependent Manufacture",
+			"repost_requirement": "RIV preflight REQUIRED; refuse poison closure",
+			"risk": "CRITICAL",
+			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR", "WRONG_RATE"],
+		},
+		{
+			"phase": 7,
+			"name": "SLE_GL_DRIFT / GL reconciliation",
+			"repair_classes": ["SLE_GL_DRIFT", "GL"],
+			"candidate_count": drift_total + gl_total,
+			"root_chain_count": drift_total + gl_total,
+			"expected_downstream_healed": "GL balance after SLE healthy",
+			"repost_requirement": "no — selective GL only",
+			"risk": "HIGH",
+			"blocking_dependencies": ["FAILED_RIV"],
+		},
+		{
+			"phase": 8,
+			"name": "Residual manual negative-stock cases",
+			"repair_classes": [],
+			"candidate_count": None,
+			"root_chain_count": None,
+			"expected_downstream_healed": "operator-driven chronology / inbound",
+			"repost_requirement": "only after user confirms operational cause",
+			"risk": "HIGH",
+			"blocking_dependencies": ["all prior phases"],
+			"notes": "See negative_stock_report.build_negative_stock_root_report",
+		},
+	]
 
 
 def _status_bucket(row) -> str:
@@ -252,8 +373,16 @@ def _class_zero(company):
 
 	scan = scan_zero_rate_rows(company=company)
 	rows = scan.get("rows") or []
+	# Actionable only — legitimate scrap zeros are NO_ACTION_REQUIRED.
+	actionable_rows = [
+		r
+		for r in rows
+		if not r.get("no_action_required")
+		and r.get("status") not in ("NO_ACTION_REQUIRED", "Z0_LEGITIMATE_ZERO", "LEGITIMATE_SCRAP_ZERO_RATE")
+		and r.get("zero_class") not in ("LEGITIMATE_SCRAP_ZERO_RATE", "Z0_LEGITIMATE_ZERO")
+	]
 	out = _agg(
-		rows,
+		actionable_rows,
 		"ZERO_RATE",
 		risk="MEDIUM",
 		expected_kpi={"Zero Rate": "cluster campaigns only"},
@@ -261,6 +390,12 @@ def _class_zero(company):
 	)
 	out["by_confidence"] = scan.get("by_confidence")
 	out["by_class"] = scan.get("by_class")
+	out["by_zero_reason"] = scan.get("by_zero_reason")
+	out["raw_count"] = scan.get("raw_count") or len(rows)
+	out["no_action_required_count"] = scan.get("no_action_required_count") or 0
+	out["legitimate_scrap_zero_count"] = scan.get("legitimate_scrap_zero_count") or 0
+	out["actionable_count"] = scan.get("actionable_count") or len(actionable_rows)
+	out["sample_rows"] = actionable_rows[:50]
 	out["promotion_status"] = "PRODUCTION_PROVEN_SMALL_CLUSTER"
 	return out
 

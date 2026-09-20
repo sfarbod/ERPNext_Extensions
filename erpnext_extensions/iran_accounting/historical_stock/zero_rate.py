@@ -12,6 +12,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_AMBIGUOUS,
 	CONFIDENCE_EXACT,
 	CONFIDENCE_LIKELY,
+	NO_ACTION_REQUIRED,
 	QTY_EPS,
 	RATE_EPS,
 	STATUS_DEPENDENCY_REPAIR_REQUIRED,
@@ -20,11 +21,18 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	STATUS_RECONSTRUCTABLE,
 	STATUS_VALUATION_POISON_DEPENDENCY,
 	VALUE_EPS,
+	Z0_LEGITIMATE_SCRAP_ZERO,
 	Z0_LEGITIMATE_ZERO,
 	Z1_HISTORICAL_RATE_LOST,
 	Z3_MISSING_INCOMING_VALUATION,
 	Z4_BATCH_SABB_LOOKUP_ZERO,
 	Z6_UNKNOWN,
+	ZERO_REASON_LEGITIMATE_SCRAP,
+	ZERO_REASON_MANUAL,
+	ZERO_REASON_MANUFACTURE_DEP,
+	ZERO_REASON_MISSING_SOURCE,
+	ZERO_REASON_TRUE_CORRUPTION,
+	ZERO_REASON_UPSTREAM_POISONED,
 )
 from erpnext_extensions.iran_accounting.historical_stock.patient_zero import find_patient_zero
 from erpnext_extensions.iran_accounting.historical_stock.util import (
@@ -129,6 +137,7 @@ def scan_zero_rate_rows(
 			"by_class": _count(out, "zero_class"),
 			"by_confidence": _count(out, "confidence"),
 			"by_status": _count(out, "status"),
+			"by_zero_reason": _count(out, "zero_reason"),
 		}
 	)
 	stamped["rows"] = filter_rows_by_planner(
@@ -138,6 +147,41 @@ def scan_zero_rate_rows(
 		patient_zero=scope.get("patient_zero"),
 	)
 	stamped["count"] = len(stamped["rows"])
+	# KPI semantics: RAW vs ACTIONABLE (legitimate scrap zeros are NO_ACTION).
+	from erpnext_extensions.iran_accounting.historical_stock import (
+		NO_ACTION_REQUIRED,
+		Z0_LEGITIMATE_SCRAP_ZERO,
+		Z0_LEGITIMATE_ZERO,
+	)
+
+	raw_rows = stamped["rows"]
+	no_action = [
+		r
+		for r in raw_rows
+		if r.get("no_action_required")
+		or r.get("status") in (NO_ACTION_REQUIRED, Z0_LEGITIMATE_ZERO, Z0_LEGITIMATE_SCRAP_ZERO)
+		or r.get("zero_class") in (Z0_LEGITIMATE_SCRAP_ZERO, Z0_LEGITIMATE_ZERO)
+	]
+	actionable = [r for r in raw_rows if r not in no_action and r.get("actionable", True)]
+	stamped["raw_count"] = len(raw_rows)
+	stamped["no_action_required_count"] = len(no_action)
+	stamped["legitimate_scrap_zero_count"] = sum(
+		1 for r in raw_rows if r.get("zero_class") == Z0_LEGITIMATE_SCRAP_ZERO
+	)
+	stamped["actionable_count"] = len(actionable)
+	stamped["true_zero_corruption_count"] = sum(
+		1
+		for r in actionable
+		if (r.get("zero_reason") or "")
+		in (
+			"TRUE_ZERO_RATE_CORRUPTION",
+			"MISSING_SOURCE_RATE",
+			"Z1_HISTORICAL_RATE_LOST",
+			"Z3_MISSING_INCOMING_VALUATION",
+		)
+		or r.get("eligible")
+		or r.get("status") == STATUS_RECONSTRUCTABLE
+	)
 	return stamped
 
 
@@ -149,6 +193,56 @@ def classify_zero_row(row, _cache=None) -> dict:
 	batch = g(row, "batch_no")
 	parent = g(row, "parent")
 	detail = g(row, "name")
+
+	# Rule 1 — zero-valued receipt into Scrap/Reject/Waste is NO_ACTION_REQUIRED.
+	from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+		is_legitimate_scrap_zero_rate,
+		scrap_valuation_role,
+	)
+
+	if is_legitimate_scrap_zero_rate(row, company=g(row, "company")):
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		role = scrap_valuation_role(row)
+		return attach_rate_analysis(
+			{
+				"topic": "ZERO_RATE",
+				"voucher": parent,
+				"voucher_detail": detail,
+				"idx": g(row, "idx"),
+				"purpose": purpose,
+				"item": item,
+				"warehouse": warehouse,
+				"s_warehouse": g(row, "s_warehouse"),
+				"t_warehouse": g(row, "t_warehouse"),
+				"batch": batch,
+				"sabb": g(row, "serial_and_batch_bundle"),
+				"qty": qty,
+				"current_rate": flt(g(row, "basic_rate")),
+				"current_amount": flt(g(row, "amount")),
+				"historical_rate": 0.0,
+				"proposed_rate": 0.0,
+				"proposed_amount": 0.0,
+				"source_of_truth": "legitimate_scrap_reject_waste_warehouse",
+				"confidence": CONFIDENCE_EXACT,
+				"zero_class": Z0_LEGITIMATE_SCRAP_ZERO,
+				"zero_reason": ZERO_REASON_LEGITIMATE_SCRAP,
+				"scrap_valuation_role": role,
+				"status": NO_ACTION_REQUIRED,
+				"planner_status": NO_ACTION_REQUIRED,
+				"actionable": False,
+				"patient_zero": None,
+				"eligible": False,
+				"work_order": g(row, "work_order"),
+				"job_card": g(row, "job_card"),
+				"is_finished_item": g(row, "is_finished_item"),
+				"secondary_item_type": g(row, "secondary_item_type"),
+				"reconstruction_sources": {},
+				"rate_source": "legitimate_scrap_zero",
+				"no_action_required": True,
+			},
+			row,
+		)
 
 	if g(row, "allow_zero_valuation_rate") or purpose == "Stock Reconciliation" or g(row, "voucher_type") == "Stock Reconciliation":
 		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
@@ -177,7 +271,9 @@ def classify_zero_row(row, _cache=None) -> dict:
 				else "document_authoritative",
 				"confidence": CONFIDENCE_EXACT,
 				"zero_class": Z0_LEGITIMATE_ZERO,
-				"status": Z0_LEGITIMATE_ZERO,
+				"zero_reason": Z0_LEGITIMATE_ZERO,
+				"status": NO_ACTION_REQUIRED if g(row, "allow_zero_valuation_rate") else Z0_LEGITIMATE_ZERO,
+				"actionable": False,
 				"patient_zero": None,
 				"eligible": False,
 				"work_order": g(row, "work_order"),
@@ -186,6 +282,7 @@ def classify_zero_row(row, _cache=None) -> dict:
 				"secondary_item_type": g(row, "secondary_item_type"),
 				"reconstruction_sources": {},
 				"rate_source": "document_authoritative",
+				"no_action_required": True,
 			},
 			row,
 		)
@@ -295,18 +392,31 @@ def classify_zero_row(row, _cache=None) -> dict:
 
 	patient = _patient_for_identity(item, warehouse, batch, cache=_cache)
 	status = STATUS_MANUAL_REVIEW
+	zero_reason = ZERO_REASON_MANUAL
 	if zero_class == Z0_LEGITIMATE_ZERO:
 		status = Z0_LEGITIMATE_ZERO
+		zero_reason = Z0_LEGITIMATE_ZERO
 	elif patient and patient.get("voucher_no") and patient["voucher_no"] != parent:
 		status = STATUS_DEPENDENCY_REPAIR_REQUIRED
+		zero_reason = ZERO_REASON_MANUFACTURE_DEP if purpose == "Manufacture" else ZERO_REASON_MISSING_SOURCE
 	elif _identity_poisoned(item, warehouse, cache=_cache):
 		status = STATUS_VALUATION_POISON_DEPENDENCY
+		zero_reason = ZERO_REASON_UPSTREAM_POISONED
 	elif confidence == CONFIDENCE_EXACT and proposed > RATE_EPS:
 		status = STATUS_RECONSTRUCTABLE
+		zero_reason = ZERO_REASON_TRUE_CORRUPTION
 	elif confidence == CONFIDENCE_LIKELY:
 		status = STATUS_MANUAL_REVIEW
+		zero_reason = ZERO_REASON_MISSING_SOURCE if zero_class == Z3_MISSING_INCOMING_VALUATION else ZERO_REASON_MANUAL
 	else:
 		status = STATUS_MANUAL_REVIEW
+		zero_reason = (
+			ZERO_REASON_MISSING_SOURCE
+			if zero_class == Z3_MISSING_INCOMING_VALUATION
+			else ZERO_REASON_TRUE_CORRUPTION
+			if zero_class == Z1_HISTORICAL_RATE_LOST
+			else ZERO_REASON_MANUAL
+		)
 
 	amount = flt(proposed) * qty
 	sources = {}
@@ -344,7 +454,10 @@ def classify_zero_row(row, _cache=None) -> dict:
 			"source_of_truth": source,
 			"confidence": confidence,
 			"zero_class": zero_class,
+			"zero_reason": zero_reason,
 			"status": status,
+			"actionable": status
+			not in (Z0_LEGITIMATE_ZERO, NO_ACTION_REQUIRED, STATUS_RATE_REBUILD_COMPLETE),
 			"patient_zero": patient,
 			"eligible": status == STATUS_RECONSTRUCTABLE and confidence == CONFIDENCE_EXACT,
 			"work_order": g(row, "work_order"),
