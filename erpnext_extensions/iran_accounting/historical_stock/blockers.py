@@ -291,13 +291,31 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 
 		po = run_full_history_scan(company=company)
 		shortage_n = 0
+		shortage_findings = 0
+		iw_set = set()
+		ibw_set = set()
+		root_set = set()
 		for raw in po.get("rows") or []:
 			opt = str(raw.get("optimizer_status") or raw.get("status") or "")
 			if opt not in ("REAL_STOCK_SHORTAGE", "INSUFFICIENT_STOCK"):
 				continue
+			shortage_findings += 1
 			r = attach_plan(dict(raw))
 			item = r.get("item") or r.get("item_code")
 			wh = r.get("warehouse")
+			batch = r.get("batch") or r.get("batch_no")
+			out_vn = r.get("outbound_document") or r.get("voucher") or r.get("voucher_no")
+			root_key = (item, wh, batch or "", out_vn or "")
+			root_set.add(root_key)
+			if item and wh:
+				iw_set.add((item, wh))
+			if item and wh:
+				ibw_set.add((item, batch or "", wh))
+			item_name = None
+			try:
+				item_name = frappe.db.get_value("Item", item, "item_name") if item else None
+			except Exception:
+				item_name = None
 			payload = {
 				"lane": LANE_USER_ACTION,
 				"status": STATUS_OPEN,
@@ -307,19 +325,21 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 				"company": company or r.get("company"),
 				"item_code": item,
 				"warehouse": wh,
-				"batch_no": r.get("batch") or r.get("batch_no"),
+				"batch_no": batch,
 				"voucher_type": "Stock Entry",
-				"voucher_no": r.get("outbound_document") or r.get("voucher") or r.get("voucher_no"),
+				"voucher_no": out_vn,
 				"posting_date": r.get("posting_date") or str(r.get("current_outbound_time") or "")[:10],
-				"posting_time": r.get("posting_time"),
+				"posting_time": r.get("posting_time") or str(r.get("current_outbound_time") or "")[11:19],
 				"current_qty": r.get("min_qty_before") or r.get("qty_before"),
 				"expected_qty": r.get("min_qty_after") or r.get("qty_after"),
-				"dependency_root": r.get("outbound_document") or r.get("voucher"),
-				"affected_downstream_count": int(r.get("affected_count") or 0),
+				"dependency_root": out_vn,
+				"affected_downstream_count": int(
+					r.get("affected_count") or r.get("dependent_count") or r.get("inbound_count") or 0
+				),
 				"recommended_user_action": (
-					f"Investigate shortage for Item {item} in {wh}: first negative outbound "
-					f"{r.get('outbound_document')}. Confirm missing inbound / wrong batch / "
-					"wrong warehouse, or approve a business correction. Do not invent stock."
+					"Historical stock becomes negative at this movement and no deterministic "
+					"earlier receipt/chronology correction can be proven. Review the physical "
+					"receipt/issue chronology or missing source document. Do not edit SLE directly."
 				),
 				"why_automatic_repair_is_unsafe": (
 					"Timestamp rewrite cannot create missing stock. This is a genuine historical "
@@ -327,8 +347,14 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 				),
 				"can_recheck_after_user_action": 1,
 				"user_facing_explanation": (
-					"Stock went negative historically. Review prior receipts/transfers and "
-					"correct the business document if stock was mis-posted."
+					f"Item {item}"
+					+ (f" ({item_name})" if item_name else "")
+					+ f" / Warehouse {wh}"
+					+ (f" / Batch {batch}" if batch else "")
+					+ f": first negative voucher {out_vn} "
+					f"({r.get('outbound_purpose') or r.get('purpose') or 'Stock Entry'}). "
+					f"Qty before={r.get('min_qty_before')}, movement leads to negative. "
+					"Previous/next vouchers are in payload_json for review."
 				),
 				"last_scanned_at": scanned_at,
 				"payload_json": frappe.as_json(
@@ -336,9 +362,18 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 						"optimizer_status": opt,
 						"confidence": r.get("confidence"),
 						"manual_reason": "MANUAL_NEGATIVE_STOCK_HISTORY",
+						"item_name": item_name,
 						"inbound_document": r.get("inbound_document"),
+						"outbound_document": out_vn,
+						"outbound_purpose": r.get("outbound_purpose") or r.get("purpose"),
+						"previous_voucher": r.get("previous_voucher") or r.get("prior_voucher"),
+						"next_voucher": r.get("next_voucher") or r.get("inbound_document"),
+						"qty_before": r.get("min_qty_before") or r.get("qty_before"),
+						"movement_qty": r.get("outbound_qty") or r.get("qty"),
+						"qty_after": r.get("min_qty_after") or r.get("qty_after"),
 						"min_qty_before": r.get("min_qty_before"),
 						"min_qty_after": r.get("min_qty_after"),
+						"posting_datetime": r.get("current_outbound_time"),
 					}
 				),
 			}
@@ -349,6 +384,14 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 			shortage_n += 1
 			if shortage_n >= 150:
 				break
+		# Attach summary so callers/dashboard can show findings vs root blockers.
+		frappe.flags.hr_shortage_summary = {
+			"affected_findings": shortage_findings,
+			"user_root_blockers": len(root_set),
+			"unique_item_warehouse": len(iw_set),
+			"unique_item_batch_warehouse": len(ibw_set),
+			"blockers_written": shortage_n,
+		}
 	except Exception as exc:
 		frappe.log_error(f"blocker PO shortage scan: {exc}", "Historical Repair Blocker")
 
@@ -423,6 +466,7 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 		"count": len(rows_out),
 		"user_action_required": user_n,
 		"tool_limit": tool_n,
+		"shortage_summary": getattr(frappe.flags, "hr_shortage_summary", None),
 		"rows": rows_out[:200],
 		"by_issue_type": _count(rows_out, "issue_type"),
 		"by_lane": _count(rows_out, "lane"),

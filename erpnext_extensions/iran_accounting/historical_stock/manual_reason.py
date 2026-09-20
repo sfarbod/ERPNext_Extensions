@@ -56,6 +56,36 @@ def _voucher(row: dict) -> str | None:
 
 def classify_wrong_manual_reason(row: dict) -> dict:
 	"""Stamp ``manual_reason`` + ``manual_lane`` on a Wrong Rate MANUAL row."""
+	# Phase 5B — prefer structured transfer/manufacture reconstruction lanes.
+	tr = row.get("transfer_reconstruction") or {}
+	if tr.get("classification") in ("WAITING_UPSTREAM", "EXACT", "RECONSTRUCTABLE", "USER_ACTION_REQUIRED", "TOOL_LIMIT", "NO_ACTION"):
+		cls = tr["classification"]
+		if cls == "WAITING_UPSTREAM":
+			row["manual_reason"] = MANUAL_TRANSFER_PROPAGATION
+			row["manual_lane"] = LANE_WAITING
+			row["wrong_reason"] = row.get("wrong_reason") or MANUAL_TRANSFER_PROPAGATION
+			return row
+		if cls in ("EXACT", "RECONSTRUCTABLE", "NO_ACTION"):
+			# Not a MANUAL terminal — clear reason so KPI can promote.
+			row.pop("manual_reason", None)
+			row["manual_lane"] = LANE_DETERMINISTIC
+			return row
+		if cls == "USER_ACTION_REQUIRED":
+			row["manual_reason"] = MANUAL_NO_AUTHORITATIVE_SOURCE
+			row["manual_lane"] = LANE_USER
+			return row
+		if cls == "TOOL_LIMIT":
+			row["manual_reason"] = MANUAL_TRANSFER_PROPAGATION
+			row["manual_lane"] = LANE_TOOL
+			return row
+
+	ih = (row.get("input_health") or {}) if isinstance(row.get("input_health"), dict) else {}
+	if row.get("purpose") == "Manufacture" and ih.get("status") == "poisoned":
+		row["manual_reason"] = MANUAL_MANUFACTURE_DEPENDENCY
+		row["manual_lane"] = LANE_WAITING
+		row["wrong_reason"] = MANUAL_MANUFACTURE_DEPENDENCY
+		return row
+
 	ps = str(row.get("planner_status") or row.get("status") or "")
 	flags = set(row.get("flags") or [])
 	if row.get("flag"):
@@ -161,8 +191,13 @@ def summarize_manual_groups(rows: list[dict]) -> dict[str, Any]:
 	for r in rows or []:
 		if not r.get("manual_reason"):
 			classify_wrong_manual_reason(r)
-		reason = r.get("manual_reason") or MANUAL_UNSPECIFIED
 		lane = r.get("manual_lane") or LANE_TOOL
+		reason = r.get("manual_reason")
+		# Phase 5B: transfer/manufacture EXACT/RECONSTRUCTABLE/NO_ACTION clear
+		# manual_reason — do not bucket them as MANUAL_UNSPECIFIED.
+		if not reason and lane == LANE_DETERMINISTIC:
+			reason = "NO_ACTION_DETERMINISTIC"
+		reason = reason or MANUAL_UNSPECIFIED
 		by_reason[reason] += 1
 		by_lane[lane] += 1
 		item = r.get("item") or r.get("item_code")
@@ -173,6 +208,8 @@ def summarize_manual_groups(rows: list[dict]) -> dict[str, Any]:
 		if pz:
 			roots.add(pz)
 			pz_set.add(pz)
+		if reason in ("NO_ACTION_DETERMINISTIC",):
+			continue
 		if len(samples[reason]) < 3:
 			samples[reason].append(
 				{

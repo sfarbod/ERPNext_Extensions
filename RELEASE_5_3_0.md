@@ -407,6 +407,29 @@ Root-first canaries + waves on development.localhost (Espad):
 - Dashboard KPI contract: RAW / ACTIONABLE / ROOT_IDENTITIES for I4; Wrong Rate
   MANUAL carries machine-readable `manual_reason` codes.
 - Foreign patient-zero Wrong Rate rows count as WAITING (not MANUAL).
+
+### Phase 5B — Transfer propagation + Manufacture dependency + PO preflight
+
+New / upgraded modules:
+
+| Module | Role |
+|--------|------|
+| `transfer_valuation.py` | `reconstruct_transfer_valuation` — outgoing SLE SVD → target; structured evidence (EXACT / RECONSTRUCTABLE / WAITING_UPSTREAM / USER / TOOL_LIMIT) |
+| `manufacture.py` | Input-health gate; MATCHED_BUT_CORRUPT detection; expected target value/rate independent of corrupt FG |
+| `stock_posting_order/repair.py` | Shared `preflight_apply_eligibility` — dry-run uses apply qty-sim + warehouse-replay deep GL probe |
+| `manual_reason.py` | Prefer transfer/manufacture reconstruction lanes; NO_ACTION_DETERMINISTIC |
+| `blockers.py` | REAL_STOCK_SHORTAGE user report fields + shortage_summary (findings vs IW / IBW) |
+
+Campaign (development.localhost):
+
+- MANUAL_TRANSFER_PROPAGATION **3915 → ~9** (residual TOOL_LIMIT / no source); bulk reclass to EXACT/RECONSTRUCTABLE/NO_ACTION
+- Transfer canaries **1→3→5→10** roots apply OK; larger wave tooling continues
+- Manufacture canaries **1→3→5** OK; **n=10** introduced 24 neg valuation on `30300042` Quarantine — healed via SVD-sign fix + MA replay; apply now has **savepoint + post-replay neg gate**
+- PO READY_WAREHOUSE_REPLAY dry≠apply fixed: both former READY cases now dry-block with apply's reasons (still-negative sim / GL ±1)
+- REAL_STOCK_SHORTAGE: **292** findings / **246** unique Item+Warehouse / **268** IBW — no auto-repair
+- I1 / neg valuation / neg incoming / neg FG = **0** after heal
+
+Verdict: **PHASE_5B_NEEDS_FURTHER_TOOL_DEVELOPMENT** — transfer EXACT roots remain large; manufacture identity replay still needs hardening before fixed-point waves; no broad GL / global RIV.
 - REAL_STOCK_SHORTAGE Posting Order → USER_ACTION_REQUIRED blockers with shortage context.
 - Wrong READY re-drained after wider scan; Zero RAW 303→231.
 

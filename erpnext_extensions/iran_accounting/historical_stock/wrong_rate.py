@@ -144,6 +144,64 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 			continue
 		row["topic"] = "WRONG_RATE"
 		row["surface"] = "SE"
+		# Phase 5B — authoritative transfer reconstruction (outgoing SLE → target).
+		purpose = g(raw, "purpose") or row.get("purpose") or ""
+		if purpose in (
+			"Material Transfer",
+			"Material Transfer for Manufacture",
+			"Send to Subcontractor",
+			"Material Issue",
+			"Material Consumption for Manufacture",
+		):
+			from erpnext_extensions.iran_accounting.historical_stock.transfer_valuation import (
+				apply_transfer_reconstruction_to_row,
+			)
+
+			row = apply_transfer_reconstruction_to_row(row, cache=cache)
+		# Phase 5B — Manufacture dependency: native contract + input health.
+		if purpose == "Manufacture" or row.get("purpose") == "Manufacture":
+			from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
+				preview_manufacture_voucher,
+			)
+
+			voucher = row.get("voucher") or g(raw, "parent")
+			if voucher:
+				try:
+					mfg = preview_manufacture_voucher(voucher)
+					row["manufacture_preview"] = mfg
+					row["input_health"] = mfg.get("input_health")
+					row["matched_but_corrupt"] = bool(mfg.get("matched_but_corrupt")) or bool(
+						row.get("matched_but_corrupt")
+					)
+					if mfg.get("status") == "DEPENDENCY_REPAIR_REQUIRED":
+						row["status"] = "DEPENDENCY_REPAIR_REQUIRED"
+						row["confidence"] = CONFIDENCE_AMBIGUOUS
+						row["eligible"] = False
+						row["patient_zero"] = mfg.get("patient_zero")
+						row["wrong_reason"] = "MANUAL_MANUFACTURE_DEPENDENCY"
+						row["manual_lane"] = "WAITING_UPSTREAM"
+						row["message"] = mfg.get("planner_note") or "WAITING_UPSTREAM manufacture inputs"
+					elif mfg.get("eligible") and mfg.get("expected_target_rate"):
+						# Only apply FG expected rate to finished-item rows.
+						if g(raw, "is_finished_item") or row.get("is_finished_item"):
+							exp = flt(mfg.get("expected_target_rate"))
+							if abs(exp) > RATE_EPS:
+								row["proposed_rate"] = exp
+								row["expected"] = exp
+								row["expected_rate"] = exp
+								row["confidence"] = mfg.get("confidence") or CONFIDENCE_EXACT
+								row["status"] = "RECONSTRUCTABLE"
+								row["eligible"] = True
+								row["source_of_truth"] = "5.3.0_manufacture_output_contract"
+								row["difference"] = exp - flt(row.get("current_rate") or 0)
+								row["message"] = mfg.get("planner_note") or "manufacture EXACT reconstruction"
+								if mfg.get("matched_but_corrupt"):
+									flags_pre = list(row.get("flags") or [])
+									if "MATCHED_BUT_CORRUPT" not in flags_pre:
+										flags_pre.insert(0, "MATCHED_BUT_CORRUPT")
+									row["flags"] = flags_pre
+				except Exception as exc:
+					row["manufacture_preview_error"] = str(exc)[:200]
 		flags = classify_rate_flags(
 			qty=row.get("qty"),
 			basic_rate=g(raw, "basic_rate"),

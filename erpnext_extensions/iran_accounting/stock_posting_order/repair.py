@@ -351,13 +351,14 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 	applied = []
 	blocked = []
 	run_id = f"PPO-{now_datetime().strftime('%Y%m%d%H%M%S')}-{frappe.generate_hash(length=6)}"
-	log = _new_audit_log(run_id, user or frappe.session.user)
+	log = None if getattr(frappe.flags, "ppo_probe_no_audit", False) else _new_audit_log(run_id, user or frappe.session.user)
 	for row in rows:
 		try:
 			_assert_preview_fresh(row)
-			from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
-
-			assert_ready(row)
+			# Same contract as dry_run_selected — refuse before mutation.
+			pre = preflight_apply_eligibility(row)
+			if not pre.get("ok"):
+				raise frappe.ValidationError(pre.get("reason") or "apply preflight failed")
 			moves = _row_moves(row)
 			# Keep moves aligned with coalesced proposed outbound.
 			prop_out = row.get("proposed_outbound_time")
@@ -410,10 +411,7 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				opening_prop = opening - sum((D(r.actual_qty) for r in injected), D(0))
 				current = simulate_running(sles, opening) if sles else {"min_qty": opening, "final_qty": opening}
 				proposed = simulate_running(prop_sles or sles, opening_prop, times)
-				if proposed["min_qty"] < -0.0001:
-					raise frappe.ValidationError(
-						f"Replay failed: proposed order still negative (min {proposed['min_qty']})"
-					)
+				# Qty-sim already gated by preflight_apply_eligibility; keep values for audit.
 			else:
 				current = proposed = {"min_qty": row.get("min_qty_before"), "final_qty": row.get("final_qty_before")}
 
@@ -797,12 +795,182 @@ def _filter_identity_batch(rows: list, batch_no) -> list:
 	return out
 
 
+def preflight_apply_eligibility(row: dict) -> dict:
+	"""Shared apply-path eligibility (qty-sim + GL readiness) used by dry-run and apply.
+
+	Must not weaken Apply. If this returns ok=False, dry-run MUST surface the same
+	blocker that apply would raise — never report READY when apply would abort.
+	"""
+	from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+
+	out = {
+		"ok": False,
+		"reason": None,
+		"sim_min_qty": None,
+		"gl_blockers": [],
+	}
+	try:
+		assert_ready(row)
+	except Exception as exc:
+		out["reason"] = str(exc)
+		return out
+
+	moves = _row_moves(row)
+	prop_out = row.get("proposed_outbound_time")
+	if prop_out:
+		for m in moves:
+			if m.get("document") == row.get("outbound_document"):
+				m["new"] = prop_out
+
+	in_t = row.get("current_inbound_time")
+	out_t = row.get("current_outbound_time")
+	if not in_t or not out_t:
+		out["reason"] = "Current posting date/time is required"
+		return out
+	from_dt = min(get_datetime(in_t), get_datetime(out_t))
+
+	sles = _identity_window(row["item"], row["warehouse"], row.get("batch"), from_dt)
+	prop_sles = _identity_window_for_moves(
+		row["item"], row["warehouse"], row.get("batch"), from_dt, moves
+	)
+	opening = D(row.get("opening_qty") or 0)
+	if sles or prop_sles:
+		times = {}
+		for m in moves:
+			times[m["document"]] = get_datetime(m["new"])
+		times.setdefault(
+			row["inbound_document"],
+			get_datetime(row["proposed_inbound_time"] or row["current_inbound_time"]),
+		)
+		times.setdefault(row["outbound_document"], get_datetime(row["proposed_outbound_time"]))
+		base_names = {r.name for r in sles}
+		injected = [r for r in prop_sles if r.name not in base_names]
+		opening_prop = opening - sum((D(r.actual_qty) for r in injected), D(0))
+		proposed = simulate_running(prop_sles or sles, opening_prop, times)
+		out["sim_min_qty"] = proposed["min_qty"]
+		if proposed["min_qty"] < -0.0001:
+			out["reason"] = (
+				f"Replay failed: proposed order still negative (min {proposed['min_qty']})"
+			)
+			return out
+
+	# GL readiness: refuse dry-run READY when native GL entries for touched SEs
+	# already fail debit=credit (apply rebuild would abort with the same error).
+	quantity_only = str(row.get("valuation_impact") or "QUANTITY-ONLY") == "QUANTITY-ONLY"
+	external_in = _voucher_doctype(row.get("inbound_document")) != "Stock Entry"
+	ps = str(row.get("planner_status") or "")
+	# Warehouse replay rewrites rates → always probe GL rebuild feasibility.
+	must_probe_gl = (not (quantity_only and external_in)) or ps == "READY_WAREHOUSE_REPLAY"
+	if must_probe_gl:
+		gl_blockers = []
+		for vn in {row.get("inbound_document"), row.get("outbound_document")}:
+			if not vn or _voucher_doctype(vn) != "Stock Entry":
+				continue
+			bal = _gl_balanced(vn)
+			if not bal.get("balanced"):
+				diff = bal.get("difference")
+				gl_blockers.append(
+					{
+						"voucher": vn,
+						"difference": diff,
+						"reason": f"Debit and Credit not equal for Stock Entry #{vn}. Difference is {diff}.",
+					}
+				)
+			probe = _probe_gl_rebuild_would_fail(vn)
+			if probe:
+				gl_blockers.append(probe)
+		# Dedupe by reason
+		seen = set()
+		uniq = []
+		for g in gl_blockers:
+			key = (g.get("voucher"), g.get("reason"))
+			if key in seen:
+				continue
+			seen.add(key)
+			uniq.append(g)
+		out["gl_blockers"] = uniq
+		if uniq:
+			out["reason"] = uniq[0].get("reason") or "GL rebuild preflight failed"
+			return out
+
+	# Authoritative deep probe for warehouse replay: apply mutates rates then
+	# rebuilds GL — static get_gl_entries can miss ±1 IRR failures. Use a
+	# savepoint apply and roll back so dry-run matches apply exactly.
+	if (
+		ps == "READY_WAREHOUSE_REPLAY"
+		and not getattr(frappe.flags, "ppo_skip_deep_probe", False)
+	):
+		deep = _deep_apply_probe(row)
+		if not deep.get("ok"):
+			out["reason"] = deep.get("reason") or "warehouse replay apply probe failed"
+			out["deep_probe"] = deep
+			return out
+
+	out["ok"] = True
+	return out
+
+
+def _deep_apply_probe(row: dict) -> dict:
+	"""Savepoint apply of a single READY_WAREHOUSE_REPLAY row; always roll back."""
+	savepoint = f"ppo_probe_{frappe.generate_hash(length=8)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		frappe.flags.ppo_skip_deep_probe = True
+		frappe.flags.ppo_probe_no_audit = True
+		try:
+			from erpnext_extensions.iran_accounting.stock_posting_order import repair as repair_mod
+
+			res = repair_mod.apply_repairs([dict(row)], dry_run=False)
+		finally:
+			frappe.flags.ppo_skip_deep_probe = False
+			frappe.flags.ppo_probe_no_audit = False
+		if res.get("aborted") or (res.get("blocked") and not res.get("applied")):
+			err = res.get("reason") or (
+				(res.get("blocked") or [{}])[0].get("error") if res.get("blocked") else None
+			)
+			return {"ok": False, "reason": err or "apply probe aborted"}
+		return {"ok": True}
+	except Exception as exc:
+		return {"ok": False, "reason": str(exc)}
+	finally:
+		frappe.db.rollback(save_point=savepoint)
+
+
+def _probe_gl_rebuild_would_fail(voucher_no: str) -> dict | None:
+	"""Read-only: does native get_gl_entries already fail debit=credit for this SE?"""
+	try:
+		from erpnext.accounts.general_ledger import toggle_debit_credit_if_negative
+
+		se = frappe.get_doc("Stock Entry", voucher_no)
+		if cint(se.docstatus) != 1:
+			return None
+		inventory_account_map = se.get_inventory_account_map()
+		expected = toggle_debit_credit_if_negative(se.get_gl_entries(inventory_account_map))
+		debit = sum(flt(e.get("debit") or e.get("debit_in_account_currency") or 0) for e in expected)
+		credit = sum(flt(e.get("credit") or e.get("credit_in_account_currency") or 0) for e in expected)
+		diff = flt(debit - credit, 2)
+		if abs(diff) > 0.005:
+			return {
+				"voucher": voucher_no,
+				"difference": diff,
+				"reason": (
+					f"Debit and Credit not equal for Stock Entry #{voucher_no}. "
+					f"Difference is {abs(diff)}."
+				),
+			}
+	except Exception as exc:
+		msg = str(exc)
+		if "Debit and Credit" in msg or "debit" in msg.lower():
+			return {"voucher": voucher_no, "difference": None, "reason": msg}
+	return None
+
+
 def dry_run_selected(rows: list[dict]) -> dict:
 	"""Preview selected posting-order rows without writing.
 
 	Re-stamps planner decisions so callers see eligible/blocked with the same
-	gates as apply (including LIKELY→EXACT promotion). Returns both legacy
-	``rows`` and apply-shaped ``applied``/``blocked`` lists for campaign scripts.
+	gates as apply (including LIKELY→EXACT promotion + apply qty-sim/GL preflight).
+	Returns both legacy ``rows`` and apply-shaped ``applied``/``blocked`` lists.
 	"""
 	from erpnext_extensions.iran_accounting.historical_stock.planner import (
 		READY_STATUSES,
@@ -834,6 +1002,21 @@ def dry_run_selected(rows: list[dict]) -> dict:
 			"dry_run": True,
 		}
 		if eligible:
+			pre = preflight_apply_eligibility(r)
+			entry["apply_preflight"] = {
+				"ok": pre.get("ok"),
+				"reason": pre.get("reason"),
+				"sim_min_qty": str(pre.get("sim_min_qty")) if pre.get("sim_min_qty") is not None else None,
+				"gl_blockers": pre.get("gl_blockers") or [],
+			}
+			if not pre.get("ok"):
+				entry["reason"] = pre.get("reason") or "apply preflight failed"
+				entry["planner_status"] = STATUS_BLOCKED
+				r["eligible"] = False
+				r["planner_status"] = STATUS_BLOCKED
+				r["skip_reason"] = entry["reason"]
+				blocked.append({"row": r, "error": entry["reason"], "status": STATUS_BLOCKED})
+				continue
 			applied.append(entry)
 		else:
 			blocked.append({"row": r, "error": entry["reason"] or ps or "not eligible"})

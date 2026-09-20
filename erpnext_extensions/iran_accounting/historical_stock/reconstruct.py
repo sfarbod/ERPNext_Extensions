@@ -228,57 +228,71 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 					applied.append({**preview, "written": False, "sle_se_drift": sle_drift})
 					append_entry(log, preview, written=False)
 					continue
-				doc = frappe.get_doc("Stock Entry", vn)
-				if not preview.get("sle_se_drift"):
-					apply_manufacture_preview_to_doc(doc)
-					from erpnext_extensions.iran_accounting.stock_entry import (
-						persist_irr_stock_entry_header_and_rows,
+				savepoint = f"mfg_{frappe.generate_hash(length=8)}"
+				frappe.db.savepoint(savepoint)
+				try:
+					doc = frappe.get_doc("Stock Entry", vn)
+					if not preview.get("sle_se_drift"):
+						apply_manufacture_preview_to_doc(doc)
+						from erpnext_extensions.iran_accounting.stock_entry import (
+							persist_irr_stock_entry_header_and_rows,
+						)
+
+						persist_irr_stock_entry_header_and_rows(doc)
+
+					targets = []
+					for change in preview.get("changed_rows") or []:
+						after = (change or {}).get("after") or {}
+						item_code = after.get("item_code") or change.get("item")
+						wh = after.get("t_warehouse") or after.get("s_warehouse")
+						batch = after.get("batch_no")
+						if item_code and wh:
+							targets.append((item_code, wh, batch))
+					if not targets:
+						for d in doc.items or []:
+							if d.is_finished_item or getattr(d, "secondary_item_type", None) == "Scrap" or d.t_warehouse:
+								if d.item_code and (d.t_warehouse or d.s_warehouse):
+									targets.append(
+										(d.item_code, d.t_warehouse or d.s_warehouse, d.batch_no)
+									)
+
+					sle_sync = sync_sle_from_stock_entry_detail(vn)
+					replayed = []
+					seen = set()
+					for item_code, wh, batch in targets:
+						key = (item_code, wh, batch or "")
+						if key in seen:
+							continue
+						seen.add(key)
+						neg_before = _count_neg_valuation(item_code, wh)
+						replay = replay_from_patient_zero(item_code, wh, batch, from_dt=doc.posting_date)
+						sync_sle_from_stock_entry_detail(vn, item_code)
+						write_sle_transaction_rates(vn, item_code)
+						sync_sabb_from_sle(vn, item_code)
+						neg_after = _count_neg_valuation(item_code, wh)
+						if neg_after > neg_before:
+							raise frappe.ValidationError(
+								f"Manufacture replay introduced negative valuation_rate "
+								f"on {item_code} / {wh} (before={neg_before}, after={neg_after}). "
+								"Apply aborted — identity must be healed before retry."
+							)
+						replayed.append(
+							{"item": item_code, "warehouse": wh, "batch": batch, "replay": replay}
+						)
+					applied.append(
+						{
+							**preview,
+							"written": True,
+							"status": STATUS_REPAIRED,
+							"sle_synced": len(sle_sync),
+							"replay": replayed,
+							"replay_identities": len(replayed),
+						}
 					)
-
-					persist_irr_stock_entry_header_and_rows(doc)
-
-				targets = []
-				for change in preview.get("changed_rows") or []:
-					after = (change or {}).get("after") or {}
-					item_code = after.get("item_code") or change.get("item")
-					wh = after.get("t_warehouse") or after.get("s_warehouse")
-					batch = after.get("batch_no")
-					if item_code and wh:
-						targets.append((item_code, wh, batch))
-				if not targets:
-					for d in doc.items or []:
-						if d.is_finished_item or getattr(d, "secondary_item_type", None) == "Scrap" or d.t_warehouse:
-							if d.item_code and (d.t_warehouse or d.s_warehouse):
-								targets.append(
-									(d.item_code, d.t_warehouse or d.s_warehouse, d.batch_no)
-								)
-
-				sle_sync = sync_sle_from_stock_entry_detail(vn)
-				replayed = []
-				seen = set()
-				for item_code, wh, batch in targets:
-					key = (item_code, wh, batch or "")
-					if key in seen:
-						continue
-					seen.add(key)
-					replay = replay_from_patient_zero(item_code, wh, batch, from_dt=doc.posting_date)
-					sync_sle_from_stock_entry_detail(vn, item_code)
-					write_sle_transaction_rates(vn, item_code)
-					sync_sabb_from_sle(vn, item_code)
-					replayed.append(
-						{"item": item_code, "warehouse": wh, "batch": batch, "replay": replay}
-					)
-				applied.append(
-					{
-						**preview,
-						"written": True,
-						"status": STATUS_REPAIRED,
-						"sle_synced": len(sle_sync),
-						"replay": replayed,
-						"replay_identities": len(replayed),
-					}
-				)
-				append_entry(log, preview, written=True)
+					append_entry(log, preview, written=True)
+				except Exception:
+					frappe.db.rollback(save_point=savepoint)
+					raise
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
 	finally:
@@ -290,6 +304,21 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 		"applied": applied,
 		"blocked": blocked,
 	}
+
+
+def _count_neg_valuation(item_code, warehouse) -> int:
+	if not item_code or not warehouse:
+		return 0
+	return int(
+		frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabStock Ledger Entry`
+			WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+			  AND valuation_rate < -0.0001
+			""",
+			(item_code, warehouse),
+		)[0][0]
+	)
 
 
 def _manufacture_sle_disagrees_with_se(voucher_no: str) -> bool:

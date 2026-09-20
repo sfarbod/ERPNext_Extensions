@@ -175,7 +175,23 @@ def _build_v2_phases(classes: list, root_cause: dict) -> list:
 		},
 		{
 			"phase": 5,
-			"name": "Manufacture deterministic reconstruction",
+			"name": "Transfer propagation roots then Manufacture dependency",
+			"repair_classes": ["WRONG_RATE", "ZERO_RATE"],
+			"candidate_count": wrong_total + zero_total,
+			"root_chain_count": wrong_total + zero_total,
+			"expected_downstream_healed": "multi-hop transfers + FG + unlocked Zero/I4",
+			"repost_requirement": "controlled identity replay after EXACT reconstruction; no global RIV",
+			"risk": "CRITICAL",
+			"blocking_dependencies": ["POSTING_ORDER", "I1_NEGATIVE_RATE_REPAIR"],
+			"notes": (
+				"reconstruct_transfer_valuation + manufacture input_health; "
+				"HEALED_BY_UPSTREAM_TRANSFER / HEALED_BY_MANUFACTURE_REBUILD; "
+				f"dependency_cycles_detected={cycles}"
+			),
+		},
+		{
+			"phase": 6,
+			"name": "Manufacture deterministic reconstruction (I1-linked)",
 			"repair_classes": ["I1_NEGATIVE_RATE_REPAIR", "WRONG_RATE"],
 			"candidate_count": i1_total,
 			"root_chain_count": i1_total,
@@ -183,10 +199,10 @@ def _build_v2_phases(classes: list, root_cause: dict) -> list:
 			"repost_requirement": "yes after EXACT/RECONSTRUCTABLE preview",
 			"risk": "CRITICAL",
 			"blocking_dependencies": ["ZERO_RATE", "WRONG_RATE"],
-			"notes": f"dependency_cycles_detected={cycles}",
+			"notes": "post-replay neg valuation gate required",
 		},
 		{
-			"phase": 6,
+			"phase": 7,
 			"name": "Controlled repost waves",
 			"repair_classes": ["FAILED_RIV"],
 			"candidate_count": riv_total,
@@ -197,7 +213,7 @@ def _build_v2_phases(classes: list, root_cause: dict) -> list:
 			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR", "WRONG_RATE"],
 		},
 		{
-			"phase": 7,
+			"phase": 8,
 			"name": "SLE_GL_DRIFT / GL reconciliation",
 			"repair_classes": ["SLE_GL_DRIFT", "GL"],
 			"candidate_count": drift_total + gl_total,
@@ -208,7 +224,7 @@ def _build_v2_phases(classes: list, root_cause: dict) -> list:
 			"blocking_dependencies": ["FAILED_RIV"],
 		},
 		{
-			"phase": 8,
+			"phase": 9,
 			"name": "Residual manual negative-stock cases",
 			"repair_classes": [],
 			"candidate_count": None,

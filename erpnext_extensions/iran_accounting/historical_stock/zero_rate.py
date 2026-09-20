@@ -554,7 +554,7 @@ def classify_zero_row(row, _cache=None) -> dict:
 		sources["repack_allocated"] = repack_rate
 	from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
 
-	return attach_rate_analysis(
+	result = attach_rate_analysis(
 		{
 			"topic": "ZERO_RATE",
 			"voucher": parent,
@@ -608,6 +608,15 @@ def classify_zero_row(row, _cache=None) -> dict:
 		},
 		row,
 	)
+	# Phase 5B: authoritative transfer reconstruction upgrades MANUAL_TRANSFER
+	# and never trusts target incoming SLE as source of truth.
+	if purpose in TRANSFER_PURPOSES or purpose in ("Material Issue", "Material Consumption for Manufacture"):
+		from erpnext_extensions.iran_accounting.historical_stock.transfer_valuation import (
+			apply_transfer_reconstruction_to_row,
+		)
+
+		result = apply_transfer_reconstruction_to_row(result, cache=_cache)
+	return result
 
 
 def preview_zero_row(row: dict) -> dict:
@@ -772,7 +781,11 @@ def _repack_allocated_rate(row) -> float:
 
 
 def _source_transfer_sle_rate(row) -> float:
-	"""Nonzero incoming SLE on the same voucher (transfer target) or prior source SLE."""
+	"""Authoritative outgoing SLE rate on the transfer voucher (source → target).
+
+	Never uses the target/incoming SLE rate as authority — that may be the
+	corrupt value being repaired (MATCHED_BUT_CORRUPT / transfer propagation).
+	"""
 	purpose = g(row, "purpose") or ""
 	if purpose not in TRANSFER_PURPOSES:
 		return 0.0
@@ -780,22 +793,37 @@ def _source_transfer_sle_rate(row) -> float:
 	item = g(row, "item_code")
 	if not parent or not item:
 		return 0.0
+	s_wh = g(row, "s_warehouse")
+	conds = [
+		"voucher_type='Stock Entry'",
+		"voucher_no=%s",
+		"item_code=%s",
+		"is_cancelled=0",
+		"actual_qty < 0",
+	]
+	args: list = [parent, item]
+	if s_wh:
+		conds.append("warehouse=%s")
+		args.append(s_wh)
 	found = frappe.db.sql(
-		"""
-		SELECT incoming_rate
+		f"""
+		SELECT actual_qty, outgoing_rate, stock_value_difference
 		FROM `tabStock Ledger Entry`
-		WHERE voucher_type='Stock Entry' AND voucher_no=%s AND item_code=%s
-		  AND is_cancelled=0 AND actual_qty > 0 AND ABS(IFNULL(incoming_rate,0)) > %s
+		WHERE {" AND ".join(conds)}
 		ORDER BY posting_datetime, creation
 		LIMIT 1
 		""",
-		(parent, item, RATE_EPS),
+		args,
 		as_dict=True,
 	)
-	if found:
-		return flt(found[0].incoming_rate)
-	return 0.0
-
+	if not found:
+		return 0.0
+	r = found[0]
+	qty = flt(r.actual_qty)
+	svd = flt(r.stock_value_difference)
+	if abs(qty) > QTY_EPS and abs(svd) > VALUE_EPS:
+		return abs(svd / qty)
+	return abs(flt(r.outgoing_rate))
 
 def _previous_healthy_sle_rate(item, warehouse, posting_date, posting_time) -> float:
 	if not item or not warehouse or not posting_date:
