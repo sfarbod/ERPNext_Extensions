@@ -36,6 +36,8 @@ def _neg():
 
 
 def run(*, n_roots: int = 1, apply: int = 0):
+	# Frappe TooManyWritesError above ~100 roots / large finding batches.
+	n_roots = min(int(n_roots), 100)
 	import frappe
 	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
 	from erpnext_extensions.iran_accounting.historical_stock.zero_rate import scan_zero_rate_rows
@@ -78,24 +80,49 @@ def run(*, n_roots: int = 1, apply: int = 0):
 		vn = str(r.get("voucher") or "")
 		if not vn.startswith("MAT-STE-") and not vn.startswith("STE-"):
 			continue
-		tr = r.get("transfer_reconstruction") or {}
+		tr = r.get("transfer_reconstruction")
+		if not tr:
+			from erpnext_extensions.iran_accounting.historical_stock.transfer_valuation import (
+				reconstruct_transfer_valuation,
+				apply_transfer_reconstruction_to_row,
+			)
+
+			r = apply_transfer_reconstruction_to_row(dict(r))
+			tr = r.get("transfer_reconstruction") or reconstruct_transfer_valuation(r)
+			r["transfer_reconstruction"] = tr
 		cls = tr.get("classification")
 		# Prefer EXACT (outgoing SVD). RECONSTRUCTABLE only when no upstream PZ.
 		if cls not in (EXACT, RECONSTRUCTABLE):
 			continue
-		if not r.get("eligible") and abs(float(r.get("proposed_rate") or 0)) < 0.0001:
+		prop = float(r.get("proposed_rate") or r.get("expected_rate") or tr.get("expected_rate") or 0)
+		if abs(prop) < 0.0001:
 			continue
-		if abs(float(r.get("proposed_rate") or r.get("expected_rate") or 0)) < 0.0001:
-			continue
+		r["proposed_rate"] = prop
+		r["expected_rate"] = prop
 		pz = r.get("patient_zero")
 		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
 		root = tr.get("root_voucher") or r.get("voucher")
+		# Self-rooted EXACT outgoing-SVD: authoritative on this voucher — promote.
+		self_exact = (
+			cls == EXACT
+			and tr.get("authoritative_source") in ("outgoing_sle_svd", "outgoing_sle_rate")
+			and (not root or root == r.get("voucher"))
+			and tr.get("upstream_health") in ("healthy", "missing", None)
+		)
+		if self_exact:
+			r["eligible"] = True
+			r["confidence"] = "EXACT"
+			r["status"] = "RECONSTRUCTABLE"
+			r["planner_status"] = "READY_WRONG_RATE"
+			r["patient_zero"] = {"voucher_no": r.get("voucher")}
+			r["sql_updates"] = max(int(r.get("sql_updates") or 0), 1)
+			cands.append(r)
+			continue
 		# Skip downstream of a different patient-zero / root.
 		if pz_v and pz_v != r.get("voucher") and pz_v != root:
 			continue
 		if root and root != r.get("voucher") and cls != EXACT:
 			continue
-		# Prefer EXACT first; defer RECONSTRUCTABLE with upstream health unknown.
 		if cls == RECONSTRUCTABLE and tr.get("upstream_health") not in ("healthy", None):
 			continue
 		if str(r.get("status") or "") == "DEPENDENCY_REPAIR_REQUIRED":

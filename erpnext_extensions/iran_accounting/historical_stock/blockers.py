@@ -8,10 +8,15 @@ handle — never classified as user blockers.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 
 import frappe
 from frappe.utils import now_datetime
+
+# Frappe Data field practical max (Historical Repair Blocker.blocker_key).
+BLOCKER_KEY_MAX_LEN = 140
 
 # Workflow statuses
 STATUS_OPEN = "OPEN"
@@ -66,6 +71,71 @@ SEVERITY_MEDIUM = "MEDIUM"
 SEVERITY_LOW = "LOW"
 
 
+def _issue_type_short(issue_type: str | None) -> str:
+	"""Stable short code for namespaced blocker keys (keep key << 140)."""
+	mapping = {
+		HISTORICAL_NEGATIVE_STOCK: "HNS",
+		AMBIGUOUS_POSTING_ORDER: "APO",
+		MISSING_SOURCE_TRANSACTION: "MST",
+		MISSING_VALUATION_SOURCE: "MVS",
+		UNRESOLVED_BATCH_CHAIN: "UBC",
+		MANUFACTURE_DEPENDENCY: "MFG",
+		POISONED_UPSTREAM_VALUATION: "PUV",
+		UNRECONSTRUCTABLE_RATE: "URR",
+		DOCUMENT_INCONSISTENCY: "DOC",
+		NEGATIVE_STOCK_REQUIRES_USER: "NSU",
+		RIV_PREFLIGHT_BLOCKED: "RIV",
+		EXPECTED_GL_UNBALANCED: "EGL",
+		DEPENDENCY_CYCLE_UNRESOLVED: "DCY",
+		CONVERTED_DATA_AMBIGUITY: "CDA",
+		OTHER_MANUAL_REVIEW: "OMR",
+	}
+	it = (issue_type or OTHER_MANUAL_REVIEW).strip()
+	if it in mapping:
+		return mapping[it]
+	# Fallback: first letters of underscore parts, max 6 chars.
+	parts = [p[:1] for p in it.replace("-", "_").split("_") if p]
+	return ("".join(parts)[:6] or "OMR").upper()
+
+
+def _norm(value) -> str:
+	"""Normalize identity dimensions for stable hashing."""
+	if value is None:
+		return ""
+	s = str(value).strip()
+	# Collapse internal whitespace (incl. Persian/Arabic presentation forms stay intact).
+	return " ".join(s.split())
+
+
+def canonical_blocker_identity(
+	*,
+	lane: str = LANE_USER_ACTION,
+	issue_type: str | None = None,
+	company: str | None = None,
+	item_code: str | None = None,
+	warehouse: str | None = None,
+	batch_no: str | None = None,
+	serial_and_batch_bundle: str | None = None,
+	voucher_no: str | None = None,
+	dependency_root: str | None = None,
+	patient_zero: str | None = None,
+	first_bad_voucher: str | None = None,
+) -> dict:
+	"""Structured identity payload used for dedupe (never encode prose here)."""
+	batch_or_sabb = _norm(batch_no) or _norm(serial_and_batch_bundle)
+	root = _norm(dependency_root) or _norm(patient_zero) or _norm(first_bad_voucher) or _norm(voucher_no)
+	return {
+		"lane": _norm(lane) or LANE_USER_ACTION,
+		"issue_type": _norm(issue_type) or OTHER_MANUAL_REVIEW,
+		"company": _norm(company),
+		"item": _norm(item_code),
+		"warehouse": _norm(warehouse),
+		"batch_or_sabb": batch_or_sabb,
+		"root": root,
+		"voucher": _norm(voucher_no),
+	}
+
+
 def build_blocker_key(
 	*,
 	issue_type: str,
@@ -74,7 +144,52 @@ def build_blocker_key(
 	batch_no: str | None = None,
 	voucher_no: str | None = None,
 	lane: str = LANE_USER_ACTION,
+	company: str | None = None,
+	serial_and_batch_bundle: str | None = None,
+	dependency_root: str | None = None,
+	patient_zero: str | None = None,
+	first_bad_voucher: str | None = None,
 ) -> str:
+	"""Short deterministic blocker identity: ``HRB:<short>:<sha256-32>``.
+
+	Never concatenates raw warehouse/voucher text into the key (Persian names
+	and long vouchers blew past Data(140) → "Value too big").
+	Uses hashlib.sha256 — never process-random ``hash()``.
+	"""
+	identity = canonical_blocker_identity(
+		lane=lane,
+		issue_type=issue_type,
+		company=company,
+		item_code=item_code,
+		warehouse=warehouse,
+		batch_no=batch_no,
+		serial_and_batch_bundle=serial_and_batch_bundle,
+		voucher_no=voucher_no,
+		dependency_root=dependency_root,
+		patient_zero=patient_zero,
+		first_bad_voucher=first_bad_voucher,
+	)
+	# Canonical JSON (sorted keys, no whitespace) → stable digest across runs.
+	blob = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+	digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+	short = _issue_type_short(identity["issue_type"])
+	key = f"HRB:{short}:{digest}"
+	if len(key) > BLOCKER_KEY_MAX_LEN:
+		# Absolute safety: truncate digest further (should never happen with this format).
+		key = f"HRB:{short}:{digest[:16]}"
+	return key
+
+
+def legacy_blocker_key(
+	*,
+	issue_type: str,
+	item_code: str | None = None,
+	warehouse: str | None = None,
+	batch_no: str | None = None,
+	voucher_no: str | None = None,
+	lane: str = LANE_USER_ACTION,
+) -> str:
+	"""Pre-5.3.0 Phase 5C pipe-joined key (may exceed 140 — kept for migration lookup)."""
 	parts = [
 		lane,
 		issue_type or "OTHER",
@@ -86,9 +201,12 @@ def build_blocker_key(
 	return "|".join(parts)
 
 
-def upsert_blocker(payload: dict, *, dry_run: bool = False) -> dict:
-	"""Insert or update a blocker by blocker_key. Never auto-marks USER_FIXED."""
-	key = payload.get("blocker_key") or build_blocker_key(
+def _find_existing_blocker(key: str, payload: dict) -> str | None:
+	"""Resolve existing doc by canonical key, then legacy key, then structured fields."""
+	name = frappe.db.get_value("Historical Repair Blocker", {"blocker_key": key}, "name")
+	if name:
+		return name
+	legacy = legacy_blocker_key(
 		issue_type=payload.get("issue_type") or OTHER_MANUAL_REVIEW,
 		item_code=payload.get("item_code"),
 		warehouse=payload.get("warehouse"),
@@ -96,20 +214,105 @@ def upsert_blocker(payload: dict, *, dry_run: bool = False) -> dict:
 		voucher_no=payload.get("voucher_no"),
 		lane=payload.get("lane") or LANE_USER_ACTION,
 	)
+	if len(legacy) <= BLOCKER_KEY_MAX_LEN:
+		name = frappe.db.get_value("Historical Repair Blocker", {"blocker_key": legacy}, "name")
+		if name:
+			return name
+	# Structured-field match: same logical root (lane + issue + item + wh + voucher).
+	filters = {
+		"lane": payload.get("lane") or LANE_USER_ACTION,
+		"issue_type": payload.get("issue_type") or OTHER_MANUAL_REVIEW,
+	}
+	for field in ("item_code", "warehouse", "voucher_no"):
+		val = payload.get(field)
+		if val in (None, ""):
+			# Incomplete identity — do not soft-match (would collide).
+			return None
+		filters[field] = val
+	if payload.get("batch_no") not in (None, ""):
+		filters["batch_no"] = payload["batch_no"]
+	if payload.get("company") not in (None, ""):
+		filters["company"] = payload["company"]
+	rows = frappe.get_all(
+		"Historical Repair Blocker",
+		filters=filters,
+		fields=["name", "status", "blocker_key"],
+		order_by="modified desc",
+		limit_page_length=3,
+	)
+	return rows[0].name if rows else None
+
+
+def upsert_blocker(payload: dict, *, dry_run: bool = False) -> dict:
+	"""Insert or update a blocker by canonical blocker_key. Never auto-marks USER_FIXED."""
+	key = payload.get("blocker_key") or build_blocker_key(
+		issue_type=payload.get("issue_type") or OTHER_MANUAL_REVIEW,
+		item_code=payload.get("item_code"),
+		warehouse=payload.get("warehouse"),
+		batch_no=payload.get("batch_no"),
+		voucher_no=payload.get("voucher_no"),
+		lane=payload.get("lane") or LANE_USER_ACTION,
+		company=payload.get("company"),
+		serial_and_batch_bundle=payload.get("serial_and_batch_bundle"),
+		dependency_root=payload.get("dependency_root"),
+		patient_zero=(payload.get("patient_zero") or {}).get("voucher_no")
+		if isinstance(payload.get("patient_zero"), dict)
+		else payload.get("patient_zero"),
+		first_bad_voucher=payload.get("first_bad_sle") or payload.get("first_bad_voucher"),
+	)
 	payload = dict(payload)
+	legacy = legacy_blocker_key(
+		issue_type=payload.get("issue_type") or OTHER_MANUAL_REVIEW,
+		item_code=payload.get("item_code"),
+		warehouse=payload.get("warehouse"),
+		batch_no=payload.get("batch_no"),
+		voucher_no=payload.get("voucher_no"),
+		lane=payload.get("lane") or LANE_USER_ACTION,
+	)
+	# Preserve legacy identity in payload_json for audit / recheck.
+	extra = {}
+	try:
+		if payload.get("payload_json"):
+			extra = (
+				frappe.parse_json(payload["payload_json"])
+				if isinstance(payload["payload_json"], str)
+				else dict(payload["payload_json"] or {})
+			)
+	except Exception:
+		extra = {}
+	extra["legacy_blocker_key"] = legacy
+	extra["canonical_identity"] = canonical_blocker_identity(
+		lane=payload.get("lane") or LANE_USER_ACTION,
+		issue_type=payload.get("issue_type"),
+		company=payload.get("company"),
+		item_code=payload.get("item_code"),
+		warehouse=payload.get("warehouse"),
+		batch_no=payload.get("batch_no"),
+		serial_and_batch_bundle=payload.get("serial_and_batch_bundle"),
+		voucher_no=payload.get("voucher_no"),
+		dependency_root=payload.get("dependency_root"),
+		patient_zero=extra.get("patient_zero"),
+		first_bad_voucher=payload.get("first_bad_sle"),
+	)
+	payload["payload_json"] = frappe.as_json(extra)
 	payload["blocker_key"] = key
 	payload.setdefault("lane", LANE_USER_ACTION)
 	payload.setdefault("status", STATUS_OPEN)
 	payload.setdefault("last_scanned_at", now_datetime())
 	payload.setdefault("can_recheck_after_user_action", 1 if payload["lane"] == LANE_USER_ACTION else 0)
 
-	existing = frappe.db.get_value("Historical Repair Blocker", {"blocker_key": key}, "name")
+	existing = _find_existing_blocker(key, payload)
 	if dry_run:
-		return {"dry_run": True, "blocker_key": key, "exists": bool(existing), "payload": payload}
+		return {
+			"dry_run": True,
+			"blocker_key": key,
+			"legacy_blocker_key": legacy,
+			"exists": bool(existing),
+			"payload": payload,
+		}
 
 	if existing:
 		doc = frappe.get_doc("Historical Repair Blocker", existing)
-		# Preserve workflow status unless still OPEN / READY_TO_RECHECK.
 		preserve = doc.status in (
 			STATUS_UNDER_REVIEW,
 			STATUS_USER_FIXED,
@@ -117,12 +320,22 @@ def upsert_blocker(payload: dict, *, dry_run: bool = False) -> dict:
 			STATUS_IGNORED_WITH_REASON,
 		)
 		old_status = doc.status
+		old_key = doc.blocker_key
 		doc.update({k: v for k, v in payload.items() if k not in ("name", "creation", "owner") and v is not None})
+		# Migrate key in place when legacy pipe-key / truncated key found.
+		doc.blocker_key = key
 		if preserve:
 			doc.status = old_status
 		doc.last_scanned_at = now_datetime()
 		doc.save(ignore_permissions=True)
-		return {"name": doc.name, "blocker_key": key, "updated": True, "status": doc.status}
+		return {
+			"name": doc.name,
+			"blocker_key": key,
+			"legacy_blocker_key": old_key if old_key != key else legacy,
+			"migrated_key": old_key != key,
+			"updated": True,
+			"status": doc.status,
+		}
 
 	doc = frappe.get_doc({"doctype": "Historical Repair Blocker", **payload})
 	doc.insert(ignore_permissions=True)
@@ -382,7 +595,7 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 			updated += int(bool(res.get("updated")))
 			rows_out.append({**payload, "name": res.get("name")})
 			shortage_n += 1
-			if shortage_n >= 150:
+			if shortage_n >= 500:
 				break
 		# Attach summary so callers/dashboard can show findings vs root blockers.
 		frappe.flags.hr_shortage_summary = {

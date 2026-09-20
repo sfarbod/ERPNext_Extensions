@@ -265,7 +265,17 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 							continue
 						seen.add(key)
 						neg_before = _count_neg_valuation(item_code, wh)
-						replay = replay_from_patient_zero(item_code, wh, batch, from_dt=doc.posting_date)
+						# Phase 5C: bound replay at posting_datetime (not date midnight).
+						from_dt = f"{doc.posting_date} {doc.posting_time or '00:00:00'}"
+						replay = replay_from_patient_zero(
+							item_code, wh, batch, from_dt=from_dt
+						)
+						if not replay.get("ok"):
+							raise frappe.ValidationError(
+								f"Manufacture identity replay blocked for {item_code} / {wh}: "
+								f"{replay.get('status')}: {replay.get('reason')} "
+								f"(voucher={replay.get('voucher')})"
+							)
 						sync_sle_from_stock_entry_detail(vn, item_code)
 						write_sle_transaction_rates(vn, item_code)
 						sync_sabb_from_sle(vn, item_code)

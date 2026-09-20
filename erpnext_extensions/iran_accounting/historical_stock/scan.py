@@ -249,6 +249,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Failed RIV Superseded": int((riv.get("by_reconcile") or {}).get("SUPERSEDED_BY_SUCCESSFUL_REPAIR") or 0)
 		or int((riv.get("stage1") or {}).get("superseded") or 0),
 		"Patient Zero": len(patients),
+		"Patient Zero Findings": sum(patients.values()) if patients else 0,
 		"Zero Rate Patient Zero": len(patients_by_topic["ZERO_RATE"]),
 		"READY_I4": ready_i4,
 		"WAITING_I4": int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0),

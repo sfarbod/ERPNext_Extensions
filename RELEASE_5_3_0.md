@@ -433,3 +433,52 @@ Verdict: **PHASE_5B_NEEDS_FURTHER_TOOL_DEVELOPMENT** — transfer EXACT roots re
 - REAL_STOCK_SHORTAGE Posting Order → USER_ACTION_REQUIRED blockers with shortage context.
 - Wrong READY re-drained after wider scan; Zero RAW 303→231.
 
+### Phase 5C — Blocker key + Manufacture leftover-opening fix + Transfer drain
+
+**Blocker identity**
+
+- Root cause of UI `Value too big`: `blocker_key` was a pipe-joined concatenation of
+  lane|issue|item|warehouse|batch|voucher (Persian warehouse names >> 140).
+- New canonical key: `HRB:<issue-short>:<sha256-32>` from normalized identity JSON
+  (never `hash()`, never truncate raw business text).
+- Migration rewrites existing rows in place; `legacy_blocker_key` kept in `payload_json`.
+- Upsert resolves by canonical key → legacy key → structured fields (no duplicate explosion).
+- Tests: long Persian WH/batch/voucher, determinism, lane split, length ≤140.
+
+**Manufacture 30300042 incident (computational root cause)**
+
+Not merely the post-replay gate:
+
+1. `replay_from_patient_zero` allowed opening `qty_after≈0` with large leftover
+   `stock_value` (`qty_after_zero_nonzero_value`).
+2. Manufacture inbound added positive SVD but could not clear huge negative leftover →
+   **negative `valuation_rate`** on the FG SLE.
+3. Downstream outbounds used MA `rate = value/qty` (negative) so
+   `svd = qty(neg) * rate(neg)` → **positive inverted outgoing SVD**.
+4. Cascade produced 24 negative valuation SLEs on the Quarantine identity.
+5. Why 1/3/5 passed: those waves did not include `MAT-STE-2026-27825` (first wave
+   voucher touching this identity). n=10 did.
+
+**Generic fix**
+
+- Refuse leftover-at-zero / neg valuation openings in `replay_from_patient_zero`.
+- Zero opening_value when opening_qty≈0 before series.
+- Pre-write refuse inverted SVD / neg valuation_rate.
+- Manufacture apply uses **posting_datetime** boundary (not date midnight) + savepoint
+  + neg gate + blocked replay raises.
+- Regression: `test_manufacture_replay_leftover_v530` (old poison vs new refuse/healthy).
+
+**Transfer drain (root-first, max 100/wave — Frappe TooManyWrites above that)**
+
+- Engine audit: EXACT samples match native outgoing SVD (RECONSTRUCTABLE w/ zero
+  outgoing uses previous_healthy — expected).
+- Waves 25 + 50 + 100 apply OK; invariants held.
+- Remaining Transfer EXACT still large (classification ≠ yet repaired fixed-point).
+
+**Manufacture resume**
+
+- After fix: canaries **1→3→5→10** (includes 27825) apply OK; neg valuation **0**.
+
+Verdict: **PHASE_5C_NEEDS_FURTHER_TOOL_DEVELOPMENT** — Transfer EXACT not yet 0;
+chunked drain + Wrong/Zero/I4 unlock continue; no broad GL / global RIV.
+
