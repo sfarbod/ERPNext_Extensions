@@ -230,6 +230,40 @@ class TestManufactureConfidenceV530(unittest.TestCase):
 		self.assertEqual(out.get("status"), STATUS_RECONSTRUCTABLE)
 
 
+class TestSEToSLESync(unittest.TestCase):
+	def test_sync_sle_from_se_detail_writes_svd(self):
+		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+			sync_sle_from_stock_entry_detail,
+		)
+
+		sle = SimpleNamespace(
+			name="SLE1",
+			voucher_detail_no="D1",
+			item_code="FG",
+			actual_qty=10,
+			incoming_rate=-1e9,
+			outgoing_rate=0,
+			valuation_rate=-1e9,
+			stock_value_difference=-1e10,
+			amount=5000,
+			basic_amount=5000,
+			qty=10,
+			basic_rate=500,
+			se_valuation_rate=500,
+		)
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild.frappe"
+		) as frappe_mod:
+			frappe_mod.db.sql.return_value = [sle]
+			written = sync_sle_from_stock_entry_detail("STE-1")
+		self.assertEqual(len(written), 1)
+		frappe_mod.db.set_value.assert_called()
+		args = frappe_mod.db.set_value.call_args
+		values = args[0][2]
+		self.assertAlmostEqual(values["incoming_rate"], 500.0)
+		self.assertAlmostEqual(values["stock_value_difference"], 5000.0)
+
+
 class TestPlannerFalseComplete(unittest.TestCase):
 	@patch(
 		"erpnext_extensions.iran_accounting.historical_stock.planner._write_counts",

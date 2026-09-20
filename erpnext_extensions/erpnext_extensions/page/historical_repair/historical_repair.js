@@ -19,6 +19,7 @@ const TOPICS = [
 	{ id: "sle", title: __("SLE / Bin Integrity"), kpi: "Broken Bin" },
 	{ id: "gl", title: __("GL Integrity"), kpi: "Broken GL" },
 	{ id: "riv", title: __("Failed RIV"), kpi: "Failed RIV" },
+	{ id: "blockers", title: __("User Action Required"), kpi: "User Action Required", section: "Historical Repair Blockers" },
 ];
 
 /** Dashboard chip → topic id (primary surface for that KPI). */
@@ -57,6 +58,8 @@ const KPI_TOPIC = {
 	"RIV SAFE": "riv",
 	"RIV WAITING": "riv",
 	"RIV UNSAFE": "riv",
+	"User Action Required": "blockers",
+	"Tool Limit": "blockers",
 };
 
 const KPI_ORDER = [
@@ -89,6 +92,8 @@ const KPI_ORDER = [
 	"RIV SAFE",
 	"RIV WAITING",
 	"RIV UNSAFE",
+	"User Action Required",
+	"Tool Limit",
 	"Patient Zero",
 	"Zero Rate Patient Zero",
 	"READY_I4",
@@ -378,6 +383,22 @@ class HistoricalRepairPage {
 		this.btn_root_explorer = this._btn(g3, "root-explorer", __("Root Cause Explorer"), () => this.show_root_cause_explorer(), "btn-primary", __("Healthy → Patient Zero → Replay chain → Current voucher"));
 		this.btn_health = this._btn(g3, "identity-health", __("Identity Health"), () => this.show_identity_health(), "btn-default", __("Posting / Wrong Rate / I4 / Bin / GL health panel"));
 		this.btn_master_plan = this._btn(g3, "master-plan", __("Master Repair Plan"), () => this.show_master_repair_plan(), "btn-default", __("Database-wide repair roadmap"));
+		this.btn_recheck_blocker = this._btn(
+			g3,
+			"recheck-blocker",
+			__("Recheck Blocker"),
+			() => this.recheck_selected_blocker(),
+			"btn-primary",
+			__("After user fixes business data, rescan the selected blocker root")
+		);
+		this.btn_open_blocker_list = this._btn(
+			g3,
+			"open-blocker-list",
+			__("Open Blockers List"),
+			() => frappe.set_route("List", "Historical Repair Blocker"),
+			"btn-default",
+			__("Open the full Historical Repair Blockers DocType list")
+		);
 		this.btn_campaign_wizard = this._btn(
 			g3,
 			"campaign-wizard",
@@ -710,6 +731,17 @@ class HistoricalRepairPage {
 			sle: [`${this.api}.scan_sle_bin_api`, f],
 			gl: [`${this.api}.scan_gl_api`, f],
 			riv: [`${this.api}.scan_failed_riv_api`, f],
+			blockers: [
+				`${this.api}.scan_blockers_api`,
+				{
+					company: f.company,
+					lane: "USER_ACTION_REQUIRED",
+					item_code: f.item_code,
+					warehouse: f.warehouse,
+					batch_no: f.batch,
+					sync: 1,
+				},
+			],
 		};
 		const [method, args] = map[this.topic];
 		this.render_wizard_step(2);
@@ -1794,6 +1826,29 @@ class HistoricalRepairPage {
 				__("Status"),
 			];
 		}
+		if (this.topic === "blockers") {
+			return [
+				"",
+				__("Lane"),
+				__("Status"),
+				__("Severity"),
+				__("Issue Type"),
+				__("Item"),
+				__("Item Name"),
+				__("Batch"),
+				__("Warehouse"),
+				__("Voucher"),
+				__("Posting Date"),
+				__("Posting Time"),
+				__("Work Order"),
+				__("Job Card"),
+				__("Downstream"),
+				__("Dependency Root"),
+				__("Recommended Action"),
+				__("Why Unsafe"),
+				__("Explanation"),
+			];
+		}
 		return ["", __("Voucher"), __("Item"), __("Warehouse"), __("Confidence"), __("Planner Status"), __("Immediate Dependency"), __("Root Patient Zero"), __("Required Action"), __("Blocker"), __("Status")];
 	}
 
@@ -1891,6 +1946,28 @@ class HistoricalRepairPage {
 				row.smallest_safe_scope || "IDENTITY",
 				row.blocker || row.reason || row.skip_reason || "",
 				row.status || row.i4_status || "",
+			];
+		}
+		if (this.topic === "blockers") {
+			return [
+				row.lane,
+				row.status,
+				row.severity,
+				row.issue_type,
+				row.item_code || row.item,
+				row.item_name || "",
+				row.batch_no || row.batch || "",
+				row.warehouse,
+				row.voucher_no || row.voucher,
+				row.posting_date || "",
+				row.posting_time || "",
+				row.work_order || "",
+				row.job_card || "",
+				row.affected_downstream_count == null ? "" : String(row.affected_downstream_count),
+				row.dependency_root || "",
+				row.recommended_user_action || "",
+				row.why_automatic_repair_is_unsafe || "",
+				row.user_facing_explanation || row.root_cause || "",
 			];
 		}
 		return [
@@ -2479,6 +2556,34 @@ class HistoricalRepairPage {
 				});
 				const score = msg.overall_health != null ? msg.overall_health : msg.health_score;
 				$panel.append($("<div class='hr-health-score'>").text(__("Overall Health") + `: ${score == null ? "—" : score + "%"}`));
+			},
+		});
+	}
+
+	recheck_selected_blocker() {
+		const rows = this.selected_rows();
+		if (!rows.length) {
+			frappe.msgprint(__("Select a blocker row first."));
+			return;
+		}
+		const name = rows[0].name || rows[0].blocker_name;
+		if (!name) {
+			frappe.msgprint(__("Selected row has no blocker document name. Scan User Action Required first."));
+			return;
+		}
+		frappe.call({
+			method: `${this.api}.recheck_blocker_api`,
+			args: { name },
+			freeze: true,
+			freeze_message: __("Rechecking blocker closure..."),
+			callback: (r) => {
+				const msg = (r && r.message) || {};
+				frappe.msgprint({
+					title: __("Blocker Recheck"),
+					indicator: msg.eligible_for_auto_repair ? "green" : "orange",
+					message: __(msg.message || JSON.stringify(msg)),
+				});
+				if (this.topic === "blockers") this.scan();
 			},
 		});
 	}

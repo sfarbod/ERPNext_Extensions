@@ -226,6 +226,29 @@ Validated against restored pre-deep-pass DB (`20260919_221747`):
 
 Master Plan V2 exposes **8 campaign phases** derived from dependency order.
 
+### User Action Required / Blockers (campaign addendum)
+
+- DocType **`Historical Repair Blocker`** with lanes:
+  - `USER_ACTION_REQUIRED` — genuine business blockers
+  - `TOOL_LIMIT` — deterministic gaps in code (never mixed into user blockers)
+- Historical Repair page tab **User Action Required** + Recheck / Open List
+- APIs: `scan_blockers_api`, `recheck_blocker_api`, `sync_blockers_api`
+- Workflow: OPEN → UNDER_REVIEW → USER_FIXED → READY_TO_RECHECK → RESOLVED
+
+### Manufacture SE→SLE sync (campaign discovery)
+
+`write_sle_transaction_rates` alone cannot heal poisoned SLE after SE repair
+because it derives rate from existing SLE SVD. v5.3.0 adds
+`sync_sle_from_stock_entry_detail` and manufacture repair now:
+
+1. applies Iran manufacture contract to SE (when needed)
+2. pushes SE Detail → SLE rates/SVD
+3. replays affected FG/scrap identities
+4. re-asserts SE→SLE after replay
+
+Also repairs the case where SE is already healthy but SLE still disagrees
+(`sle_se_drift`).
+
 
 | Incident | v5.3.0 fix |
 |----------|------------|

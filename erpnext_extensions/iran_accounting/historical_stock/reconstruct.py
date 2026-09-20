@@ -9,6 +9,7 @@ from frappe.utils import flt, now_datetime
 from erpnext_extensions.iran_accounting.historical_stock import (
 	HISTORICAL_REPAIR_FLAG,
 	STATUS_BLOCKED,
+	STATUS_RECONSTRUCTABLE,
 	STATUS_REPAIRED,
 )
 from erpnext_extensions.iran_accounting.historical_stock.audit import append_entry, finish_run, start_run
@@ -186,6 +187,8 @@ def repair_wrong_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 
 
 def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock import CONFIDENCE_EXACT
+
 	applied = []
 	blocked = []
 	log = start_run("MANUFACTURE", dry_run=dry_run)
@@ -196,30 +199,85 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 			try:
 				preview = preview_manufacture_voucher(vn)
 				from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+				from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+					sync_sabb_from_sle,
+					sync_sle_from_stock_entry_detail,
+					write_sle_transaction_rates,
+				)
 
+				sle_drift = _manufacture_sle_disagrees_with_se(vn)
+				se_healthy = preview.get("status") == "HEALTHY" or (
+					not preview.get("needs_repair") and preview.get("confidence") == CONFIDENCE_EXACT
+				)
+				if se_healthy and not sle_drift:
+					applied.append({**preview, "written": False, "status": "ALREADY_HEALTHY"})
+					append_entry(log, preview, written=False)
+					continue
+				if se_healthy and sle_drift:
+					preview = {
+						**preview,
+						"needs_repair": True,
+						"status": STATUS_RECONSTRUCTABLE,
+						"confidence": CONFIDENCE_EXACT,
+						"eligible": True,
+						"sle_se_drift": True,
+						"source_of_truth": "5.3.0_se_to_sle_sync",
+					}
 				assert_ready(preview)
 				if dry_run:
-					applied.append({**preview, "written": False})
+					applied.append({**preview, "written": False, "sle_se_drift": sle_drift})
 					append_entry(log, preview, written=False)
 					continue
 				doc = frappe.get_doc("Stock Entry", vn)
-				apply_manufacture_preview_to_doc(doc)
-				from erpnext_extensions.iran_accounting.stock_entry import persist_irr_stock_entry_header_and_rows
-
-				persist_irr_stock_entry_header_and_rows(doc)
-				item = (doc.items or [None])[0]
-				wh = item.t_warehouse or item.s_warehouse if item else None
-				replay = None
-				if item and wh:
-					replay = replay_from_patient_zero(item.item_code, wh, item.batch_no, from_dt=doc.posting_date)
-					from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
-						sync_sabb_from_sle,
-						write_sle_transaction_rates,
+				if not preview.get("sle_se_drift"):
+					apply_manufacture_preview_to_doc(doc)
+					from erpnext_extensions.iran_accounting.stock_entry import (
+						persist_irr_stock_entry_header_and_rows,
 					)
 
-					write_sle_transaction_rates(vn, item.item_code)
-					sync_sabb_from_sle(vn, item.item_code)
-				applied.append({**preview, "written": True, "status": STATUS_REPAIRED, "replay": replay})
+					persist_irr_stock_entry_header_and_rows(doc)
+
+				targets = []
+				for change in preview.get("changed_rows") or []:
+					after = (change or {}).get("after") or {}
+					item_code = after.get("item_code") or change.get("item")
+					wh = after.get("t_warehouse") or after.get("s_warehouse")
+					batch = after.get("batch_no")
+					if item_code and wh:
+						targets.append((item_code, wh, batch))
+				if not targets:
+					for d in doc.items or []:
+						if d.is_finished_item or getattr(d, "secondary_item_type", None) == "Scrap" or d.t_warehouse:
+							if d.item_code and (d.t_warehouse or d.s_warehouse):
+								targets.append(
+									(d.item_code, d.t_warehouse or d.s_warehouse, d.batch_no)
+								)
+
+				sle_sync = sync_sle_from_stock_entry_detail(vn)
+				replayed = []
+				seen = set()
+				for item_code, wh, batch in targets:
+					key = (item_code, wh, batch or "")
+					if key in seen:
+						continue
+					seen.add(key)
+					replay = replay_from_patient_zero(item_code, wh, batch, from_dt=doc.posting_date)
+					sync_sle_from_stock_entry_detail(vn, item_code)
+					write_sle_transaction_rates(vn, item_code)
+					sync_sabb_from_sle(vn, item_code)
+					replayed.append(
+						{"item": item_code, "warehouse": wh, "batch": batch, "replay": replay}
+					)
+				applied.append(
+					{
+						**preview,
+						"written": True,
+						"status": STATUS_REPAIRED,
+						"sle_synced": len(sle_sync),
+						"replay": replayed,
+						"replay_identities": len(replayed),
+					}
+				)
 				append_entry(log, preview, written=True)
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
@@ -232,6 +290,34 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 		"applied": applied,
 		"blocked": blocked,
 	}
+
+
+def _manufacture_sle_disagrees_with_se(voucher_no: str) -> bool:
+	"""True when any inbound SLE rate materially disagrees with SE Detail amount/qty."""
+	from erpnext_extensions.iran_accounting.historical_stock import RATE_EPS
+
+	rows = frappe.db.sql(
+		"""
+		SELECT sle.actual_qty, sle.incoming_rate, sle.outgoing_rate,
+		       sed.amount, sed.basic_amount, sed.qty, sed.valuation_rate, sed.basic_rate
+		FROM `tabStock Ledger Entry` sle
+		JOIN `tabStock Entry Detail` sed ON sed.name = sle.voucher_detail_no
+		WHERE sle.voucher_type='Stock Entry' AND sle.voucher_no=%s AND sle.is_cancelled=0
+		  AND ABS(sle.actual_qty) > 0
+		""",
+		(voucher_no,),
+		as_dict=True,
+	)
+	for r in rows:
+		qty = abs(flt(r.qty) or flt(r.actual_qty))
+		if qty <= 0:
+			continue
+		amount = abs(flt(r.amount if r.amount is not None else r.basic_amount))
+		expected = amount / qty if amount else abs(flt(r.valuation_rate or r.basic_rate))
+		current = abs(flt(r.incoming_rate if flt(r.actual_qty) > 0 else r.outgoing_rate))
+		if abs(expected - current) > max(1.0, RATE_EPS):
+			return True
+	return False
 
 
 def _ensure_pz_row_in_cache(pz_voucher: str, cache: dict) -> None:

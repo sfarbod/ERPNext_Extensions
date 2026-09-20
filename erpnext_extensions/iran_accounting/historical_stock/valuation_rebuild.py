@@ -207,6 +207,71 @@ def write_sle_transaction_rates(voucher_no: str, item_code=None) -> list[dict]:
 	return written
 
 
+def sync_sle_from_stock_entry_detail(voucher_no: str, item_code=None) -> list[dict]:
+	"""Overwrite SLE txn rates + SVD from current Stock Entry Detail (authoritative after SE repair).
+
+	``write_sle_transaction_rates`` derives rate from *existing* SLE SVD — useless when SLE is
+	still poisoned after SE Detail was reconstructed. This writes SE → SLE explicitly.
+	"""
+	conds = ["sle.voucher_type='Stock Entry'", "sle.voucher_no=%s", "sle.is_cancelled=0"]
+	args: list = [voucher_no]
+	if item_code:
+		conds.append("sle.item_code=%s")
+		args.append(item_code)
+	rows = frappe.db.sql(
+		f"""
+		SELECT sle.name, sle.voucher_detail_no, sle.item_code, sle.actual_qty,
+		       sle.incoming_rate, sle.outgoing_rate, sle.valuation_rate,
+		       sle.stock_value_difference,
+		       sed.basic_rate, sed.valuation_rate AS se_valuation_rate,
+		       sed.amount, sed.basic_amount, sed.qty
+		FROM `tabStock Ledger Entry` sle
+		LEFT JOIN `tabStock Entry Detail` sed ON sed.name = sle.voucher_detail_no
+		WHERE {" AND ".join(conds)}
+		""",
+		args,
+		as_dict=True,
+	)
+	written = []
+	for sle in rows:
+		qty = D(sle.actual_qty)
+		if abs(qty) <= 0:
+			continue
+		# Prefer amount/qty (economic), then SE valuation_rate, then basic_rate.
+		se_amount = D(sle.amount if sle.amount is not None else sle.basic_amount)
+		se_qty = D(sle.qty) if sle.qty is not None else abs(qty)
+		rate = None
+		if abs(se_amount) > 0 and abs(se_qty) > 0:
+			rate = abs(se_amount / se_qty)
+		elif sle.se_valuation_rate is not None and abs(D(sle.se_valuation_rate)) > 0:
+			rate = abs(D(sle.se_valuation_rate))
+		elif sle.basic_rate is not None and abs(D(sle.basic_rate)) > 0:
+			rate = abs(D(sle.basic_rate))
+		if rate is None:
+			continue
+		# Inbound SVD positive; outbound negative.
+		svd = abs(qty) * rate if qty > 0 else -(abs(qty) * rate)
+		values = {
+			"stock_value_difference": flt(svd),
+		}
+		if qty > 0:
+			values["incoming_rate"] = flt(rate)
+			values["outgoing_rate"] = 0
+			values["valuation_rate"] = flt(rate)
+		else:
+			values["outgoing_rate"] = flt(rate)
+			values["incoming_rate"] = 0
+		# Skip no-op
+		if (
+			abs(D(sle.stock_value_difference) - svd) <= REPLAY_VALUE_EPS
+			and abs(D(sle.incoming_rate if qty > 0 else sle.outgoing_rate) - rate) <= REPLAY_VALUE_EPS
+		):
+			continue
+		frappe.db.set_value("Stock Ledger Entry", sle.name, values, update_modified=False)
+		written.append({"sle": sle.name, "item": sle.item_code, **values})
+	return written
+
+
 def sync_sabb_from_sle(voucher_no: str, item_code=None) -> list[dict]:
 	"""Copy SLE SVD / txn rate onto Serial and Batch Bundle + Entry (report source)."""
 	conds = ["voucher_type='Stock Entry'", "voucher_no=%s", "is_cancelled=0"]

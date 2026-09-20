@@ -1059,6 +1059,66 @@ def warehouse_apply_api(row=None, dry_run=True):
 	return apply_warehouse_repair(parsed, dry_run=is_dry)
 
 
+@frappe.whitelist()
+def scan_blockers_api(
+	company=None,
+	lane=None,
+	issue_type=None,
+	item_code=None,
+	warehouse=None,
+	batch_no=None,
+	status=None,
+	severity=None,
+	sync=0,
+	limit=500,
+):
+	"""List Historical Repair Blockers; optionally sync from live scans first."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.blockers import (
+		list_blockers,
+		scan_and_sync_blockers,
+	)
+
+	sync_result = None
+	if cint(sync):
+		sync_result = scan_and_sync_blockers(company=company or None, limit=cint(limit) or 500)
+	listed = list_blockers(
+		company=company or None,
+		lane=lane or None,
+		issue_type=issue_type or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		batch_no=batch_no or None,
+		status=status or None,
+		severity=severity or None,
+		limit=cint(limit) or 500,
+	)
+	listed["sync"] = sync_result
+	return listed
+
+
+@frappe.whitelist()
+def recheck_blocker_api(name=None):
+	_guard()
+	if not name:
+		frappe.throw("Blocker name is required")
+	from erpnext_extensions.iran_accounting.historical_stock.blockers import recheck_blocker
+
+	return recheck_blocker(name)
+
+
+@frappe.whitelist()
+def sync_blockers_api(company=None, include_tool_limits=1, limit=500):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.blockers import scan_and_sync_blockers
+
+	return scan_and_sync_blockers(
+		company=company or None,
+		include_tool_limits=bool(cint(include_tool_limits)),
+		limit=cint(limit) or 500,
+	)
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair
