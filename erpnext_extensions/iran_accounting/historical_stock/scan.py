@@ -72,11 +72,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		_add_pz("WRONG_RATE", r)
 
 	replay = _replay_kpis()
-	# KPI semantics (v5.3.0): actionable Zero Rate excludes legitimate scrap zeros.
+	# KPI semantics (v5.3.0 purpose-first): actionable excludes Material Receipt
+	# user-review and document-authorised zeros. Scrap warehouse alone is NOT no-action.
 	zero_raw_n = int(zero.get("raw_count") or zero.get("count") or 0)
 	zero_n = int(zero.get("actionable_count") if zero.get("actionable_count") is not None else zero.get("count") or 0)
 	zero_no_action = int(zero.get("no_action_required_count") or 0)
-	zero_scrap_legit = int(zero.get("legitimate_scrap_zero_count") or 0)
+	zero_scrap_legit = 0  # deprecated under purpose-first semantics
+	zero_receipt_review = int(zero.get("material_receipt_user_review_count") or 0)
+	zero_reconstructable = int(zero.get("reconstructable_count") or 0)
 	wrong_raw_n = wrong.get("count") or 0
 	# Posting Order KPI excludes optimizer-healthy / no-repair rows.
 	posting_n = sum(
@@ -216,6 +219,9 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Zero Rate": zero_n,
 		"Zero Rate Raw": zero_raw_n,
 		"Zero Rate No Action": zero_no_action,
+		"Zero Rate User Review": zero_receipt_review,
+		"Zero Rate Reconstructable": zero_reconstructable,
+		"Material Receipt Zero User Review": zero_receipt_review,
 		"Legitimate Scrap Zero Rate": zero_scrap_legit,
 		"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
 		"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
@@ -282,9 +288,15 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		},
 		"zero_rate": {
 			"count": zero.get("count"),
+			"raw_count": zero_raw_n,
+			"actionable_count": zero_n,
+			"material_receipt_user_review_count": zero_receipt_review,
+			"reconstructable_count": zero_reconstructable,
 			"by_class": zero.get("by_class"),
 			"by_confidence": zero.get("by_confidence"),
 			"by_status": zero.get("by_status"),
+			"by_kpi_bucket": zero.get("by_kpi_bucket"),
+			"by_purpose": zero.get("by_purpose"),
 			"exact": exact,
 			"likely": likely,
 			"ambiguous": ambiguous,

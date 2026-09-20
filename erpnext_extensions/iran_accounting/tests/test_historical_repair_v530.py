@@ -452,7 +452,9 @@ class TestMasterPlanV2Shape(unittest.TestCase):
 		self.assertEqual(len(plan.get("phases") or []), 8)
 		self.assertTrue(plan.get("safety", {}).get("riv_preflight_required"))
 		self.assertTrue(plan.get("safety", {}).get("false_rate_rebuild_complete_refused"))
-		self.assertTrue(plan.get("safety", {}).get("legitimate_scrap_zero_no_action"))
+		self.assertTrue(plan.get("safety", {}).get("zero_rate_purpose_first"))
+		self.assertTrue(plan.get("safety", {}).get("material_receipt_no_invent_rate"))
+		self.assertFalse(plan.get("safety", {}).get("legitimate_scrap_zero_no_action"))
 		self.assertTrue(plan.get("safety", {}).get("matched_but_corrupt_detected"))
 
 
@@ -467,11 +469,10 @@ class TestScrapZeroBusinessRules(unittest.TestCase):
 		self.assertFalse(warehouse_matches_scrap_reject_waste("انبار محصولات هولد نیمه ساخته اسپاد"))
 
 	def test_legitimate_scrap_zero_no_action(self):
+		"""Legacy scrap-warehouse exemption removed — Manufacture scrap into scrap WH
+		is no longer auto NO_ACTION solely because of warehouse name."""
 		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import classify_zero_row
-		from erpnext_extensions.iran_accounting.historical_stock import (
-			NO_ACTION_REQUIRED,
-			Z0_LEGITIMATE_SCRAP_ZERO,
-		)
+		from erpnext_extensions.iran_accounting.historical_stock import NO_ACTION_REQUIRED
 
 		row = {
 			"name": "d1",
@@ -497,18 +498,54 @@ class TestScrapZeroBusinessRules(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse.is_scrap_reject_waste_warehouse",
 			return_value=True,
 		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._version_rate",
+			return_value=(0.0, 0.0),
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._batch_inward_rate",
+			return_value=0.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._previous_healthy_sle_rate",
+			return_value=0.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._source_transfer_sle_rate",
+			return_value=0.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._patient_for_identity",
+			return_value=None,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._identity_poisoned",
+			return_value=False,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._finished_item",
+			return_value="FG1",
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate.is_scrap_row",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate.is_product_reject",
+			return_value=False,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._issued_rate_for_component",
+			return_value=0.0,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate.frappe.get_doc",
+			return_value=object(),
+		), patch(
 			"erpnext_extensions.iran_accounting.historical_stock.expected.attach_rate_analysis",
 			side_effect=lambda d, *_a, **_k: d,
 		):
 			out = classify_zero_row(row)
-		self.assertEqual(out.get("zero_class"), Z0_LEGITIMATE_SCRAP_ZERO)
-		self.assertEqual(out.get("status"), NO_ACTION_REQUIRED)
-		self.assertFalse(out.get("eligible"))
-		self.assertTrue(out.get("no_action_required"))
+		self.assertNotEqual(out.get("status"), NO_ACTION_REQUIRED)
+		self.assertNotEqual(out.get("zero_class"), "LEGITIMATE_SCRAP_ZERO_RATE")
+		self.assertTrue(out.get("scrap_warehouse_context"))
 
 	def test_normal_incoming_zero_still_actionable(self):
+		"""Material Receipt with document Version source remains reconstructable."""
 		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import classify_zero_row
-		from erpnext_extensions.iran_accounting.historical_stock import NO_ACTION_REQUIRED
+		from erpnext_extensions.iran_accounting.historical_stock import (
+			NO_ACTION_REQUIRED,
+			STATUS_RECONSTRUCTABLE,
+		)
 
 		row = {
 			"name": "d2",
@@ -562,8 +599,9 @@ class TestScrapZeroBusinessRules(unittest.TestCase):
 		):
 			out = classify_zero_row(row)
 		self.assertNotEqual(out.get("status"), NO_ACTION_REQUIRED)
-		self.assertTrue(out.get("eligible") or out.get("actionable", True))
-		self.assertEqual(out.get("zero_reason"), "TRUE_ZERO_RATE_CORRUPTION")
+		self.assertEqual(out.get("status"), STATUS_RECONSTRUCTABLE)
+		self.assertTrue(out.get("eligible"))
+		self.assertEqual(out.get("zero_reason"), "AUTHORITATIVE_SOURCE_EXISTS_BUT_RATE_IS_ZERO")
 
 
 class TestMatchedButCorrupt(unittest.TestCase):

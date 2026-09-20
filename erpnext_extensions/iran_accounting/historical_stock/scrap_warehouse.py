@@ -1,12 +1,14 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Scrap / Reject / Waste warehouse detection for Historical Repair (v5.3.0).
+"""Scrap / Reject / Waste warehouse helpers for Historical Repair (v5.3.0).
 
-Business rule: a receipt into a designated Scrap/Reject/Waste warehouse may
-legitimately carry valuation_rate = 0. That alone is not ZERO_RATE corruption.
+Warehouse Scrap/Reject/Waste is **contextual information only**.
 
-Do NOT assume every scrap *item* is zero-valued — only warehouse-targeted
-zero-valued waste receipts are exempt, and only when no independent invariant
-is violated.
+v5.3.0 purpose-first rule: TRANSACTION SEMANTICS + AUTHORITATIVE SOURCE
+determine Zero Rate repairability. Scrap/Reject warehouse name alone must
+NOT exempt a zero-rate row from classification (especially Material Receipt).
+
+``is_legitimate_scrap_zero_rate`` is retained for backward compatibility but
+is no longer used as the primary Zero Rate decision branch.
 """
 
 from __future__ import annotations

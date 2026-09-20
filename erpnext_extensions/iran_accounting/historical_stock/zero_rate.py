@@ -12,11 +12,15 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_AMBIGUOUS,
 	CONFIDENCE_EXACT,
 	CONFIDENCE_LIKELY,
+	CONFIDENCE_MANUAL,
 	NO_ACTION_REQUIRED,
+	AUTHORITATIVE_SOURCE_EXISTS_BUT_RATE_IS_ZERO,
+	NO_AUTHORITATIVE_SOURCE,
 	QTY_EPS,
 	RATE_EPS,
 	STATUS_DEPENDENCY_REPAIR_REQUIRED,
 	STATUS_MANUAL_REVIEW,
+	STATUS_MATERIAL_RECEIPT_USER_REVIEW,
 	STATUS_RATE_REBUILD_COMPLETE,
 	STATUS_RECONSTRUCTABLE,
 	STATUS_VALUATION_POISON_DEPENDENCY,
@@ -27,14 +31,25 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	Z3_MISSING_INCOMING_VALUATION,
 	Z4_BATCH_SABB_LOOKUP_ZERO,
 	Z6_UNKNOWN,
+	Z_MATERIAL_RECEIPT_USER_REVIEW,
 	ZERO_REASON_LEGITIMATE_SCRAP,
 	ZERO_REASON_MANUAL,
 	ZERO_REASON_MANUFACTURE_DEP,
+	ZERO_REASON_MATERIAL_RECEIPT_USER,
 	ZERO_REASON_MISSING_SOURCE,
+	ZERO_REASON_NO_AUTHORITATIVE_SOURCE,
 	ZERO_REASON_TRUE_CORRUPTION,
 	ZERO_REASON_UPSTREAM_POISONED,
 )
 from erpnext_extensions.iran_accounting.historical_stock.patient_zero import find_patient_zero
+from erpnext_extensions.iran_accounting.historical_stock.transaction_semantics import (
+	NO_INVENT_RATE,
+	RECONSTRUCT_FROM_SOURCE,
+	RECONSTRUCT_MANUFACTURE,
+	material_receipt_user_message,
+	may_auto_propose_rate,
+	purpose_semantics,
+)
 from erpnext_extensions.iran_accounting.historical_stock.util import (
 	g,
 	last_nonzero_from_version,
@@ -53,6 +68,8 @@ TRANSFER_PURPOSES = {
 	"Material Transfer for Manufacture",
 	"Send to Subcontractor",
 	"Material Issue",
+	"Material Consumption for Manufacture",
+	"Repack",
 }
 
 
@@ -147,28 +164,61 @@ def scan_zero_rate_rows(
 		patient_zero=scope.get("patient_zero"),
 	)
 	stamped["count"] = len(stamped["rows"])
-	# KPI semantics: RAW vs ACTIONABLE (legitimate scrap zeros are NO_ACTION).
-	from erpnext_extensions.iran_accounting.historical_stock import (
-		NO_ACTION_REQUIRED,
-		Z0_LEGITIMATE_SCRAP_ZERO,
-		Z0_LEGITIMATE_ZERO,
-	)
-
+	# KPI semantics (v5.3.0 purpose-first): RAW vs Actionable vs Material Receipt user review.
+	# Scrap/Reject warehouse alone is NOT a no-action exemption.
 	raw_rows = stamped["rows"]
+	user_review = [
+		r
+		for r in raw_rows
+		if r.get("status") == STATUS_MATERIAL_RECEIPT_USER_REVIEW
+		or r.get("zero_class") == Z_MATERIAL_RECEIPT_USER_REVIEW
+		or r.get("kpi_bucket") == "MATERIAL_RECEIPT_ZERO_USER_REVIEW"
+	]
 	no_action = [
 		r
 		for r in raw_rows
 		if r.get("no_action_required")
-		or r.get("status") in (NO_ACTION_REQUIRED, Z0_LEGITIMATE_ZERO, Z0_LEGITIMATE_SCRAP_ZERO)
-		or r.get("zero_class") in (Z0_LEGITIMATE_SCRAP_ZERO, Z0_LEGITIMATE_ZERO)
+		or r.get("status") in (NO_ACTION_REQUIRED, Z0_LEGITIMATE_ZERO)
+		or r.get("zero_class") == Z0_LEGITIMATE_ZERO
 	]
-	actionable = [r for r in raw_rows if r not in no_action and r.get("actionable", True)]
+	reconstructable = [
+		r
+		for r in raw_rows
+		if (
+			r.get("eligible")
+			or r.get("status") == STATUS_RECONSTRUCTABLE
+			or r.get("kpi_bucket") == "ZERO_RATE_RECONSTRUCTABLE"
+		)
+		and r not in user_review
+		and r not in no_action
+	]
+	waiting = [
+		r
+		for r in raw_rows
+		if r.get("status")
+		in (STATUS_DEPENDENCY_REPAIR_REQUIRED, STATUS_VALUATION_POISON_DEPENDENCY)
+		or "WAITING" in str(r.get("planner_status") or "")
+	]
+	# Actionable = auto-repair candidates (not user-review, not no-action).
+	actionable = [
+		r
+		for r in raw_rows
+		if r not in no_action
+		and r not in user_review
+		and (r.get("eligible") or r.get("actionable", True))
+		and r.get("status")
+		not in (STATUS_MATERIAL_RECEIPT_USER_REVIEW, STATUS_RATE_REBUILD_COMPLETE)
+	]
 	stamped["raw_count"] = len(raw_rows)
 	stamped["no_action_required_count"] = len(no_action)
-	stamped["legitimate_scrap_zero_count"] = sum(
-		1 for r in raw_rows if r.get("zero_class") == Z0_LEGITIMATE_SCRAP_ZERO
-	)
+	# Legacy field kept for dashboard compatibility — always 0 under purpose-first rules.
+	stamped["legitimate_scrap_zero_count"] = 0
+	stamped["material_receipt_user_review_count"] = len(user_review)
+	stamped["reconstructable_count"] = len(reconstructable)
+	stamped["waiting_upstream_count"] = len(waiting)
 	stamped["actionable_count"] = len(actionable)
+	stamped["by_kpi_bucket"] = _count(raw_rows, "kpi_bucket")
+	stamped["by_purpose"] = _count(raw_rows, "purpose")
 	stamped["true_zero_corruption_count"] = sum(
 		1
 		for r in actionable
@@ -176,8 +226,7 @@ def scan_zero_rate_rows(
 		in (
 			"TRUE_ZERO_RATE_CORRUPTION",
 			"MISSING_SOURCE_RATE",
-			"Z1_HISTORICAL_RATE_LOST",
-			"Z3_MISSING_INCOMING_VALUATION",
+			"AUTHORITATIVE_SOURCE_EXISTS_BUT_RATE_IS_ZERO",
 		)
 		or r.get("eligible")
 		or r.get("status") == STATUS_RECONSTRUCTABLE
@@ -193,58 +242,25 @@ def classify_zero_row(row, _cache=None) -> dict:
 	batch = g(row, "batch_no")
 	parent = g(row, "parent")
 	detail = g(row, "name")
+	sem = purpose_semantics(purpose)
 
-	# Rule 1 — zero-valued receipt into Scrap/Reject/Waste is NO_ACTION_REQUIRED.
+	# Contextual scrap/reject warehouse flag only — NEVER primary NO_ACTION.
 	from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
-		is_legitimate_scrap_zero_rate,
+		is_scrap_reject_waste_warehouse,
 		scrap_valuation_role,
 	)
 
-	if is_legitimate_scrap_zero_rate(row, company=g(row, "company")):
-		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+	scrap_wh_context = bool(
+		is_scrap_reject_waste_warehouse(g(row, "t_warehouse"), company=g(row, "company"))
+		or is_scrap_reject_waste_warehouse(g(row, "s_warehouse"), company=g(row, "company"))
+	)
+	scrap_role = scrap_valuation_role(row) if scrap_wh_context or is_scrap_row(row) else None
 
-		role = scrap_valuation_role(row)
-		return attach_rate_analysis(
-			{
-				"topic": "ZERO_RATE",
-				"voucher": parent,
-				"voucher_detail": detail,
-				"idx": g(row, "idx"),
-				"purpose": purpose,
-				"item": item,
-				"warehouse": warehouse,
-				"s_warehouse": g(row, "s_warehouse"),
-				"t_warehouse": g(row, "t_warehouse"),
-				"batch": batch,
-				"sabb": g(row, "serial_and_batch_bundle"),
-				"qty": qty,
-				"current_rate": flt(g(row, "basic_rate")),
-				"current_amount": flt(g(row, "amount")),
-				"historical_rate": 0.0,
-				"proposed_rate": 0.0,
-				"proposed_amount": 0.0,
-				"source_of_truth": "legitimate_scrap_reject_waste_warehouse",
-				"confidence": CONFIDENCE_EXACT,
-				"zero_class": Z0_LEGITIMATE_SCRAP_ZERO,
-				"zero_reason": ZERO_REASON_LEGITIMATE_SCRAP,
-				"scrap_valuation_role": role,
-				"status": NO_ACTION_REQUIRED,
-				"planner_status": NO_ACTION_REQUIRED,
-				"actionable": False,
-				"patient_zero": None,
-				"eligible": False,
-				"work_order": g(row, "work_order"),
-				"job_card": g(row, "job_card"),
-				"is_finished_item": g(row, "is_finished_item"),
-				"secondary_item_type": g(row, "secondary_item_type"),
-				"reconstruction_sources": {},
-				"rate_source": "legitimate_scrap_zero",
-				"no_action_required": True,
-			},
-			row,
-		)
-
-	if g(row, "allow_zero_valuation_rate") or purpose == "Stock Reconciliation" or g(row, "voucher_type") == "Stock Reconciliation":
+	if (
+		g(row, "allow_zero_valuation_rate")
+		or purpose == "Stock Reconciliation"
+		or g(row, "voucher_type") == "Stock Reconciliation"
+	):
 		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
 
 		return attach_rate_analysis(
@@ -283,6 +299,10 @@ def classify_zero_row(row, _cache=None) -> dict:
 				"reconstruction_sources": {},
 				"rate_source": "document_authoritative",
 				"no_action_required": True,
+				"kpi_bucket": "NO_ACTION",
+				"purpose_policy": sem.get("policy"),
+				"scrap_warehouse_context": scrap_wh_context,
+				"scrap_valuation_role": scrap_role,
 			},
 			row,
 		)
@@ -295,8 +315,6 @@ def classify_zero_row(row, _cache=None) -> dict:
 		doc = frappe.get_doc("Stock Entry", parent)
 		issued = flt(_issued_rate_for_component(doc, row))
 
-	# Idempotent: already has a non-zero basic rate → not a zero-rate defect.
-	# v5.3.0: refuse false COMPLETE when the non-zero rate is poisoned/negative/non-finite.
 	current_basic = flt(g(row, "basic_rate"))
 	if abs(current_basic) > RATE_EPS:
 		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
@@ -337,6 +355,10 @@ def classify_zero_row(row, _cache=None) -> dict:
 			"reconstruction_sources": {},
 			"rate_source": "already_valued",
 			"allow_zero_valuation_rate": g(row, "allow_zero_valuation_rate"),
+			"kpi_bucket": "NO_ACTION",
+			"purpose_policy": sem.get("policy"),
+			"scrap_warehouse_context": scrap_wh_context,
+			"scrap_valuation_role": scrap_role,
 		}
 		if not is_authoritative_healthy_rate(current_basic, allow_zero=False, allow_negative=False):
 			complete_row = reclassify_false_complete_row(complete_row)
@@ -390,9 +412,75 @@ def classify_zero_row(row, _cache=None) -> dict:
 		zero_class = Z3_MISSING_INCOMING_VALUATION
 		confidence = CONFIDENCE_AMBIGUOUS
 
+	# Purpose-first: Material Receipt must not invent rates from warehouse MA / batch alone.
+	if sem.get("policy") == NO_INVENT_RATE:
+		if not (source and may_auto_propose_rate(purpose, source) and abs(proposed) > RATE_EPS):
+			from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+			return attach_rate_analysis(
+				{
+					"topic": "ZERO_RATE",
+					"voucher": parent,
+					"voucher_detail": detail,
+					"idx": g(row, "idx"),
+					"purpose": purpose,
+					"item": item,
+					"warehouse": warehouse,
+					"s_warehouse": g(row, "s_warehouse"),
+					"t_warehouse": g(row, "t_warehouse"),
+					"batch": batch,
+					"sabb": g(row, "serial_and_batch_bundle"),
+					"qty": qty,
+					"current_rate": flt(g(row, "basic_rate")),
+					"current_amount": flt(g(row, "amount")),
+					"historical_rate": 0.0,
+					"proposed_rate": 0.0,
+					"proposed_amount": 0.0,
+					"source_of_truth": NO_AUTHORITATIVE_SOURCE,
+					"confidence": CONFIDENCE_MANUAL,
+					"zero_class": Z_MATERIAL_RECEIPT_USER_REVIEW,
+					"zero_reason": ZERO_REASON_MATERIAL_RECEIPT_USER,
+					"status": STATUS_MATERIAL_RECEIPT_USER_REVIEW,
+					"planner_status": STATUS_MATERIAL_RECEIPT_USER_REVIEW,
+					"actionable": False,
+					"auto_repairable": False,
+					"user_action_required": True,
+					"patient_zero": None,
+					"eligible": False,
+					"work_order": g(row, "work_order"),
+					"job_card": g(row, "job_card"),
+					"is_finished_item": g(row, "is_finished_item"),
+					"secondary_item_type": g(row, "secondary_item_type"),
+					"posting_date": g(row, "posting_date"),
+					"posting_time": g(row, "posting_time"),
+					"reconstruction_sources": {
+						k: v
+						for k, v in {
+							"version": version_rate,
+							"batch_inward_not_used": batch_rate,
+							"previous_healthy_sle_not_used": prev_sle_rate,
+						}.items()
+						if abs(flt(v)) > RATE_EPS
+					},
+					"rate_source": NO_AUTHORITATIVE_SOURCE,
+					"message": material_receipt_user_message(),
+					"recommended_user_action": material_receipt_user_message(),
+					"kpi_bucket": "MATERIAL_RECEIPT_ZERO_USER_REVIEW",
+					"purpose_policy": sem.get("policy"),
+					"source_kind": NO_AUTHORITATIVE_SOURCE,
+					"scrap_warehouse_context": scrap_wh_context,
+					"scrap_valuation_role": scrap_role,
+					"company": g(row, "company"),
+				},
+				row,
+			)
+
+	if source and not may_auto_propose_rate(purpose, source):
+		proposed, source, confidence = 0.0, None, CONFIDENCE_AMBIGUOUS
+		zero_class = Z3_MISSING_INCOMING_VALUATION
+
 	as_of = _row_posting_datetime(row)
 	patient = _patient_for_identity(item, warehouse, batch, cache=_cache, as_of=as_of)
-	# Later identity poison must not block an earlier EXACT reconstructable root.
 	if (
 		patient
 		and patient.get("voucher_no")
@@ -404,30 +492,37 @@ def classify_zero_row(row, _cache=None) -> dict:
 		patient = None
 	status = STATUS_MANUAL_REVIEW
 	zero_reason = ZERO_REASON_MANUAL
+	kpi_bucket = "ZERO_RATE_BLOCKED"
 	if zero_class == Z0_LEGITIMATE_ZERO:
 		status = Z0_LEGITIMATE_ZERO
 		zero_reason = Z0_LEGITIMATE_ZERO
+		kpi_bucket = "NO_ACTION"
 	elif patient and patient.get("voucher_no") and patient["voucher_no"] != parent:
 		status = STATUS_DEPENDENCY_REPAIR_REQUIRED
 		zero_reason = ZERO_REASON_MANUFACTURE_DEP if purpose == "Manufacture" else ZERO_REASON_MISSING_SOURCE
+		kpi_bucket = "ZERO_RATE_WAITING_UPSTREAM"
 	elif _identity_poisoned(item, warehouse, cache=_cache):
 		status = STATUS_VALUATION_POISON_DEPENDENCY
 		zero_reason = ZERO_REASON_UPSTREAM_POISONED
+		kpi_bucket = "ZERO_RATE_WAITING_UPSTREAM"
 	elif confidence == CONFIDENCE_EXACT and proposed > RATE_EPS:
 		status = STATUS_RECONSTRUCTABLE
-		zero_reason = ZERO_REASON_TRUE_CORRUPTION
+		zero_reason = AUTHORITATIVE_SOURCE_EXISTS_BUT_RATE_IS_ZERO
+		kpi_bucket = "ZERO_RATE_RECONSTRUCTABLE"
 	elif confidence == CONFIDENCE_LIKELY:
 		status = STATUS_MANUAL_REVIEW
 		zero_reason = ZERO_REASON_MISSING_SOURCE if zero_class == Z3_MISSING_INCOMING_VALUATION else ZERO_REASON_MANUAL
+		kpi_bucket = "ZERO_RATE_TOOL_LIMIT"
 	else:
 		status = STATUS_MANUAL_REVIEW
 		zero_reason = (
-			ZERO_REASON_MISSING_SOURCE
-			if zero_class == Z3_MISSING_INCOMING_VALUATION
+			ZERO_REASON_NO_AUTHORITATIVE_SOURCE
+			if zero_class == Z3_MISSING_INCOMING_VALUATION and not source
 			else ZERO_REASON_TRUE_CORRUPTION
 			if zero_class == Z1_HISTORICAL_RATE_LOST
 			else ZERO_REASON_MANUAL
 		)
+		kpi_bucket = "ZERO_RATE_BLOCKED" if not source else "ZERO_RATE_TOOL_LIMIT"
 
 	amount = flt(proposed) * qty
 	sources = {}
@@ -468,7 +563,12 @@ def classify_zero_row(row, _cache=None) -> dict:
 			"zero_reason": zero_reason,
 			"status": status,
 			"actionable": status
-			not in (Z0_LEGITIMATE_ZERO, NO_ACTION_REQUIRED, STATUS_RATE_REBUILD_COMPLETE),
+			not in (
+				Z0_LEGITIMATE_ZERO,
+				NO_ACTION_REQUIRED,
+				STATUS_RATE_REBUILD_COMPLETE,
+				STATUS_MATERIAL_RECEIPT_USER_REVIEW,
+			),
 			"patient_zero": patient,
 			"eligible": status == STATUS_RECONSTRUCTABLE and confidence == CONFIDENCE_EXACT,
 			"work_order": g(row, "work_order"),
@@ -479,6 +579,16 @@ def classify_zero_row(row, _cache=None) -> dict:
 			"posting_time": g(row, "posting_time"),
 			"reconstruction_sources": sources,
 			"rate_source": source,
+			"kpi_bucket": kpi_bucket,
+			"purpose_policy": sem.get("policy"),
+			"source_kind": (
+				AUTHORITATIVE_SOURCE_EXISTS_BUT_RATE_IS_ZERO
+				if source and abs(proposed) > RATE_EPS
+				else NO_AUTHORITATIVE_SOURCE
+			),
+			"scrap_warehouse_context": scrap_wh_context,
+			"scrap_valuation_role": scrap_role,
+			"company": g(row, "company"),
 		},
 		row,
 	)

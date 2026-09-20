@@ -284,6 +284,67 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 	except Exception as exc:
 		frappe.log_error(f"blocker PO scan: {exc}", "Historical Repair Blocker")
 
+	# Material Receipt zero-rate without authoritative source → USER_ACTION_REQUIRED.
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import scan_zero_rate_rows
+		from erpnext_extensions.iran_accounting.historical_stock.transaction_semantics import (
+			material_receipt_user_message,
+		)
+
+		zr = scan_zero_rate_rows(company=company, limit=min(limit, 2000))
+		mr_n = 0
+		for r in zr.get("rows") or []:
+			if (
+				r.get("status") != "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW"
+				and r.get("zero_class") != "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW"
+				and r.get("kpi_bucket") != "MATERIAL_RECEIPT_ZERO_USER_REVIEW"
+			):
+				continue
+			msg = material_receipt_user_message()
+			payload = {
+				"lane": LANE_USER_ACTION,
+				"status": STATUS_OPEN,
+				"severity": SEVERITY_MEDIUM,
+				"issue_type": MISSING_VALUATION_SOURCE,
+				"root_cause": "Material Receipt has no authoritative upstream valuation source",
+				"company": company or r.get("company"),
+				"item_code": r.get("item") or r.get("item_code"),
+				"warehouse": r.get("warehouse") or r.get("t_warehouse"),
+				"batch_no": r.get("batch") or r.get("batch_no"),
+				"voucher_type": "Stock Entry",
+				"voucher_no": r.get("voucher") or r.get("voucher_no"),
+				"posting_date": r.get("posting_date"),
+				"posting_time": r.get("posting_time"),
+				"current_qty": r.get("qty"),
+				"expected_qty": r.get("qty"),
+				"dependency_root": r.get("voucher") or r.get("voucher_no"),
+				"affected_downstream_count": 0,
+				"recommended_user_action": msg,
+				"why_automatic_repair_is_unsafe": (
+					"Inventing a Material Receipt rate would invent business truth; "
+					"no reconstructable upstream source exists."
+				),
+				"can_recheck_after_user_action": 1,
+				"user_facing_explanation": msg,
+				"last_scanned_at": scanned_at,
+				"payload_json": frappe.as_json(
+					{
+						"purpose": r.get("purpose"),
+						"kpi_bucket": r.get("kpi_bucket"),
+						"scrap_warehouse_context": r.get("scrap_warehouse_context"),
+					}
+				),
+			}
+			res = upsert_blocker(payload)
+			created += int(bool(res.get("created")))
+			updated += int(bool(res.get("updated")))
+			rows_out.append({**payload, "name": res.get("name")})
+			mr_n += 1
+			if mr_n >= 200:
+				break
+	except Exception as exc:
+		frappe.log_error(f"blocker Material Receipt zero scan: {exc}", "Historical Repair Blocker")
+
 	frappe.db.commit()
 	user_n = sum(1 for r in rows_out if r.get("lane") == LANE_USER_ACTION)
 	tool_n = sum(1 for r in rows_out if r.get("lane") == LANE_TOOL_LIMIT)

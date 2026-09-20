@@ -729,6 +729,19 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			)
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
 		return _not_ready(decision, amb_status, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
+	# Material Receipt without authoritative source → USER review (never auto-READY).
+	if (
+		status == "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW"
+		or row.get("user_action_required")
+		or row.get("zero_class") == "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW"
+	):
+		return _not_ready(
+			decision,
+			man_status,
+			row.get("message")
+			or row.get("recommended_user_action")
+			or "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW — enter valuation rate on the receipt; do not invent",
+		)
 	if status in (STATUS_MANUAL_REVIEW, Z0_LEGITIMATE_ZERO) and confidence == CONFIDENCE_MANUAL:
 		return _not_ready(decision, man_status, f"MANUAL — {status or 'operator review required'}")
 	if confidence == CONFIDENCE_MANUAL or status == Z0_LEGITIMATE_ZERO:

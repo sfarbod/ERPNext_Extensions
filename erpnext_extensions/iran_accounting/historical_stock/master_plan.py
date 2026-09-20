@@ -88,14 +88,19 @@ def build_master_repair_plan(company=None) -> dict:
 			"false_rate_rebuild_complete_refused": True,
 			"manufacture_exact_on_healthy_after": True,
 			"irr_align_before_expected_gl_gate": True,
-			"legitimate_scrap_zero_no_action": True,
+			# Deprecated: scrap WH alone no longer grants NO_ACTION.
+			"legitimate_scrap_zero_no_action": False,
+			"zero_rate_purpose_first": True,
+			"material_receipt_no_invent_rate": True,
 			"matched_but_corrupt_detected": True,
 		},
 		"message": (
 			"Master Plan V2 — prove each class with small SAFE clusters before bulk. "
 			"Repair roots before downstream. Never Global Replay / Global RIV / Global GL. "
 			"Run RIV preflight before any controlled repost. "
-			"Legitimate Scrap/Reject/Waste zero-rate receipts are NO_ACTION_REQUIRED."
+			"Zero Rate is purpose-first: Material Receipt without authoritative source "
+			"is USER_ACTION_REQUIRED (never invent a rate); Transfer/Manufacture "
+			"reconstruct from source. Scrap/Reject warehouse is contextual only."
 		),
 	}
 

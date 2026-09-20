@@ -18,7 +18,7 @@ cases repairable.
 |------|------------------|
 | Master Plan | **V2** — root-cause graph, root-vs-downstream grouping, safety banner |
 | RIV | Preflight + dependency-closure + repost impact preview before queue |
-| Wrong / Zero Rate | Authoritative-rate validation; refuse false `RATE_REBUILD_COMPLETE` |
+| Zero / Wrong Rate | Authoritative-rate validation; refuse false `RATE_REBUILD_COMPLETE`; **purpose-first Zero Rate** (Material Receipt → user review, never invent) |
 | Manufacture | Deterministic contract → **EXACT** when AFTER rates are healthy (even if BEFORE FG was negative) |
 | I1 | Dependency-cycle detection; route self-poison to Manufacture EXACT |
 | Expected GL | IRR align **before** postability gate (classify ↔ apply consistency) |
@@ -107,13 +107,14 @@ negative/exploded rates, and manufacture preview is EXACT:
 
 - Posting Order planner path unchanged; Master Plan V2 groups roots vs downstream
   and exposes **8 campaign phases** (negative-rate → … → residual manual).
-- Zero Rate:
-  - **Rule 1** — receipt into Scrap/Reject/Waste warehouse with rate≈0 →
-    `LEGITIMATE_SCRAP_ZERO_RATE` / `NO_ACTION_REQUIRED` (not corruption).
-  - **Rule 6** — actionable zeros carry precise `zero_reason`
-    (`TRUE_ZERO_RATE_CORRUPTION`, `MISSING_SOURCE_RATE`, `UPSTREAM_POISONED`, …).
-  - Dashboard exposes **Zero Rate** (actionable), **Zero Rate Raw**,
-    **Legitimate Scrap Zero Rate**.
+- Zero Rate (**purpose-first**, pre-Phase 4 correction):
+  - **Primary rule** — Stock Entry purpose + authoritative source (not Scrap/Reject WH).
+  - Material Receipt with no inventable source →
+    `MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW` / USER_ACTION_REQUIRED (never invent MA/batch).
+  - Material Transfer / TfM / Manufacture → reconstruct from source when available.
+  - Scrap/Reject warehouse is **contextual only** (legacy `legitimate_scrap_zero_count` = 0).
+  - Precise `zero_reason` / `kpi_bucket` on every row.
+  - Dashboard: **Zero Rate — Actionable**, Raw, Material Receipt User Review, Reconstructable.
 - Wrong Rate: `MATCHED_BUT_CORRUPT` when SE Detail rate == SLE rate but both
   disagree with independently reconstructed expected rate.
 - I4: unchanged apply guards; benefits from healthier upstream Wrong/Manufacture classification.
@@ -213,16 +214,19 @@ Also retain v5.2.28 `test_sle_gl_drift_v5228` regression suite.
 
 Validated against restored pre-deep-pass DB (`20260919_221747`):
 
-1. **Scrap/Reject/Waste zero** → `LEGITIMATE_SCRAP_ZERO_RATE` / `NO_ACTION_REQUIRED`
-   (`scrap_warehouse.py`). Six company warehouses discovered by name tokens.
-2. **Input-material vs manufacture scrap roles** distinguished (Rule 2).
+1. **Zero Rate purpose-first** — Material Receipt without authoritative source →
+   USER_ACTION_REQUIRED (never invent). Scrap/Reject WH is contextual only
+   (`transaction_semantics.py`). Legacy scrap-zero NO_ACTION removed.
+2. **Input-material vs manufacture scrap roles** distinguished (Rule 2) as
+   contextual metadata — not a Zero Rate exemption.
 3. **Manufacture FG** reconstructs via native Iran output contract; negative FG
    + healthy AFTER → EXACT even when another RM row is zero (Rule 3).
 4. **MATCHED_BUT_CORRUPT** when SE==SLE but both disagree with expected.
 5. **Negative Stock Root Report** for operator investigation.
 6. **Failed RIV reconcile** skips expensive preflight when SLE identity is
    already unhealthy (scan performance + HISTORICAL_ONLY KPI semantics).
-7. Dashboard KPI: actionable Zero Rate excludes legitimate scrap zeros.
+7. Dashboard KPI: **Zero Rate — Actionable** excludes Material Receipt user-review
+   and document-authorised zeros (not scrap-warehouse exemptions).
 
 Master Plan V2 exposes **8 campaign phases** derived from dependency order.
 
@@ -282,6 +286,33 @@ v5.3.0:
 2. reverses injected qty out of `opening_qty` before proposed/assert running
 3. apply pre-write gate refuses proposals that still go negative under this sim
 
+
+### Zero Rate — purpose-first semantics (pre-Phase 4)
+
+Campaign correction: Scrap/Reject warehouse destination is **not** the
+primary Zero Rate rule. Classification depends on **Stock Entry purpose /
+transaction semantics** and **whether an authoritative valuation source
+exists**.
+
+| Purpose | Zero rate behaviour |
+|---------|---------------------|
+| Material Receipt | No inventable upstream source → `MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW` / USER_ACTION_REQUIRED; never invent MA/batch rates |
+| Material Transfer / Transfer for Manufacture / Issue / Repack / Subcontract | Reconstruct from source SLE when available → EXACT/RECONSTRUCTABLE |
+| Manufacture | Reconstruct native manufacturing / issued-pool valuation |
+| Stock Reconciliation / `allow_zero_valuation_rate` | Document-authoritative zero → NO_ACTION |
+
+Also:
+
+1. `transaction_semantics.py` purpose registry
+2. KPI split: Raw / Actionable / Material Receipt User Review / Reconstructable
+3. Blocker sync for Material Receipt zeros → USER_ACTION_REQUIRED lane
+4. Scrap warehouse retained as **contextual** flag only
+
+Read-only reclass on `development.localhost` (company اسپاد فارمد دارو, backup
+campaign DB): RAW=490; former scrap NO_ACTION=35 → WAITING/RECONSTRUCTABLE/BLOCKED;
+Material Receipt USER_REVIEW=0 (22 MR zeros all have `allow_zero_valuation_rate`);
+Transfer EXACT/RECON=25; TfM=14; Manufacture=42; data_writes=0.
+Verdict: **ZERO_RATE_SEMANTICS_READY_FOR_PHASE_4**.
 
 ### Patient-zero as-of clipping (Zero Rate / I1 unlock)
 
