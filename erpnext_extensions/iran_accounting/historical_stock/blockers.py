@@ -543,8 +543,8 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 				"voucher_no": out_vn,
 				"posting_date": r.get("posting_date") or str(r.get("current_outbound_time") or "")[:10],
 				"posting_time": r.get("posting_time") or str(r.get("current_outbound_time") or "")[11:19],
-				"current_qty": r.get("min_qty_before") or r.get("qty_before"),
-				"expected_qty": r.get("min_qty_after") or r.get("qty_after"),
+				"current_qty": r.get("qty_before") or r.get("min_qty_before"),
+				"expected_qty": r.get("qty_after") or r.get("min_qty_after"),
 				"dependency_root": out_vn,
 				"affected_downstream_count": int(
 					r.get("affected_count") or r.get("dependent_count") or r.get("inbound_count") or 0
@@ -566,7 +566,8 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 					+ (f" / Batch {batch}" if batch else "")
 					+ f": first negative voucher {out_vn} "
 					f"({r.get('outbound_purpose') or r.get('purpose') or 'Stock Entry'}). "
-					f"Qty before={r.get('min_qty_before')}, movement leads to negative. "
+					f"Opening={r.get('opening_qty')}, qty_before={r.get('qty_before') or r.get('min_qty_before')}, "
+					f"movement={r.get('movement_qty')}, qty_after={r.get('qty_after') or r.get('min_qty_after')}. "
 					"Previous/next vouchers are in payload_json for review."
 				),
 				"last_scanned_at": scanned_at,
@@ -581,12 +582,26 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 						"outbound_purpose": r.get("outbound_purpose") or r.get("purpose"),
 						"previous_voucher": r.get("previous_voucher") or r.get("prior_voucher"),
 						"next_voucher": r.get("next_voucher") or r.get("inbound_document"),
-						"qty_before": r.get("min_qty_before") or r.get("qty_before"),
-						"movement_qty": r.get("outbound_qty") or r.get("qty"),
-						"qty_after": r.get("min_qty_after") or r.get("qty_after"),
+						"opening_qty": r.get("opening_qty"),
+						"opening_source_voucher": r.get("opening_source_voucher"),
+						"opening_source_datetime": r.get("opening_source_datetime"),
+						"opening_source": r.get("opening_source"),
+						"qty_before": r.get("qty_before") or r.get("min_qty_before"),
+						"movement_qty": r.get("movement_qty") or r.get("outbound_qty") or r.get("qty"),
+						"qty_after": r.get("qty_after") or r.get("min_qty_after"),
+						"minimum_historical_qty": r.get("minimum_historical_qty") or r.get("min_qty_before"),
+						"first_negative_voucher": r.get("first_negative_voucher") or out_vn,
+						"first_negative_datetime": r.get("first_negative_datetime")
+						or r.get("current_outbound_time"),
+						"identity_scope": r.get("identity_scope"),
+						"batch": batch,
+						"sabb": r.get("sabb_outbound") or r.get("sabb"),
+						"simulation_start": r.get("simulation_start"),
+						"simulation_end": r.get("simulation_end"),
 						"min_qty_before": r.get("min_qty_before"),
 						"min_qty_after": r.get("min_qty_after"),
 						"posting_datetime": r.get("current_outbound_time"),
+						"shortage_evidence": r.get("shortage_evidence"),
 					}
 				),
 			}
@@ -597,6 +612,45 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 			shortage_n += 1
 			if shortage_n >= 500:
 				break
+		# Resolve OPEN shortage blockers no longer confirmed by the scanner
+		# (false-positive opening-state / window / batch scope). Keep history.
+		resolved_fp = 0
+		open_hns = frappe.get_all(
+			"Historical Repair Blocker",
+			filters={
+				"issue_type": HISTORICAL_NEGATIVE_STOCK,
+				"status": STATUS_OPEN,
+				"lane": LANE_USER_ACTION,
+			},
+			fields=["name", "item_code", "warehouse", "batch_no", "voucher_no", "blocker_key"],
+			limit=2000,
+		)
+		for blk in open_hns:
+			rk = (
+				blk.item_code,
+				blk.warehouse,
+				blk.batch_no or "",
+				blk.voucher_no or "",
+			)
+			if rk in root_set:
+				continue
+			doc = frappe.get_doc("Historical Repair Blocker", blk.name)
+			doc.status = STATUS_RESOLVED
+			doc.user_facing_explanation = (
+				(doc.user_facing_explanation or "")
+				+ "\n[v5.3.0] Auto-resolved: shortage reclassification no longer confirms "
+				"REAL_STOCK_SHORTAGE (opening-state-aware simulation)."
+			).strip()
+			try:
+				extra = frappe.parse_json(doc.payload_json) if doc.payload_json else {}
+			except Exception:
+				extra = {}
+			extra["resolved_reason"] = "FALSE_POSITIVE_OPENING_STATE_OR_RECLASS"
+			extra["resolved_at"] = str(scanned_at)
+			doc.payload_json = frappe.as_json(extra)
+			doc.last_scanned_at = scanned_at
+			doc.save(ignore_permissions=True)
+			resolved_fp += 1
 		# Attach summary so callers/dashboard can show findings vs root blockers.
 		frappe.flags.hr_shortage_summary = {
 			"affected_findings": shortage_findings,
@@ -604,6 +658,7 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 			"unique_item_warehouse": len(iw_set),
 			"unique_item_batch_warehouse": len(ibw_set),
 			"blockers_written": shortage_n,
+			"false_positives_resolved": resolved_fp,
 		}
 	except Exception as exc:
 		frappe.log_error(f"blocker PO shortage scan: {exc}", "Historical Repair Blocker")

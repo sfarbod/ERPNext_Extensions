@@ -482,3 +482,55 @@ Not merely the post-replay gate:
 Verdict: **PHASE_5C_NEEDS_FURTHER_TOOL_DEVELOPMENT** — Transfer EXACT not yet 0;
 chunked drain + Wrong/Zero/I4 unlock continue; no broad GL / global RIV.
 
+---
+
+## Shortage classifier — opening-state / qty_after alignment (STOP before Phase 5C waves)
+
+**Confirmed false positive:** Item `10510117` / `MAT-STE-2026-24520`
+
+- Native ledger: Opening Stock Reconciliation `MAT-RECO-2026-02784` sets
+  `qty_after=4` (with `actual_qty=0`), then Material Issue qty_out=1 → balance 3.
+- Old classifier summed `actual_qty` only → opening=0 → simulated min=-1 →
+  `REAL_STOCK_SHORTAGE` / `USER_ACTION_REQUIRED`.
+
+**Root cause:** historical shortage simulation ignored authoritative
+`qty_after_transaction` on absolute-balance rows (Opening Stock RECO and
+similar). Window/opening helpers summed raw `actual_qty`, defaulting mid-ledger
+identities to opening 0.
+
+**Generic fix (no whitelist):**
+
+| Helper | Behaviour |
+|--------|-----------|
+| `simulation.align_movements_to_qty_after` | Patch effective `actual_qty` to `qty_after - qty_before` when they disagree |
+| `simulation.opening_state_before` | Opening = last prior SLE `qty_after` (never Bin) |
+| `scanner._opening_before` | Uses `opening_state_before` |
+| `negative_interval.walk_running` | Aligns before walk; skips intervals where native `qty_after >= 0` |
+| Contract | `REAL_STOCK_SHORTAGE` only if authoritative `qty_after < 0` at the movement |
+| Evidence | opening_qty/source, qty_before, movement, qty_after, min historical, first negative, identity, simulation window |
+| Blocker sync | OPEN `HISTORICAL_NEGATIVE_STOCK` not reconfirmed → `RESOLVED` (history kept) |
+
+**Tests:** `test_shortage_opening_state_v530` — healthy 4→1, true shortage 4→5,
+windowed opening, batch healthy/shortage.
+
+**Reclassification (read-only audit of prior 292 OPEN shortage blockers):**
+
+| Bucket | Count |
+|--------|------:|
+| FALSE_POSITIVE_OPENING_STATE | 121 |
+| FALSE_POSITIVE_BATCH_SCOPE | 75 |
+| CONFIRMED_REAL_SHORTAGE | 96 |
+| After live scan `REAL_STOCK_SHORTAGE` | 121 |
+| FP blockers resolved on sync | 186 |
+| OPEN shortage blockers after | 121 |
+| OPEN USER_ACTION_REQUIRED | 419 → 248 |
+
+`10510117` / `MAT-STE-2026-24520` blocker → **RESOLVED**.
+
+**Safety (no stock repair in this cut):** I1=0, neg valuation/incoming/FG=0, active RIV=0.
+
+**Do not resume Phase 5C bulk waves until this audit is accepted.**
+
+Verdict: **SHORTAGE_CLASSIFIER_FIXED_READY_TO_RESUME_PHASE_5C**
+
+

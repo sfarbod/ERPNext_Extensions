@@ -75,7 +75,17 @@ def order_with_times(sles: list, times: dict | None = None) -> list:
 
 
 def simulate_running(sles: list, opening=0, times: dict | None = None, *, preserve_order: bool = False) -> dict:
-	ordered = list(sles) if preserve_order else order_with_times(sles, times)
+	from erpnext_extensions.iran_accounting.stock_posting_order.simulation import (
+		align_movements_to_qty_after,
+	)
+
+	# Current-order walks must honour qty_after absolute balances (Opening RECO).
+	# Proposed-time walks keep caller-supplied movements (already aligned upstream
+	# when the series came from negative_interval / scanner).
+	work = sles
+	if times is None and not preserve_order:
+		work = align_movements_to_qty_after(sles, opening=opening)
+	ordered = list(work) if preserve_order else order_with_times(work, times)
 	run = D(opening)
 	minimum = run
 	series = []

@@ -121,17 +121,16 @@ def _identity_key(row) -> tuple:
 
 
 def _opening_before(series: list, t_dt, t_creation) -> float:
-	total = D(0)
-	for row in series:
-		dt = get_datetime(row["posting_datetime"])
-		cr = str(row.get("creation") or "")
-		if dt < t_dt or (dt == t_dt and cr < t_creation):
-			total += D(row.get("actual_qty"))
-		else:
-			# series is ordered; later rows cannot be before T
-			if dt > t_dt:
-				break
-	return total
+	"""Authoritative qty immediately before boundary (qty_after, not sum of actual_qty).
+
+	Opening Stock Reconciliation may store qty_after without matching actual_qty;
+	summing actual_qty falsely yields opening=0 and REAL_STOCK_SHORTAGE FPs.
+	"""
+	from erpnext_extensions.iran_accounting.stock_posting_order.simulation import (
+		opening_state_before,
+	)
+
+	return opening_state_before(series, t_dt, t_creation)["opening_qty"]
 
 
 def _voucher_edges(group_rows: list, against_map: dict) -> tuple[list, str, str]:
