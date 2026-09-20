@@ -401,3 +401,36 @@
 .historical-repair-page .hr-row-exact[data-repair-class="I4_LEFTOVER_REPAIR"] td:nth-child(5) {
 	font-weight: 600;
 }
+
+.historical-repair-page .hr-status-strip {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin: 6px 0 10px;
+	padding: 6px 10px;
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	background: var(--subtle-fg, var(--bg-color));
+	font-size: 12px;
+}
+.historical-repair-page .hr-pill {
+	display: inline-block;
+	padding: 1px 8px;
+	border-radius: 999px;
+	border: 1px solid var(--border-color);
+	font-weight: 600;
+	font-size: 11px;
+}
+.historical-repair-page .hr-pill-fresh { background: #e8f5e9; color: #1b5e20; }
+.historical-repair-page .hr-pill-stale { background: #fff8e1; color: #f57f17; }
+.historical-repair-page .hr-pill-scanning { background: #e3f2fd; color: #0d47a1; }
+.historical-repair-page .hr-pill-failed,
+.historical-repair-page .hr-pill-worker_unavailable,
+.historical-repair-page .hr-pill-not_scanned { background: #ffebee; color: #b71c1c; }
+.historical-repair-page .hr-kpi-stale { opacity: 0.92; border-style: dashed; }
+.historical-repair-page .hr-kpi-scanning { outline: 1px dashed var(--blue-400, #42a5f5); }
+.historical-repair-page .hr-kpi-failed { outline: 1px solid var(--red-400, #ef5350); }
+.historical-repair-page .hr-repair-advanced {
+	opacity: 0.95;
+}

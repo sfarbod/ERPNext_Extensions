@@ -108,6 +108,22 @@ const KPI_ORDER = [
 	"Average Replay Time",
 ];
 
+/** Default operational chips — detail statuses stay in Advanced Mode. */
+const KPI_PRIORITY = [
+	"Integrity Score",
+	"User Action Required",
+	"Tool Limit",
+	"I1 Negative Rate",
+	"I4 Leftover",
+	"Posting Order",
+	"Wrong Rate",
+	"Zero Rate",
+	"Broken GL",
+	"Failed RIV",
+	"Broken Bin",
+	"Patient Zero",
+];
+
 class HistoricalRepairPage {
 	constructor(page) {
 		this.page = page;
@@ -133,11 +149,15 @@ class HistoricalRepairPage {
 		this.active_kpi_label = null;
 		this.topic_state = {};
 		this._reset_topic_state();
+		this.freshness = "NOT_SCANNED";
+		this.worker_state = null;
+		this.metrics_meta = null;
 		this.access = this._access_from_boot();
 		this.$body = $(page.body);
 		this.render();
 		this._bind_keys();
-		this.scan_all({ auto: true });
+		// Never auto-enqueue Scan All on page open — load last metrics snapshot instead.
+		this.load_dashboard_summary({ auto: true });
 	}
 
 	_reset_topic_state() {
@@ -260,7 +280,7 @@ class HistoricalRepairPage {
 		}
 		this._invalidate_topic_rows(__("company changed ({0} → {1})", [prev || "—", company || "—"]));
 		this.render_table();
-		if (company) this.scan_all({ auto: true });
+		if (company) this.load_dashboard_summary({ auto: true });
 	}
 
 	_topic_unloaded_message() {
@@ -313,6 +333,8 @@ class HistoricalRepairPage {
 		});
 		this.$dashboard = $('<div class="hr-dashboard" data-role="dashboard">').appendTo(this.$sticky);
 		this.render_dashboard({});
+		this.$status = $('<div class="hr-status-strip" data-role="status-strip">').appendTo(this.$sticky);
+		this._render_status_strip();
 		this.$title = $('<h4 class="hr-section-title">').appendTo(this.$sticky);
 		this.$toolbar = $('<div class="hr-toolbar">').appendTo(this.$sticky);
 		this._scope_control("company", "Link", "Company", "Company");
@@ -366,15 +388,17 @@ class HistoricalRepairPage {
 		if (this.access.can_repair) {
 			const g2 = $('<div class="hr-action-group" data-group="repair">').appendTo($actions);
 			this.btn_repair = this._btn(g2, "repair", __("Repair Selected"), () => this.repair_bulk("selected"), "btn-danger", __("Repair checked EXACT rows"));
-			this.btn_repair_i4 = this._btn(g2, "repair-i4", __("Repair I4 Patient Zero"), () => this.repair_i4_patient_zero(), "btn-danger", __("Identity-scoped I4 leftover repair from Patient Zero"));
-			this.btn_repair_i1 = this._btn(g2, "repair-i1", __("Repair I1 Negative Rate"), () => this.repair_i1_negative_rate(), "btn-danger", __("Reprice secondary inbound from this document's issue rate"));
-			this.btn_repair_filter = this._btn(g2, "repair-filter", __("Repair Current Filter"), () => this.repair_bulk("filter"), "btn-danger", __("Repair EXACT rows matching search and column filters"));
-			this.btn_repair_page = this._btn(g2, "repair-page", __("Repair Current Page"), () => this.repair_bulk("page"), "btn-danger", __("Repair visible EXACT rows"));
-			this.btn_repair_scope = this._btn(g2, "repair-scope", __("Repair Current Scope"), () => this.repair_bulk("scope"), "btn-danger", __("Repair every EXACT row in this topic scan"));
 			this.btn_repair_chain = this._btn(g2, "repair-chain", __("Repair Dependency Chain"), () => this.repair_dependency_chain(), "btn-danger", __("Repair only the READY root. Never warehouse/item/company-wide"));
-			this.btn_replay_ds = this._btn(g2, "replay-downstream", __("Replay Downstream"), () => this.replay_downstream(), "btn-info", __("Identity-scoped downstream replay"));
-			this.btn_rebuild_docs = this._btn(g2, "rebuild-docs", __("Rebuild Affected Documents"), () => this.rebuild_affected_documents(), "btn-info", __("Identity-scoped rebuild"));
 			this.btn_repost = this._btn(g2, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning", __("One Item+Warehouse RIV. Never global"));
+			this.$repair_advanced = $('<div class="hr-action-group hr-repair-advanced" data-group="repair-advanced">').appendTo($actions);
+			this.btn_repair_i4 = this._btn(this.$repair_advanced, "repair-i4", __("Repair I4 Patient Zero"), () => this.repair_i4_patient_zero(), "btn-danger", __("Identity-scoped I4 leftover repair from Patient Zero"));
+			this.btn_repair_i1 = this._btn(this.$repair_advanced, "repair-i1", __("Repair I1 Negative Rate"), () => this.repair_i1_negative_rate(), "btn-danger", __("Reprice secondary inbound from this document's issue rate"));
+			this.btn_repair_filter = this._btn(this.$repair_advanced, "repair-filter", __("Repair Current Filter"), () => this.repair_bulk("filter"), "btn-danger", __("Repair EXACT rows matching search and column filters"));
+			this.btn_repair_page = this._btn(this.$repair_advanced, "repair-page", __("Repair Current Page"), () => this.repair_bulk("page"), "btn-danger", __("Repair visible EXACT rows"));
+			this.btn_repair_scope = this._btn(this.$repair_advanced, "repair-scope", __("Repair Current Scope"), () => this.repair_bulk("scope"), "btn-danger", __("Repair every EXACT row in this topic scan"));
+			this.btn_replay_ds = this._btn(this.$repair_advanced, "replay-downstream", __("Replay Downstream"), () => this.replay_downstream(), "btn-info", __("Identity-scoped downstream replay"));
+			this.btn_rebuild_docs = this._btn(this.$repair_advanced, "rebuild-docs", __("Rebuild Affected Documents"), () => this.rebuild_affected_documents(), "btn-info", __("Identity-scoped rebuild"));
+			this.$repair_advanced.toggle(false);
 			this._lock_writes(true);
 		}
 		const g3 = $('<div class="hr-action-group" data-group="inspect">').appendTo($actions);
@@ -441,15 +465,19 @@ class HistoricalRepairPage {
 		);
 		this.btn_goto_root = this._btn(g3, "goto-root", __("Go To Root Cause"), () => this.go_to_root_cause(), "btn-primary", __("Filter, select, and show the patient-zero repair plan"));
 		this.btn_history = this._btn(g3, "history", __("Repair History"), () => this.show_history(), "btn-default", __("Previous repair runs"));
-		if (this.access.can_admin) {
+		if (this.access.can_admin || this.access.can_repair) {
 			const $adv = $('<label class="hr-advanced">').appendTo(g3);
 			this.$advanced = $('<input type="checkbox" data-role="advanced">').appendTo($adv);
 			$adv.append(document.createTextNode(" " + __("Advanced Mode")));
-			$adv.attr("title", __("Administrator experimental tools"));
+			$adv.attr("title", __("Show bulk repair variants and experimental tools"));
 			this.$advanced.on("change", () => {
 				this.advanced = this.$advanced.prop("checked");
 				this.$admin_group && this.$admin_group.toggle(this.advanced);
+				this.$repair_advanced && this.$repair_advanced.toggle(this.advanced);
+				this.render_dashboard(this.last_dashboard || {});
 			});
+		}
+		if (this.access.can_admin) {
 			this.$admin_group = $('<div class="hr-action-group" data-group="admin">').appendTo($actions);
 			this.btn_resume = this._btn(this.$admin_group, "resume", __("Resume"), () => this.resume());
 			this.btn_cancel = this._btn(this.$admin_group, "cancel", __("Cancel"), () => { this.cancelled = true; });
@@ -1252,39 +1280,6 @@ class HistoricalRepairPage {
 		});
 	}
 
-	scan_all(opts) {
-		const auto = !!(opts && opts.auto);
-		this.start_progress();
-		if (auto) this.$eta.text(__("Scan All… queued on long worker"));
-		else this.$eta.text(__("Scan All… queued"));
-		// Async path: enqueue on long queue and poll. Avoids HTTP / proxy timeouts
-		// on production-size Scan All (often 20–60s+ synchronously).
-		frappe.call({
-			method: `${this.api}.start_scan_all_job`,
-			args: { company: this.company.get_value() },
-			freeze: false,
-			callback: (r) => {
-				const start = r.message || {};
-				const jobId = start.job_id;
-				if (!jobId) {
-					this.end_progress();
-					this.$preview.text(__("Scan All failed to enqueue. No writes were attempted."));
-					return;
-				}
-				if (start.deduplicated) {
-					this.$eta.text(__("Scan All already running — attaching to job {0}", [jobId]));
-				} else {
-					this.$eta.text(__("Scan All queued ({0})", [jobId]));
-				}
-				this._poll_scan_all_job(jobId, auto, 0);
-			},
-			error: () => {
-				this.end_progress();
-				this.$preview.text(__("Scan All failed to enqueue. Retry Scan All. No writes were attempted."));
-			},
-		});
-	}
-
 	_poll_scan_all_job(jobId, auto, attempt) {
 		const maxAttempts = 900; // ~30 min at 2s
 		frappe.call({
@@ -1294,8 +1289,9 @@ class HistoricalRepairPage {
 			callback: (r) => {
 				const job = r.message || {};
 				const status = String(job.status || "");
-				const phase = job.phase || status;
+				const phase = job.phase || job.current_scanner || status;
 				const progress = job.progress != null ? job.progress : "";
+				if (job.worker) this.worker_state = job.worker;
 				this.$eta.text(
 					__("Scan All {0} — {1}{2}", [
 						status,
@@ -1303,6 +1299,7 @@ class HistoricalRepairPage {
 						progress !== "" ? ` (${progress}%)` : "",
 					])
 				);
+				this._render_status_strip();
 				if (status === "COMPLETED") {
 					this.end_progress();
 					const msg = job.result || {};
@@ -1313,6 +1310,12 @@ class HistoricalRepairPage {
 					this.scan_all_company = this.company && this.company.get_value();
 					this.last_scan_all = msg;
 					this.last_dashboard = msg.dashboard || {};
+					this.freshness = "FRESH";
+					this.metrics_meta = Object.assign({}, this.metrics_meta || {}, {
+						scanned_at: job.finished_at || new Date().toISOString(),
+						source: "scan_all",
+						pending_job: null,
+					});
 					this._invalidate_topic_rows(null);
 					this.render_dashboard(this.last_dashboard);
 					const unloadNote =
@@ -1322,15 +1325,28 @@ class HistoricalRepairPage {
 						"\n" +
 						this.format_preview(msg);
 					this.$preview.text(unloadNote);
-					// Auto-load the active topic so the visible grid never looks like "no data"
-					// while its dashboard KPI is non-zero.
 					this.scan({ after_scan_all: true });
+					return;
+				}
+				if (status === "WORKER_UNAVAILABLE" || status === "STALE_JOB") {
+					this.end_progress();
+					this.freshness = this.last_dashboard && Object.keys(this.last_dashboard).length ? "STALE" : "FAILED";
+					this.render_dashboard(this.last_dashboard || {});
+					this.$preview.text(
+						__(status) +
+							"\n" +
+							(job.error || job.message || "") +
+							"\n" +
+							__("Last successful metrics remain visible when available.")
+					);
 					return;
 				}
 				if (status === "FAILED" || status === "CANCELLED") {
 					this.end_progress();
+					this.freshness = this.last_dashboard && Object.keys(this.last_dashboard).length ? "STALE" : "FAILED";
+					this._render_status_strip();
 					this.$preview.text(
-						__("Scan All failed: {0}", [job.error || status]) +
+						__("Scan All {0}: {1}", [status, job.error || status]) +
 							" " +
 							__("No writes were attempted.")
 					);
@@ -1356,16 +1372,159 @@ class HistoricalRepairPage {
 
 	render_dashboard(dash) {
 		this.$dashboard.empty();
-		KPI_ORDER.forEach((label) => {
-			const n = dash && dash[label] != null ? dash[label] : "—";
+		const labels = this.advanced ? KPI_ORDER : KPI_PRIORITY;
+		const freshness = this.freshness || "NOT_SCANNED";
+		labels.forEach((label) => {
+			const has = dash && Object.prototype.hasOwnProperty.call(dash, label) && dash[label] != null;
+			const n = has ? dash[label] : null;
+			// Prefer last known value even when STALE / SCANNING — never blank out known KPIs.
+			const shown = n != null ? n : "—";
 			const $chip = $('<button type="button" class="hr-kpi">')
 				.attr("title", __("Open this problem in the grid"))
+				.attr("data-freshness", freshness)
 				.append($('<span class="hr-kpi-label">').text(label))
-				.append($('<b class="hr-kpi-value">').text(n));
+				.append($('<b class="hr-kpi-value">').text(shown));
 			if (label === "Integrity Score") $chip.addClass("hr-kpi-score");
-			else if (typeof n === "number" && n > 0) $chip.addClass("hr-kpi-alert");
+			else if (typeof shown === "number" && shown > 0) $chip.addClass("hr-kpi-alert");
+			if (freshness === "STALE") $chip.addClass("hr-kpi-stale");
+			if (freshness === "SCANNING") $chip.addClass("hr-kpi-scanning");
+			if (freshness === "FAILED" || freshness === "WORKER_UNAVAILABLE") $chip.addClass("hr-kpi-failed");
 			$chip.on("click", () => this._open_kpi(label));
 			this.$dashboard.append($chip);
+		});
+		this._render_status_strip();
+	}
+
+	_render_status_strip() {
+		if (!this.$status) return;
+		this.$status.empty();
+		const parts = [];
+		const fresh = this.freshness || "NOT_SCANNED";
+		parts.push(`<span class="hr-pill hr-pill-${String(fresh).toLowerCase()}">${frappe.utils.escape_html(fresh)}</span>`);
+		if (this.metrics_meta && this.metrics_meta.scanned_at) {
+			parts.push(
+				`<span class="text-muted">${__("Last scan")}: ${frappe.utils.escape_html(String(this.metrics_meta.scanned_at).slice(0, 19))}</span>`
+			);
+		}
+		const w = this.worker_state || {};
+		if (w.available === false) {
+			parts.push(
+				`<span class="hr-pill hr-pill-worker_unavailable">${__("WORKER_UNAVAILABLE")}</span>`
+			);
+			parts.push(
+				`<span class="text-muted">${frappe.utils.escape_html(w.message || __("Background workers are paused."))}</span>`
+			);
+		} else if (w.available) {
+			parts.push(`<span class="hr-pill hr-pill-fresh">${__("Workers OK")}</span>`);
+		}
+		const pending = (this.metrics_meta && this.metrics_meta.pending_job) || null;
+		if (pending && pending.status) {
+			parts.push(
+				`<span class="hr-pill">${frappe.utils.escape_html(pending.status)} ${pending.progress != null ? pending.progress + "%" : ""}</span>`
+			);
+			if (pending.phase) {
+				parts.push(`<span class="text-muted">${frappe.utils.escape_html(pending.phase)}</span>`);
+			}
+		}
+		if (this.metrics_meta && this.metrics_meta.elapsed_ms != null) {
+			parts.push(`<span class="text-muted">${__("Summary")} ${this.metrics_meta.elapsed_ms} ms</span>`);
+		}
+		this.$status.html(parts.join(" · "));
+	}
+
+	load_dashboard_summary(opts) {
+		const auto = !!(opts && opts.auto);
+		const t0 = performance.now();
+		frappe.call({
+			method: `${this.api}.get_dashboard_summary_api`,
+			args: { company: this.company ? this.company.get_value() : null },
+			freeze: false,
+			callback: (r) => {
+				const msg = r.message || {};
+				this.freshness = msg.freshness || "NOT_SCANNED";
+				this.worker_state = msg.worker || null;
+				this.metrics_meta = {
+					scanned_at: msg.scanned_at,
+					source: msg.source,
+					pending_job: msg.pending_job,
+					elapsed_ms: msg.elapsed_ms,
+					load_ms: Math.round(performance.now() - t0),
+				};
+				if (msg.dashboard && Object.keys(msg.dashboard).length) {
+					this.last_dashboard = msg.dashboard;
+					this.render_dashboard(msg.dashboard);
+				} else {
+					this.render_dashboard(this.last_dashboard || {});
+				}
+				if (msg.pending_job && ["QUEUED", "RUNNING"].includes(msg.pending_job.status)) {
+					this.scan_all_job_id = msg.pending_job.job_id;
+					this.$eta && this.$eta.text(__("Attaching to {0} job {1}", [msg.pending_job.status, msg.pending_job.job_id]));
+					this._poll_scan_all_job(msg.pending_job.job_id, auto, 0);
+				} else if (msg.pending_job && msg.pending_job.status === "WORKER_UNAVAILABLE") {
+					this.$eta &&
+						this.$eta.text(
+							__("WORKER_UNAVAILABLE — {0}", [msg.pending_job.error || msg.message || ""])
+						);
+				} else if (auto && this.freshness === "NOT_SCANNED") {
+					this.$eta &&
+						this.$eta.text(
+							__("No metrics snapshot yet. Click Scan All when workers are available.")
+						);
+				} else if (this.$eta) {
+					this.$eta.text(msg.message || __("Dashboard loaded from snapshot."));
+				}
+			},
+			error: () => {
+				this.$eta && this.$eta.text(__("Dashboard summary failed to load."));
+			},
+		});
+	}
+
+	scan_all(opts) {
+		const auto = !!(opts && opts.auto);
+		this.start_progress();
+		if (auto) this.$eta.text(__("Scan All… checking workers"));
+		else this.$eta.text(__("Scan All…"));
+		frappe.call({
+			method: `${this.api}.start_scan_all_job`,
+			args: { company: this.company.get_value() },
+			freeze: false,
+			callback: (r) => {
+				const start = r.message || {};
+				const jobId = start.job_id;
+				const status = String(start.status || "");
+				this.worker_state = start.worker || this.worker_state;
+				if (status === "WORKER_UNAVAILABLE") {
+					this.end_progress();
+					this.freshness = this.last_dashboard && Object.keys(this.last_dashboard).length ? "STALE" : "FAILED";
+					this._render_status_strip();
+					this.$preview.text(
+						__("WORKER_UNAVAILABLE") +
+							"\n" +
+							(start.message ||
+								__("Background workers are paused. Start workers or keep using the last metrics snapshot."))
+					);
+					this.$eta.text(__("WORKER_UNAVAILABLE — not queued"));
+					return;
+				}
+				if (!jobId) {
+					this.end_progress();
+					this.$preview.text(__("Scan All failed to enqueue. No writes were attempted."));
+					return;
+				}
+				if (start.deduplicated) {
+					this.$eta.text(__("Scan All already {0} — attaching to job {1}", [status || "running", jobId]));
+				} else {
+					this.$eta.text(__("Scan All {0} ({1})", [status || "QUEUED", jobId]));
+				}
+				this.freshness = "SCANNING";
+				this._render_status_strip();
+				this._poll_scan_all_job(jobId, auto, 0);
+			},
+			error: () => {
+				this.end_progress();
+				this.$preview.text(__("Scan All failed to enqueue. Retry Scan All. No writes were attempted."));
+			},
 		});
 	}
 

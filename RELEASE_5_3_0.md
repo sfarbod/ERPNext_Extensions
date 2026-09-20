@@ -293,3 +293,20 @@ v5.3.0:
 | Promoted LIKELY READY mislabeled as TOOL_LIMIT | stamp EXACT confidence on attach_plan |
 | Batch STALE_PREVIEW after sibling multi-move | skip collateral-moved outbounds |
 | Multi-move apply false-fail (pre-window SE) | inject moves into window + opening adjust |
+| Blank KPI / QUEUED 0% with workers paused | metrics snapshot + WORKER_UNAVAILABLE gate |
+
+### Dashboard snapshot / Scan All job lifecycle
+
+Campaign finding: page load called `scan_all({auto:true})` which enqueued
+`long` RQ jobs while controlled-repair workers were paused. KPI chips stayed
+`—` until a job completed; status showed `QUEUED (0%)` indefinitely.
+
+v5.3.0 adds:
+
+1. DocType **Historical Repair Metrics Snapshot** + `metrics_snapshot.py`
+2. Fast `get_dashboard_summary_api` (snapshot + worker probe; no full SLE scan)
+3. Scan job states: `QUEUED|RUNNING|COMPLETED|FAILED|CANCELLED|STALE_JOB|WORKER_UNAVAILABLE`
+4. Duplicate active-job dedupe; cancel for QUEUED
+5. Incremental rescan APIs (`rescan_item_warehouse` / `rescan_voucher` / `rescan_root`)
+6. UI: priority KPI chips, status strip (FRESH/STALE/…), Advanced Mode hides bulk repair variants
+7. Page open loads snapshot — does **not** auto-enqueue Scan All

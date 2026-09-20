@@ -92,7 +92,21 @@ def scan_all(company=None):
 	"""Synchronous Scan All (compat / small tenants). Prefer start_scan_all_job on UI."""
 	_guard()
 	# Dashboard Scan All skips manufacture get_doc loops; Manufacture tab still scans itself.
-	return run_full_integrity_scan(company=company or None, include_manufacture=False)
+	result = run_full_integrity_scan(company=company or None, include_manufacture=False)
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+			save_metrics_snapshot,
+		)
+
+		save_metrics_snapshot(
+			company=company or None,
+			dashboard=(result or {}).get("dashboard") or {},
+			timing=(result or {}).get("timing") or {},
+			source="scan_all_sync",
+		)
+	except Exception:
+		pass
+	return result
 
 
 @frappe.whitelist()
@@ -113,6 +127,76 @@ def get_scan_all_job(job_id=None):
 	if not job_id:
 		frappe.throw("job_id required")
 	return _get(job_id)
+
+
+@frappe.whitelist()
+def cancel_scan_all_job(job_id=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.scan_job import cancel_scan_all_job as _cancel
+
+	if not job_id:
+		frappe.throw("job_id required")
+	return _cancel(job_id)
+
+
+@frappe.whitelist()
+def get_dashboard_summary_api(company=None):
+	"""Fast page-load summary from metrics snapshot + worker state. No full scan."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+		get_dashboard_summary,
+	)
+
+	return get_dashboard_summary(company=company or None)
+
+
+@frappe.whitelist()
+def worker_status_api():
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+		worker_queue_status,
+	)
+
+	return worker_queue_status("long")
+
+
+@frappe.whitelist()
+def rescan_item_warehouse_api(company=None, item_code=None, warehouse=None, limit=500):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.incremental_rescan import (
+		rescan_item_warehouse,
+	)
+
+	return rescan_item_warehouse(
+		company=company or None,
+		item_code=item_code,
+		warehouse=warehouse,
+		limit=limit,
+	)
+
+
+@frappe.whitelist()
+def rescan_voucher_api(company=None, voucher=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.incremental_rescan import (
+		rescan_voucher,
+	)
+
+	return rescan_voucher(company=company or None, voucher=voucher)
+
+
+@frappe.whitelist()
+def rescan_root_api(company=None, root_id=None, voucher=None, item_code=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.incremental_rescan import rescan_root
+
+	return rescan_root(
+		company=company or None,
+		root_id=root_id,
+		voucher=voucher,
+		item_code=item_code,
+		warehouse=warehouse,
+	)
 
 
 @frappe.whitelist()
