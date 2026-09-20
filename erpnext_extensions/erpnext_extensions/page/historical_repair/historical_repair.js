@@ -1374,6 +1374,12 @@ class HistoricalRepairPage {
 		this.$dashboard.empty();
 		const labels = this.advanced ? KPI_ORDER : KPI_PRIORITY;
 		const freshness = this.freshness || "NOT_SCANNED";
+		const rawHints = {
+			"Failed RIV": "Failed RIV Raw",
+			"Zero Rate": "Zero Rate Raw",
+			"Wrong Rate": "Wrong Rate Complete",
+			"Posting Order": null,
+		};
 		labels.forEach((label) => {
 			const has = dash && Object.prototype.hasOwnProperty.call(dash, label) && dash[label] != null;
 			const n = has ? dash[label] : null;
@@ -1384,6 +1390,20 @@ class HistoricalRepairPage {
 				.attr("data-freshness", freshness)
 				.append($('<span class="hr-kpi-label">').text(label))
 				.append($('<b class="hr-kpi-value">').text(shown));
+			const rawKey = rawHints[label];
+			if (rawKey && dash && dash[rawKey] != null && dash[rawKey] !== shown) {
+				const detail =
+					label === "Failed RIV"
+						? __("{0} historical records", [dash[rawKey]])
+						: label === "Zero Rate"
+							? __("raw {0}", [dash[rawKey]])
+							: __("detail {0}", [dash[rawKey]]);
+				$chip.append($('<span class="hr-kpi-detail text-muted">').text(detail));
+				$chip.attr(
+					"title",
+					__("{0} actionable · {1}", [shown, detail])
+				);
+			}
 			if (label === "Integrity Score") $chip.addClass("hr-kpi-score");
 			else if (typeof shown === "number" && shown > 0) $chip.addClass("hr-kpi-alert");
 			if (freshness === "STALE") $chip.addClass("hr-kpi-stale");

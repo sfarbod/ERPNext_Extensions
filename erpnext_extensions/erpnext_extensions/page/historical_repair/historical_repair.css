@@ -94,6 +94,12 @@
 .historical-repair-page .hr-kpi-value {
 	font-size: 16px;
 }
+.historical-repair-page .hr-kpi-detail {
+	display: block;
+	font-size: 10px;
+	line-height: 1.2;
+	margin-top: 2px;
+}
 .historical-repair-page .hr-kpi-score {
 	border-color: var(--primary);
 }

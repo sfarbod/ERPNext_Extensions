@@ -203,11 +203,127 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 		self.assertEqual(out["proposed_rate"], 1500.0)
 		self.assertTrue(out.get("eligible"))
 
+	def test_material_issue_reconstructs_from_source_chain(self):
+		ctx = _patches(prev=321.5)
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+			out = classify_zero_row(
+				_base(
+					purpose="Material Issue",
+					s_warehouse="Stores - E",
+					t_warehouse=None,
+				)
+			)
+		self.assertEqual(out["status"], STATUS_RECONSTRUCTABLE)
+		self.assertEqual(out["proposed_rate"], 321.5)
+		self.assertTrue(out.get("eligible"))
+		self.assertEqual(out.get("source_of_truth"), "previous_healthy_sle")
+
+	def test_material_issue_poisoned_upstream_waits(self):
+		ctx = _patches(prev=100.0, poisoned=True)
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+			out = classify_zero_row(
+				_base(
+					purpose="Material Issue",
+					s_warehouse="Stores - E",
+					t_warehouse=None,
+				)
+			)
+		self.assertEqual(out["status"], "VALUATION_POISON_DEPENDENCY")
+		self.assertFalse(out.get("eligible"))
+
+	def test_repack_output_uses_allocated_input_value(self):
+		ctx = _patches()
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._repack_allocated_rate",
+			return_value=88.0,
+		):
+			out = classify_zero_row(
+				_base(
+					purpose="Repack",
+					s_warehouse=None,
+					t_warehouse="FG WH",
+					is_finished_item=1,
+				)
+			)
+		self.assertEqual(out["status"], STATUS_RECONSTRUCTABLE)
+		self.assertEqual(out["proposed_rate"], 88.0)
+		self.assertEqual(out.get("source_of_truth"), "repack_allocated")
+		self.assertTrue(out.get("eligible"))
+
+	def test_repack_multi_output_allocation_helper(self):
+		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import _repack_allocated_rate
+
+		details = [
+			{
+				"name": "src",
+				"idx": 1,
+				"item_code": "RM",
+				"qty": 10,
+				"transfer_qty": 10,
+				"s_warehouse": "WH-A",
+				"t_warehouse": None,
+				"basic_rate": 0,
+				"valuation_rate": 0,
+				"is_finished_item": 0,
+				"allow_zero_valuation_rate": 0,
+				"additional_cost": 0,
+			},
+			{
+				"name": "fg1",
+				"idx": 2,
+				"item_code": "FG1",
+				"qty": 4,
+				"transfer_qty": 4,
+				"s_warehouse": None,
+				"t_warehouse": "WH-B",
+				"basic_rate": 0,
+				"valuation_rate": 0,
+				"is_finished_item": 1,
+				"allow_zero_valuation_rate": 0,
+				"additional_cost": 0,
+			},
+			{
+				"name": "fg2",
+				"idx": 3,
+				"item_code": "FG2",
+				"qty": 6,
+				"transfer_qty": 6,
+				"s_warehouse": None,
+				"t_warehouse": "WH-B",
+				"basic_rate": 0,
+				"valuation_rate": 0,
+				"is_finished_item": 1,
+				"allow_zero_valuation_rate": 0,
+				"additional_cost": 0,
+			},
+		]
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate.frappe.db.sql",
+			return_value=details,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._previous_healthy_sle_rate",
+			return_value=50.0,  # 10*50 = 500 → rate = 500/10 = 50 per unit
+		):
+			rate = _repack_allocated_rate(
+				_base(
+					name="fg1",
+					purpose="Repack",
+					item_code="FG1",
+					qty=4,
+					s_warehouse=None,
+					t_warehouse="WH-B",
+					is_finished_item=1,
+				)
+			)
+		self.assertEqual(rate, 50.0)
+
 
 class TestTransactionSemanticsRegistry(unittest.TestCase):
 	def test_registry_covers_site_purposes(self):
 		from erpnext_extensions.iran_accounting.historical_stock.transaction_semantics import (
 			PURPOSE_REGISTRY,
+			RECONSTRUCT_REPACK,
+			known_stock_entry_purposes,
 			purpose_semantics,
 		)
 
@@ -222,6 +338,57 @@ class TestTransactionSemanticsRegistry(unittest.TestCase):
 		):
 			self.assertIn(p, PURPOSE_REGISTRY)
 			self.assertTrue(purpose_semantics(p).get("policy"))
+		self.assertEqual(purpose_semantics("Repack").get("policy"), RECONSTRUCT_REPACK)
+		self.assertIn("Material Issue", known_stock_entry_purposes())
+		self.assertIn("Repack", known_stock_entry_purposes())
+
+
+class TestCrossKpiRootGraph(unittest.TestCase):
+	def test_root_chain_dedup_and_cross_kpi(self):
+		from erpnext_extensions.iran_accounting.historical_stock.root_graph import (
+			build_zero_wrong_root_graph,
+		)
+
+		zero = [
+			{
+				"voucher": "STE-ROOT",
+				"purpose": "Material Transfer",
+				"item": "A",
+				"warehouse": "W1",
+				"status": "RECONSTRUCTABLE",
+				"eligible": True,
+				"confidence": "EXACT",
+				"posting_date": "2026-01-01",
+				"proposed_rate": 10,
+			},
+			{
+				"voucher": "STE-DOWN",
+				"purpose": "Manufacture",
+				"item": "B",
+				"warehouse": "W2",
+				"status": "DEPENDENCY_REPAIR_REQUIRED",
+				"patient_zero": {"voucher_no": "STE-ROOT"},
+				"posting_date": "2026-01-02",
+			},
+		]
+		wrong = [
+			{
+				"voucher": "STE-DOWN",
+				"purpose": "Manufacture",
+				"item": "B",
+				"warehouse": "W2",
+				"status": "WAITING_RATE",
+				"patient_zero": {"voucher_no": "STE-ROOT"},
+				"flag": "MATCHED_BUT_CORRUPT",
+				"posting_date": "2026-01-02",
+			}
+		]
+		g = build_zero_wrong_root_graph(zero, wrong)
+		self.assertEqual(g["ZERO_RAW_FINDINGS"], 2)
+		self.assertEqual(g["WRONG_RAW_FINDINGS"], 1)
+		self.assertGreaterEqual(g["CROSS_KPI_ROOT_CHAINS"], 1)
+		self.assertEqual(g["MATCHED_BUT_CORRUPT"], 1)
+		self.assertGreaterEqual(g["ZERO_INDEPENDENT_ROOTS"], 1)
 
 
 if __name__ == "__main__":

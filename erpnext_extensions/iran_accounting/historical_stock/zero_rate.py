@@ -46,6 +46,7 @@ from erpnext_extensions.iran_accounting.historical_stock.transaction_semantics i
 	NO_INVENT_RATE,
 	RECONSTRUCT_FROM_SOURCE,
 	RECONSTRUCT_MANUFACTURE,
+	RECONSTRUCT_REPACK,
 	material_receipt_user_message,
 	may_auto_propose_rate,
 	purpose_semantics,
@@ -310,10 +311,20 @@ def classify_zero_row(row, _cache=None) -> dict:
 	version_rate, version_amount = _version_rate(parent, detail)
 	batch_rate = _batch_inward_rate(item, batch, warehouse)
 	prev_sle_rate = _previous_healthy_sle_rate(item, warehouse, g(row, "posting_date"), g(row, "posting_time"))
+	# Material Issue: valuation identity is the source warehouse chain.
+	if purpose == "Material Issue" and g(row, "s_warehouse"):
+		issue_prev = _previous_healthy_sle_rate(
+			item, g(row, "s_warehouse"), g(row, "posting_date"), g(row, "posting_time")
+		)
+		if abs(issue_prev) > RATE_EPS:
+			prev_sle_rate = issue_prev
 	issued = 0.0
 	if purpose == "Manufacture" and (is_scrap_row(row) or g(row, "secondary_item_type") == "Scrap"):
 		doc = frappe.get_doc("Stock Entry", parent)
 		issued = flt(_issued_rate_for_component(doc, row))
+	repack_rate = 0.0
+	if purpose == "Repack" and (sem.get("policy") == RECONSTRUCT_REPACK or True):
+		repack_rate = _repack_allocated_rate(row)
 
 	current_basic = flt(g(row, "basic_rate"))
 	if abs(current_basic) > RATE_EPS:
@@ -389,6 +400,9 @@ def classify_zero_row(row, _cache=None) -> dict:
 		zero_class = Z1_HISTORICAL_RATE_LOST
 	elif abs(transfer_sle) > RATE_EPS:
 		proposed, source, confidence = transfer_sle, "source_transfer_sle", CONFIDENCE_EXACT
+		zero_class = Z1_HISTORICAL_RATE_LOST
+	elif purpose == "Repack" and abs(repack_rate) > RATE_EPS:
+		proposed, source, confidence = repack_rate, "repack_allocated", CONFIDENCE_EXACT
 		zero_class = Z1_HISTORICAL_RATE_LOST
 	elif purpose == "Manufacture" and issued > RATE_EPS and is_scrap_row(row):
 		fg = _finished_item(parent)
@@ -536,6 +550,8 @@ def classify_zero_row(row, _cache=None) -> dict:
 		sources["transfer_source"] = transfer_sle
 	if abs(issued) > RATE_EPS:
 		sources["manufacture_pool"] = issued
+	if abs(repack_rate) > RATE_EPS:
+		sources["repack_allocated"] = repack_rate
 	from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
 
 	return attach_rate_analysis(
@@ -663,6 +679,96 @@ def _batch_inward_rate(item, batch, warehouse=None) -> float:
 			if r.warehouse == warehouse:
 				return flt(r.get("incoming_rate") or r.get("sbe_rate"))
 	return flt(rows[0].get("incoming_rate") or rows[0].get("sbe_rate"))
+
+
+def _repack_allocated_rate(row) -> float:
+	"""Native ERPNext-style Repack output rate from input stock value.
+
+	Mirrors ``StockEntry.get_basic_rate_for_repacked_items``:
+	outgoing_items_cost (source rows with healthy rates) / finished output qty.
+	Source/input rows use previous_healthy_sle at s_warehouse; outputs get allocated rate.
+	Returns 0 when inputs lack authoritative valuation (WAITING_UPSTREAM / no invent).
+	"""
+	purpose = g(row, "purpose") or ""
+	if purpose != "Repack":
+		return 0.0
+	parent = g(row, "parent")
+	if not parent:
+		return 0.0
+	# Only allocate onto target/finished rows (have t_warehouse). Source rows use chain rate.
+	if g(row, "s_warehouse") and not g(row, "t_warehouse"):
+		return _previous_healthy_sle_rate(
+			g(row, "item_code"),
+			g(row, "s_warehouse"),
+			g(row, "posting_date"),
+			g(row, "posting_time"),
+		)
+	details = frappe.db.sql(
+		"""
+		SELECT name, idx, item_code, qty, transfer_qty, s_warehouse, t_warehouse,
+		       basic_rate, valuation_rate, is_finished_item, allow_zero_valuation_rate,
+		       additional_cost
+		FROM `tabStock Entry Detail`
+		WHERE parent=%s
+		ORDER BY idx
+		""",
+		parent,
+		as_dict=True,
+	)
+	if not details:
+		return 0.0
+	posting_date = g(row, "posting_date")
+	posting_time = g(row, "posting_time")
+	outgoing_cost = 0.0
+	any_source = False
+	for d in details:
+		s_wh = g(d, "s_warehouse")
+		if not s_wh:
+			continue
+		any_source = True
+		qty = flt(g(d, "transfer_qty") or g(d, "qty"))
+		rate = flt(g(d, "basic_rate") or g(d, "valuation_rate"))
+		if abs(rate) <= RATE_EPS:
+			rate = _previous_healthy_sle_rate(g(d, "item_code"), s_wh, posting_date, posting_time)
+		if abs(rate) <= RATE_EPS:
+			# Missing authoritative source valuation — cannot invent.
+			return 0.0
+		outgoing_cost += abs(qty) * abs(rate)
+		outgoing_cost += flt(g(d, "additional_cost"))
+	if not any_source or outgoing_cost <= VALUE_EPS:
+		return 0.0
+
+	from frappe.utils import cint
+
+	finished = [
+		d
+		for d in details
+		if g(d, "t_warehouse")
+		and (cint(g(d, "is_finished_item")) or not g(d, "s_warehouse"))
+		and not flt(g(d, "allow_zero_valuation_rate"))
+	]
+	if not finished:
+		finished = [d for d in details if g(d, "t_warehouse") and not g(d, "s_warehouse")]
+	if not finished:
+		return 0.0
+	this_name = g(row, "name")
+	this = next((d for d in finished if g(d, "name") == this_name), None)
+	if not this:
+		if g(row, "t_warehouse"):
+			this_qty = flt(g(row, "transfer_qty") or g(row, "qty"))
+			if this_qty > QTY_EPS and len(finished) == 1:
+				return flt(outgoing_cost / this_qty)
+		return 0.0
+	this_qty = flt(g(this, "transfer_qty") or g(this, "qty"))
+	if this_qty <= QTY_EPS:
+		return 0.0
+	if len(finished) == 1:
+		return flt(outgoing_cost / this_qty)
+	total_fg_qty = sum(flt(g(d, "transfer_qty") or g(d, "qty")) for d in finished)
+	if total_fg_qty <= QTY_EPS:
+		return 0.0
+	# Equal rate per unit across finished outputs (ERPNext multi-FG path).
+	return flt(outgoing_cost / total_fg_qty)
 
 
 def _source_transfer_sle_rate(row) -> float:

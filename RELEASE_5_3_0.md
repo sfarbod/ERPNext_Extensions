@@ -314,6 +314,15 @@ Material Receipt USER_REVIEW=0 (22 MR zeros all have `allow_zero_valuation_rate`
 Transfer EXACT/RECON=25; TfM=14; Manufacture=42; data_writes=0.
 Verdict: **ZERO_RATE_SEMANTICS_READY_FOR_PHASE_4**.
 
+### Phase 4 — Issue/Repack semantics + cross-KPI root graph
+
+- Explicit **Material Issue** / **Repack** purpose policies (`RECONSTRUCT_REPACK` allocation
+  mirrors native ERPNext `get_basic_rate_for_repacked_items`).
+- Cross-KPI Zero+Wrong root graph (`build_zero_wrong_root_graph`).
+- Dashboard: **Failed RIV** / **Zero Rate** chips show actionable primary + raw detail.
+
+
+
 ### Patient-zero as-of clipping (Zero Rate / I1 unlock)
 
 Campaign finding (Phase 3): after repairing early Zero Rate roots on an

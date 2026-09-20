@@ -218,6 +218,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Wrong Rate Complete": wr_complete,
 		"Zero Rate": zero_n,
 		"Zero Rate Raw": zero_raw_n,
+		"Zero Rate Actionable": zero_n,
 		"Zero Rate No Action": zero_no_action,
 		"Zero Rate User Review": zero_receipt_review,
 		"Zero Rate Reconstructable": zero_reconstructable,
@@ -238,7 +239,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Broken Bin": bin_n,
 		"Waiting Downstream Bin": bin_waiting,
 		"Broken GL": gl_n,
-		"Failed RIV": riv_n,
+		"Failed RIV": riv_actionable,
+		"Failed RIV Raw": riv_n,
 		"Failed RIV Actionable": riv_actionable,
 		"Failed RIV Historical": int((riv.get("by_reconcile") or {}).get("HISTORICAL_ONLY") or 0)
 		or int((riv.get("stage1") or {}).get("historical_only") or 0),

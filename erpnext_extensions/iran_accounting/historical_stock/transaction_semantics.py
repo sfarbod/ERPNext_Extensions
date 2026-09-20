@@ -19,6 +19,8 @@ NO_INVENT_RATE = "no_invent_rate"
 RECONSTRUCT_FROM_SOURCE = "reconstruct_from_source"
 # Purposes that use native manufacturing cost contract.
 RECONSTRUCT_MANUFACTURE = "reconstruct_manufacture"
+# Repack redistributes input stock value (+ additional costs) onto outputs.
+RECONSTRUCT_REPACK = "reconstruct_repack"
 # Document itself authorises zero (reconciliation / allow_zero flag handled separately).
 DOCUMENT_AUTHORITATIVE_ZERO_OK = "document_authoritative_zero_ok"
 # Unknown / rare purposes — require explicit source or user review.
@@ -52,6 +54,32 @@ TRANSFER_PREFERRED_SOURCES = frozenset(
 	}
 )
 
+# Material Issue consumes existing stock — valuation from source chain at posting time.
+ISSUE_PREFERRED_SOURCES = frozenset(
+	{
+		"previous_healthy_sle",
+		"version+previous_healthy_sle",
+		"source_transfer_sle",
+		"version+source_transfer_sle",
+		"version",
+		"version+batch_inward",
+		"batch_inward",
+	}
+)
+
+# Native ERPNext Repack: outgoing input cost allocated across finished outputs.
+REPACK_PREFERRED_SOURCES = frozenset(
+	{
+		"repack_allocated",
+		"version+repack_allocated",
+		"version",
+		"version+batch_inward",
+		"batch_inward",
+		"previous_healthy_sle",
+		"source_transfer_sle",
+	}
+)
+
 
 PURPOSE_REGISTRY: dict[str, dict[str, Any]] = {
 	"Material Receipt": {
@@ -81,15 +109,20 @@ PURPOSE_REGISTRY: dict[str, dict[str, Any]] = {
 	},
 	"Material Issue": {
 		"policy": RECONSTRUCT_FROM_SOURCE,
-		"label": "Issue valuation from source stock chain",
-		"allowed_auto_sources": TRANSFER_PREFERRED_SOURCES,
+		"label": (
+			"Material Issue consumes existing stock — expected rate from "
+			"Item+Warehouse(+Batch) valuation chain at posting datetime"
+		),
+		"allowed_auto_sources": ISSUE_PREFERRED_SOURCES,
 		"kpi_bucket": "ZERO_RATE_RECONSTRUCTABLE",
+		"zero_not_acceptable": True,
 	},
 	"Material Consumption for Manufacture": {
 		"policy": RECONSTRUCT_FROM_SOURCE,
 		"label": "Consumption valuation from source stock chain",
-		"allowed_auto_sources": TRANSFER_PREFERRED_SOURCES,
+		"allowed_auto_sources": ISSUE_PREFERRED_SOURCES,
 		"kpi_bucket": "ZERO_RATE_RECONSTRUCTABLE",
+		"zero_not_acceptable": True,
 	},
 	"Manufacture": {
 		"policy": RECONSTRUCT_MANUFACTURE,
@@ -108,10 +141,14 @@ PURPOSE_REGISTRY: dict[str, dict[str, Any]] = {
 		"kpi_bucket": "ZERO_RATE_RECONSTRUCTABLE",
 	},
 	"Repack": {
-		"policy": RECONSTRUCT_FROM_SOURCE,
-		"label": "Repack preserves source valuation where reconstructable",
-		"allowed_auto_sources": TRANSFER_PREFERRED_SOURCES,
+		"policy": RECONSTRUCT_REPACK,
+		"label": (
+			"Repack redistributes input stock value (+ additional costs) onto "
+			"finished outputs per native ERPNext get_basic_rate_for_repacked_items"
+		),
+		"allowed_auto_sources": REPACK_PREFERRED_SOURCES,
 		"kpi_bucket": "ZERO_RATE_RECONSTRUCTABLE",
+		"zero_not_acceptable": True,
 	},
 	"Stock Reconciliation": {
 		"policy": DOCUMENT_AUTHORITATIVE_ZERO_OK,
@@ -149,7 +186,14 @@ def may_auto_propose_rate(purpose: str | None, source: str | None) -> bool:
 	if policy == NO_INVENT_RATE:
 		# Strict: only document-local / explicit receipt sources.
 		return source in allowed and not source.startswith("previous_healthy") and source != "batch_inward"
+	if policy in (RECONSTRUCT_FROM_SOURCE, RECONSTRUCT_MANUFACTURE, RECONSTRUCT_REPACK):
+		return source in allowed or source.split("+")[0] in {a.split("+")[0] for a in allowed}
 	return source in allowed or source.split("+")[0] in {a.split("+")[0] for a in allowed}
+
+
+def known_stock_entry_purposes() -> frozenset[str]:
+	"""Purposes with an explicit registry entry (no generic Other bucket)."""
+	return frozenset(PURPOSE_REGISTRY.keys())
 
 
 def material_receipt_user_message() -> str:
