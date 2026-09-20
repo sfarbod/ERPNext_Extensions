@@ -59,19 +59,20 @@ def _select_roots(zrows, *, n_roots: int) -> list[dict]:
 			continue
 		st = str(r.get("status") or "")
 		ps = str(r.get("planner_status") or "")
+		planner_ready = ps in READY_STATUSES or ps.startswith("READY")
 		if not (
 			r.get("eligible")
 			or st == "RECONSTRUCTABLE"
-			or ps in READY_STATUSES
-			or ps.startswith("READY")
+			or planner_ready
 		):
 			continue
 		if abs(float(r.get("proposed_rate") or 0)) <= 0:
 			continue
-		# Skip rows waiting on another patient.
+		# Skip rows waiting on another patient — unless planner already marked READY
+		# (patient valued / circular earliest-root election).
 		pz = r.get("patient_zero")
 		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
-		if pz_v and pz_v != r.get("voucher"):
+		if pz_v and pz_v != r.get("voucher") and not planner_ready:
 			continue
 		cands.append(r)
 

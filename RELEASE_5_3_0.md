@@ -389,3 +389,14 @@ v5.3.0 adds:
 5. Incremental rescan APIs (`rescan_item_warehouse` / `rescan_voucher` / `rescan_root`)
 6. UI: priority KPI chips, status strip (FRESH/STALE/…), Advanced Mode hides bulk repair variants
 7. Page open loads snapshot — does **not** auto-enqueue Scan All
+
+### Phase 4 campaign progress (Zero + Wrong root reconstruction)
+
+Root-first canaries + waves on development.localhost (Espad):
+
+- Zero Rate RAW 490 → **303**; RECONSTRUCTABLE auto roots → **0**
+- Wrong Rate READY 183 → **0** (active ~3088 residual WAITING/MANUAL)
+- Cross-KPI root graph + Issue/Repack semantics; Failed RIV dashboard actionable-primary
+- I1 / negative valuation remained **0**; I4 raw still ~63 (upstream-dependent)
+- Material Receipt: no invented rates; allow-zero count **22**; USER_REVIEW **0** on scan
+
