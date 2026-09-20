@@ -321,5 +321,68 @@ class TestBatchApplyCollateralSkip(unittest.TestCase):
 		self.assertIn("STE-SIBLING", moved)
 
 
+class TestMultiMovePreWindowInjection(unittest.TestCase):
+	"""Multi-move can pull older SEs into the from_dt window; plan/assert must agree."""
+
+	def test_identity_window_for_moves_unions_missing_vouchers(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import (
+			_identity_window_for_moves,
+		)
+
+		base = [
+			frappe_dict(name="SLE-1", voucher_no="STE-INWIN", actual_qty=-10, posting_datetime="2026-09-14 18:00:00", creation="a", batch_no=None, serial_and_batch_bundle=None),
+		]
+		extra = [
+			frappe_dict(name="SLE-2", voucher_no="STE-OLD", actual_qty=-100, posting_datetime="2026-04-01 12:00:00", creation="b", batch_no=None, serial_and_batch_bundle=None),
+		]
+
+		with patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair._identity_window",
+			return_value=list(base),
+		), patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair.frappe.db.sql",
+			return_value=list(extra),
+		):
+			merged = _identity_window_for_moves(
+				"ITEM",
+				"WH",
+				None,
+				"2026-09-14 18:00:00",
+				[{"document": "STE-OLD", "old": "2026-04-01 12:00:00", "new": "2026-09-17 13:25:05"}],
+			)
+		names = {r.name for r in merged}
+		self.assertIn("SLE-1", names)
+		self.assertIn("SLE-2", names)
+
+	def test_opening_adjustment_prevents_pre_window_double_count(self):
+		from decimal import Decimal
+		from erpnext_extensions.iran_accounting.stock_posting_order.simulation import running_qty, order_sles
+		from frappe.utils import get_datetime
+
+		# opening_at_from_dt already includes STE-OLD (-200). Proposed re-applies it.
+		opening = Decimal("50")
+		injected_qty = Decimal("-200")
+		opening_prop = opening - injected_qty  # 250
+		sles = [
+			{"voucher_no": "PRE", "actual_qty": 100, "posting_datetime": "2026-09-17 13:25:04", "creation": "1", "name": "a"},
+			{"voucher_no": "STE-OLD", "actual_qty": -200, "posting_datetime": "2026-04-01 12:00:00", "creation": "2", "name": "b"},
+			{"voucher_no": "STE-OUT", "actual_qty": -40, "posting_datetime": "2026-09-14 18:00:00", "creation": "3", "name": "c"},
+		]
+		times = {
+			"PRE": get_datetime("2026-09-17 13:25:04"),
+			"STE-OLD": get_datetime("2026-09-17 13:25:05"),
+			"STE-OUT": get_datetime("2026-09-17 13:25:06"),
+		}
+		prop = running_qty(order_sles(sles, proposed_times=times), opening=opening_prop)
+		self.assertGreaterEqual(prop["min_qty"], 0)
+		# Without adjustment, opening=50 double-counts STE-OLD → 50+100-200-40 = -90
+		bad = running_qty(order_sles(sles, proposed_times=times), opening=opening)
+		self.assertLess(bad["min_qty"], 0)
+
+
+def frappe_dict(**kwargs):
+	return type("R", (), kwargs)()
+
+
 if __name__ == "__main__":
 	unittest.main()

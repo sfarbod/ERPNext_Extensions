@@ -268,6 +268,20 @@ v5.3.0 now:
 True EXACT+`REAL_STOCK_SHORTAGE` / warehouse-still-negative remain blockers
 (USER or further warehouse-campaign TOOL_LIMIT), not silent auto-apply.
 
+### Posting Order — multi-move pre-window injection
+
+Campaign finding (`MAT-STE-2026-36772`): multi-move proposals shift Stock Entries
+that currently sit *before* the repair `from_dt` into the window. Plan-time
+`_identity_window(from_dt)` never saw those rows, while apply-time assert saw
+them after timestamp rewrite and double-counted their qty against
+`opening_qty` → false `batch running qty still negative`.
+
+v5.3.0:
+
+1. `_identity_window_for_moves` unions moved vouchers into the sim series
+2. reverses injected qty out of `opening_qty` before proposed/assert running
+3. apply pre-write gate refuses proposals that still go negative under this sim
+
 
 | Incident | v5.3.0 fix |
 |----------|------------|
@@ -278,3 +292,4 @@ True EXACT+`REAL_STOCK_SHORTAGE` / warehouse-still-negative remain blockers
 | READY_GL_ONLY vs UNBALANCED apply skew | IRR align before expected-GL gate |
 | Promoted LIKELY READY mislabeled as TOOL_LIMIT | stamp EXACT confidence on attach_plan |
 | Batch STALE_PREVIEW after sibling multi-move | skip collateral-moved outbounds |
+| Multi-move apply false-fail (pre-window SE) | inject moves into window + opening adjust |

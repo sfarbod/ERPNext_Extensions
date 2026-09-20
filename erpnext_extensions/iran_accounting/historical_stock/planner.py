@@ -1413,26 +1413,39 @@ def _posting_revalidate(row, moves, from_dt, cache) -> str | None:
 	warehouse = row.get("warehouse")
 	if not item or not warehouse:
 		return None
-	key = ("sim", item, warehouse, row.get("batch") or "", str(from_dt))
+	move_key = tuple(sorted(str(m.get("document") or "") for m in (moves or [])))
+	key = ("sim", item, warehouse, row.get("batch") or "", str(from_dt), move_key)
 	if key in cache:
 		return cache[key]
 	reason = None
 	try:
 		from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import simulate_running
-		from erpnext_extensions.iran_accounting.stock_posting_order.repair import _identity_window
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import (
+			_identity_window,
+			_identity_window_for_moves,
+		)
 		from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
 
-		sles = _identity_window(item, warehouse, row.get("batch"), from_dt)
-		if sles:
+		base = _identity_window(item, warehouse, row.get("batch"), from_dt)
+		prop_sles = _identity_window_for_moves(item, warehouse, row.get("batch"), from_dt, moves)
+		if base or prop_sles:
 			opening = D(row.get("opening_qty") or 0)
+			base_names = {r.name for r in base}
+			injected = [r for r in prop_sles if r.name not in base_names]
+			# opening_at_from_dt already includes injected vouchers' historical qty.
+			# Proposed order re-applies them at new timestamps — reverse them out of opening.
+			opening_prop = opening - sum((D(r.actual_qty) for r in injected), D(0))
 			times = {m["document"]: get_datetime(m["new"]) for m in moves}
 			times.setdefault(
 				row["inbound_document"],
 				get_datetime(row.get("proposed_inbound_time") or row["current_inbound_time"]),
 			)
 			times.setdefault(row["outbound_document"], get_datetime(row["proposed_outbound_time"]))
-			current = simulate_running(sles, opening)
-			proposed = simulate_running(sles, opening, times)
+			current = simulate_running(base, opening) if base else {
+				"min_qty": opening,
+				"final_qty": opening,
+			}
+			proposed = simulate_running(prop_sles or base, opening_prop, times)
 			if current["min_qty"] >= 0:
 				reason = "Revalidation failed: repair no longer needed"
 			elif proposed["min_qty"] < 0:

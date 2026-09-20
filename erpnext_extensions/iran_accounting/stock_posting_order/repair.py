@@ -391,15 +391,29 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 				row.get("batch"),
 				from_dt,
 			)
+			prop_sles = _identity_window_for_moves(
+				row["item"],
+				row["warehouse"],
+				row.get("batch"),
+				from_dt,
+				moves,
+			)
 			opening = D(row.get("opening_qty") or 0)
-			if sles:
+			if sles or prop_sles:
 				times = {}
 				for m in moves:
 					times[m["document"]] = get_datetime(m["new"])
 				times.setdefault(row["inbound_document"], get_datetime(row["proposed_inbound_time"] or row["current_inbound_time"]))
 				times.setdefault(row["outbound_document"], get_datetime(row["proposed_outbound_time"]))
-				current = simulate_running(sles, opening)
-				proposed = simulate_running(sles, opening, times)
+				base_names = {r.name for r in sles}
+				injected = [r for r in prop_sles if r.name not in base_names]
+				opening_prop = opening - sum((D(r.actual_qty) for r in injected), D(0))
+				current = simulate_running(sles, opening) if sles else {"min_qty": opening, "final_qty": opening}
+				proposed = simulate_running(prop_sles or sles, opening_prop, times)
+				if proposed["min_qty"] < -0.0001:
+					raise frappe.ValidationError(
+						f"Replay failed: proposed order still negative (min {proposed['min_qty']})"
+					)
 			else:
 				current = proposed = {"min_qty": row.get("min_qty_before"), "final_qty": row.get("final_qty_before")}
 
@@ -456,7 +470,7 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 
 				# Timestamp change is not the repair. qty_after on the inverted
 				# voucher must be non-negative after replay in ERPNext order.
-				_assert_ledger_repaired(row, from_dt)
+				_assert_ledger_repaired(row, from_dt, moves)
 				for vn in moved_vouchers:
 					_assert_transfer_value_neutral(vn, row.get("item"))
 
@@ -589,7 +603,7 @@ def apply_repairs(rows: list[dict], *, dry_run: bool = True, user: str | None = 
 	}
 
 
-def _assert_ledger_repaired(row: dict, from_dt) -> None:
+def _assert_ledger_repaired(row: dict, from_dt, moves: list[dict] | None = None) -> None:
 	"""Fail closed if timestamps moved but qty_after still inverted."""
 	item = row.get("item")
 	warehouse = row.get("warehouse")
@@ -614,7 +628,20 @@ def _assert_ledger_repaired(row: dict, from_dt) -> None:
 		raise frappe.ValidationError(
 			f"Replay failed: outbound {out_name} still before inbound {in_name}"
 		)
-	run = D(row.get("opening_qty") or 0)
+	# opening_at_from_dt already included vouchers that multi-move pulled into the
+	# window from before from_dt. Reverse those qty effects before re-running.
+	opening = D(row.get("opening_qty") or 0)
+	pre_window_moves = {
+		str(m.get("document"))
+		for m in (moves or [])
+		if m.get("document") and m.get("old") and get_datetime(m["old"]) < get_datetime(from_dt)
+	}
+	if pre_window_moves:
+		opening -= sum(
+			(D(s.actual_qty) for s in sles if str(s.voucher_no) in pre_window_moves),
+			D(0),
+		)
+	run = opening
 	for s in sles:
 		run += D(s.actual_qty)
 		if run < -0.0001:
@@ -687,13 +714,76 @@ def _identity_window(item_code, warehouse, batch_no, posting_datetime) -> list:
 		args,
 		as_dict=True,
 	)
+	return _filter_identity_batch(rows, batch_no)
+
+
+def _identity_window_for_moves(
+	item_code,
+	warehouse,
+	batch_no,
+	posting_datetime,
+	moves: list[dict] | None = None,
+) -> list:
+	"""Identity SLE window plus any moved vouchers currently *before* ``posting_datetime``.
+
+	Multi-move proposals often shift older Stock Entries into the repair window.
+	Plan-time simulation must include those rows (with proposed timestamps),
+	otherwise min_qty_after falsely clears and apply fails after the timestamps
+	land inside the window.
+	"""
+	base = _identity_window(item_code, warehouse, batch_no, posting_datetime)
+	move_docs = {
+		str(m.get("document"))
+		for m in (moves or [])
+		if m.get("document")
+	}
+	if not move_docs:
+		return base
+	present = {str(r.voucher_no) for r in base}
+	missing = sorted(move_docs - present)
+	if not missing:
+		return base
+	placeholders = ", ".join(["%s"] * len(missing))
+	extra = frappe.db.sql(
+		f"""
+		SELECT name, voucher_no, actual_qty, qty_after_transaction, incoming_rate,
+		       valuation_rate, stock_value, stock_value_difference, posting_datetime,
+		       creation, batch_no, serial_and_batch_bundle, warehouse, item_code
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND voucher_no IN ({placeholders})
+		ORDER BY posting_datetime, creation
+		""",
+		tuple([item_code, warehouse, *missing]),
+		as_dict=True,
+	)
+	extra = _filter_identity_batch(extra, batch_no)
+	if not extra:
+		return base
+	# Dedupe by SLE name; keep stable chronological order on current timestamps
+	# (callers overlay proposed times via simulate_running).
+	by_name = {r.name: r for r in base}
+	for r in extra:
+		by_name.setdefault(r.name, r)
+	merged = list(by_name.values())
+	merged.sort(
+		key=lambda r: (
+			str(r.posting_datetime or ""),
+			str(r.creation or ""),
+			str(r.name or ""),
+		)
+	)
+	return merged
+
+
+def _filter_identity_batch(rows: list, batch_no) -> list:
 	if not batch_no:
-		return rows
+		return list(rows or [])
 	from erpnext_extensions.iran_accounting.stock_posting_order.batch_identity import canonical_batch_no
 
 	wanted = str(batch_no)
 	out = []
-	for r in rows:
+	for r in rows or []:
 		entries = []
 		if r.serial_and_batch_bundle:
 			entries = frappe.db.sql(
