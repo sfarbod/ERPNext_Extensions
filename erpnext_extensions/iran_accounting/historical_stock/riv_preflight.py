@@ -252,7 +252,7 @@ def _expected_gl_postable(voucher_no: str) -> dict:
 	return _gl_expected_map_state(voucher_no)
 
 
-def classify_failed_riv_current_impact(doc) -> dict:
+def classify_failed_riv_current_impact(doc, *, _cache=None, sle_state=None, skip_preflight_when_healthy=True) -> dict:
 	"""Reconcile a Failed RIV against the *current* ledger (V2).
 
 	Statuses:
@@ -261,6 +261,11 @@ def classify_failed_riv_current_impact(doc) -> dict:
 	- CURRENT_LEDGER_IMPACT — identity still poisoned / unhealthy
 	- SAFE_TO_RETRY — preflight passes
 	- BLOCKED_* — preflight refuses
+
+	``skip_preflight_when_healthy`` (default True): when SLE identity is already
+	healthy, return HISTORICAL_ONLY without running the O(vouchers) RIV preflight.
+	Stage-1 Failed RIV scan relies on this; correctness for actionable KPI is
+	preserved because a healthy current ledger is not an actionable Failed RIV.
 	"""
 	item = getattr(doc, "item_code", None) or (doc.get("item_code") if isinstance(doc, dict) else None)
 	warehouse = getattr(doc, "warehouse", None) or (doc.get("warehouse") if isinstance(doc, dict) else None)
@@ -275,19 +280,34 @@ def classify_failed_riv_current_impact(doc) -> dict:
 			"reason": "missing item/warehouse on Failed RIV",
 		}
 
-	later_ok = frappe.db.sql(
-		"""
-		SELECT name FROM `tabRepost Item Valuation`
-		WHERE item_code=%s AND warehouse=%s AND status='Completed' AND docstatus=1
-		  AND creation > IFNULL((SELECT creation FROM `tabRepost Item Valuation` WHERE name=%s), '2000-01-01')
-		ORDER BY creation DESC LIMIT 1
-		""",
-		(item, warehouse, name),
-	)
+	cache = _cache if isinstance(_cache, dict) else {}
+	later_key = ("later_ok", item, warehouse, name)
+	if later_key in cache:
+		later_ok = cache[later_key]
+	else:
+		later_ok = frappe.db.sql(
+			"""
+			SELECT name FROM `tabRepost Item Valuation`
+			WHERE item_code=%s AND warehouse=%s AND status='Completed' AND docstatus=1
+			  AND creation > IFNULL((SELECT creation FROM `tabRepost Item Valuation` WHERE name=%s), '2000-01-01')
+			ORDER BY creation DESC LIMIT 1
+			""",
+			(item, warehouse, name),
+		)
+		cache[later_key] = later_ok
+
 	from erpnext_extensions.iran_accounting.historical_stock.sle_bin import classify_identity
 	from erpnext_extensions.iran_accounting.historical_stock import SLE_HEALTHY
 
-	sle_state = classify_identity(item, warehouse)
+	ck = ("sle", item, warehouse)
+	if sle_state is None:
+		if ck in cache:
+			sle_state = cache[ck]
+		else:
+			sle_state = classify_identity(item, warehouse)
+			cache[ck] = sle_state
+	else:
+		cache[ck] = sle_state
 
 	if later_ok:
 		return {
@@ -295,9 +315,10 @@ def classify_failed_riv_current_impact(doc) -> dict:
 			"item": item,
 			"warehouse": warehouse,
 			"riv_reconcile_status": "SUPERSEDED_BY_SUCCESSFUL_REPAIR",
-			"later_completed": later_ok[0][0],
+			"later_completed": later_ok[0][0] if later_ok and later_ok[0] else later_ok,
 			"sle_state": sle_state,
 			"preflight": None,
+			"stage": "cheap",
 		}
 
 	# Cheap path: unhealthy SLE → current impact WITHOUT full RIV preflight
@@ -311,9 +332,30 @@ def classify_failed_riv_current_impact(doc) -> dict:
 			"sle_state": sle_state,
 			"preflight": None,
 			"reason": f"SLE identity not healthy ({sle_state}); repair roots before RIV retry",
+			"stage": "cheap",
 		}
 
-	# Healthy SLE — run preflight only for SAFE vs HISTORICAL / BLOCKED_GL discrimination.
+	# Healthy SLE — default Stage-1: HISTORICAL_ONLY without expensive preflight.
+	if skip_preflight_when_healthy:
+		err_l = err or ""
+		out = {
+			"riv": name,
+			"item": item,
+			"warehouse": warehouse,
+			"riv_reconcile_status": "HISTORICAL_ONLY",
+			"sle_state": sle_state,
+			"preflight": None,
+			"stage": "cheap",
+			"reason": "SLE healthy; Failed RIV is historical/superseded noise for actionable KPI",
+		}
+		if "Debit and Credit not equal" in err_l or "Difference is" in err_l:
+			out["error_class"] = "UNBALANCED_GL_1IRR"
+			out["reason"] = (
+				"SLE healthy; Failed RIV was GL-phase 1IRR class — use SLE_GL_DRIFT, do not mass-retry"
+			)
+		return out
+
+	# Expensive path (opt-in): healthy SLE — run preflight for SAFE vs HISTORICAL / BLOCKED_GL.
 	preflight = riv_preflight_gate(item, warehouse, posting_date=posting_date)
 
 	if sle_state == SLE_HEALTHY and preflight.get("eligible"):
@@ -328,6 +370,7 @@ def classify_failed_riv_current_impact(doc) -> dict:
 				"sle_state": sle_state,
 				"preflight": preflight,
 				"error_class": "UNBALANCED_GL_1IRR",
+				"stage": "expensive",
 			}
 		return {
 			"riv": name,
@@ -336,6 +379,7 @@ def classify_failed_riv_current_impact(doc) -> dict:
 			"riv_reconcile_status": "HISTORICAL_ONLY",
 			"sle_state": sle_state,
 			"preflight": preflight,
+			"stage": "expensive",
 		}
 	if preflight.get("eligible"):
 		return {
@@ -345,6 +389,7 @@ def classify_failed_riv_current_impact(doc) -> dict:
 			"riv_reconcile_status": "SAFE_TO_RETRY",
 			"sle_state": sle_state,
 			"preflight": preflight,
+			"stage": "expensive",
 		}
 	status = "CURRENT_LEDGER_IMPACT"
 	if preflight.get("poison_blockers"):
@@ -361,4 +406,5 @@ def classify_failed_riv_current_impact(doc) -> dict:
 		"sle_state": sle_state,
 		"preflight": preflight,
 		"reason": preflight.get("reason"),
+		"stage": "expensive",
 	}

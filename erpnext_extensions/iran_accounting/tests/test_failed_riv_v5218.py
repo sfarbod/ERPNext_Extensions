@@ -35,6 +35,15 @@ def _doc(**kw):
 
 
 class TestFailedRIVClassifier(unittest.TestCase):
+	def setUp(self):
+		# Isolate Phase-2 error-class assertions from Stage-1 ledger reconcile.
+		self._reconcile_patch = patch(
+			"erpnext_extensions.iran_accounting.historical_stock.riv_preflight.classify_failed_riv_current_impact",
+			return_value={"riv_reconcile_status": "CURRENT_LEDGER_IMPACT", "stage": "test"},
+		)
+		self._reconcile_patch.start()
+		self.addCleanup(self._reconcile_patch.stop)
+
 	@patch("erpnext_extensions.iran_accounting.historical_stock.failed_riv._has_wrong_rate_dependency", return_value=False)
 	@patch("erpnext_extensions.iran_accounting.historical_stock.failed_riv._has_zero_rate_dependency", return_value=False)
 	@patch("erpnext_extensions.iran_accounting.historical_stock.failed_riv.classify_stock_entry_gl")

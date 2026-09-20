@@ -390,7 +390,18 @@ def classify_zero_row(row, _cache=None) -> dict:
 		zero_class = Z3_MISSING_INCOMING_VALUATION
 		confidence = CONFIDENCE_AMBIGUOUS
 
-	patient = _patient_for_identity(item, warehouse, batch, cache=_cache)
+	as_of = _row_posting_datetime(row)
+	patient = _patient_for_identity(item, warehouse, batch, cache=_cache, as_of=as_of)
+	# Later identity poison must not block an earlier EXACT reconstructable root.
+	if (
+		patient
+		and patient.get("voucher_no")
+		and patient["voucher_no"] != parent
+		and as_of
+		and patient.get("posting_datetime")
+		and str(patient["posting_datetime"]) > str(as_of)
+	):
+		patient = None
 	status = STATUS_MANUAL_REVIEW
 	zero_reason = ZERO_REASON_MANUAL
 	if zero_class == Z0_LEGITIMATE_ZERO:
@@ -602,10 +613,22 @@ def _finished_item(voucher) -> str | None:
 	)
 
 
-def _patient_for_identity(item, warehouse, batch, cache=None) -> dict | None:
+def _row_posting_datetime(row) -> str | None:
+	"""Compose posting_datetime for as-of patient-zero clipping."""
+	dt = g(row, "posting_datetime")
+	if dt:
+		return str(dt)
+	d = g(row, "posting_date")
+	if not d:
+		return None
+	t = g(row, "posting_time") or "00:00:00"
+	return f"{d} {t}"
+
+
+def _patient_for_identity(item, warehouse, batch, cache=None, as_of=None) -> dict | None:
 	if not item or not warehouse:
 		return None
-	key = (item, warehouse, batch or "")
+	key = (item, warehouse, batch or "", str(as_of) if as_of else "")
 	if cache is not None and key in cache:
 		return cache[key]
 	rows = frappe.db.sql(
@@ -620,7 +643,7 @@ def _patient_for_identity(item, warehouse, batch, cache=None) -> dict | None:
 		(item, warehouse),
 		as_dict=True,
 	)
-	found = find_patient_zero(rows, batch=batch)
+	found = find_patient_zero(rows, batch=batch, as_of=as_of)
 	if cache is not None:
 		cache[key] = found
 	return found

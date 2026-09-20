@@ -120,6 +120,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	# Active Wrong Rate problem count (excludes RATE_REPAIR_COMPLETE / already-valued).
 	wrong_n = wr_buckets.get("active") or 0
 	riv_by = riv.get("by_status") or {}
+	riv_actionable = int(riv.get("actionable_count") or 0)
+	if not riv_actionable and riv.get("rows"):
+		riv_actionable = sum(
+			1
+			for r in (riv.get("rows") or [])
+			if (r.get("riv_reconcile_status") or "")
+			not in ("HISTORICAL_ONLY", "SUPERSEDED_BY_SUCCESSFUL_REPAIR")
+		)
 	riv_safe = int(riv_by.get("SAFE_TO_RETRY") or 0)
 	riv_waiting = sum(
 		int(riv_by.get(k) or 0)
@@ -188,7 +196,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ bin_n * 1.0
 		+ bin_waiting * 0.15
 		+ gl_n * 1.5
-		+ riv_n * 1.5
+		# Score only actionable Failed RIV (not historical/superseded raw count).
+		+ riv_actionable * 1.5
 		+ i4_n * 0.75
 		+ i1_n * 1.25
 	)
@@ -224,6 +233,11 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Waiting Downstream Bin": bin_waiting,
 		"Broken GL": gl_n,
 		"Failed RIV": riv_n,
+		"Failed RIV Actionable": riv_actionable,
+		"Failed RIV Historical": int((riv.get("by_reconcile") or {}).get("HISTORICAL_ONLY") or 0)
+		or int((riv.get("stage1") or {}).get("historical_only") or 0),
+		"Failed RIV Superseded": int((riv.get("by_reconcile") or {}).get("SUPERSEDED_BY_SUCCESSFUL_REPAIR") or 0)
+		or int((riv.get("stage1") or {}).get("superseded") or 0),
 		"Patient Zero": len(patients),
 		"Zero Rate Patient Zero": len(patients_by_topic["ZERO_RATE"]),
 		"READY_I4": ready_i4,
@@ -293,7 +307,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 			"bin_mismatches": len(sle.get("bin_mismatches") or []),
 		},
 		"gl": {"count": gl.get("count"), "by_class": gl.get("by_class")},
-		"failed_riv": {"count": riv.get("count"), "by_status": riv.get("by_status")},
+		"failed_riv": {
+			"count": riv.get("count"),
+			"raw_count": riv.get("raw_count") or riv.get("count"),
+			"actionable_count": riv_actionable,
+			"by_status": riv.get("by_status"),
+			"by_reconcile": riv.get("by_reconcile"),
+			"stage1": riv.get("stage1"),
+		},
 		"i4": {"count": i4.get("count"), "by_status": i4_by, "ready": ready_i4},
 		"i1": {"count": i1_n, "by_status": i1_by, "ready": ready_i1},
 		"patient_zero_vouchers": patients,

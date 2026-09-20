@@ -297,18 +297,40 @@ def run_scan_all_job(company=None, scan_job_id=None, user=None, **_kwargs):
 		# Full scan still one call; progress phases bookend it until scan.py grows hooks.
 		_heartbeat(job_id, job, phase="full_integrity_scan", progress=25, scanner="Full Integrity Scan")
 		result = run_full_integrity_scan(company=company, include_manufacture=False)
-		_heartbeat(job_id, job, phase="root_graph_metrics", progress=85, scanner="Metrics Snapshot")
 		elapsed = round(perf_counter() - t0, 3)
 		timing = (result or {}).get("timing") or {}
 		dashboard = (result or {}).get("dashboard") or {}
-		save_metrics_snapshot(
-			company=company,
-			dashboard=dashboard,
-			timing=timing,
-			source="scan_all",
-			job_id=job_id,
-			extra={"elapsed_s": elapsed},
+		# Persist scan result before snapshot so a DocType validation failure
+		# cannot discard a completed integrity scan.
+		job.update(
+			{
+				"status": "RUNNING",
+				"phase": "root_graph_metrics",
+				"progress": 85,
+				"elapsed_s": elapsed,
+				"result": result,
+				"timing": timing,
+				"current_scanner": "Metrics Snapshot",
+				"heartbeat_at": str(now_datetime()),
+			}
 		)
+		_save(job_id, job)
+		snapshot_error = None
+		try:
+			save_metrics_snapshot(
+				company=company,
+				dashboard=dashboard,
+				timing=timing,
+				source="scan_all",
+				job_id=job_id,
+				extra={"elapsed_s": elapsed},
+			)
+		except Exception as snap_exc:
+			snapshot_error = str(snap_exc)[:500]
+			frappe.log_error(
+				title=f"Historical Repair Metrics Snapshot failed ({job_id})",
+				message=frappe.get_traceback(),
+			)
 		job.update(
 			{
 				"status": "COMPLETED",
@@ -319,6 +341,7 @@ def run_scan_all_job(company=None, scan_job_id=None, user=None, **_kwargs):
 				"result": result,
 				"timing": timing,
 				"error": None,
+				"snapshot_error": snapshot_error,
 				"current_scanner": None,
 			}
 		)

@@ -22,7 +22,7 @@ cases repairable.
 | Manufacture | Deterministic contract → **EXACT** when AFTER rates are healthy (even if BEFORE FG was negative) |
 | I1 | Dependency-cycle detection; route self-poison to Manufacture EXACT |
 | Expected GL | IRR align **before** postability gate (classify ↔ apply consistency) |
-| Failed RIV | Current-ledger reconciliation (`HISTORICAL_ONLY` / `SUPERSEDED` / `SAFE_TO_RETRY` / `BLOCKED_*`) |
+| Failed RIV | Stage-1 cheap HISTORICAL/SUPERSEDED screen; Stage-2 survivors; raw vs actionable KPI |
 | Integrity Score | Includes I1 pressure; version tag `5.3.0` |
 
 ---
@@ -283,6 +283,39 @@ v5.3.0:
 3. apply pre-write gate refuses proposals that still go negative under this sim
 
 
+### Patient-zero as-of clipping (Zero Rate / I1 unlock)
+
+Campaign finding (Phase 3): after repairing early Zero Rate roots on an
+identity, `find_patient_zero` still returned a *later* zero inbound as the
+patient zero. Earlier Manufacture issue rows with EXACT reconstructable rates
+(`batch_inward` / previous healthy SLE) were blocked as
+`WAITING_PATIENT_ZERO` forever.
+
+v5.3.0:
+
+1. `find_patient_zero(..., as_of=)` / `find_patient_zero_identity(..., as_of=)`
+2. Zero Rate classify clips patient-zero to the row's posting datetime
+3. Later identity poison cannot demote an earlier EXACT reconstructable root
+
+This unblocked the I1 dependency chain for item `13200551` → Manufacture EXACT
+on the three remaining negative-FG roots.
+
+Campaign finding: Failed RIV scan ≈95s for ~1716 rows dominated Scan All.
+Per-row work repeated `classify_identity`, zero/wrong-rate probes, GL classify,
+and (for healthy SLE) full `riv_preflight_gate` — even when the current ledger
+was already healthy and the Failed row was historical noise.
+
+v5.3.0 now:
+
+1. **Stage 1 (bulk):** unique-identity SLE classify + bulk Completed-RIV map →
+   `HISTORICAL_ONLY` / `SUPERSEDED_BY_SUCCESSFUL_REPAIR` without preflight
+2. **Stage 2:** full classify only for unhealthy-SLE / missing-identity survivors
+3. Healthy-SLE reconcile skips preflight by default (`skip_preflight_when_healthy`)
+4. Dashboard exposes **Failed RIV** (raw) vs **Failed RIV Actionable**; Integrity
+   Score penalties use actionable count only
+5. Worker probe matches site-prefixed RQ queue names (`…:long`)
+6. Scan All persists result before Metrics Snapshot; null company → `_ALL_` sentinel
+
 | Incident | v5.3.0 fix |
 |----------|------------|
 | RIV cascade into manufacture then 1IRR GL fail | Preflight + closure poison/GL gate |
@@ -294,6 +327,12 @@ v5.3.0:
 | Batch STALE_PREVIEW after sibling multi-move | skip collateral-moved outbounds |
 | Multi-move apply false-fail (pre-window SE) | inject moves into window + opening adjust |
 | Blank KPI / QUEUED 0% with workers paused | metrics snapshot + WORKER_UNAVAILABLE gate |
+| Failed RIV scan ~95s / historical noise in Integrity Score | Stage-1 cheap screen + actionable KPI |
+| Long worker listening but UI WORKER_UNAVAILABLE | match prefixed `site:long` queue names |
+| Scan All lost after snapshot company validation | save result first; `_ALL_` company sentinel |
+| Zero Rate WAITING on later inbound blocks earlier EXACT | patient-zero `as_of` posting-datetime clip |
+
+
 
 ### Dashboard snapshot / Scan All job lifecycle
 

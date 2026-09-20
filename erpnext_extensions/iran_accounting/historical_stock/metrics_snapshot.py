@@ -33,6 +33,7 @@ PRIORITY_KPI_LABELS = [
 	"Zero Rate",
 	"Broken GL",
 	"Failed RIV",
+	"Failed RIV Actionable",
 	"Broken Bin",
 	"Patient Zero",
 ]
@@ -47,6 +48,16 @@ def _cache_key(company: str | None) -> str:
 
 def _ensure_doctype() -> bool:
 	return bool(frappe.db.exists("DocType", DOCTYPE))
+
+
+def _queue_name_matches(qname: str, queue: str) -> bool:
+	"""Match bare queue names and site-prefixed RQ names (``site:long``)."""
+	if not qname:
+		return False
+	if qname == queue:
+		return True
+	# frappe/rq often registers ``workspace-…:long`` while callers probe ``long``.
+	return qname.endswith(f":{queue}")
 
 
 def worker_queue_status(queue: str = "long") -> dict:
@@ -71,21 +82,31 @@ def worker_queue_status(queue: str = "long") -> dict:
 		conn = get_redis_conn()
 		workers = Worker.all(connection=conn)
 		out["workers_total"] = len(workers)
+		matched_qnames = set()
 		for w in workers:
 			qnames = []
 			try:
 				qnames = [q.name for q in (w.queues or [])]
 			except Exception:
 				qnames = []
-			# Some RQ builds leave queues empty when worker is unhealthy/orphaned.
-			if queue in qnames or (not qnames and w.get_state() not in ("?", "suspended")):
-				# Only count as available when the worker explicitly listens to queue,
-				# OR (legacy) when it has no queue list but is busy — still not safe.
-				if queue in qnames:
+			for qn in qnames:
+				if _queue_name_matches(qn, queue):
 					out["workers_for_queue"] += 1
 					out["worker_names"].append(w.name)
-		q = Queue(queue, connection=conn)
-		out["queued_jobs"] = len(q)
+					matched_qnames.add(qn)
+					break
+		# Count jobs on bare + any matched prefixed queue name.
+		queued = 0
+		seen = set()
+		for qn in [queue, *sorted(matched_qnames)]:
+			if qn in seen:
+				continue
+			seen.add(qn)
+			try:
+				queued += len(Queue(qn, connection=conn))
+			except Exception:
+				pass
+		out["queued_jobs"] = queued
 		out["available"] = out["workers_for_queue"] > 0
 		if not out["available"]:
 			out["message"] = (
@@ -127,7 +148,8 @@ def save_metrics_snapshot(
 	extra: dict | None = None,
 ) -> dict:
 	"""Persist aggregate KPIs after a full/partial scan or incremental update."""
-	company = company or None
+	# DocType.company is required — use sentinel for site-wide / null-company scans.
+	company_key = (company or "").strip() or "_ALL_"
 	dashboard = dict(dashboard or {})
 	# Enrich with blocker lane counts (cheap SQL) when DocType exists.
 	try:
@@ -149,6 +171,7 @@ def save_metrics_snapshot(
 	scanned_at = now_datetime()
 	payload = {
 		"company": company,
+		"company_key": company_key,
 		"scanned_at": str(scanned_at),
 		"freshness": FRESHNESS_FRESH,
 		"source": source,
@@ -160,11 +183,14 @@ def save_metrics_snapshot(
 		"saved_at": str(scanned_at),
 	}
 	frappe.cache().set_value(_cache_key(company), payload, expires_in_sec=CACHE_TTL)
+	# Also index under the company used by the UI when Scan All had company=None.
+	if company_key != (company or "").strip():
+		frappe.cache().set_value(_cache_key(company_key), payload, expires_in_sec=CACHE_TTL)
 
 	if _ensure_doctype():
-		name = frappe.db.get_value(DOCTYPE, {"company": company or ""}, "name")
+		name = frappe.db.get_value(DOCTYPE, {"company": company_key}, "name")
 		doc = frappe.get_doc(DOCTYPE, name) if name else frappe.new_doc(DOCTYPE)
-		doc.company = company or ""
+		doc.company = company_key
 		doc.scanned_at = scanned_at
 		doc.freshness = FRESHNESS_FRESH
 		doc.source = source
