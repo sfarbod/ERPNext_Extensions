@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Historical Stock Integrity & Repair (5.2.7).
+"""Historical Stock Integrity & Repair (5.3.0 — Master Plan V2).
 
 Repairs stock truth in this order:
 

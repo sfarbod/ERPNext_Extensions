@@ -92,9 +92,22 @@ def preview_manufacture_voucher(voucher_no: str) -> dict:
 			changed.append({"idx": b["idx"], "item": b["item_code"], "before": b, "after": a})
 	fg_neg = any(flt(r["amount"]) < 0 or flt(r["basic_rate"]) < 0 for r in before["rows"] if r["is_finished_item"])
 	needs = bool(changed) or fg_neg
-	confidence = CONFIDENCE_EXACT if changed and not fg_neg else (
-		CONFIDENCE_LIKELY if needs else CONFIDENCE_AMBIGUOUS
+	# v5.3.0: when the deterministic Iran manufacture contract yields healthy
+	# AFTER rates, treat as EXACT even if BEFORE FG was negative. The negative
+	# FG is the defect being repaired — not a reason to force MANUAL_REVIEW.
+	from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+		manufacture_after_rates_healthy,
 	)
+
+	after_healthy = manufacture_after_rates_healthy(changed, fg_negative_before=fg_neg)
+	if needs and changed and after_healthy:
+		confidence = CONFIDENCE_EXACT
+	elif changed and not fg_neg:
+		confidence = CONFIDENCE_EXACT
+	elif needs:
+		confidence = CONFIDENCE_LIKELY
+	else:
+		confidence = CONFIDENCE_AMBIGUOUS
 	if not needs:
 		confidence = CONFIDENCE_EXACT
 	status = STATUS_RECONSTRUCTABLE if needs and confidence == CONFIDENCE_EXACT else (
@@ -114,11 +127,17 @@ def preview_manufacture_voucher(voucher_no: str) -> dict:
 		"needs_repair": needs,
 		"changed_rows": changed,
 		"fg_negative": fg_neg,
+		"after_rates_healthy": after_healthy,
 		"confidence": confidence,
 		"status": status,
 		"eligible": status == STATUS_RECONSTRUCTABLE,
-		"source_of_truth": "5.2.0_manufacture_output_contract",
+		"source_of_truth": "5.3.0_manufacture_output_contract",
 		"patient_zero": {"voucher_no": voucher_no} if needs else None,
+		"planner_note": (
+			"EXACT via healthy AFTER contract despite fg_negative BEFORE"
+			if needs and confidence == CONFIDENCE_EXACT and fg_neg
+			else None
+		),
 	}
 
 

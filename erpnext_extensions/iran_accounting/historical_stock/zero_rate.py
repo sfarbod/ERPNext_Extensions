@@ -199,44 +199,53 @@ def classify_zero_row(row, _cache=None) -> dict:
 		issued = flt(_issued_rate_for_component(doc, row))
 
 	# Idempotent: already has a non-zero basic rate → not a zero-rate defect.
+	# v5.3.0: refuse false COMPLETE when the non-zero rate is poisoned/negative/non-finite.
 	current_basic = flt(g(row, "basic_rate"))
 	if abs(current_basic) > RATE_EPS:
+		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+			is_authoritative_healthy_rate,
+			rate_integrity_reason,
+			reclassify_false_complete_row,
+		)
 		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
 
-		return attach_rate_analysis(
-			{
-				"topic": "ZERO_RATE",
-				"voucher": parent,
-				"voucher_detail": detail,
-				"idx": g(row, "idx"),
-				"purpose": purpose,
-				"item": item,
-				"warehouse": warehouse,
-				"s_warehouse": g(row, "s_warehouse"),
-				"t_warehouse": g(row, "t_warehouse"),
-				"batch": batch,
-				"sabb": g(row, "serial_and_batch_bundle"),
-				"qty": qty,
-				"current_rate": current_basic,
-				"current_amount": flt(g(row, "amount")),
-				"historical_rate": current_basic,
-				"proposed_rate": current_basic,
-				"proposed_amount": current_basic * qty,
-				"source_of_truth": "already_valued",
-				"confidence": CONFIDENCE_EXACT,
-				"zero_class": Z0_LEGITIMATE_ZERO,
-				"status": STATUS_RATE_REBUILD_COMPLETE,
-				"patient_zero": None,
-				"eligible": False,
-				"work_order": g(row, "work_order"),
-				"job_card": g(row, "job_card"),
-				"is_finished_item": g(row, "is_finished_item"),
-				"secondary_item_type": g(row, "secondary_item_type"),
-				"reconstruction_sources": {},
-				"rate_source": "already_valued",
-			},
-			row,
-		)
+		complete_row = {
+			"topic": "ZERO_RATE",
+			"voucher": parent,
+			"voucher_detail": detail,
+			"idx": g(row, "idx"),
+			"purpose": purpose,
+			"item": item,
+			"warehouse": warehouse,
+			"s_warehouse": g(row, "s_warehouse"),
+			"t_warehouse": g(row, "t_warehouse"),
+			"batch": batch,
+			"sabb": g(row, "serial_and_batch_bundle"),
+			"qty": qty,
+			"current_rate": current_basic,
+			"current_amount": flt(g(row, "amount")),
+			"historical_rate": current_basic,
+			"proposed_rate": current_basic,
+			"proposed_amount": current_basic * qty,
+			"source_of_truth": "already_valued",
+			"confidence": CONFIDENCE_EXACT,
+			"zero_class": Z0_LEGITIMATE_ZERO,
+			"status": STATUS_RATE_REBUILD_COMPLETE,
+			"patient_zero": None,
+			"eligible": False,
+			"work_order": g(row, "work_order"),
+			"job_card": g(row, "job_card"),
+			"is_finished_item": g(row, "is_finished_item"),
+			"secondary_item_type": g(row, "secondary_item_type"),
+			"reconstruction_sources": {},
+			"rate_source": "already_valued",
+			"allow_zero_valuation_rate": g(row, "allow_zero_valuation_rate"),
+		}
+		if not is_authoritative_healthy_rate(current_basic, allow_zero=False, allow_negative=False):
+			complete_row = reclassify_false_complete_row(complete_row)
+			complete_row["zero_class"] = Z6_UNKNOWN
+			complete_row["integrity_reason"] = rate_integrity_reason(current_basic)
+		return attach_rate_analysis(complete_row, row)
 
 	zero_class = Z6_UNKNOWN
 	proposed = 0.0

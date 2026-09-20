@@ -162,6 +162,26 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 		riv_status = RIV_SAFE_TO_RETRY
 
 	eligible = riv_status == RIV_SAFE_TO_RETRY
+	# v5.3.0 Failed RIV reconciliation against current ledger + preflight.
+	from erpnext_extensions.iran_accounting.historical_stock.riv_preflight import (
+		classify_failed_riv_current_impact,
+	)
+
+	reconcile = classify_failed_riv_current_impact(doc)
+	# Never mass-promote HISTORICAL_ONLY / SUPERSEDED to SAFE_TO_RETRY.
+	if reconcile.get("riv_reconcile_status") in (
+		"HISTORICAL_ONLY",
+		"SUPERSEDED_BY_SUCCESSFUL_REPAIR",
+	):
+		eligible = False
+		if riv_status == RIV_SAFE_TO_RETRY:
+			riv_status = RIV_UNKNOWN
+	elif reconcile.get("riv_reconcile_status") == "SAFE_TO_RETRY" and riv_status == RIV_UNKNOWN:
+		riv_status = RIV_SAFE_TO_RETRY
+		eligible = True
+	elif str(reconcile.get("riv_reconcile_status") or "").startswith("BLOCKED"):
+		eligible = False
+
 	return {
 		"topic": "FAILED_RIV",
 		"riv_name": name,
@@ -184,6 +204,8 @@ def classify_failed_riv(doc, _cache=None) -> dict:
 		"status": riv_status,
 		"eligible": eligible,
 		"confidence": CONFIDENCE_EXACT if eligible else "LIKELY",
+		"riv_reconcile_status": reconcile.get("riv_reconcile_status"),
+		"riv_reconcile": reconcile,
 	}
 
 

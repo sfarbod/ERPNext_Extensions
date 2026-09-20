@@ -674,6 +674,7 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	man_status = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_MANUAL
 	wait_dep = PLAN_WAITING_RATE_DEPENDENCY if is_wrong_rate else PLAN_WAITING_RATE_REPAIR
 	# Already-valued / rebuild-complete: rate surface is healthy (amount micro-gaps stay complete).
+	# v5.3.0: refuse false COMPLETE when current/expected rates are poisoned.
 	if status == STATUS_RATE_REBUILD_COMPLETE or str(row.get("source") or row.get("source_of_truth") or "") == "already_valued":
 		# Prefer SE basic_rate (current_rate) — attach_rate_analysis may set current=0 from SLE.
 		cur = flt(
@@ -686,7 +687,29 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			if row.get("proposed_rate") is not None
 			else (row.get("expected") if row.get("expected") is not None else cur)
 		)
-		if abs(cur) > RATE_EPS or abs(exp) > RATE_EPS:
+		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+			refuse_false_rate_rebuild_complete,
+		)
+
+		refusal = refuse_false_rate_rebuild_complete(
+			current_rate=cur,
+			expected_rate=exp,
+			source=row.get("source") or row.get("source_of_truth"),
+			status=status,
+			allow_zero=bool(row.get("allow_zero_valuation_rate")),
+		)
+		if refusal:
+			# Fall through into normal rate evaluation with poison/reconstruction semantics.
+			row = dict(row)
+			row["status"] = refusal["status"]
+			row["source"] = "requires_authoritative_reconstruction"
+			row["source_of_truth"] = "requires_authoritative_reconstruction"
+			row["false_rate_rebuild_complete"] = True
+			row["blocker"] = refusal["blocker"]
+			status = refusal["status"]
+			decision["false_rate_rebuild_complete"] = True
+			decision["message"] = refusal["message"]
+		elif abs(cur) > RATE_EPS or abs(exp) > RATE_EPS:
 			return _not_ready(
 				decision,
 				PLAN_RATE_REPAIR_COMPLETE,
@@ -825,8 +848,32 @@ def _rate_patient_cleared(patient: str, cache: dict, row: dict | None = None) ->
 		status = str(prow.get("status") or "")
 		source = str(prow.get("source") or prow.get("source_of_truth") or "")
 		if ps == PLAN_RATE_REPAIR_COMPLETE or status == STATUS_RATE_REBUILD_COMPLETE:
+			from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+				refuse_false_rate_rebuild_complete,
+			)
+
+			refusal = refuse_false_rate_rebuild_complete(
+				current_rate=prow.get("current_rate", prow.get("current")),
+				expected_rate=prow.get("proposed_rate", prow.get("expected")),
+				source=source,
+				status=status,
+			)
+			if refusal:
+				return False
 			return True
 		if source == "already_valued":
+			from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+				refuse_false_rate_rebuild_complete,
+			)
+
+			refusal = refuse_false_rate_rebuild_complete(
+				current_rate=prow.get("current_rate", prow.get("current")),
+				expected_rate=prow.get("proposed_rate", prow.get("expected")),
+				source=source,
+				status=status,
+			)
+			if refusal:
+				return False
 			return True
 		cur = flt(prow.get("current") if prow.get("current") is not None else prow.get("current_rate"))
 		exp = flt(prow.get("expected") if prow.get("expected") is not None else prow.get("proposed_rate"))
@@ -1080,12 +1127,23 @@ def _gl_expected_map_state(voucher) -> dict:
 			row.setdefault("voucher_type", "Stock Entry")
 			row.setdefault("voucher_no", voucher)
 			gl_map.append(row)
+		# v5.3.0: align IRR map to currency precision BEFORE the postability gate so
+		# classify/apply agree with make_gl_entries (which also aligns). Does not
+		# widen allowance — still refuse true imbalances after alignment.
+		try:
+			from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
+				align_irr_gl_map_to_currency_precision,
+			)
+
+			align_irr_gl_map_to_currency_precision(se, gl_map)
+		except Exception:
+			pass
 		currency = frappe.get_cached_value("Company", se.company, "default_currency")
 		precision = get_field_precision(frappe.get_meta("GL Entry").get_field("debit"), currency=currency)
 		diff, _trx = get_debit_credit_difference(gl_map, precision)
 		allowance = get_debit_credit_allowance("Stock Entry", precision)
-		raw_deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
-		raw_cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
+		raw_deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in gl_map)
+		raw_cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in gl_map)
 		return {
 			"nonempty": True,
 			"balanced": abs(raw_deb - raw_cre) <= abs(flt(allowance)),
@@ -1094,6 +1152,7 @@ def _gl_expected_map_state(voucher) -> dict:
 			"precision": precision,
 			"allowance": allowance,
 			"raw_diff": abs(raw_deb - raw_cre),
+			"irr_aligned": True,
 		}
 	except Exception:
 		return empty

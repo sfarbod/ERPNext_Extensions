@@ -826,6 +826,38 @@ def master_repair_plan_api(company=None):
 
 
 @frappe.whitelist()
+def riv_preflight_api(item_code=None, warehouse=None, posting_date=None, company=None):
+	"""Read-only RIV preflight + dependency-closure + impact preview (v5.3.0)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.riv_preflight import riv_preflight_gate
+
+	if not item_code or not warehouse:
+		frappe.throw("item_code and warehouse are required")
+	return riv_preflight_gate(
+		item_code,
+		warehouse,
+		posting_date=posting_date or None,
+		company=company or None,
+	)
+
+
+@frappe.whitelist()
+def preview_repost_impact_api(item_code=None, warehouse=None, posting_date=None, company=None):
+	"""Read-only repost impact preview (v5.3.0)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.riv_preflight import preview_repost_impact
+
+	if not item_code or not warehouse:
+		frappe.throw("item_code and warehouse are required")
+	return preview_repost_impact(
+		item_code,
+		warehouse,
+		posting_date=posting_date or None,
+		company=company or None,
+	)
+
+
+@frappe.whitelist()
 def validate_dashboard_api(company=None):
 	"""Compare Dashboard ↔ Scan ↔ Planner ↔ SQL ↔ Queue for every KPI (read-only)."""
 	_guard()

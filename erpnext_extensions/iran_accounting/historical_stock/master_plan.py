@@ -33,7 +33,12 @@ CLASS_PRIORITY = {
 
 
 def build_master_repair_plan(company=None) -> dict:
-	"""Full per-class roadmap with READY/WAITING/MANUAL/AMBIGUOUS and dependency stats."""
+	"""Full per-class roadmap with READY/WAITING/MANUAL/AMBIGUOUS and dependency stats.
+
+	v5.3.0 Master Plan V2 adds root-cause graph, root-vs-downstream grouping,
+	RIV preflight summary hooks, and false-complete awareness — without removing
+	v5.2.x class metrics or recommended order.
+	"""
 	company = resolve_company(company)
 	t0 = perf_counter()
 	classes = []
@@ -49,17 +54,44 @@ def build_master_repair_plan(company=None) -> dict:
 
 	classes.sort(key=lambda c: c.get("priority") or 99)
 	graph = _dependency_graph_summary(classes)
+
+	# V2 root-cause graph from live class rows (best-effort; never fails the plan).
+	root_cause = {"classes": {}, "cycles": [], "edge_count": 0, "cycle_count": 0}
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.root_graph import (
+			build_root_cause_graph,
+		)
+
+		class_rows = {}
+		for c in classes:
+			# Prefer retaining sample rows if scanners attached them; else empty.
+			class_rows[c["repair_class"]] = c.get("sample_rows") or []
+		root_cause = build_root_cause_graph(class_rows)
+	except Exception as exc:
+		root_cause = {"error": str(exc), "classes": {}, "cycles": [], "edge_count": 0, "cycle_count": 0}
+
 	return {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
 		"company": company,
-		"version": "5.2.22",
+		"version": "5.3.0",
+		"master_plan": "V2",
 		"elapsed_seconds": round(perf_counter() - t0, 2),
 		"classes": classes,
 		"repair_order": [c["repair_class"] for c in classes],
 		"dependency_graph": graph,
+		"root_cause_graph": root_cause,
+		"safety": {
+			"no_global_riv": True,
+			"no_weaken_integrity_guards": True,
+			"riv_preflight_required": True,
+			"false_rate_rebuild_complete_refused": True,
+			"manufacture_exact_on_healthy_after": True,
+			"irr_align_before_expected_gl_gate": True,
+		},
 		"message": (
-			"Prove each class with small SAFE clusters before bulk. "
-			"Never Global Replay / Global RIV / Global GL."
+			"Master Plan V2 — prove each class with small SAFE clusters before bulk. "
+			"Repair roots before downstream. Never Global Replay / Global RIV / Global GL. "
+			"Run RIV preflight before any controlled repost."
 		),
 	}
 
@@ -120,6 +152,21 @@ def _agg(rows, repair_class, *, risk, expected_kpi, notes="") -> dict:
 		sql += int(r.get("sql_updates") or r.get("sql_updates_estimate") or r.get("replay_count") or 1)
 		replay += int(r.get("replay_count") or r.get("rows") or 0)
 	ready = buckets["READY"]
+	# Compact sample for Master Plan V2 root-cause graph (no full row dump).
+	sample_rows = []
+	for r in (rows or [])[:80]:
+		sample_rows.append(
+			{
+				"voucher": r.get("voucher") or r.get("voucher_no") or r.get("outbound_document"),
+				"item": r.get("item") or r.get("item_code"),
+				"warehouse": r.get("warehouse") or r.get("s_warehouse") or r.get("t_warehouse"),
+				"status": r.get("planner_status") or r.get("status") or r.get("drift_status") or r.get("i1_status") or r.get("i4_status"),
+				"confidence": r.get("confidence"),
+				"patient_zero": r.get("patient_zero") or r.get("root_patient_zero"),
+				"topic": r.get("topic"),
+				"required_prerequisite": r.get("required_prerequisite"),
+			}
+		)
 	return {
 		"repair_class": repair_class,
 		"priority": CLASS_PRIORITY.get(repair_class, 99),
@@ -143,6 +190,7 @@ def _agg(rows, repair_class, *, risk, expected_kpi, notes="") -> dict:
 		"notes": notes,
 		"can_bulk": False,
 		"promotion_status": "NOT_PROVEN",
+		"sample_rows": sample_rows,
 	}
 
 

@@ -174,6 +174,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ ready_i4
 	)
 	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
+	# v5.3.0: include I1 and manufacture-linked negative-rate pressure in the score.
+	i1_n = int(i1.get("count") or 0)
 	penalty = (
 		posting_n * 0.25
 		+ zero_n * 0.5
@@ -184,16 +186,17 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ gl_n * 1.5
 		+ riv_n * 1.5
 		+ i4_n * 0.75
+		+ i1_n * 1.25
 	)
 	from math import log10
 
 	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
 	i4_by = i4.get("by_status") or {}
 	i1_by = i1.get("by_status") or {}
-	i1_n = int(i1.get("count") or 0)
 	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
+		"Integrity Score Version": "5.3.0",
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
 		"Wrong Rate Complete": wr_complete,
