@@ -284,6 +284,74 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 	except Exception as exc:
 		frappe.log_error(f"blocker PO scan: {exc}", "Historical Repair Blocker")
 
+	# Posting Order REAL_STOCK_SHORTAGE → USER_ACTION_REQUIRED (true historical shortage).
+	try:
+		from erpnext_extensions.iran_accounting.stock_posting_order.scanner import run_full_history_scan
+		from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+
+		po = run_full_history_scan(company=company)
+		shortage_n = 0
+		for raw in po.get("rows") or []:
+			opt = str(raw.get("optimizer_status") or raw.get("status") or "")
+			if opt not in ("REAL_STOCK_SHORTAGE", "INSUFFICIENT_STOCK"):
+				continue
+			r = attach_plan(dict(raw))
+			item = r.get("item") or r.get("item_code")
+			wh = r.get("warehouse")
+			payload = {
+				"lane": LANE_USER_ACTION,
+				"status": STATUS_OPEN,
+				"severity": SEVERITY_HIGH,
+				"issue_type": HISTORICAL_NEGATIVE_STOCK,
+				"root_cause": "REAL_STOCK_SHORTAGE — ledger goes negative; chronology rewrite refused",
+				"company": company or r.get("company"),
+				"item_code": item,
+				"warehouse": wh,
+				"batch_no": r.get("batch") or r.get("batch_no"),
+				"voucher_type": "Stock Entry",
+				"voucher_no": r.get("outbound_document") or r.get("voucher") or r.get("voucher_no"),
+				"posting_date": r.get("posting_date") or str(r.get("current_outbound_time") or "")[:10],
+				"posting_time": r.get("posting_time"),
+				"current_qty": r.get("min_qty_before") or r.get("qty_before"),
+				"expected_qty": r.get("min_qty_after") or r.get("qty_after"),
+				"dependency_root": r.get("outbound_document") or r.get("voucher"),
+				"affected_downstream_count": int(r.get("affected_count") or 0),
+				"recommended_user_action": (
+					f"Investigate shortage for Item {item} in {wh}: first negative outbound "
+					f"{r.get('outbound_document')}. Confirm missing inbound / wrong batch / "
+					"wrong warehouse, or approve a business correction. Do not invent stock."
+				),
+				"why_automatic_repair_is_unsafe": (
+					"Timestamp rewrite cannot create missing stock. This is a genuine historical "
+					"shortage (USER_ACTION_REQUIRED), not a tool limitation."
+				),
+				"can_recheck_after_user_action": 1,
+				"user_facing_explanation": (
+					"Stock went negative historically. Review prior receipts/transfers and "
+					"correct the business document if stock was mis-posted."
+				),
+				"last_scanned_at": scanned_at,
+				"payload_json": frappe.as_json(
+					{
+						"optimizer_status": opt,
+						"confidence": r.get("confidence"),
+						"manual_reason": "MANUAL_NEGATIVE_STOCK_HISTORY",
+						"inbound_document": r.get("inbound_document"),
+						"min_qty_before": r.get("min_qty_before"),
+						"min_qty_after": r.get("min_qty_after"),
+					}
+				),
+			}
+			res = upsert_blocker(payload)
+			created += int(bool(res.get("created")))
+			updated += int(bool(res.get("updated")))
+			rows_out.append({**payload, "name": res.get("name")})
+			shortage_n += 1
+			if shortage_n >= 150:
+				break
+	except Exception as exc:
+		frappe.log_error(f"blocker PO shortage scan: {exc}", "Historical Repair Blocker")
+
 	# Material Receipt zero-rate without authoritative source → USER_ACTION_REQUIRED.
 	try:
 		from erpnext_extensions.iran_accounting.historical_stock.zero_rate import scan_zero_rate_rows

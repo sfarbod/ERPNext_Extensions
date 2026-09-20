@@ -44,7 +44,7 @@ def run(*, n_roots: int = 3, apply: int = 0):
 		print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
 		return out
 
-	w = scan_wrong_rates(company=COMPANY, limit=4000)
+	w = scan_wrong_rates(company=COMPANY, limit=6000)
 	wrows = [attach_plan(dict(r)) for r in (w.get("rows") or [])]
 	out["wrong_before"] = count_wrong_rate_buckets(wrows)
 
@@ -125,7 +125,7 @@ def run(*, n_roots: int = 3, apply: int = 0):
 			except Exception:
 				pass
 
-	w2 = scan_wrong_rates(company=COMPANY, limit=4000)
+	w2 = scan_wrong_rates(company=COMPANY, limit=6000)
 	w2rows = [attach_plan(dict(r)) for r in (w2.get("rows") or [])]
 	out["wrong_after"] = count_wrong_rate_buckets(w2rows)
 	z = scan_zero_rate_rows(company=COMPANY, limit=8000)

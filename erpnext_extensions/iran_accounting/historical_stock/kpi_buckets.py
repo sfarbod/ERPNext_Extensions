@@ -152,6 +152,16 @@ def _ps(row: dict) -> str:
 def wrong_rate_bucket(row: dict) -> str | None:
 	"""Return ready|waiting|manual|complete|replay|other for a Wrong Rate row."""
 	ps = _ps(row)
+	# Phase 5: foreign patient-zero is WAITING even if planner left RATE_AMBIGUOUS.
+	pz = row.get("patient_zero") if isinstance(row, dict) else None
+	pz_v = None
+	if isinstance(pz, dict):
+		pz_v = pz.get("voucher_no") or pz.get("voucher")
+	elif pz:
+		pz_v = str(pz)
+	voucher = (row or {}).get("voucher") or (row or {}).get("voucher_no")
+	if pz_v and voucher and pz_v != voucher and ps in WRONG_RATE_MANUAL_STATUSES:
+		return "waiting"
 	if ps in WRONG_RATE_COMPLETE_STATUSES:
 		return "complete"
 	if ps in WRONG_RATE_READY_STATUSES and int((row or {}).get("sql_updates") or 0) > 0:

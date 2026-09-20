@@ -231,6 +231,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Wrong Average": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
 		"Matched But Corrupt": (wrong.get("by_flag") or {}).get("MATCHED_BUT_CORRUPT", 0),
 		"I4 Leftover": i4_n,
+		"I4 Raw": int(i4.get("raw_count") or i4_n),
+		"I4 Root Identities": int(i4.get("root_identity_count") or 0),
 		"I1 Negative Rate": i1_n,
 		"READY_I1": ready_i1,
 		"WAITING_I1": int(i1_by.get("WAITING_I1") or 0),

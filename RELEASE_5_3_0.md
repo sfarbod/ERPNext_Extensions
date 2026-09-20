@@ -400,3 +400,13 @@ Root-first canaries + waves on development.localhost (Espad):
 - I1 / negative valuation remained **0**; I4 raw still ~63 (upstream-dependent)
 - Material Receipt: no invented rates; allow-zero count **22**; USER_REVIEW **0** on scan
 
+### Phase 5 — MANUAL/WAITING reclassification + KPI contract
+
+- **I4 63 vs 65 explained**: 63 = Stock Entry–joined distinct vouchers; 65 = all
+  voucher types for company. Root identities: SE=17 / all=19.
+- Dashboard KPI contract: RAW / ACTIONABLE / ROOT_IDENTITIES for I4; Wrong Rate
+  MANUAL carries machine-readable `manual_reason` codes.
+- Foreign patient-zero Wrong Rate rows count as WAITING (not MANUAL).
+- REAL_STOCK_SHORTAGE Posting Order → USER_ACTION_REQUIRED blockers with shortage context.
+- Wrong READY re-drained after wider scan; Zero RAW 303→231.
+

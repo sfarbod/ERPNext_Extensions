@@ -237,6 +237,24 @@ def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
 	out["required_prerequisite"] = decision["required_prerequisite"]
 	if decision["patient_zero"] and not out.get("patient_zero"):
 		out["patient_zero"] = {"voucher_no": decision["patient_zero"]}
+	if decision.get("manual_reason"):
+		out["manual_reason"] = decision["manual_reason"]
+	# Phase 5: stamp machine-readable MANUAL reason for Wrong Rate rows.
+	topic = str(out.get("topic") or "")
+	ps = str(out.get("planner_status") or "")
+	if topic in ("WRONG_RATE", "WRONG") or out.get("flags") or out.get("mismatch_class"):
+		from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import wrong_rate_bucket
+		from erpnext_extensions.iran_accounting.historical_stock.manual_reason import (
+			classify_wrong_manual_reason,
+		)
+
+		if wrong_rate_bucket(out) == "manual" or ps in (
+			"RATE_AMBIGUOUS",
+			"RATE_MANUAL",
+			"MANUAL",
+			"AMBIGUOUS",
+		):
+			classify_wrong_manual_reason(out)
 	from erpnext_extensions.iran_accounting.historical_stock.dependency import stamp_dependency
 
 	return stamp_dependency(out, cache=cache, decision=decision)
@@ -466,7 +484,14 @@ def _evaluate_posting(row, decision, cache) -> dict:
 	if opt in (STATUS_MIDNIGHT, STATUS_MIDNIGHT_REVIEW):
 		return _not_ready(decision, PLAN_MANUAL, "MIDNIGHT_REVIEW — posting-date boundary requires manual review")
 	if opt in (STATUS_INSUFFICIENT_STOCK, STATUS_REAL_STOCK_SHORTAGE):
-		return _not_ready(decision, PLAN_BLOCKED, "REAL_STOCK_SHORTAGE — timestamp change refused")
+		decision["manual_reason"] = "MANUAL_NEGATIVE_STOCK_HISTORY"
+		decision["manual_lane"] = "USER_ACTION_REQUIRED"
+		decision["po_class"] = "REAL_STOCK_SHORTAGE"
+		return _not_ready(
+			decision,
+			PLAN_BLOCKED,
+			"REAL_STOCK_SHORTAGE — historical shortage; timestamp change refused (USER_ACTION_REQUIRED)",
+		)
 	if row.get("confidence") == CONFIDENCE_AMBIGUOUS or opt in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
 		return _not_ready(decision, PLAN_AMBIGUOUS, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
 	if row.get("confidence") == CONFIDENCE_MANUAL or opt in (STATUS_MANUAL_REVIEW,):
@@ -727,7 +752,27 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 				"RATE_REPAIR_COMPLETE — already valued / rates match",
 				patient=patient,
 			)
+	# Phase 5: foreign patient-zero wins over AMBIGUOUS/MANUAL catch-all.
+	# Downstream symptoms must not inflate Wrong Rate MANUAL.
+	pz_name = None
+	if isinstance(patient, dict):
+		pz_name = patient.get("voucher_no") or patient.get("voucher")
+	elif patient:
+		pz_name = str(patient)
+	if not pz_name:
+		pz_name = _patient_name(row)
+	if pz_name and voucher and pz_name != voucher:
+		if not _rate_patient_cleared(pz_name, cache, row=row):
+			return _not_ready(
+				decision,
+				PLAN_WAITING_PATIENT_ZERO,
+				f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {pz_name}",
+				patient=pz_name,
+				prerequisite=pz_name,
+				dependency="upstream_patient_zero",
+			)
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
+		decision["manual_reason"] = decision.get("manual_reason") or "MANUAL_RATE_SOURCES_DISAGREE"
 		return _not_ready(decision, amb_status, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
 	# Material Receipt without authoritative source → USER review (never auto-READY).
 	if (
