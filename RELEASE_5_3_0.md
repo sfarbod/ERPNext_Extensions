@@ -533,4 +533,45 @@ windowed opening, batch healthy/shortage.
 
 Verdict: **SHORTAGE_CLASSIFIER_FIXED_READY_TO_RESUME_PHASE_5C**
 
+---
+
+## Phase 5C resume (after opening-state fix)
+
+Fresh baseline (Scan All `HRS-7bcdb1789d` + `phase5c_resume_baseline`):
+
+| KPI | Value |
+|-----|------:|
+| Integrity Score | 35 |
+| I1 / neg val / neg in / neg FG / RIV | 0 / 0 / 0 / 0 / 0 |
+| Transfer EXACT findings / roots | ~3983 / ~1102 |
+| Transfer RECON | 15 |
+| PO RAW / shortage / actionable | 255 / 121 / 4 |
+| Wrong ready / waiting / manual | 102 / 951 / 4017 |
+| Zero raw / recon / waiting | 118 / 35 / 74 |
+| I4 findings / identities | 52 / 16 |
+| USER OPEN findings / roots | 248 / 145 |
+| Shortage OPEN | 121 |
+| Patient Zero findings | 742 |
+| Broken Bin / GL | 36–203 / 91 |
+
+**Transfer drain**
+
+- Waves: 25 → 50 OK; unchunked **100 → TooManyWritesError (reverted)**.
+- Hardening: `phase5c_transfer_wave` chunked apply (≤25/commit, logical ≤50–100).
+- Multi: 6×50 chunked + prior waves; safety held throughout.
+- Remaining after drain: EXACT findings **~3605**, MAT-STE EXACT roots **~983**.
+- Probe: repaired vouchers leave wrong-scan / become NO_ACTION, but EXACT population
+  does not converge — multi-item / re-selection / large residual diffs (gt1000: ~2828).
+- Tool gap: Transfer EXACT≠0 fixed-point not reached; unchunked 100 unsafe.
+
+**Manufacture**
+
+- Fresh canaries **1→3→5→10** APPLY_OK (includes `MAT-STE-2026-27825`).
+- `30300042` Quarantine: neg valuation/incoming **0** (leftover regression holds).
+
+**Not completed this resume:** Wrong/Zero full drain, I4 READY, PO deterministic drain,
+Bin sync, final Scan All fixed-point. No broad GL/RIV.
+
+Verdict: **PHASE_5C_NEEDS_FURTHER_TOOL_DEVELOPMENT**
+
 
