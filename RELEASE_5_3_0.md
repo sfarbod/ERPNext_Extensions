@@ -249,6 +249,25 @@ because it derives rate from existing SLE SVD. v5.3.0 adds
 Also repairs the case where SE is already healthy but SLE still disagrees
 (`sle_se_drift`).
 
+### Posting Order — LIKELY→EXACT stamp + dry-run preview
+
+Campaign finding: optimizer may label chronology `LIKELY` while quantity sim
+clears (`min_after >= 0`). Planner already promoted these to auto-repairable
+via `promoted_likely_sim_cleared`, but `attach_plan` left row `confidence` as
+`LIKELY`, so campaigns/blocker sync treated READY rows as TOOL_LIMIT.
+
+v5.3.0 now:
+
+1. stamps effective `confidence=EXACT` (+ `raw_confidence`) on attach_plan
+2. returns apply-shaped `applied`/`blocked` from posting-order dry_run
+3. skips promoted/READY PO rows from blocker TOOL_LIMIT lane
+4. batch apply skips outbounds already timestamp-shifted as collision
+   multi-move collateral (`already_moved_as_collateral`) so a single-scan
+   SAFE_GROUP run does not false-fail later roots as STALE_PREVIEW
+
+True EXACT+`REAL_STOCK_SHORTAGE` / warehouse-still-negative remain blockers
+(USER or further warehouse-campaign TOOL_LIMIT), not silent auto-apply.
+
 
 | Incident | v5.3.0 fix |
 |----------|------------|
@@ -257,3 +276,5 @@ Also repairs the case where SE is already healthy but SLE still disagrees
 | Manufacture MANUAL despite correct preview | EXACT when AFTER healthy |
 | I1 WAITING circular on Wrong COMPLETE | Cycle resolution → Manufacture |
 | READY_GL_ONLY vs UNBALANCED apply skew | IRR align before expected-GL gate |
+| Promoted LIKELY READY mislabeled as TOOL_LIMIT | stamp EXACT confidence on attach_plan |
+| Batch STALE_PREVIEW after sibling multi-move | skip collateral-moved outbounds |

@@ -203,6 +203,7 @@ def evaluate_row(row: dict | None, *, cache: dict | None = None) -> dict:
 
 
 def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
+	raw_confidence = (row or {}).get("confidence")
 	decision = evaluate_row(row, cache=cache)
 	out = dict(row or {})
 	out["planner"] = decision
@@ -211,6 +212,16 @@ def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
 	out["blocked"] = bool(decision["blocked"])
 	out["reason"] = decision["reason"]
 	out["skip_reason"] = decision["reason"]
+	# Stamp planner confidence (e.g. LIKELY → EXACT via promoted_likely_sim_cleared)
+	# so Scan / blockers / campaigns see the effective auto-repair confidence.
+	if decision.get("confidence"):
+		out["confidence"] = decision["confidence"]
+	if raw_confidence is not None:
+		out["raw_confidence"] = raw_confidence
+	elif decision.get("confidence"):
+		out["raw_confidence"] = decision["confidence"]
+	if decision.get("dependency"):
+		out["dependency"] = decision["dependency"]
 	# Preserve structured integrity blocker codes for SLE_GL_DRIFT (I1/I4/…).
 	if out.get("topic") in (TOPIC_SLE_GL_DRIFT, "SLE_GL_DRIFT") or out.get("repair_class") == SLE_GL_DRIFT_REPAIR:
 		out["integrity_blocker"] = row.get("blocker") or row.get("integrity_blocker")

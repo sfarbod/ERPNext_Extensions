@@ -708,7 +708,54 @@ def _identity_window(item_code, warehouse, batch_no, posting_datetime) -> list:
 
 
 def dry_run_selected(rows: list[dict]) -> dict:
-	return {"dry_run": True, "status": STATUS_DRY_RUN, "rows": rows, "count": len(rows)}
+	"""Preview selected posting-order rows without writing.
+
+	Re-stamps planner decisions so callers see eligible/blocked with the same
+	gates as apply (including LIKELY→EXACT promotion). Returns both legacy
+	``rows`` and apply-shaped ``applied``/``blocked`` lists for campaign scripts.
+	"""
+	from erpnext_extensions.iran_accounting.historical_stock.planner import (
+		READY_STATUSES,
+		attach_plan_many,
+	)
+
+	stamped = attach_plan_many([dict(r) for r in (rows or [])])
+	applied = []
+	blocked = []
+	for r in stamped:
+		ps = str(r.get("planner_status") or "")
+		eligible = bool(r.get("eligible")) and ps in READY_STATUSES and int(r.get("sql_updates") or 0) > 0
+		entry = {
+			"inbound_document": r.get("inbound_document"),
+			"outbound_document": r.get("outbound_document"),
+			"item": r.get("item"),
+			"warehouse": r.get("warehouse"),
+			"batch": r.get("batch"),
+			"planner_status": ps,
+			"confidence": r.get("confidence"),
+			"raw_confidence": r.get("raw_confidence"),
+			"dependency": r.get("dependency"),
+			"sql_updates": int(r.get("sql_updates") or 0),
+			"proposed_outbound_time": r.get("proposed_outbound_time"),
+			"current_outbound_time": r.get("current_outbound_time"),
+			"min_qty_before": r.get("min_qty_before"),
+			"min_qty_after": r.get("min_qty_after"),
+			"reason": r.get("reason") or r.get("skip_reason"),
+			"dry_run": True,
+		}
+		if eligible:
+			applied.append(entry)
+		else:
+			blocked.append({"row": r, "error": entry["reason"] or ps or "not eligible"})
+	return {
+		"dry_run": True,
+		"status": STATUS_DRY_RUN,
+		"rows": stamped,
+		"count": len(stamped),
+		"applied": applied,
+		"blocked": blocked,
+		"aborted": False,
+	}
 
 
 def _new_audit_log(run_id: str, user: str):

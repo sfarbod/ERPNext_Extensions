@@ -199,19 +199,34 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 	try:
 		from erpnext_extensions.iran_accounting.stock_posting_order.scanner import run_full_history_scan
 
+		from erpnext_extensions.iran_accounting.historical_stock.planner import (
+			READY_STATUSES,
+			attach_plan,
+		)
+
 		po = run_full_history_scan(company=company)
 		amb = 0
-		for r in po.get("rows") or []:
+		plan_cache = {}
+		for raw in po.get("rows") or []:
+			r = attach_plan(dict(raw), cache=plan_cache)
 			opt = str(r.get("optimizer_status") or r.get("status") or "")
 			conf = str(r.get("confidence") or r.get("repair_confidence") or "")
+			raw_conf = str(r.get("raw_confidence") or raw.get("confidence") or "")
 			if opt in ("NO_REPAIR_NEEDED", "ALREADY_ORDERED", "HEALTHY"):
+				continue
+			# Promoted / EXACT auto-repairable rows are not blockers.
+			if conf == "EXACT" or (
+				r.get("eligible")
+				and str(r.get("planner_status") or "") in READY_STATUSES
+				and int(r.get("sql_updates") or 0) > 0
+			):
 				continue
 			if "EXACT" in conf or "EXACT" in opt:
 				continue
-			if "AMBIGUOUS" not in conf and "AMBIGUOUS" not in opt and "LIKELY" not in conf:
+			if "AMBIGUOUS" not in conf and "AMBIGUOUS" not in opt and "LIKELY" not in conf and "LIKELY" not in raw_conf:
 				continue
-			if "LIKELY" in conf:
-				# LIKELY is TOOL_LIMIT until classifier upgrades — not a user blocker.
+			if "LIKELY" in conf or "LIKELY" in raw_conf:
+				# Unpromoted LIKELY is TOOL_LIMIT until classifier upgrades — not a user blocker.
 				if not include_tool_limits:
 					continue
 				lane = LANE_TOOL_LIMIT
@@ -234,12 +249,20 @@ def scan_and_sync_blockers(company=None, *, include_tool_limits: bool = True, li
 				"warehouse": r.get("warehouse"),
 				"batch_no": r.get("batch") or r.get("batch_no"),
 				"voucher_type": "Stock Entry",
-				"voucher_no": r.get("voucher") or r.get("voucher_no"),
+				"voucher_no": (
+					r.get("outbound_document")
+					or r.get("voucher")
+					or r.get("voucher_no")
+				),
 				"posting_date": r.get("posting_date"),
 				"posting_time": r.get("posting_time"),
 				"work_order": r.get("work_order"),
 				"job_card": r.get("job_card"),
-				"dependency_root": r.get("voucher") or r.get("voucher_no"),
+				"dependency_root": (
+					r.get("outbound_document")
+					or r.get("voucher")
+					or r.get("voucher_no")
+				),
 				"affected_downstream_count": int(r.get("affected_count") or 0),
 				"recommended_user_action": (
 					"Review Work Order / Job Card / Batch flow and confirm intended posting order."
