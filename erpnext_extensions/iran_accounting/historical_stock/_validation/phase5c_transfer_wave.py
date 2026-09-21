@@ -59,7 +59,12 @@ def _select_roots(n_roots: int):
 		if (r.get("purpose") or "") not in TRANSFER:
 			continue
 		vn = str(r.get("voucher") or "")
-		if not vn.startswith("MAT-STE-") and not vn.startswith("STE-"):
+		# Stock Entry naming: MAT-STE-*, STE-*, and Work Order material transfers PO-JOB*.
+		if not (
+			vn.startswith("MAT-STE-")
+			or vn.startswith("STE-")
+			or vn.startswith("PO-JOB")
+		):
 			continue
 		r = apply_transfer_reconstruction_to_row(dict(r))
 		tr = r.get("transfer_reconstruction") or reconstruct_transfer_valuation(r)

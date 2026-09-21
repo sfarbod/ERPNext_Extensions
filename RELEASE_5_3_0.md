@@ -605,9 +605,26 @@ before draining remaining EXACT roots.
 | Wave | Verdict | Notes |
 |------|---------|-------|
 | 1 / 3 / 5 / 10 / 25 | WAVE_PASS | All `REPAIRED_TO_NO_ACTION`, idempotency_fail=0, I1/neg=0 |
-| Drain | in progress | ≤25 roots/commit; progress via `drain_progress` |
+| Drain (MAT-STE then PO-JOB) | **FIXED POINT** | Eligible EXACT roots → 0; WAITING_UPSTREAM remains with reason |
 
-Safety gates held throughout: I1=0, neg valuation/incoming/FG=0, active RIV=0.
-`10510117` / `MAT-STE-2026-24520` remains RESOLVED.
+### Final Transfer fixed-point (eligible auto-apply)
+
+| Metric | Value |
+|--------|------:|
+| Eligible Transfer EXACT roots | **0** |
+| Transfer WAITING_UPSTREAM (non-auto) | ~32 |
+| I1 / neg val / neg in / neg FG / active RIV | 0 / 0 / 0 / 0 / 0 |
+| `10510117` / `MAT-STE-2026-24520` | RESOLVED |
+
+### Manufacture after Transfer FP
+
+Canaries **1 → 3 → 5 → 10** `PHASE_5B_MFG_CANARY_APPLY_OK`, neg gates held.
+
+### Non-auto remainder (not a KPI cheat)
+
+- `WAITING_UPSTREAM` — poisoned Manufacture / zero-SVD outgoing (do not invent)
+- Scan-surface rows that are `transfer_already_balanced` are excluded from eligible apply
+
+Verdict: **PHASE_5D_TRANSFER_FIXED_POINT_REACHED**
 
 
