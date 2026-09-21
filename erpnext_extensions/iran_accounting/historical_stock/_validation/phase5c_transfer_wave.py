@@ -46,6 +46,7 @@ def _select_roots(n_roots: int):
 	from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
 	from erpnext_extensions.iran_accounting.historical_stock.transfer_valuation import (
 		EXACT,
+		NO_ACTION,
 		RECONSTRUCTABLE,
 		reconstruct_transfer_valuation,
 		apply_transfer_reconstruction_to_row,
@@ -64,25 +65,46 @@ def _select_roots(n_roots: int):
 		tr = r.get("transfer_reconstruction") or reconstruct_transfer_valuation(r)
 		r["transfer_reconstruction"] = tr
 		cls = tr.get("classification")
+		if cls == NO_ACTION:
+			continue
 		if cls not in (EXACT, RECONSTRUCTABLE):
 			continue
 		prop = float(r.get("proposed_rate") or r.get("expected_rate") or tr.get("expected_rate") or 0)
 		if abs(prop) < 0.0001:
 			continue
-		# Skip near-equal (already healthy within 1 IRR)
-		cur = float(r.get("current_rate") or 0)
+		# Prefer reconstruct's own current/expected — scan surface current_rate can be stale
+		# and keep thrashing already-balanced roots (before_diff=0 / ALREADY_REPAIRED).
+		cur = float(
+			tr.get("current_rate")
+			if tr.get("current_rate") is not None
+			else r.get("current_rate")
+			or 0
+		)
 		if abs(cur - prop) <= 1.0:
 			continue
+		# Live pair already balanced → not an apply candidate.
+		try:
+			from erpnext_extensions.iran_accounting.historical_stock.transfer_convergence import (
+				transfer_already_balanced,
+			)
+
+			if transfer_already_balanced({**r, "purpose": r.get("purpose")}):
+				continue
+		except Exception:
+			pass
 		r["proposed_rate"] = prop
 		r["expected_rate"] = prop
+		r["current_rate"] = cur
 		pz = r.get("patient_zero")
 		pz_v = pz.get("voucher_no") if isinstance(pz, dict) else pz
 		root = tr.get("root_voucher") or r.get("voucher")
+		# Only auto-apply when upstream is proven healthy. "missing" must not
+		# qualify — it often means posting_datetime was unset and poison was skipped.
 		self_exact = (
 			cls == EXACT
 			and tr.get("authoritative_source") in ("outgoing_sle_svd", "outgoing_sle_rate")
 			and (not root or root == r.get("voucher"))
-			and tr.get("upstream_health") in ("healthy", "missing", None)
+			and tr.get("upstream_health") == "healthy"
 		)
 		if self_exact:
 			r["eligible"] = True
