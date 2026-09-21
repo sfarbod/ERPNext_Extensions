@@ -745,6 +745,22 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			status = refusal["status"]
 			decision["false_rate_rebuild_complete"] = True
 			decision["message"] = refusal["message"]
+		elif abs(cur - exp) > 1.0 and abs(exp) > RATE_EPS:
+			# v5.3.0 Phase 5D: SE/SLE "already valued" agreement is NOT complete when an
+			# authoritative expected (e.g. Transfer outgoing SVD) disagrees — MATCHED_BUT_CORRUPT.
+			row = dict(row)
+			row["status"] = STATUS_RECONSTRUCTABLE
+			row["matched_but_corrupt"] = True
+			row["source"] = "requires_authoritative_reconstruction"
+			row["source_of_truth"] = row.get("source_of_truth") or "requires_authoritative_reconstruction"
+			row["eligible"] = True
+			status = STATUS_RECONSTRUCTABLE
+			decision["matched_but_corrupt"] = True
+			decision["message"] = (
+				f"MATCHED_BUT_CORRUPT — document rates agree at {cur} but authoritative "
+				f"expected is {exp}; refusing false RATE_REPAIR_COMPLETE"
+			)
+			# Fall through to READY evaluation below.
 		elif abs(cur) > RATE_EPS or abs(exp) > RATE_EPS:
 			return _not_ready(
 				decision,

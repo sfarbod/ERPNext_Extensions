@@ -184,6 +184,16 @@ def _build_v2_phases(classes: list, root_cause: dict) -> list:
 			"risk": "CRITICAL",
 			"blocking_dependencies": ["POSTING_ORDER", "I1_NEGATIVE_RATE_REPAIR"],
 			"notes": (
+				"Phase 5D: Transfer Repair Group (item+batch+voucher_detail) → "
+				"classify/preview/apply/verify/rescan → NO_ACTION; "
+				"refuse false RATE_REPAIR_COMPLETE when SE≈SLE≠outgoing SVD (MATCHED_BUT_CORRUPT); "
+				"finalize incoming to post-write outgoing SVD; soft batch match (SLE batch NULL); "
+				"idempotent ALREADY_REPAIRED (zero economic writes); chunk ≤25/commit; "
+				"never full-replay source warehouse from distant patient-zero during Transfer apply; "
+				"resolve posting/warehouses before upstream health (missing stamps ≠ healthy); "
+				"self_exact requires upstream_health=healthy (not missing); "
+				"poisoned source → WAITING_UPSTREAM (do not propagate); "
+				"SE Detail identity must not also run SLE-only writer (idempotency); "
 				"reconstruct_transfer_valuation + manufacture input_health; "
 				"HEALED_BY_UPSTREAM_TRANSFER / HEALED_BY_MANUFACTURE_REBUILD; "
 				f"dependency_cycles_detected={cycles}"
@@ -199,7 +209,7 @@ def _build_v2_phases(classes: list, root_cause: dict) -> list:
 			"repost_requirement": "yes after EXACT/RECONSTRUCTABLE preview",
 			"risk": "CRITICAL",
 			"blocking_dependencies": ["ZERO_RATE", "WRONG_RATE"],
-			"notes": "post-replay neg valuation gate required",
+			"notes": "post-replay neg valuation gate required; idempotent repair→rescan→NO_ACTION",
 		},
 		{
 			"phase": 7,

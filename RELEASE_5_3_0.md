@@ -574,4 +574,40 @@ Bin sync, final Scan All fixed-point. No broad GL/RIV.
 
 Verdict: **PHASE_5C_NEEDS_FURTHER_TOOL_DEVELOPMENT**
 
+---
+
+## Phase 5D — Transfer convergence & idempotency
+
+Goal: make Transfer repair deterministic
+`classify → preview → apply → verify → rescan → NO_ACTION / COMPLETE`
+before draining remaining EXACT roots.
+
+### Reusable components
+
+| Module / helper | Role |
+|-----------------|------|
+| `transfer_convergence.py` | Transfer Repair Group (ITEM_BATCH_VOUCHER_DETAIL), fingerprints, residual policy, `finalize_transfer_repair_group`, `apply_transfer_repair_group`, `transfer_already_balanced` / `ALREADY_REPAIRED` |
+| `reconstruct.repair_wrong_rate_selected` | SE Detail identity must **not** also run SLE-only writer (idempotency leak when `surface=SLE`) |
+| `transfer_valuation.reconstruct_transfer_valuation` | Resolve posting/warehouses from SE/Detail before upstream health; poisoned source → `WAITING_UPSTREAM` |
+| Selection (`phase5c_transfer_wave._select_roots`) | `self_exact` requires `upstream_health=healthy` (not `missing`) |
+| Tests | `test_transfer_convergence_v530` (group, residual, idempotency skip, WAITING→BLOCKED) |
+
+### Non-convergence causes found (live)
+
+| Cause | Example | Disposition |
+|-------|---------|-------------|
+| J/K — SLE+SE double-apply (`surface=SLE` + `voucher_detail`) | Second apply always `written=True` | Fixed — SLE-only path skipped when detail present |
+| A/L — false EXACT when posting/warehouse stamps missing → upstream `missing` | `MAT-STE-2026-25741` / `13200256` | Fixed — resolve stamps; require healthy upstream |
+| M/N — poisoned Manufacture upstream (`zero_rate_with_value_movement`) | Root `MAT-STE-2026-25447` blocks 25741/25742 | Correct `WAITING_UPSTREAM` — do not propagate; Manufacture phase unlocks |
+
+### Canaries (after fixes)
+
+| Wave | Verdict | Notes |
+|------|---------|-------|
+| 1 / 3 / 5 / 10 / 25 | WAVE_PASS | All `REPAIRED_TO_NO_ACTION`, idempotency_fail=0, I1/neg=0 |
+| Drain | in progress | ≤25 roots/commit; progress via `drain_progress` |
+
+Safety gates held throughout: I1=0, neg valuation/incoming/FG=0, active RIV=0.
+`10510117` / `MAT-STE-2026-24520` remains RESOLVED.
+
 

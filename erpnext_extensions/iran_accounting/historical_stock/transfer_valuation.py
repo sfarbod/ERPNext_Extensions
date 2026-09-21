@@ -61,6 +61,39 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 	posting_date = g(row, "posting_date")
 	posting_time = g(row, "posting_time") or "00:00:00"
 	posting_dt = g(row, "posting_datetime") or f"{posting_date} {posting_time}"
+	detail = g(row, "voucher_detail") or g(row, "voucher_detail_no") or g(row, "name")
+	# Resolve posting + warehouses from Stock Entry / Detail when row stamps are incomplete.
+	# Incomplete stamps make upstream health return "missing" → false EXACT eligibility.
+	_bad_dt = (
+		not posting_date
+		or str(posting_date).lower() in ("none", "null")
+		or str(posting_dt).lower().startswith("none")
+	)
+	if voucher and (_bad_dt or not s_wh or not t_wh or not batch):
+		if detail:
+			sed = frappe.db.get_value(
+				"Stock Entry Detail",
+				detail,
+				["s_warehouse", "t_warehouse", "batch_no", "qty", "basic_rate"],
+				as_dict=True,
+			)
+			if sed:
+				s_wh = s_wh or sed.s_warehouse
+				t_wh = t_wh or sed.t_warehouse
+				batch = batch or sed.batch_no
+				if not qty:
+					qty = flt(sed.qty)
+		if _bad_dt:
+			pd = frappe.db.get_value(
+				"Stock Entry",
+				voucher,
+				["posting_date", "posting_time"],
+				as_dict=True,
+			)
+			if pd and pd.get("posting_date"):
+				posting_date = pd.posting_date
+				posting_time = pd.posting_time or "00:00:00"
+				posting_dt = f"{posting_date} {posting_time}"
 	current_rate = flt(
 		g(row, "basic_rate")
 		if g(row, "basic_rate") is not None
@@ -124,6 +157,31 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		elif abs(orate) > RATE_EPS:
 			source_rate = abs(orate)
 			source_kind = "outgoing_sle_rate"
+		elif abs(oq) > QTY_EPS and abs(svd) <= VALUE_EPS and abs(orate) <= RATE_EPS:
+			# Qty left source with zero economic value — do NOT invent from previous_healthy.
+			out["evidence"]["outgoing_sle"] = {
+				"name": out_sle.name,
+				"warehouse": out_sle.warehouse,
+				"actual_qty": oq,
+				"outgoing_rate": orate,
+				"stock_value_difference": svd,
+				"qty_after": out_sle.qty_after_transaction,
+				"stock_value": out_sle.stock_value,
+			}
+			out["classification"] = WAITING_UPSTREAM
+			out["confidence"] = CONFIDENCE_AMBIGUOUS
+			out["reason"] = (
+				"outgoing qty moved with zero stock_value_difference / zero outgoing_rate "
+				"— refuse previous_healthy invention; repair upstream source valuation first"
+			)
+			out["authoritative_source"] = None
+			out["expected_rate"] = 0.0
+			upstream = _source_upstream_health(item, s_wh, posting_dt, batch=batch, cache=cache)
+			out["upstream_health"] = upstream.get("status") or "unknown"
+			out["dependency_closure"] = list(upstream.get("dependencies") or [])
+			if upstream.get("root_voucher"):
+				out["root_voucher"] = upstream["root_voucher"]
+			return out
 		out["evidence"]["outgoing_sle"] = {
 			"name": out_sle.name,
 			"warehouse": out_sle.warehouse,
