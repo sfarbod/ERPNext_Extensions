@@ -76,28 +76,39 @@ def _disposed_assets_on_sales_invoice(doc) -> list[str]:
 
 
 @frappe.whitelist()
-def scrap_asset(*args, **kwargs):
+def scrap_asset(asset_name: str, scrap_date=None):
 	"""Whitelist wrapper: run core scrap, then re-apply usage factors.
 
 	Uses ``override_whitelisted_methods`` (same pattern as other modules in this
 	app). Imports the original function from the ERPNext module object so this
 	is not a monkey patch of the module attribute.
+
+	Signature mirrors ERPNext ``depreciation.scrap_asset`` on purpose. Frappe
+	RPC (``handler.execute_cmd`` → ``frappe.call(..., **form_dict)``) includes
+	dispatch metadata such as ``cmd`` in ``form_dict``. ``frappe.get_newargs``
+	only strips unsupported keys when the callee does **not** accept
+	``**kwargs``. Matching the native fixed signature keeps RPC metadata out of
+	this wrapper and out of the core call, while still forwarding the business
+	arguments ``asset_name`` / ``scrap_date``.
 	"""
 	from erpnext.assets.doctype.asset import depreciation as depr_mod
 
-	result = depr_mod.scrap_asset(*args, **kwargs)
-	asset_name = kwargs.get("asset_name") or (args[0] if args else None)
+	result = depr_mod.scrap_asset(asset_name, scrap_date)
 	_reapply_for_asset(asset_name)
 	return result
 
 
 @frappe.whitelist()
-def restore_asset(*args, **kwargs):
-	"""Whitelist wrapper: run core restore, then re-apply usage factors."""
+def restore_asset(asset_name: str):
+	"""Whitelist wrapper: run core restore, then re-apply usage factors.
+
+	Same RPC-boundary contract as ``scrap_asset``: fixed signature so Frappe
+	strips ``cmd`` / other form_dict metadata before the wrapper runs, and only
+	``asset_name`` is forwarded to native ``depreciation.restore_asset``.
+	"""
 	from erpnext.assets.doctype.asset import depreciation as depr_mod
 
-	result = depr_mod.restore_asset(*args, **kwargs)
-	asset_name = kwargs.get("asset_name") or (args[0] if args else None)
+	result = depr_mod.restore_asset(asset_name)
 	_reapply_for_asset(asset_name)
 	return result
 
