@@ -550,6 +550,75 @@ class TestEquivalentUnitCosting(unittest.TestCase):
 		with _env(stock_uoms={"FG": "Nos"}, uom_factors={}, jc_secondaries={}):
 			self.assertFalse(allocate_stage_output_cost(doc))
 
+	def test_changed_uom_after_snapshot_does_not_recost(self):
+		doc = _box_syringe_doc()
+		mutated = {(FG, SYRINGE): 99, (FG, BOX): 1, (CP, SYRINGE): 1}
+		with _env():
+			apply_iran_manufacture_output_contract(doc)
+			fg_amount = flt(doc.items[1].basic_amount)
+			cp_amount = flt(doc.items[2].basic_amount)
+			self.assertEqual(flt(doc.items[1].get(PHYSICAL_CONV_FIELD)), 2)
+		with _env(uom_factors=mutated):
+			doc.docstatus = 1
+			doc.set(CONTRACT_VERSION_FIELD, MANUFACTURE_COSTING_CONTRACT_VERSION)
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(doc.items[1].basic_amount), fg_amount)
+		self.assertEqual(flt(doc.items[2].basic_amount), cp_amount)
+		self.assertEqual(flt(doc.items[1].get(PHYSICAL_CONV_FIELD)), 2)
+		self.assertEqual(flt(doc.items[1].get(EQUIV_QTY_FIELD)), 2856)
+
+	def test_changed_factor_after_snapshot_does_not_recost(self):
+		fg = _output("FG", 1, is_fg=1, stock_uom="Nos", **{EQUIV_FACTOR_FIELD: 5})
+		cp = _output(
+			"CP",
+			1,
+			secondary_item_type="Co-Product",
+			stock_uom="Nos",
+			t_warehouse="CO",
+			**{EQUIV_FACTOR_FIELD: 5},
+		)
+		doc = _Doc(job_card="PO-JOB-TEST", items=[_consumed("RM", 1, 10000), fg, cp])
+		jc = {
+			"PO-JOB-TEST": [
+				_Dict(
+					item_code="CP",
+					secondary_item_type="Co-Product",
+					idx=1,
+					**{EQUIV_FACTOR_FIELD: 5},
+				)
+			]
+		}
+		with _env(stock_uoms={"FG": "Nos", "CP": "Nos"}, uom_factors={}, jc_secondaries=jc):
+			apply_iran_manufacture_output_contract(doc)
+			self.assertEqual(flt(fg.basic_amount), 5000)
+			doc.docstatus = 1
+			doc.set(CONTRACT_VERSION_FIELD, MANUFACTURE_COSTING_CONTRACT_VERSION)
+		jc_changed = {
+			"PO-JOB-TEST": [
+				_Dict(
+					item_code="CP",
+					secondary_item_type="Co-Product",
+					idx=1,
+					**{EQUIV_FACTOR_FIELD: 1},
+				)
+			]
+		}
+		with _env(stock_uoms={"FG": "Nos", "CP": "Nos"}, uom_factors={}, jc_secondaries=jc_changed):
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(fg.basic_amount), 5000)
+		self.assertEqual(flt(cp.get(EQUIV_FACTOR_FIELD)), 5)
+
+	def test_submitted_skips_job_card_rematch(self):
+		doc = _box_syringe_doc()
+		doc.docstatus = 1
+		doc.set(CONTRACT_VERSION_FIELD, MANUFACTURE_COSTING_CONTRACT_VERSION)
+		with _env(
+			jc_secondaries={
+				"PO-JOB-TEST": [_Dict(item_code=JC_MISMATCH, secondary_item_type="By-Product", idx=1)]
+			}
+		):
+			validate_job_card_secondary_match(doc)
+
 
 if __name__ == "__main__":
 	unittest.main()

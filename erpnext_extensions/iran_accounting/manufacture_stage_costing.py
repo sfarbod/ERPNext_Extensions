@@ -107,6 +107,8 @@ def snapshot_output_classification(doc, classified=None) -> dict:
 
 def snapshot_equivalent_factors_from_sources(doc) -> None:
 	"""Copy JC / BOM equivalent factors onto SE rows when the row has none."""
+	if cint(doc.get("docstatus")) >= 1:
+		return
 	by_item: dict[tuple[str | None, str | None], float] = {}
 	job_card = doc.get("job_card")
 	if job_card:
@@ -139,6 +141,8 @@ def snapshot_equivalent_factors_from_sources(doc) -> None:
 def validate_job_card_secondary_match(doc) -> None:
 	"""Job Card Co/By-Product / Additional FG must match the Manufacture rows."""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
+		return
+	if cint(doc.get("docstatus")) >= 1:
 		return
 	job_card = doc.get("job_card")
 	if not job_card:
@@ -289,12 +293,26 @@ def _explicit_factor(row) -> float | None:
 	return flt(raw)
 
 
+def _snapshotted_physical(row) -> float | None:
+	raw = row.get(PHYSICAL_CONV_FIELD)
+	if raw in (None, ""):
+		return None
+	value = flt(raw)
+	return value if value > 0 else None
+
+
+def _has_complete_equivalence_snapshot(stage_rows) -> bool:
+	return all(_snapshotted_physical(row) is not None and _explicit_factor(row) is not None for row in stage_rows)
+
+
 def equivalent_qty_for_row(
 	row, common_uom: str | None, *, require_physical: bool
 ) -> tuple[float, float, float]:
 	"""Return (equivalent_qty, physical_conversion, explicit_factor)."""
 	stock_qty = _row_qty(row)
-	physical = physical_conversion_to_common(row, common_uom) if common_uom else None
+	physical = _snapshotted_physical(row)
+	if physical is None:
+		physical = physical_conversion_to_common(row, common_uom) if common_uom else None
 	explicit = _explicit_factor(row)
 	if physical is None:
 		if require_physical or explicit is None:
@@ -389,9 +407,13 @@ def allocate_stage_output_cost(doc) -> bool:
 		if parent_row and _explicit_factor(row) is None and _explicit_factor(parent_row) is not None:
 			_set_field(row, EQUIV_FACTOR_FIELD, _explicit_factor(parent_row))
 
-	common_uom = resolve_common_uom(stage)
-	require_physical = bool(common_uom)
-	if not common_uom:
+	if _has_complete_equivalence_snapshot(stage):
+		common_uom = next((row.get(COMMON_UOM_FIELD) for row in stage if row.get(COMMON_UOM_FIELD)), None)
+		require_physical = False
+	else:
+		common_uom = resolve_common_uom(stage)
+		require_physical = bool(common_uom)
+	if not common_uom and not _has_complete_equivalence_snapshot(stage):
 		missing_factor = [row for row in stage if _explicit_factor(row) is None]
 		if missing_factor:
 			frappe.throw(

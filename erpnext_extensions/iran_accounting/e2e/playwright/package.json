@@ -6,6 +6,7 @@
   "scripts": {
     "test": "playwright test",
     "test:scenario21": "playwright test tests/scenario21.spec.ts",
+    "test:v533": "playwright test tests/manufacture-valuation-v533.spec.ts",
     "test:stock-ledger-report": "playwright test tests/stock-ledger-report.spec.ts",
     "test:headed": "playwright test --headed",
     "report": "playwright show-report",
