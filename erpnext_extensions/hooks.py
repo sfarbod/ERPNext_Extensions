@@ -513,6 +513,7 @@ override_whitelisted_methods = {
 override_doctype_dashboards = {
 	"Asset": "erpnext_extensions.asset_usage_depreciation.asset_dashboard.get_data",
 	"Material Request": "erpnext_extensions.asset_usage_depreciation.material_request_dashboard.get_data",
+	"Payment Request": "erpnext_extensions.cheque_management.payment_request_dashboard.get_data",
 }
 
 # exempt linked doctypes from being automatically cancelled
