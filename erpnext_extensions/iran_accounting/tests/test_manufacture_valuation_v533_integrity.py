@@ -208,9 +208,45 @@ class TestRealDevelopmentDocuments(unittest.TestCase):
 		self.assertTrue(scrap_rows)
 		soft = next((row for row in scrap_rows if row.item_code == "13200256"), None)
 		self.assertIsNotNone(soft)
+		soft_consume = [
+			row
+			for row in doc.items
+			if row.item_code == "13200256" and row.s_warehouse and not row.t_warehouse
+		]
+		self.assertTrue(soft_consume)
+		for row in soft_consume:
+			self.assertTrue(row.s_warehouse)
+			self.assertFalse(row.t_warehouse)
+			self.assertGreater(flt(row.transfer_qty), 0)
+			self.assertAlmostEqual(flt(row.basic_amount) / flt(row.transfer_qty), 35297, delta=0)
+		matched = [row for row in soft_consume if row.batch_no == soft.batch_no]
+		self.assertTrue(matched)
+		source_rate = flt(matched[0].basic_amount) / flt(matched[0].transfer_qty)
+		self.assertEqual(round(source_rate), EXPECTED_SOFT_BOX_RATE)
 		expected = _issued_rate_for_component(doc, soft)
 		self.assertEqual(round(expected), EXPECTED_SOFT_BOX_RATE)
 		self.assertEqual(round(expected * flt(soft.transfer_qty or soft.qty)), 247079)
+		self.assertTrue(soft.t_warehouse)
+		self.assertFalse(soft.s_warehouse)
+		dest_bin = frappe.db.get_value(
+			"Bin",
+			{"item_code": "13200256", "warehouse": soft.t_warehouse},
+			"valuation_rate",
+		)
+		if dest_bin not in (None, ""):
+			self.assertNotEqual(round(flt(dest_bin)), EXPECTED_SOFT_BOX_RATE)
+			self.assertEqual(round(expected), EXPECTED_SOFT_BOX_RATE)
+		bag = next((row for row in scrap_rows if row.item_code == "13200473"), None)
+		self.assertIsNotNone(bag)
+		bag_consume = next(
+			row
+			for row in doc.items
+			if row.item_code == "13200473" and row.s_warehouse and not row.t_warehouse
+		)
+		bag_issued = flt(bag_consume.basic_amount) / flt(bag_consume.transfer_qty)
+		self.assertEqual(round(bag_issued), 33136)
+		self.assertEqual(round(_issued_rate_for_component(doc, bag)), 33136)
+		self.assertEqual(round(33136 * flt(bag.transfer_qty or bag.qty)), 1259168)
 		for row in scrap_rows:
 			issued = _issued_rate_for_component(doc, row)
 			self.assertGreater(issued, 0)

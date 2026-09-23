@@ -376,5 +376,104 @@ class TestComponentScrapIssuedRateContract(unittest.TestCase):
 		self.assertEqual(flt(doc.items[3].basic_rate), 35297)
 
 
+class TestSourceSideNotDestination(unittest.TestCase):
+	"""Destination Reject warehouse valuation must have zero influence."""
+
+	SOURCE_RATE = 35297
+	DEST_RATES = (0, 1, 246100, 9_999_999)
+
+	def _doc(self, dest_rate: float, dest_warehouse="Reject-WH"):
+		consume = _consumed("13200256", 7, self.SOURCE_RATE, batch_no="737", s_warehouse="WIP-SOURCE")
+		scrap = _output(
+			"13200256",
+			7,
+			secondary_item_type="Scrap",
+			rate=dest_rate,
+			batch_no="737",
+			t_warehouse=dest_warehouse,
+		)
+		fg = _output("20100102", 1, is_fg=1, rate=1, t_warehouse="FG")
+		return _Doc(items=[consume, fg, scrap]), consume, scrap
+
+	def test_destination_rates_never_change_issued_rate(self):
+		for dest_rate in self.DEST_RATES:
+			with self.subTest(dest_rate=dest_rate):
+				doc, consume, scrap = self._doc(dest_rate)
+				self.assertNotEqual(dest_rate, self.SOURCE_RATE)
+				self.assertEqual(flt(consume.basic_amount) / flt(consume.transfer_qty), self.SOURCE_RATE)
+				self.assertEqual(consume.s_warehouse, "WIP-SOURCE")
+				self.assertIsNone(consume.t_warehouse)
+				self.assertEqual(scrap.t_warehouse, "Reject-WH")
+				self.assertIsNone(scrap.s_warehouse)
+				with _irr():
+					apply_iran_manufacture_output_contract(doc)
+				self.assertEqual(flt(scrap.basic_rate), self.SOURCE_RATE)
+				self.assertEqual(flt(scrap.basic_amount), 7 * self.SOURCE_RATE)
+				self.assertNotEqual(flt(scrap.basic_rate), dest_rate)
+
+	def test_destination_batch_history_ignored(self):
+		doc, consume, scrap = self._doc(246100)
+		scrap.batch_no = "737"
+		# Destination batch history would be 246100; source consume of the same
+		# batch is 35,297. Source must win.
+		with _irr():
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(consume.basic_rate), self.SOURCE_RATE)
+		self.assertEqual(flt(scrap.basic_rate), self.SOURCE_RATE)
+		self.assertNotEqual(246100, self.SOURCE_RATE)
+
+	def test_get_valuation_rate_never_consulted(self):
+		doc, _consume, scrap = self._doc(246100)
+		with (
+			_irr(),
+			mock.patch("erpnext.stock.stock_ledger.get_valuation_rate") as dest_spy,
+		):
+			apply_iran_manufacture_output_contract(doc)
+		dest_spy.assert_not_called()
+		self.assertEqual(flt(scrap.basic_rate), self.SOURCE_RATE)
+
+	def test_riv_recalculate_keeps_source_rate_after_dest_poison(self):
+		doc, _consume, scrap = self._doc(0)
+		with _irr():
+			apply_iran_manufacture_output_contract(doc)
+			self.assertEqual(flt(scrap.basic_rate), self.SOURCE_RATE)
+			# Simulate ERPNext RIV calculate() rewriting scrap from destination.
+			scrap.basic_rate = 246100
+			scrap.basic_amount = 7 * 246100
+			scrap.amount = scrap.basic_amount
+			scrap.valuation_rate = 246100
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(scrap.basic_rate), self.SOURCE_RATE)
+		self.assertEqual(flt(scrap.basic_amount), 247079)
+
+	def test_multiple_source_warehouses_weighted_not_destination(self):
+		doc = _Doc(
+			items=[
+				_consumed("A", 5, 100, s_warehouse="WIP-A"),
+				_consumed("A", 5, 300, s_warehouse="WIP-B"),
+				_output("FG", 8, is_fg=1, t_warehouse="FG"),
+				_output("A", 2, secondary_item_type="Scrap", rate=999_999, t_warehouse="Reject"),
+			]
+		)
+		with _irr():
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(doc.items[3].basic_rate), 200)
+		self.assertNotEqual(999_999, 200)
+
+	def test_multiple_source_batches_match_then_destination_ignored(self):
+		doc = _Doc(
+			items=[
+				_consumed("A", 10, 100, batch_no="B1", s_warehouse="WIP"),
+				_consumed("A", 10, 500, batch_no="B2", s_warehouse="WIP"),
+				_output("FG", 18, is_fg=1, t_warehouse="FG"),
+				_output("A", 2, secondary_item_type="Scrap", rate=246100, batch_no="B2", t_warehouse="Reject"),
+			]
+		)
+		with _irr():
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(doc.items[3].basic_rate), 500)
+		self.assertNotEqual(246100, 500)
+
+
 if __name__ == "__main__":
 	unittest.main()
