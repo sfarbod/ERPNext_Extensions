@@ -154,6 +154,8 @@ def prepare_v533_ui_scenario(scenario: str, company: str | None = None):
 		return _prepare_gap2_mismatch(company)
 	if scenario == "gap2_missing_equivalence":
 		return _prepare_missing_equivalence(company)
+	if scenario == "independent_by_product":
+		return _prepare_independent_by_product(company)
 	frappe.throw(f"Unknown v5.3.3 UI scenario: {scenario}")
 
 
@@ -392,5 +394,121 @@ def _prepare_missing_equivalence(company: str) -> dict:
 			"expected_error": error,
 			"blocked": bool(error),
 			"mentions_no_1_to_1": bool(error and "1:1" in error),
+		},
+	)
+
+
+def _prepare_independent_by_product(company: str) -> dict:
+	"""Within-pool Valuation Rate By-Product stays independent; over-pool still I5."""
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ValuationIntegrityError,
+		assert_manufacture_value_pool,
+	)
+
+	rm = _seed_item(company, f"{PREFIX}-RMIND", rate=1000)
+	fg = _seed_item(company, f"{PREFIX}-FGIND", rate=1)
+	by_item = _seed_item(company, f"{PREFIX}-BYIND", rate=100)
+	doc = _new_draft(
+		company,
+		[
+			{
+				"item_code": rm,
+				"qty": 10,
+				"transfer_qty": 10,
+				"basic_rate": 1000,
+				"basic_amount": 10_000,
+				"amount": 10_000,
+				"s_warehouse": True,
+			},
+			{
+				"item_code": fg,
+				"qty": 9,
+				"transfer_qty": 9,
+				"is_finished_item": 1,
+				"t_warehouse": True,
+			},
+			{
+				"item_code": by_item,
+				"qty": 1,
+				"transfer_qty": 1,
+				"secondary_item_type": "By-Product",
+				"valuation_type": "Valuation Rate",
+				"basic_rate": 100,
+				"basic_amount": 100,
+				"amount": 100,
+				"t_warehouse": True,
+			},
+		],
+	)
+	by_row = next(row for row in doc.items if row.secondary_item_type == "By-Product")
+	fg_row = next(row for row in doc.items if row.is_finished_item)
+	if flt(by_row.basic_rate) != 100:
+		apply_iran_manufacture_output_contract(doc)
+		doc.db_update()
+		for row in doc.items:
+			row.db_update()
+		frappe.db.commit()
+		doc = frappe.get_doc("Stock Entry", doc.name)
+		by_row = next(row for row in doc.items if row.secondary_item_type == "By-Product")
+		fg_row = next(row for row in doc.items if row.is_finished_item)
+
+	i5_error = None
+	try:
+		probe = frappe.new_doc("Stock Entry")
+		probe.company = company
+		probe.purpose = "Manufacture"
+		wip = get_warehouse(company)
+		fg_wh = get_second_warehouse(company, wip)
+		probe.append(
+			"items",
+			{
+				"item_code": rm,
+				"qty": 10,
+				"transfer_qty": 10,
+				"basic_rate": 1000,
+				"basic_amount": 10_000,
+				"amount": 10_000,
+				"s_warehouse": wip,
+			},
+		)
+		probe.append(
+			"items",
+			{
+				"item_code": fg,
+				"qty": 9,
+				"transfer_qty": 9,
+				"is_finished_item": 1,
+				"t_warehouse": fg_wh,
+			},
+		)
+		probe.append(
+			"items",
+			{
+				"item_code": by_item,
+				"qty": 1,
+				"transfer_qty": 1,
+				"secondary_item_type": "By-Product",
+				"valuation_type": "Valuation Rate",
+				"basic_rate": 5_000_000,
+				"basic_amount": 5_000_000,
+				"amount": 5_000_000,
+				"t_warehouse": fg_wh,
+			},
+		)
+		apply_iran_manufacture_output_contract(probe)
+		assert_manufacture_value_pool(probe)
+	except (ValuationIntegrityError, frappe.ValidationError) as exc:
+		i5_error = str(exc)
+
+	return _context(
+		doc,
+		{
+			"by_item": by_item,
+			"expected_by_rate": 100,
+			"expected_fg_amount": 9900,
+			"by_rate": flt(by_row.basic_rate),
+			"fg_amount": flt(fg_row.basic_amount),
+			"i5_blocked": bool(i5_error and "I5" in i5_error),
+			"expected_error": i5_error,
 		},
 	)

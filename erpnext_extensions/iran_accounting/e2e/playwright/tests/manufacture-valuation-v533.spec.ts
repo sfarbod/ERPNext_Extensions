@@ -20,6 +20,11 @@ type V533Context = {
   expected_error?: string;
   blocked?: boolean;
   mentions_no_1_to_1?: boolean;
+  expected_by_rate?: number;
+  expected_fg_amount?: number;
+  by_rate?: number;
+  fg_amount?: number;
+  i5_blocked?: boolean;
   items: Array<Record<string, unknown>>;
 };
 
@@ -171,5 +176,34 @@ test.describe("v5.3.3 Manufacture valuation Desk UI @release-blocking", () => {
     await captureStep(page, "v533_missing_eq_save");
     const combined = `${message || ""} ${ctx.expected_error || ""}`;
     expect(combined).toMatch(/equivalent|UOM|1:1/i);
+  });
+
+  test("Independent Valuation Rate By-Product stays outside Stage Pool and I5 still fires", async ({
+    page,
+    loginPage,
+    stockEntryPage,
+  }) => {
+    const ctx = prepare("independent_by_product");
+    expect(ctx.by_rate).toBe(ctx.expected_by_rate);
+    expect(ctx.fg_amount).toBe(ctx.expected_fg_amount);
+    expect(ctx.i5_blocked).toBeTruthy();
+    expect(ctx.expected_error || "").toContain("I5");
+    await loginWithDevSid(page);
+    await stockEntryPage.open(ctx.stock_entry);
+    await captureStep(page, "v533_independent_by_open");
+    const doc = await readItems(page);
+    const byRow = doc.items.find((row) => row.secondary_item_type === "By-Product");
+    const fg = doc.items.find((row) => row.is_finished_item);
+    expect(byRow).toBeTruthy();
+    expect(byRow!.basic_rate).toBe(100);
+    expect(fg!.basic_amount).toBe(9900);
+    expect(byRow!.basic_rate).not.toBe(fg!.basic_rate);
+    await saveDraft(page);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await stockEntryPage.waitForFormReady();
+    const after = await readItems(page);
+    expect(after.items.find((row) => row.secondary_item_type === "By-Product")!.basic_rate).toBe(100);
+    expect(after.items.find((row) => row.is_finished_item)!.basic_amount).toBe(9900);
+    await captureStep(page, "v533_independent_by_after_save");
   });
 });

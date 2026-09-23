@@ -57,7 +57,14 @@ Eligible Stage Outputs:
 - `CO_PRODUCT_REJECT`
 
 Not eligible: Component Scrap, unused returns, Transfer rows, process-loss
-quantity, unrelated `OTHER_OUTPUT`, and finance-explicit Manual / `% of Component Cost` rows.
+quantity, unrelated `OTHER_OUTPUT`, and independently valued secondaries whose
+finance basis is authoritative (`Valuation Rate`, Manual, or `% of Component Cost`).
+
+Those independent secondaries keep their own rate. They are deducted from the
+Material Cost Pool and are **not** absorbed into the equivalent-unit Stage
+Output pool. If an independent value exceeds the manufacturing pool, I5 still
+fail-closes. Equivalent-unit costing must not recost them merely to hide an
+over-pool condition.
 
 Formulas:
 
