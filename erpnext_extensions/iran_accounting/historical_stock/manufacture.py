@@ -243,7 +243,7 @@ def _manufacture_input_health(doc, before_rows: list) -> dict:
 	poisoned = False
 	root = None
 	zero_rm_cause = None
-	posting_dt = f"{doc.posting_date} {doc.posting_time or '00:00:00'}"
+	posting_dt = f"{getattr(doc, 'posting_date', None) or ''} {getattr(doc, 'posting_time', None) or '00:00:00'}"
 	for r in before_rows or []:
 		s_wh = r.get("s_warehouse")
 		if not s_wh or not flt(r.get("qty")):

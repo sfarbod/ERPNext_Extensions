@@ -152,6 +152,9 @@ class TestManufactureConfidenceV530(unittest.TestCase):
 
 		class Doc:
 			def __init__(self):
+				self.name = "MAT-STE-TEST"
+				self.posting_date = "2026-06-01"
+				self.posting_time = "10:00:00"
 				self.items = [Row(**r.__dict__) for r in before_rows]
 
 			def get(self, key, default=None):
@@ -174,6 +177,7 @@ class TestManufactureConfidenceV530(unittest.TestCase):
 			side_effect=fake_contract,
 		):
 			frappe_mod.get_doc.return_value = Doc()
+			frappe_mod.db.sql.return_value = []
 			out = preview_manufacture_voucher("MAT-STE-TEST")
 		self.assertTrue(out.get("fg_negative"))
 		self.assertTrue(out.get("after_rates_healthy"))
@@ -193,6 +197,9 @@ class TestManufactureConfidenceV530(unittest.TestCase):
 
 		class Doc:
 			def __init__(self):
+				self.name = "MAT-STE-ZERO-RM"
+				self.posting_date = "2026-06-01"
+				self.posting_time = "10:00:00"
 				self.items = [
 					Row(
 						idx=1, name="fg", item_code="FG", qty=10, basic_rate=-50, basic_amount=-500,
@@ -223,6 +230,7 @@ class TestManufactureConfidenceV530(unittest.TestCase):
 			side_effect=fake_contract,
 		):
 			frappe_mod.get_doc.return_value = Doc()
+			frappe_mod.db.sql.return_value = []
 			out = preview_manufacture_voucher("MAT-STE-ZERO-RM")
 		self.assertTrue(out.get("after_rates_healthy"))
 		self.assertTrue(out.get("zero_rm_present"))
@@ -449,7 +457,7 @@ class TestMasterPlanV2Shape(unittest.TestCase):
 		self.assertEqual(plan.get("master_plan"), "V2")
 		self.assertIn("root_cause_graph", plan)
 		self.assertIn("phases", plan)
-		self.assertEqual(len(plan.get("phases") or []), 8)
+		self.assertEqual(len(plan.get("phases") or []), 9)
 		self.assertTrue(plan.get("safety", {}).get("riv_preflight_required"))
 		self.assertTrue(plan.get("safety", {}).get("false_rate_rebuild_complete_refused"))
 		self.assertTrue(plan.get("safety", {}).get("zero_rate_purpose_first"))

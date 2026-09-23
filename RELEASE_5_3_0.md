@@ -627,4 +627,52 @@ Canaries **1 → 3 → 5 → 10** `PHASE_5B_MFG_CANARY_APPLY_OK`, neg gates held
 
 Verdict: **PHASE_5D_TRANSFER_FIXED_POINT_REACHED**
 
+---
+
+## Continuation checkpoint — pause after Phase 5D
+
+**Do not treat the Historical Repair campaign as complete.**  
+Only the Transfer deterministic auto-apply population is drained on this
+development campaign database.
+
+### CURRENT DATA CHECKPOINT
+
+`PHASE_5D_TRANSFER_FIXED_POINT_REACHED`
+
+| Gate | Value |
+|------|------:|
+| Transfer eligible EXACT auto roots | **0** |
+| Transfer WAITING_UPSTREAM (non-auto) | ≈32 |
+| I1 | 0 |
+| negative valuation | 0 |
+| negative incoming | 0 |
+| negative FG | 0 |
+| active RIV | 0 |
+| `10510117` / `MAT-STE-2026-24520` | RESOLVED |
+
+Key Phase 5D commits: `7d96296`, `f9f21a0`, `301398e`.
+
+Reusable entry points for a **fresh production restore** later:
+
+- Master Plan V2: `historical_stock.master_plan`
+- Transfer reconstruct / Repair Group: `transfer_valuation`, `transfer_convergence`
+- Apply path: `reconstruct.repair_wrong_rate_selected` → `apply_transfer_repair_group`
+- Campaign drain helpers (dev): `_validation.phase5d_transfer_wave`, `_validation.phase5c_transfer_wave`
+
+### Next campaign order (resume here)
+
+1. Fresh Manufacture scan
+2. Manufacture canaries **1 → 3 → 5 → 10 → 25** (50 only if write volume allows)
+3. Wrong READY drain (≤25/commit where material)
+4. Zero deterministic drain (purpose-first semantics unchanged)
+5. Reclassify / drain I4 (`READY_I4` only)
+6. Posting Order recheck (preserve opening-state fix; keep 10510117 RESOLVED)
+7. Bin consistency
+8. Stock fixed-point verification
+9. Only then GL / Failed RIV planning (no broad/global RIV)
+
+**Pause policy:** stop now; resume from this section without relying on
+temporary one-off scripts or chat memory.
+
+
 

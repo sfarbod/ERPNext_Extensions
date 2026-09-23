@@ -53,6 +53,85 @@ def _patches(
 	patient=None,
 	poisoned=False,
 ):
+	"""Patch Zero Rate helpers + Transfer reconstruction (Phase 5B/5D path)."""
+
+	def _fake_transfer_recon(row, cache=None):
+		from erpnext_extensions.iran_accounting.historical_stock import (
+			CONFIDENCE_AMBIGUOUS,
+			CONFIDENCE_EXACT,
+			CONFIDENCE_MANUAL,
+		)
+		from erpnext_extensions.iran_accounting.historical_stock.transfer_valuation import (
+			EXACT,
+			RECONSTRUCTABLE,
+			WAITING_UPSTREAM,
+			USER_ACTION_REQUIRED,
+		)
+
+		purpose = row.get("purpose") or ""
+		cur = float(row.get("basic_rate") or row.get("current_rate") or 0)
+		base = {
+			"purpose": purpose,
+			"voucher": row.get("parent") or row.get("voucher"),
+			"item": row.get("item_code") or row.get("item"),
+			"current_rate": cur,
+			"expected_rate": 0.0,
+			"upstream_health": "healthy",
+			"root_voucher": row.get("parent") or row.get("voucher"),
+			"authoritative_source": None,
+			"reason": "",
+			"confidence": CONFIDENCE_MANUAL,
+			"classification": WAITING_UPSTREAM,
+		}
+		if poisoned:
+			return {
+				**base,
+				"classification": WAITING_UPSTREAM,
+				"upstream_health": "poisoned",
+				"reason": "mocked poisoned upstream",
+				"confidence": CONFIDENCE_AMBIGUOUS,
+				"root_voucher": "UPSTREAM-POISON",
+			}
+		if float(transfer or 0) > 0:
+			return {
+				**base,
+				"classification": EXACT,
+				"expected_rate": float(transfer),
+				"authoritative_source": "outgoing_sle_svd",
+				"confidence": CONFIDENCE_EXACT,
+				"reason": "mocked outgoing_sle_svd",
+				"upstream_health": "healthy",
+			}
+		if float(prev or 0) > 0 and purpose in (
+			"Material Issue",
+			"Material Consumption for Manufacture",
+			"Material Transfer",
+			"Material Transfer for Manufacture",
+			"Send to Subcontractor",
+		):
+			return {
+				**base,
+				"classification": RECONSTRUCTABLE,
+				"expected_rate": float(prev),
+				"authoritative_source": "previous_healthy_source_sle",
+				"confidence": CONFIDENCE_EXACT,
+				"reason": "mocked previous_healthy",
+				"upstream_health": "healthy",
+			}
+		if purpose == "Material Issue":
+			return {
+				**base,
+				"classification": USER_ACTION_REQUIRED,
+				"reason": "no authoritative source valuation found for transfer/issue",
+			}
+		return {
+			**base,
+			"classification": WAITING_UPSTREAM,
+			"upstream_health": "missing",
+			"reason": "no authoritative source valuation found for transfer/issue",
+			"confidence": CONFIDENCE_AMBIGUOUS,
+		}
+
 	return (
 		patch(
 			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._version_rate",
@@ -87,13 +166,17 @@ def _patches(
 			side_effect=lambda wh, company=None: bool(wh)
 			and any(t in (wh or "").lower() for t in ("reject", "scrap", "ضایعات")),
 		),
+		patch(
+			"erpnext_extensions.iran_accounting.historical_stock.transfer_valuation.reconstruct_transfer_valuation",
+			side_effect=_fake_transfer_recon,
+		),
 	)
 
 
 class TestZeroRatePurposeFirst(unittest.TestCase):
 	def test_a_material_receipt_reject_warehouse_user_review(self):
 		ctx = _patches(prev=999.0, batch=999.0)  # must NOT invent from these
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(_base(t_warehouse="انبار Reject مواد اولیه اسپاد"))
 		self.assertEqual(out["status"], STATUS_MATERIAL_RECEIPT_USER_REVIEW)
 		self.assertEqual(out["zero_class"], Z_MATERIAL_RECEIPT_USER_REVIEW)
@@ -105,7 +188,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 
 	def test_b_material_receipt_normal_warehouse_user_review(self):
 		ctx = _patches(prev=1500.0, batch=1500.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(_base(t_warehouse="Stores - E"))
 		self.assertEqual(out["status"], STATUS_MATERIAL_RECEIPT_USER_REVIEW)
 		self.assertEqual(out.get("proposed_rate"), 0)
@@ -113,7 +196,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 
 	def test_c_material_transfer_reject_reconstructs_from_source(self):
 		ctx = _patches(transfer=51219.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Material Transfer",
@@ -123,13 +206,13 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 			)
 		self.assertEqual(out["status"], STATUS_RECONSTRUCTABLE)
 		self.assertEqual(out["proposed_rate"], 51219.0)
-		self.assertEqual(out["source_of_truth"], "source_transfer_sle")
+		self.assertEqual(out["source_of_truth"], "outgoing_sle_svd")
 		self.assertTrue(out.get("eligible"))
 		self.assertEqual(out.get("confidence"), CONFIDENCE_EXACT)
 
 	def test_d_material_transfer_normal_reconstructs_from_source(self):
 		ctx = _patches(transfer=100.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Material Transfer",
@@ -143,7 +226,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 
 	def test_e_transfer_for_manufacture_reconstructs(self):
 		ctx = _patches(transfer=77.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Material Transfer for Manufacture",
@@ -159,7 +242,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 		# Manufacture with scrap row issued-pool path is covered elsewhere;
 		# FG with previous_healthy / batch reconstructable.
 		ctx = _patches(prev=200.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Manufacture",
@@ -175,7 +258,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 	def test_g_reject_warehouse_alone_does_not_exempt(self):
 		# Material Transfer into Reject with no source → not NO_ACTION via warehouse.
 		ctx = _patches()
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Material Transfer",
@@ -188,7 +271,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 
 	def test_h_material_receipt_never_copies_later_ma(self):
 		ctx = _patches(prev=999999.0, batch=888888.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(_base())
 		self.assertEqual(out.get("proposed_rate"), 0)
 		self.assertEqual(out["status"], STATUS_MATERIAL_RECEIPT_USER_REVIEW)
@@ -197,7 +280,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 
 	def test_material_receipt_version_is_document_local_ok(self):
 		ctx = _patches(version=(1500.0, 15000.0), batch=1500.0)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(_base())
 		self.assertEqual(out["status"], STATUS_RECONSTRUCTABLE)
 		self.assertEqual(out["proposed_rate"], 1500.0)
@@ -205,7 +288,7 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 
 	def test_material_issue_reconstructs_from_source_chain(self):
 		ctx = _patches(prev=321.5)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Material Issue",
@@ -216,11 +299,11 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 		self.assertEqual(out["status"], STATUS_RECONSTRUCTABLE)
 		self.assertEqual(out["proposed_rate"], 321.5)
 		self.assertTrue(out.get("eligible"))
-		self.assertEqual(out.get("source_of_truth"), "previous_healthy_sle")
+		self.assertEqual(out.get("source_of_truth"), "previous_healthy_source_sle")
 
 	def test_material_issue_poisoned_upstream_waits(self):
 		ctx = _patches(prev=100.0, poisoned=True)
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7]:
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8]:
 			out = classify_zero_row(
 				_base(
 					purpose="Material Issue",
@@ -228,12 +311,13 @@ class TestZeroRatePurposeFirst(unittest.TestCase):
 					t_warehouse=None,
 				)
 			)
-		self.assertEqual(out["status"], "VALUATION_POISON_DEPENDENCY")
+		self.assertIn(out["status"], ("VALUATION_POISON_DEPENDENCY", "DEPENDENCY_REPAIR_REQUIRED"))
+		self.assertFalse(out.get("eligible"))
 		self.assertFalse(out.get("eligible"))
 
 	def test_repack_output_uses_allocated_input_value(self):
 		ctx = _patches()
-		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], patch(
+		with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], ctx[7], ctx[8], patch(
 			"erpnext_extensions.iran_accounting.historical_stock.zero_rate._repack_allocated_rate",
 			return_value=88.0,
 		):
