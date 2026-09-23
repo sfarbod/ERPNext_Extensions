@@ -20,6 +20,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_AMBIGUOUS,
 	CONFIDENCE_EXACT,
 	HISTORICAL_REPAIR_FLAG,
+	LEFTOVER_MA_FAILED_POSTCONDITION,
 	LEFTOVER_MA_MANUAL,
 	LEFTOVER_MA_READY,
 	LEFTOVER_MA_REPAIR,
@@ -158,6 +159,167 @@ def already_matches(current_rows: list, series: list[dict]) -> bool:
 	return True
 
 
+def fetch_stock_ledger_source_rows(item, warehouse) -> list[dict]:
+	"""Rows the standard ERPNext Stock Ledger report reads.
+
+	Avg Rate = ``valuation_rate``. Incoming Rate = ``incoming_rate``.
+	Outgoing Rate on the report is ``stock_value_difference / actual_qty``
+	(``in_out_rate``), not the SLE ``outgoing_rate`` column.
+	"""
+	if not item or not warehouse:
+		return []
+	return list(
+		frappe.db.sql(
+			"""SELECT name, voucher_no, voucher_type, posting_datetime, actual_qty,
+			          qty_after_transaction, incoming_rate, valuation_rate,
+			          stock_value, stock_value_difference
+			   FROM `tabStock Ledger Entry`
+			   WHERE item_code=%s AND warehouse=%s AND is_cancelled=0 AND docstatus < 2
+			   ORDER BY posting_datetime, creation""",
+			(item, warehouse),
+			as_dict=True,
+		)
+		or []
+	)
+
+
+def leftover_ma_postcondition(
+	item,
+	warehouse,
+	*,
+	root_voucher,
+	expected_ma,
+	expected_stock_value,
+	rows=None,
+	bin_row=None,
+) -> dict:
+	"""Fail-closed check against the Stock Ledger report data source."""
+	chain = list(rows or []) or fetch_stock_ledger_source_rows(item, warehouse)
+	root = next((r for r in chain if _gv(r, "voucher_no") == root_voucher), None)
+	if not root:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": "root SLE missing from Stock Ledger source",
+		}
+	vr = flt(_gv(root, "valuation_rate"))
+	sv = flt(_gv(root, "stock_value"))
+	ir = flt(_gv(root, "incoming_rate"))
+	svd = flt(_gv(root, "stock_value_difference"))
+	qa = flt(_gv(root, "qty_after_transaction"))
+	if abs(ir) > RATE_EPS or abs(svd) > 1:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": "receipt incoming value was invented",
+			"report_valuation_rate": vr,
+			"report_incoming_rate": ir,
+		}
+	if flt(expected_stock_value) > VALUE_EPS and abs(sv - flt(expected_stock_value)) > max(1.0, abs(qa)):
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": "stock_value not preserved on zero inbound",
+			"report_stock_value": sv,
+		}
+	if flt(expected_ma) > VALUE_EPS and abs(vr) <= RATE_EPS:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": "Stock Ledger valuation_rate still zero",
+			"report_valuation_rate": vr,
+			"expected_ma": expected_ma,
+		}
+	if flt(expected_ma) > VALUE_EPS and abs(vr - flt(expected_ma)) > 1:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": f"Stock Ledger MA {vr} != expected {expected_ma}",
+			"report_valuation_rate": vr,
+			"expected_ma": expected_ma,
+		}
+	seen_root = False
+	for row in chain:
+		if _gv(row, "voucher_no") == root_voucher:
+			seen_root = True
+			continue
+		if not seen_root:
+			continue
+		aq = flt(_gv(row, "actual_qty"))
+		if aq >= -QTY_EPS:
+			continue
+		report_out = flt(_gv(row, "stock_value_difference")) / aq if aq else 0.0
+		if abs(report_out) <= RATE_EPS and abs(flt(_gv(row, "stock_value"))) > VALUE_EPS:
+			return {
+				"ok": False,
+				"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+				"reason": f"downstream {_gv(row, 'voucher_no')} outgoing still zero in Stock Ledger",
+			}
+	last = chain[-1]
+	if bin_row is None:
+		try:
+			bin_row = frappe.db.get_value(
+				"Bin",
+				{"item_code": item, "warehouse": warehouse},
+				["actual_qty", "stock_value", "valuation_rate"],
+				as_dict=True,
+			)
+		except Exception:
+			bin_row = None
+	if bin_row:
+		if abs(flt(_gv(bin_row, "actual_qty")) - flt(_gv(last, "qty_after_transaction"))) > QTY_EPS:
+			return {
+				"ok": False,
+				"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+				"reason": "Bin qty != last SLE",
+			}
+		if abs(flt(_gv(bin_row, "stock_value")) - flt(_gv(last, "stock_value"))) > max(
+			1.0, abs(flt(_gv(last, "qty_after_transaction")))
+		):
+			return {
+				"ok": False,
+				"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+				"reason": "Bin value != last SLE",
+			}
+	return {
+		"ok": True,
+		"status": LEFTOVER_MA_REPAIRED,
+		"report_valuation_rate": vr,
+		"report_stock_value": sv,
+		"report_incoming_rate": ir,
+		"report_qty_after": qa,
+	}
+
+
+def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
+	"""ERPNext-native replay from the zero inbound forward (Moving Average)."""
+	sle = frappe.db.get_value(
+		"Stock Ledger Entry",
+		{"voucher_no": root_voucher, "item_code": item, "warehouse": warehouse, "is_cancelled": 0},
+		["posting_date", "posting_time", "name"],
+		as_dict=True,
+	)
+	if not sle:
+		return {"ok": False, "reason": "root SLE not found for update_entries_after"}
+	posting_time = sle.posting_time
+	if hasattr(posting_time, "total_seconds"):
+		secs = int(posting_time.total_seconds())
+		posting_time = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
+	from erpnext.stock.stock_ledger import update_entries_after
+
+	update_entries_after(
+		{
+			"item_code": item,
+			"warehouse": warehouse,
+			"posting_date": str(sle.posting_date),
+			"posting_time": str(posting_time),
+		},
+		allow_zero_rate=True,
+		allow_negative_stock=False,
+	)
+	return {"ok": True, "path": "update_entries_after"}
+
+
 def classify_leftover_ma_identity(item, warehouse) -> dict:
 	prov = classify_zero_provenance(item=item, warehouse=warehouse)
 	base = {
@@ -222,17 +384,29 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 			"sql_updates": 0,
 		}
 	if sim.get("already_repaired"):
-		return {
-			**base,
-			**zov,
-			"voucher": root,
-			"leftover_ma_status": LEFTOVER_MA_REPAIRED,
-			"status": LEFTOVER_MA_REPAIRED,
-			"reason": "already matches leftover-MA reconstruction",
-			"sql_updates": 0,
-			"eligible": False,
-		}
-	sql = int(sim.get("sql_updates") or 0)
+		pc = leftover_ma_postcondition(
+			item,
+			warehouse,
+			root_voucher=root,
+			expected_ma=zov.get("expected_ma"),
+			expected_stock_value=zov.get("expected_stock_value"),
+		)
+		if pc.get("ok"):
+			return {
+				**base,
+				**zov,
+				"voucher": root,
+				"leftover_ma_status": LEFTOVER_MA_REPAIRED,
+				"status": LEFTOVER_MA_REPAIRED,
+				"reason": "already matches leftover-MA reconstruction and Stock Ledger postcondition",
+				"sql_updates": 0,
+				"eligible": False,
+				"postcondition": pc,
+			}
+		# Simulation matches but the report source still fails — do not call it Completed.
+		sql = int(sim.get("rows") or 1) + 1
+	else:
+		sql = int(sim.get("sql_updates") or 0)
 	return {
 		**base,
 		**zov,
@@ -421,7 +595,18 @@ def repair_leftover_ma_selected(rows: list[dict], *, dry_run=True) -> dict:
 		frappe.db.savepoint(savepoint)
 		for merged in prepared:
 			out = apply_leftover_ma_identity(merged["item"], merged["warehouse"], root_voucher=merged.get("voucher"))
-			row_out = {**merged, **out, "written": bool(out.get("economic_writes")), "status": STATUS_REPAIRED}
+			if out.get("leftover_ma_status") == LEFTOVER_MA_FAILED_POSTCONDITION or out.get("status") == LEFTOVER_MA_FAILED_POSTCONDITION:
+				if savepoint:
+					frappe.db.rollback(save_point=savepoint)
+				finish_run(log, applied=0, blocked=1, error="FAILED_POSTCONDITION")
+				return {
+					"dry_run": False,
+					"aborted": True,
+					"applied": [],
+					"blocked": [{"row": merged, "error": out.get("reason") or "FAILED_POSTCONDITION", "status": LEFTOVER_MA_FAILED_POSTCONDITION}],
+					"postcondition": out.get("postcondition"),
+				}
+			row_out = {**merged, **out, "written": bool(out.get("economic_writes")), "status": out.get("status") or STATUS_REPAIRED}
 			applied.append(row_out)
 			append_entry(log, row_out, written=True)
 		frappe.db.commit()
@@ -447,56 +632,101 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 	sim = simulate_leftover_ma(item, warehouse, root_voucher=root_voucher)
 	if not sim.get("ok"):
 		raise frappe.ValidationError(sim.get("reason") or "leftover-MA simulation failed")
+	expected_ma = sim.get("final_ma")
+	# Post-inbound expected MA is leftover value / qty after the honored receipt.
+	if sim.get("opening_qty") is not None and sim.get("opening_value") is not None:
+		root_step = (sim.get("series") or [None])[0] or {}
+		expected_ma = flt(root_step.get("valuation_rate") or expected_ma)
+	expected_sv = flt((sim.get("series") or [{}])[0].get("stock_value") or sim.get("opening_value") or 0)
+
+	def _pc():
+		return leftover_ma_postcondition(
+			item,
+			warehouse,
+			root_voucher=root_voucher,
+			expected_ma=expected_ma,
+			expected_stock_value=expected_sv,
+		)
+
 	if sim.get("already_repaired"):
-		return {
-			"status": LEFTOVER_MA_REPAIRED,
-			"economic_writes": 0,
-			"applied": False,
-			"message": "ALREADY_REPAIRED",
-			"final_qty": sim.get("final_qty"),
-			"final_value": sim.get("final_value"),
-			"final_ma": sim.get("final_ma"),
-		}
+		pc = _pc()
+		if pc.get("ok"):
+			return {
+				"status": LEFTOVER_MA_REPAIRED,
+				"leftover_ma_status": LEFTOVER_MA_REPAIRED,
+				"economic_writes": 0,
+				"applied": False,
+				"message": "ALREADY_REPAIRED",
+				"final_qty": sim.get("final_qty"),
+				"final_value": sim.get("final_value"),
+				"final_ma": sim.get("final_ma"),
+				"postcondition": pc,
+			}
+
 	from erpnext_extensions.iran_accounting.historical_stock.snapshot import capture_identity_snapshot
 
 	snap = capture_identity_snapshot(root_voucher, item=item, warehouse=warehouse)
 	writable = sim["writable"]
 	series = sim["series"]
-	# Safety re-check immediately before write
 	safety = series_safety(series)
 	if not safety["ok"]:
 		raise frappe.ValidationError(f"leftover-MA safety failed: {safety}")
+
+	persist = {"ok": False, "path": None}
+	try:
+		persist = persist_via_update_entries_after(item, warehouse, root_voucher)
+	except Exception as exc:
+		persist = {"ok": False, "path": "update_entries_after", "reason": str(exc)[:500]}
+
+	pc = _pc()
 	writes = 0
-	for row, step in zip(writable, series):
-		payload = {
-			"qty_after_transaction": flt(step["qty_after_transaction"]),
-			"stock_value": flt(step["stock_value"]),
-			"stock_value_difference": flt(step["stock_value_difference"]),
-			"valuation_rate": flt(step["valuation_rate"]),
+	if not pc.get("ok"):
+		# Native replay did not satisfy the Stock Ledger postcondition — reconstruct
+		# the leftover-MA series onto the same SLE rows the report reads.
+		for row, step in zip(writable, series):
+			payload = {
+				"qty_after_transaction": flt(step["qty_after_transaction"]),
+				"stock_value": flt(step["stock_value"]),
+				"stock_value_difference": flt(step["stock_value_difference"]),
+				"valuation_rate": flt(step["valuation_rate"]),
+			}
+			if flt(row.actual_qty) < -QTY_EPS:
+				payload["outgoing_rate"] = flt(step["outgoing_rate"])
+			if flt(row.actual_qty) > QTY_EPS and row.voucher_no in (sim.get("honor_zero_vouchers") or []):
+				payload["incoming_rate"] = 0
+			changed = False
+			for field, value in payload.items():
+				if abs(flt(_gv(row, field)) - flt(value)) > (QTY_EPS if "qty" in field else 1):
+					changed = True
+					break
+			if changed:
+				frappe.db.set_value("Stock Ledger Entry", row.name, payload, update_modified=False)
+				writes += 1
+			if flt(row.actual_qty) < -QTY_EPS and abs(flt(step["outgoing_rate"])) > RATE_EPS:
+				_stamp_se_outgoing(row.voucher_no, item, flt(step["outgoing_rate"]))
+		last = series[-1]
+		_update_bin(item, warehouse, flt(last["qty_after_transaction"]), flt(last["stock_value"]), flt(last["valuation_rate"]))
+		writes += 1
+		pc = _pc()
+		persist = {**persist, "fallback": "sle_series_reconstruction", "writes": writes}
+
+	if not pc.get("ok"):
+		return {
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"leftover_ma_status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"economic_writes": writes,
+			"applied": False,
+			"reason": pc.get("reason") or "FAILED_POSTCONDITION",
+			"postcondition": pc,
+			"persist": persist,
 		}
-		if flt(row.actual_qty) < -QTY_EPS:
-			payload["outgoing_rate"] = flt(step["outgoing_rate"])
-		# Never invent incoming_rate on the honored zero inbound
-		if flt(row.actual_qty) > QTY_EPS and row.voucher_no in (sim.get("honor_zero_vouchers") or []):
-			payload["incoming_rate"] = 0
-		changed = False
-		for field, value in payload.items():
-			if abs(flt(_gv(row, field)) - flt(value)) > (QTY_EPS if "qty" in field else 1 if "rate" in field or "value" in field else 1):
-				changed = True
-				break
-		if changed:
-			frappe.db.set_value("Stock Ledger Entry", row.name, payload, update_modified=False)
-			writes += 1
-		if flt(row.actual_qty) < -QTY_EPS and abs(flt(step["outgoing_rate"])) > RATE_EPS:
-			_stamp_se_outgoing(row.voucher_no, item, flt(step["outgoing_rate"]))
+
 	last = series[-1]
-	_update_bin(item, warehouse, flt(last["qty_after_transaction"]), flt(last["stock_value"]), flt(last["valuation_rate"]))
-	writes += 1
 	gl = _rebuild_gl(sim.get("touched_vouchers") or [])
 	return {
 		"status": STATUS_REPAIRED,
 		"leftover_ma_status": LEFTOVER_MA_REPAIRED,
-		"economic_writes": writes,
+		"economic_writes": writes or (0 if persist.get("path") == "update_entries_after" and sim.get("already_repaired") else max(writes, 1 if persist.get("ok") else 0)),
 		"applied": True,
 		"final_qty": flt(last["qty_after_transaction"]),
 		"final_value": flt(last["stock_value"]),
@@ -504,6 +734,8 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 		"touched_vouchers": sim.get("touched_vouchers"),
 		"snapshot_before": snap,
 		"gl": gl,
+		"postcondition": pc,
+		"persist": persist,
 	}
 
 

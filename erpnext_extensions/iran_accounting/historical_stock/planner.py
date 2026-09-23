@@ -1657,12 +1657,18 @@ def _gl_row_count(voucher) -> int:
 
 
 def _evaluate_leftover_ma(row, decision, patient) -> dict:
-	from erpnext_extensions.iran_accounting.historical_stock import LEFTOVER_MA_MANUAL, LEFTOVER_MA_REPAIRED
+	from erpnext_extensions.iran_accounting.historical_stock import (
+		LEFTOVER_MA_FAILED_POSTCONDITION,
+		LEFTOVER_MA_MANUAL,
+		LEFTOVER_MA_REPAIRED,
+	)
 
 	status = str(row.get("leftover_ma_status") or row.get("status") or "")
 	sql = cint(row.get("sql_updates") or 0)
 	if status in ("NO_ACTION", LEFTOVER_MA_REPAIRED):
 		return _not_ready(decision, PLAN_NO_REPAIR_PATH, status, patient=patient)
+	if status == LEFTOVER_MA_FAILED_POSTCONDITION:
+		return _not_ready(decision, PLAN_MANUAL, row.get("reason") or "FAILED_POSTCONDITION", patient=patient)
 	if status == LEFTOVER_MA_MANUAL or row.get("confidence") == CONFIDENCE_AMBIGUOUS:
 		return _not_ready(decision, PLAN_MANUAL, row.get("reason") or "MANUAL leftover-MA", patient=patient)
 	if status == LEFTOVER_MA_READY and sql > 0 and row.get("confidence") == CONFIDENCE_EXACT:

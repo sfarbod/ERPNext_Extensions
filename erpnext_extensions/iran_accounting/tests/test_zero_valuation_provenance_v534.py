@@ -310,3 +310,115 @@ class TestPlannerLeftoverMa(unittest.TestCase):
 			}
 		)
 		self.assertFalse(decision["eligible"])
+
+
+class TestLedgerPostcondition(unittest.TestCase):
+	def test_fails_when_report_source_still_zero(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import leftover_ma_postcondition
+
+		rows = [
+			_sle(voucher_no="BEFORE", actual_qty=522, qty_after_transaction=522, incoming_rate=5072466, valuation_rate=5072466, stock_value=2647827252, stock_value_difference=2647827252),
+			_sle(voucher_no="FREE", actual_qty=7, qty_after_transaction=529, incoming_rate=0, valuation_rate=0, stock_value=2647827252, stock_value_difference=0),
+			_sle(voucher_no="OUT", actual_qty=-2, qty_after_transaction=527, outgoing_rate=0, valuation_rate=0, stock_value=2647827252, stock_value_difference=0),
+		]
+		pc = leftover_ma_postcondition(
+			"B",
+			"W",
+			root_voucher="FREE",
+			expected_ma=5005344.52,
+			expected_stock_value=2647827252,
+			rows=rows,
+			bin_row={"actual_qty": 527, "stock_value": 2647827252, "valuation_rate": 0},
+		)
+		self.assertFalse(pc["ok"])
+		self.assertEqual(pc["status"], "FAILED_POSTCONDITION")
+
+	def test_passes_when_report_source_has_nonzero_ma(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import leftover_ma_postcondition
+
+		rows = [
+			_sle(voucher_no="BEFORE", actual_qty=522, qty_after_transaction=522, incoming_rate=5072466, valuation_rate=5072466, stock_value=2647827252, stock_value_difference=2647827252),
+			_sle(voucher_no="FREE", actual_qty=7, qty_after_transaction=529, incoming_rate=0, valuation_rate=5005344.521739131, stock_value=2647827252, stock_value_difference=0),
+			_sle(voucher_no="OUT", actual_qty=-2, qty_after_transaction=527, outgoing_rate=5005344.521739131, valuation_rate=5005344.521739131, stock_value=2637816562.96, stock_value_difference=-10010689.04),
+		]
+		pc = leftover_ma_postcondition(
+			"B",
+			"W",
+			root_voucher="FREE",
+			expected_ma=5005344.521739131,
+			expected_stock_value=2647827252,
+			rows=rows,
+			bin_row={"actual_qty": 527, "stock_value": 2637816562.96, "valuation_rate": 5005344.52},
+		)
+		self.assertTrue(pc["ok"])
+
+	def test_depleted_then_zero_receipt_is_not_leftover_ma_failure(self):
+		from erpnext_extensions.iran_accounting.historical_stock.zero_provenance import classify_zero_provenance
+
+		rows = [
+			_sle(voucher_no="IN", actual_qty=8, qty_after_transaction=8, incoming_rate=241875000, valuation_rate=241875000, stock_value=1935000000, stock_value_difference=1935000000),
+			_sle(voucher_no="OUT", actual_qty=-8, qty_after_transaction=0, outgoing_rate=241875000, valuation_rate=241875000, stock_value=0, stock_value_difference=-1935000000),
+			_sle(voucher_no="FREE", actual_qty=2, qty_after_transaction=2, incoming_rate=0, valuation_rate=0, stock_value=0, stock_value_difference=0),
+		]
+		prov = classify_zero_provenance(item="A", warehouse="W", rows=rows)
+		self.assertEqual(prov["provenance"], ZP_PROVEN_LEGITIMATE_ZERO)
+		self.assertTrue(prov["allow_zero_outgoing"])
+
+	def test_failed_postcondition_is_not_planner_ready(self):
+		from erpnext_extensions.iran_accounting.historical_stock.planner import evaluate_row
+
+		decision = evaluate_row(
+			{
+				"topic": "LEFTOVER_MA",
+				"repair_class": "LEFTOVER_MA_REPAIR",
+				"leftover_ma_status": "FAILED_POSTCONDITION",
+				"confidence": "EXACT",
+				"sql_updates": 4,
+			}
+		)
+		self.assertFalse(decision["eligible"])
+
+
+class TestWorkerQueueDetection(unittest.TestCase):
+	def test_empty_queue_registration_is_unavailable(self):
+		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import worker_queue_status
+
+		class _Dead:
+			name = "dead"
+			queues = []
+
+		class _Live:
+			name = "live"
+
+			class _Q:
+				name = "workspace-development-frappe-bench:long"
+
+			queues = [_Q()]
+
+		with patch(
+			"frappe.utils.background_jobs.get_redis_conn",
+			return_value=object(),
+		), patch(
+			"rq.Worker.all",
+			return_value=[_Dead()],
+		), patch(
+			"rq.Queue",
+			side_effect=lambda *a, **k: [],
+		):
+			dead = worker_queue_status("long")
+		self.assertFalse(dead["available"])
+		self.assertEqual(dead["workers_for_queue"], 0)
+
+		with patch(
+			"frappe.utils.background_jobs.get_redis_conn",
+			return_value=object(),
+		), patch(
+			"rq.Worker.all",
+			return_value=[_Live()],
+		), patch(
+			"rq.Queue",
+			side_effect=lambda *a, **k: [],
+		):
+			live = worker_queue_status("long")
+		self.assertTrue(live["available"])
+		self.assertEqual(live["workers_for_queue"], 1)

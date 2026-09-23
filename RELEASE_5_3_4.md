@@ -133,3 +133,25 @@ Development / test only in this cut. **Do not deploy to Production** without
 separate explicit approval.
 
 `erpnext_extensions.__version__` = **5.3.4**
+
+---
+
+## Corrective addendum — actual Stock Ledger postcondition
+
+A leftover-MA repair is **not** Completed unless the same `tabStock Ledger Entry`
+fields the standard ERPNext Stock Ledger report reads satisfy:
+
+- Incoming Rate of the authorized zero inbound remains `0`
+- Balance stock value of that inbound is unchanged
+- **Avg Rate (`valuation_rate`) is the leftover MA**, not zero
+- downstream Outgoing Rate (`stock_value_difference / actual_qty`) is nonzero
+  while leftover value remains
+- Bin matches the last SLE
+
+If expected MA is nonzero but that report source still shows zero, status is
+`FAILED_POSTCONDITION`. Persist prefers ERPNext `update_entries_after`
+(Moving Average replay from the zero inbound forward).
+
+Historical Repair Scan All requires a live RQ worker listening on `long`
+(site-prefixed `…:long` is accepted). Dead RQ registrations with empty queues
+are ignored. `WORKER_UNAVAILABLE` is shown only when no such worker exists.

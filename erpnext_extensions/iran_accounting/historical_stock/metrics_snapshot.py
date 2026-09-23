@@ -89,6 +89,9 @@ def worker_queue_status(queue: str = "long") -> dict:
 				qnames = [q.name for q in (w.queues or [])]
 			except Exception:
 				qnames = []
+			# Stale RQ registrations have no queues and must not count as available.
+			if not qnames:
+				continue
 			for qn in qnames:
 				if _queue_name_matches(qn, queue):
 					out["workers_for_queue"] += 1
