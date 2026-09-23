@@ -36,6 +36,7 @@ from erpnext_extensions.iran_accounting.scrap_costing import (
 	_is_incoming,
 	_is_source_only,
 	_row_label,
+	_restore_finished_good_as_residual,
 	_row_qty,
 	classify_manufacture_outputs,
 	secondary_item_type_of,
@@ -75,7 +76,10 @@ def _set_field(obj, field: str, value) -> None:
 
 
 def _is_finance_excluded(row) -> bool:
+	"""Independent secondaries keep their own rate and never share the stage pool."""
 	valuation_type = row.get("valuation_type")
+	if valuation_type == "Valuation Rate":
+		return True
 	if valuation_type == "Manual" and cint(row.get("set_basic_rate_manually")):
 		return True
 	if valuation_type == "% of Component Cost" and row.get("bom_secondary_item"):
@@ -372,13 +376,22 @@ def allocate_stage_output_cost(doc) -> bool:
 		for row in classified[CLASS_CO_PRODUCT] + classified[CLASS_CO_PRODUCT_REJECT]
 		if _is_finance_excluded(row)
 	]
+	participating_co = [row for row in classified[CLASS_CO_PRODUCT] if row not in finance_excluded]
+	participating_reject = [
+		row for row in classified[CLASS_CO_PRODUCT_REJECT] if row not in finance_excluded
+	]
 	stage = (
 		list(classified[CLASS_MAIN_FG])
 		+ list(classified[CLASS_MAIN_PRODUCT_REJECT])
-		+ [row for row in classified[CLASS_CO_PRODUCT] if row not in finance_excluded]
-		+ [row for row in classified[CLASS_CO_PRODUCT_REJECT] if row not in finance_excluded]
+		+ participating_co
+		+ participating_reject
 	)
-	if not classified[CLASS_CO_PRODUCT] and not classified[CLASS_CO_PRODUCT_REJECT]:
+	if not participating_co and not participating_reject:
+		# Independently valued By-Product / Co-Product (Valuation Rate, Manual, %)
+		# is not a stage-equivalent output. Restore FG as the residual so I5 can
+		# fail closed when that independent value exceeds the manufacturing pool.
+		if finance_excluded and len(classified[CLASS_MAIN_FG]) == 1:
+			return _restore_finished_good_as_residual(doc, classified[CLASS_MAIN_FG][0])
 		return False
 	if len(classified[CLASS_MAIN_FG]) != 1:
 		frappe.throw(
@@ -449,6 +462,10 @@ def allocate_stage_output_cost(doc) -> bool:
 	material_pool = round_currency(_consumed_material(doc) - component_value - excluded_value, currency)
 	operating_pool = round_currency(_operating_pool(doc, stage, finance_excluded), currency)
 	if material_pool < 0:
+		if excluded_value > 0:
+			# Independent secondary already exceeds the pool — do not invent
+			# equivalent-unit rates. I5 fails closed on the residual check.
+			return False
 		frappe.throw(
 			_("Stage material pool is negative after deducting Component Scrap."),
 			frappe.ValidationError,

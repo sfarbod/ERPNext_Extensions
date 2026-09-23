@@ -518,6 +518,24 @@ class TestEquivalentUnitCosting(unittest.TestCase):
 		self.assertEqual(flt(cp.basic_amount), 10000)
 		self.assertEqual(flt(fg.basic_amount), 10000)
 
+	def test_valuation_rate_by_product_keeps_independent_rate(self):
+		fg = _output("FG", 9, is_fg=1, stock_uom="Nos")
+		by_item = _output(
+			"BY",
+			1,
+			secondary_item_type="By-Product",
+			stock_uom="Nos",
+			t_warehouse="CO",
+			rate=100,
+			valuation_type="Valuation Rate",
+		)
+		doc = _Doc(items=[_consumed("RM", 10, 1000), fg, by_item])
+		with _env(stock_uoms={"FG": "Nos", "BY": "Nos"}, uom_factors={}, jc_secondaries={}):
+			self.assertTrue(apply_iran_manufacture_output_contract(doc))
+		self.assertEqual(flt(by_item.basic_rate), 100)
+		self.assertEqual(flt(by_item.basic_amount), 100)
+		self.assertEqual(flt(fg.basic_amount), 9900)
+
 	def test_historical_submitted_without_stamp_not_recosted(self):
 		doc = _box_syringe_doc(stale_cp_rate=0)
 		doc.docstatus = 1
