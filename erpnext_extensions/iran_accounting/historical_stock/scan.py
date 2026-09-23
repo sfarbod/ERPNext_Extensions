@@ -47,6 +47,9 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock.i1_repair import scan_i1_negative_rate
 
 	i1 = _mark("i1", lambda: scan_i1_negative_rate(company=company, limit=2000))
+	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import scan_leftover_ma
+
+	lma = _mark("leftover_ma", lambda: scan_leftover_ma(company=company, limit=2000))
 	end = datetime.now()
 	exact = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "EXACT")
 	likely = sum(1 for r in zero.get("rows") or [] if r.get("confidence") == "LIKELY")
@@ -187,6 +190,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ _ready_n(gl)
 		+ _ready_n(riv)
 		+ ready_i4
+		+ int(lma.get("repairable") or 0)
 	)
 	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
 	# v5.3.0: include I1 and manufacture-linked negative-rate pressure in the score.
@@ -255,6 +259,10 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"WAITING_I4": int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0),
 		"MANUAL_I4": int(i4_by.get("MANUAL") or 0),
 		"REPLAY_REQUIRED_I4": int(i4_by.get("I4_REPLAY_REQUIRED") or 0),
+		"Leftover MA": int(lma.get("count") or 0),
+		"READY_LEFTOVER_MA": int(lma.get("ready_count") or 0),
+		"MANUAL_LEFTOVER_MA": int(lma.get("manual_count") or 0),
+		"Proven Legitimate Zero": int((lma.get("by_status") or {}).get("NO_ACTION") or 0),
 		"Wrong Rate READY": wr_ready,
 		"Wrong Rate WAITING": wr_waiting,
 		"Wrong Rate MANUAL": wr_manual,
@@ -334,6 +342,12 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		},
 		"i4": {"count": i4.get("count"), "by_status": i4_by, "ready": ready_i4},
 		"i1": {"count": i1_n, "by_status": i1_by, "ready": ready_i1},
+		"leftover_ma": {
+			"count": lma.get("count"),
+			"ready": lma.get("ready_count"),
+			"manual": lma.get("manual_count"),
+			"by_status": lma.get("by_status"),
+		},
 		"patient_zero_vouchers": patients,
 		"patient_zero_count": len(patients),
 		"patient_zero_by_topic": {k: len(v) for k, v in patients_by_topic.items()},

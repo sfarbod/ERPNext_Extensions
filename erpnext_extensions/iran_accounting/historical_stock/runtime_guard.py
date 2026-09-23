@@ -1,12 +1,11 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 """Fail-closed runtime guard: do not silently persist unexpected outgoing rate 0.
 
-Draft saves are allowed. Submit / before_submit is blocked when:
+Draft saves are allowed. Submit / before_submit is blocked when the current
+economic chain does not prove legitimate zero-valued stock.
 
-* allow_zero_valuation_rate is not set
-* qty != 0
-* basic_rate resolved to 0
-* batch/SABB or Version or previous SLE proves a nonzero historical rate
+v5.3.4: a depleted older lot with a nonzero rate is NOT evidence that the
+current lot must carry that rate. Provenance is required.
 
 Skip during historical repair and during RIV (SE rates are already preserved
 by the 5.2.x IRR rate wrapper).
@@ -26,6 +25,7 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	SKIP_LOST_RATE_GUARD,
 	VALUE_EPS,
 )
+from erpnext_extensions.iran_accounting.historical_stock.zero_provenance import provenance_as_of
 from erpnext_extensions.iran_accounting.historical_stock.zero_rate import _batch_inward_rate, _previous_healthy_sle_rate
 
 
@@ -51,8 +51,9 @@ def assert_outgoing_rates_not_silently_zeroed(doc) -> None:
 
 
 def _assert_row(doc, row) -> None:
-	if cint(row.get("allow_zero_valuation_rate")):
-		return
+	# allow_zero on THIS outgoing row is not proof the current lot is
+	# economically zero. Provenance decides. The flag only authorized a
+	# historical inbound; it must not bypass lost_outgoing_rate_zero.
 	qty = flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
 	if abs(qty) <= QTY_EPS:
 		return
@@ -63,13 +64,25 @@ def _assert_row(doc, row) -> None:
 	item = row.get("item_code")
 	warehouse = row.get("s_warehouse")
 	batch = row.get("batch_no")
+	prov = provenance_as_of(item, warehouse, doc.posting_date, doc.posting_time)
+	if prov.get("allow_zero_outgoing"):
+		return
 	evidence_rate = 0.0
 	source = None
 	if batch:
 		evidence_rate = flt(_batch_inward_rate(item, batch, warehouse))
 		if evidence_rate > VALUE_EPS:
 			source = "batch_inward"
+	if evidence_rate <= VALUE_EPS and flt(prov.get("current_effective_ma") or 0) > VALUE_EPS:
+		evidence_rate = flt(prov.get("current_effective_ma"))
+		source = "current_effective_ma"
 	if evidence_rate <= VALUE_EPS:
+		# Old depleted lots are not evidence. Only a still-valued current position
+		# or a batch inward on the same open lot may block.
+		if not prov.get("block_zero_outgoing"):
+			return
+		if prov.get("depleted_old_value_history") and abs(flt(prov.get("current_stock_value") or 0)) <= VALUE_EPS:
+			return
 		evidence_rate = flt(
 			_previous_healthy_sle_rate(item, warehouse, doc.posting_date, doc.posting_time)
 		)
@@ -81,7 +94,7 @@ def _assert_row(doc, row) -> None:
 		"invariant": "lost_outgoing_rate_zero",
 		"voucher_type": "Stock Entry",
 		"voucher_no": doc.name,
-		"voucher_detail_no": row.name,
+		"voucher_detail_no": row.get("name") if hasattr(row, "get") else getattr(row, "name", None),
 		"item_code": item,
 		"warehouse": warehouse,
 		"batch_no": batch,
@@ -89,6 +102,8 @@ def _assert_row(doc, row) -> None:
 		"basic_rate": row.get("basic_rate"),
 		"historical_rate": evidence_rate,
 		"source": source,
+		"provenance": prov.get("provenance"),
+		"provenance_reason": prov.get("reason"),
 	}
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import format_valuation_integrity_message
 
@@ -100,9 +115,16 @@ def _assert_row(doc, row) -> None:
 
 
 def evidence_for_zero_outgoing(item, warehouse, batch, posting_date, posting_time) -> tuple[float, str | None]:
+	prov = provenance_as_of(item, warehouse, posting_date, posting_time)
+	if prov.get("allow_zero_outgoing"):
+		return 0.0, "proven_legitimate_zero"
 	rate = flt(_batch_inward_rate(item, batch, warehouse)) if batch else 0.0
 	if rate > VALUE_EPS:
 		return rate, "batch_inward"
+	if flt(prov.get("current_effective_ma") or 0) > VALUE_EPS:
+		return flt(prov.get("current_effective_ma")), "current_effective_ma"
+	if prov.get("depleted_old_value_history") and abs(flt(prov.get("current_stock_value") or 0)) <= VALUE_EPS:
+		return 0.0, "depleted_old_value_history"
 	rate = flt(_previous_healthy_sle_rate(item, warehouse, posting_date, posting_time))
 	if rate > VALUE_EPS:
 		return rate, "previous_healthy_sle"
