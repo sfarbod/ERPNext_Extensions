@@ -57,6 +57,59 @@ class TestPostingOrderLikelyPromotion(unittest.TestCase):
 		self.assertIn(d["planner_status"], READY_STATUSES)
 		self.assertTrue(d["eligible"])
 		self.assertEqual(d.get("dependency"), "promoted_likely_sim_cleared")
+		self.assertEqual(d.get("confidence"), "EXACT")
+
+	def test_attach_plan_stamps_promoted_exact_confidence(self):
+		"""Scan/campaign rows must surface EXACT after LIKELY sim-clear promotion."""
+		from erpnext_extensions.iran_accounting.historical_stock.planner import attach_plan
+
+		row = {
+			"inbound_document": "IN-1",
+			"outbound_document": "OUT-1",
+			"item": "ITEM",
+			"warehouse": "WH",
+			"batch": "B1",
+			"optimizer_status": "CROSS_TIME_REPAIRABLE",
+			"confidence": "LIKELY",
+			"min_qty_before": -10,
+			"min_qty_after": 0,
+			"current_inbound_time": "2026-01-01 10:00:00",
+			"current_outbound_time": "2026-01-01 09:00:00",
+			"proposed_inbound_time": "2026-01-01 08:00:00",
+			"proposed_outbound_time": "2026-01-01 09:00:00",
+			"moves": [
+				{"document": "IN-1", "new": "2026-01-01 08:00:00"},
+				{"document": "OUT-1", "new": "2026-01-01 09:00:00"},
+			],
+		}
+
+		def fake_scope(r, *, cache=None):
+			return {
+				"window_loaded": True,
+				"status": "READY_BATCH_SCOPED_REPAIR",
+				"reason": "READY_BATCH_SCOPED_REPAIR — test",
+				"escalation_required": False,
+				"dependency_type": "BATCH_DEPENDENCY",
+			}
+
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.scope.evaluate_minimal_scope",
+			side_effect=fake_scope,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._write_counts",
+			return_value={"se": 2, "sle": 4, "sabb": 0, "sbe": 0, "bin": 1, "sql": 7},
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.planner._posting_revalidate",
+			return_value=None,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.dependency.stamp_dependency",
+			side_effect=lambda r, **kw: r,
+		):
+			stamped = attach_plan(row)
+		self.assertEqual(stamped.get("confidence"), "EXACT")
+		self.assertEqual(stamped.get("raw_confidence"), "LIKELY")
+		self.assertEqual(stamped.get("dependency"), "promoted_likely_sim_cleared")
+		self.assertTrue(stamped.get("eligible"))
 
 	def test_likely_without_sim_clear_stays_manual(self):
 		row = {
@@ -246,6 +299,89 @@ class TestWarehouseEscalationRouting(unittest.TestCase):
 		self.assertEqual(d["planner_status"], "BLOCKED")
 		self.assertEqual(d.get("dependency"), "WAREHOUSE_REAL_SHORTAGE")
 		self.assertIn("negative", d["reason"])
+
+
+class TestBatchApplyCollateralSkip(unittest.TestCase):
+	def test_collect_moved_vouchers_includes_collision_moves(self):
+		from erpnext_extensions.iran_accounting.historical_stock._validation.recovery_posting_order_apply import (
+			collect_moved_vouchers,
+		)
+
+		applied = [
+			{
+				"outbound_document": "STE-PRIMARY",
+				"moves": [
+					{"document": "STE-PRIMARY", "old": "2026-01-01 10:00:00", "new": "2026-06-06 16:52:43"},
+					{"document": "STE-SIBLING", "old": "2026-01-02 10:00:00", "new": "2026-06-06 16:52:44"},
+				],
+			}
+		]
+		moved = collect_moved_vouchers(applied, primary="STE-PRIMARY")
+		self.assertIn("STE-PRIMARY", moved)
+		self.assertIn("STE-SIBLING", moved)
+
+
+class TestMultiMovePreWindowInjection(unittest.TestCase):
+	"""Multi-move can pull older SEs into the from_dt window; plan/assert must agree."""
+
+	def test_identity_window_for_moves_unions_missing_vouchers(self):
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import (
+			_identity_window_for_moves,
+		)
+
+		base = [
+			frappe_dict(name="SLE-1", voucher_no="STE-INWIN", actual_qty=-10, posting_datetime="2026-09-14 18:00:00", creation="a", batch_no=None, serial_and_batch_bundle=None),
+		]
+		extra = [
+			frappe_dict(name="SLE-2", voucher_no="STE-OLD", actual_qty=-100, posting_datetime="2026-04-01 12:00:00", creation="b", batch_no=None, serial_and_batch_bundle=None),
+		]
+
+		with patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair._identity_window",
+			return_value=list(base),
+		), patch(
+			"erpnext_extensions.iran_accounting.stock_posting_order.repair.frappe.db.sql",
+			return_value=list(extra),
+		):
+			merged = _identity_window_for_moves(
+				"ITEM",
+				"WH",
+				None,
+				"2026-09-14 18:00:00",
+				[{"document": "STE-OLD", "old": "2026-04-01 12:00:00", "new": "2026-09-17 13:25:05"}],
+			)
+		names = {r.name for r in merged}
+		self.assertIn("SLE-1", names)
+		self.assertIn("SLE-2", names)
+
+	def test_opening_adjustment_prevents_pre_window_double_count(self):
+		from decimal import Decimal
+		from erpnext_extensions.iran_accounting.stock_posting_order.simulation import running_qty, order_sles
+		from frappe.utils import get_datetime
+
+		# opening_at_from_dt already includes STE-OLD (-200). Proposed re-applies it.
+		opening = Decimal("50")
+		injected_qty = Decimal("-200")
+		opening_prop = opening - injected_qty  # 250
+		sles = [
+			{"voucher_no": "PRE", "actual_qty": 100, "posting_datetime": "2026-09-17 13:25:04", "creation": "1", "name": "a"},
+			{"voucher_no": "STE-OLD", "actual_qty": -200, "posting_datetime": "2026-04-01 12:00:00", "creation": "2", "name": "b"},
+			{"voucher_no": "STE-OUT", "actual_qty": -40, "posting_datetime": "2026-09-14 18:00:00", "creation": "3", "name": "c"},
+		]
+		times = {
+			"PRE": get_datetime("2026-09-17 13:25:04"),
+			"STE-OLD": get_datetime("2026-09-17 13:25:05"),
+			"STE-OUT": get_datetime("2026-09-17 13:25:06"),
+		}
+		prop = running_qty(order_sles(sles, proposed_times=times), opening=opening_prop)
+		self.assertGreaterEqual(prop["min_qty"], 0)
+		# Without adjustment, opening=50 double-counts STE-OLD → 50+100-200-40 = -90
+		bad = running_qty(order_sles(sles, proposed_times=times), opening=opening)
+		self.assertLess(bad["min_qty"], 0)
+
+
+def frappe_dict(**kwargs):
+	return type("R", (), kwargs)()
 
 
 if __name__ == "__main__":

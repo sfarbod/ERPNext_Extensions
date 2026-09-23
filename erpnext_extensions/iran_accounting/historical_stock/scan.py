@@ -72,7 +72,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		_add_pz("WRONG_RATE", r)
 
 	replay = _replay_kpis()
-	zero_n = zero.get("count") or 0
+	# KPI semantics (v5.3.0 purpose-first): actionable excludes Material Receipt
+	# user-review and document-authorised zeros. Scrap warehouse alone is NOT no-action.
+	zero_raw_n = int(zero.get("raw_count") or zero.get("count") or 0)
+	zero_n = int(zero.get("actionable_count") if zero.get("actionable_count") is not None else zero.get("count") or 0)
+	zero_no_action = int(zero.get("no_action_required_count") or 0)
+	zero_scrap_legit = 0  # deprecated under purpose-first semantics
+	zero_receipt_review = int(zero.get("material_receipt_user_review_count") or 0)
+	zero_reconstructable = int(zero.get("reconstructable_count") or 0)
 	wrong_raw_n = wrong.get("count") or 0
 	# Posting Order KPI excludes optimizer-healthy / no-repair rows.
 	posting_n = sum(
@@ -116,6 +123,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	# Active Wrong Rate problem count (excludes RATE_REPAIR_COMPLETE / already-valued).
 	wrong_n = wr_buckets.get("active") or 0
 	riv_by = riv.get("by_status") or {}
+	riv_actionable = int(riv.get("actionable_count") or 0)
+	if not riv_actionable and riv.get("rows"):
+		riv_actionable = sum(
+			1
+			for r in (riv.get("rows") or [])
+			if (r.get("riv_reconcile_status") or "")
+			not in ("HISTORICAL_ONLY", "SUPERSEDED_BY_SUCCESSFUL_REPAIR")
+		)
 	riv_safe = int(riv_by.get("SAFE_TO_RETRY") or 0)
 	riv_waiting = sum(
 		int(riv_by.get(k) or 0)
@@ -174,6 +189,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ ready_i4
 	)
 	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
+	# v5.3.0: include I1 and manufacture-linked negative-rate pressure in the score.
+	i1_n = int(i1.get("count") or 0)
 	penalty = (
 		posting_n * 0.25
 		+ zero_n * 0.5
@@ -182,28 +199,40 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ bin_n * 1.0
 		+ bin_waiting * 0.15
 		+ gl_n * 1.5
-		+ riv_n * 1.5
+		# Score only actionable Failed RIV (not historical/superseded raw count).
+		+ riv_actionable * 1.5
 		+ i4_n * 0.75
+		+ i1_n * 1.25
 	)
 	from math import log10
 
 	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
 	i4_by = i4.get("by_status") or {}
 	i1_by = i1.get("by_status") or {}
-	i1_n = int(i1.get("count") or 0)
 	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
+		"Integrity Score Version": "5.3.0",
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
 		"Wrong Rate Complete": wr_complete,
 		"Zero Rate": zero_n,
+		"Zero Rate Raw": zero_raw_n,
+		"Zero Rate Actionable": zero_n,
+		"Zero Rate No Action": zero_no_action,
+		"Zero Rate User Review": zero_receipt_review,
+		"Zero Rate Reconstructable": zero_reconstructable,
+		"Material Receipt Zero User Review": zero_receipt_review,
+		"Legitimate Scrap Zero Rate": zero_scrap_legit,
 		"Wrong Amount": (wrong.get("by_flag") or {}).get("WRONG_AMOUNT", 0),
 		"Wrong Valuation": (wrong.get("by_flag") or {}).get("WRONG_VALUATION_RATE", 0),
 		"Wrong Incoming": (wrong.get("by_flag") or {}).get("WRONG_INCOMING_RATE", 0),
 		"Wrong Outgoing": (wrong.get("by_flag") or {}).get("WRONG_OUTGOING_RATE", 0),
 		"Wrong Average": (wrong.get("by_flag") or {}).get("WRONG_AVG_RATE", 0),
+		"Matched But Corrupt": (wrong.get("by_flag") or {}).get("MATCHED_BUT_CORRUPT", 0),
 		"I4 Leftover": i4_n,
+		"I4 Raw": int(i4.get("raw_count") or i4_n),
+		"I4 Root Identities": int(i4.get("root_identity_count") or 0),
 		"I1 Negative Rate": i1_n,
 		"READY_I1": ready_i1,
 		"WAITING_I1": int(i1_by.get("WAITING_I1") or 0),
@@ -212,8 +241,15 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Broken Bin": bin_n,
 		"Waiting Downstream Bin": bin_waiting,
 		"Broken GL": gl_n,
-		"Failed RIV": riv_n,
+		"Failed RIV": riv_actionable,
+		"Failed RIV Raw": riv_n,
+		"Failed RIV Actionable": riv_actionable,
+		"Failed RIV Historical": int((riv.get("by_reconcile") or {}).get("HISTORICAL_ONLY") or 0)
+		or int((riv.get("stage1") or {}).get("historical_only") or 0),
+		"Failed RIV Superseded": int((riv.get("by_reconcile") or {}).get("SUPERSEDED_BY_SUCCESSFUL_REPAIR") or 0)
+		or int((riv.get("stage1") or {}).get("superseded") or 0),
 		"Patient Zero": len(patients),
+		"Patient Zero Findings": sum(patients.values()) if patients else 0,
 		"Zero Rate Patient Zero": len(patients_by_topic["ZERO_RATE"]),
 		"READY_I4": ready_i4,
 		"WAITING_I4": int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0),
@@ -257,9 +293,15 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		},
 		"zero_rate": {
 			"count": zero.get("count"),
+			"raw_count": zero_raw_n,
+			"actionable_count": zero_n,
+			"material_receipt_user_review_count": zero_receipt_review,
+			"reconstructable_count": zero_reconstructable,
 			"by_class": zero.get("by_class"),
 			"by_confidence": zero.get("by_confidence"),
 			"by_status": zero.get("by_status"),
+			"by_kpi_bucket": zero.get("by_kpi_bucket"),
+			"by_purpose": zero.get("by_purpose"),
 			"exact": exact,
 			"likely": likely,
 			"ambiguous": ambiguous,
@@ -282,7 +324,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 			"bin_mismatches": len(sle.get("bin_mismatches") or []),
 		},
 		"gl": {"count": gl.get("count"), "by_class": gl.get("by_class")},
-		"failed_riv": {"count": riv.get("count"), "by_status": riv.get("by_status")},
+		"failed_riv": {
+			"count": riv.get("count"),
+			"raw_count": riv.get("raw_count") or riv.get("count"),
+			"actionable_count": riv_actionable,
+			"by_status": riv.get("by_status"),
+			"by_reconcile": riv.get("by_reconcile"),
+			"stage1": riv.get("stage1"),
+		},
 		"i4": {"count": i4.get("count"), "by_status": i4_by, "ready": ready_i4},
 		"i1": {"count": i1_n, "by_status": i1_by, "ready": ready_i1},
 		"patient_zero_vouchers": patients,

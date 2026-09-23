@@ -33,7 +33,12 @@ CLASS_PRIORITY = {
 
 
 def build_master_repair_plan(company=None) -> dict:
-	"""Full per-class roadmap with READY/WAITING/MANUAL/AMBIGUOUS and dependency stats."""
+	"""Full per-class roadmap with READY/WAITING/MANUAL/AMBIGUOUS and dependency stats.
+
+	v5.3.0 Master Plan V2 adds root-cause graph, root-vs-downstream grouping,
+	RIV preflight summary hooks, and false-complete awareness — without removing
+	v5.2.x class metrics or recommended order.
+	"""
 	company = resolve_company(company)
 	t0 = perf_counter()
 	classes = []
@@ -49,19 +54,198 @@ def build_master_repair_plan(company=None) -> dict:
 
 	classes.sort(key=lambda c: c.get("priority") or 99)
 	graph = _dependency_graph_summary(classes)
+
+	# V2 root-cause graph from live class rows (best-effort; never fails the plan).
+	root_cause = {"classes": {}, "cycles": [], "edge_count": 0, "cycle_count": 0}
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.root_graph import (
+			build_root_cause_graph,
+		)
+
+		class_rows = {}
+		for c in classes:
+			# Prefer retaining sample rows if scanners attached them; else empty.
+			class_rows[c["repair_class"]] = c.get("sample_rows") or []
+		root_cause = build_root_cause_graph(class_rows)
+	except Exception as exc:
+		root_cause = {"error": str(exc), "classes": {}, "cycles": [], "edge_count": 0, "cycle_count": 0}
+
 	return {
 		"collected_at": datetime.utcnow().isoformat() + "Z",
 		"company": company,
-		"version": "5.2.22",
+		"version": "5.3.0",
+		"master_plan": "V2",
 		"elapsed_seconds": round(perf_counter() - t0, 2),
 		"classes": classes,
 		"repair_order": [c["repair_class"] for c in classes],
 		"dependency_graph": graph,
+		"root_cause_graph": root_cause,
+		"phases": _build_v2_phases(classes, root_cause),
+		"safety": {
+			"no_global_riv": True,
+			"no_weaken_integrity_guards": True,
+			"riv_preflight_required": True,
+			"false_rate_rebuild_complete_refused": True,
+			"manufacture_exact_on_healthy_after": True,
+			"irr_align_before_expected_gl_gate": True,
+			# Deprecated: scrap WH alone no longer grants NO_ACTION.
+			"legitimate_scrap_zero_no_action": False,
+			"zero_rate_purpose_first": True,
+			"material_receipt_no_invent_rate": True,
+			"matched_but_corrupt_detected": True,
+		},
 		"message": (
-			"Prove each class with small SAFE clusters before bulk. "
-			"Never Global Replay / Global RIV / Global GL."
+			"Master Plan V2 — prove each class with small SAFE clusters before bulk. "
+			"Repair roots before downstream. Never Global Replay / Global RIV / Global GL. "
+			"Run RIV preflight before any controlled repost. "
+			"Zero Rate is purpose-first: Material Receipt without authoritative source "
+			"is USER_ACTION_REQUIRED (never invent a rate); Transfer/Manufacture "
+			"reconstruct from source. Scrap/Reject warehouse is contextual only."
 		),
 	}
+
+
+def _build_v2_phases(classes: list, root_cause: dict) -> list:
+	"""Dependency-ordered campaign phases (read-only roadmap)."""
+	by = {c["repair_class"]: c for c in classes or []}
+
+	def _n(key, field="ready"):
+		c = by.get(key) or {}
+		if field == "ready":
+			return int((c.get("ready") if c.get("ready") is not None else c.get("READY")) or 0)
+		if field == "total":
+			return int(c.get("total") or c.get("count") or 0)
+		return int(c.get(field) or 0)
+
+	i1_total = _n("I1_NEGATIVE_RATE_REPAIR", "total")
+	po_total = _n("POSTING_ORDER", "total")
+	zero_total = _n("ZERO_RATE", "total")
+	wrong_total = _n("WRONG_RATE", "total")
+	i4_total = _n("I4_LEFTOVER_REPAIR", "total")
+	gl_total = _n("GL", "total")
+	drift_total = _n("SLE_GL_DRIFT", "total")
+	riv_total = _n("FAILED_RIV", "total")
+	cycles = int((root_cause or {}).get("cycle_count") or 0)
+
+	return [
+		{
+			"phase": 1,
+			"name": "Negative-rate patient-zero roots",
+			"repair_classes": ["I1_NEGATIVE_RATE_REPAIR"],
+			"candidate_count": i1_total,
+			"root_chain_count": i1_total,
+			"expected_downstream_healed": "manufacture + dependent Wrong/Zero",
+			"repost_requirement": "min-scope after root cleared",
+			"risk": "HIGH",
+			"blocking_dependencies": [],
+		},
+		{
+			"phase": 2,
+			"name": "Posting-order / chronology roots",
+			"repair_classes": ["POSTING_ORDER", "WAREHOUSE_WIDE"],
+			"candidate_count": po_total,
+			"root_chain_count": po_total,
+			"expected_downstream_healed": "negative stock / zero-rate chronology",
+			"repost_requirement": "often none if pure timestamp shift",
+			"risk": "MEDIUM",
+			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR"] if i1_total else [],
+		},
+		{
+			"phase": 3,
+			"name": "I4 / zero-qty-nonzero-value roots",
+			"repair_classes": ["I4_LEFTOVER_REPAIR"],
+			"candidate_count": i4_total,
+			"root_chain_count": i4_total,
+			"expected_downstream_healed": "Bin leftover + downstream SVD",
+			"repost_requirement": "selective after patient-zero",
+			"risk": "MEDIUM",
+			"blocking_dependencies": ["POSTING_ORDER"],
+		},
+		{
+			"phase": 4,
+			"name": "Wrong/Zero authoritative-rate reconstruction",
+			"repair_classes": ["ZERO_RATE", "WRONG_RATE"],
+			"candidate_count": zero_total + wrong_total,
+			"root_chain_count": zero_total + wrong_total,
+			"expected_downstream_healed": "SLE rates + manufacture inputs",
+			"repost_requirement": "controlled min-scope RIV after preflight",
+			"risk": "HIGH",
+			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR", "POSTING_ORDER"],
+			"notes": "LEGITIMATE_SCRAP_ZERO_RATE excluded from actionable Zero KPI",
+		},
+		{
+			"phase": 5,
+			"name": "Transfer propagation roots then Manufacture dependency",
+			"repair_classes": ["WRONG_RATE", "ZERO_RATE"],
+			"candidate_count": wrong_total + zero_total,
+			"root_chain_count": wrong_total + zero_total,
+			"expected_downstream_healed": "multi-hop transfers + FG + unlocked Zero/I4",
+			"repost_requirement": "controlled identity replay after EXACT reconstruction; no global RIV",
+			"risk": "CRITICAL",
+			"blocking_dependencies": ["POSTING_ORDER", "I1_NEGATIVE_RATE_REPAIR"],
+			"notes": (
+				"Phase 5D: Transfer Repair Group (item+batch+voucher_detail) → "
+				"classify/preview/apply/verify/rescan → NO_ACTION; "
+				"refuse false RATE_REPAIR_COMPLETE when SE≈SLE≠outgoing SVD (MATCHED_BUT_CORRUPT); "
+				"finalize incoming to post-write outgoing SVD; soft batch match (SLE batch NULL); "
+				"idempotent ALREADY_REPAIRED (zero economic writes); chunk ≤25/commit; "
+				"never full-replay source warehouse from distant patient-zero during Transfer apply; "
+				"resolve posting/warehouses before upstream health (missing stamps ≠ healthy); "
+				"self_exact requires upstream_health=healthy (not missing); "
+				"poisoned source → WAITING_UPSTREAM (do not propagate); "
+				"SE Detail identity must not also run SLE-only writer (idempotency); "
+				"reconstruct_transfer_valuation + manufacture input_health; "
+				"HEALED_BY_UPSTREAM_TRANSFER / HEALED_BY_MANUFACTURE_REBUILD; "
+				f"dependency_cycles_detected={cycles}"
+			),
+		},
+		{
+			"phase": 6,
+			"name": "Manufacture deterministic reconstruction (I1-linked)",
+			"repair_classes": ["I1_NEGATIVE_RATE_REPAIR", "WRONG_RATE"],
+			"candidate_count": i1_total,
+			"root_chain_count": i1_total,
+			"expected_downstream_healed": "FG + scrap/by-product + pool balance",
+			"repost_requirement": "yes after EXACT/RECONSTRUCTABLE preview",
+			"risk": "CRITICAL",
+			"blocking_dependencies": ["ZERO_RATE", "WRONG_RATE"],
+			"notes": "post-replay neg valuation gate required; idempotent repair→rescan→NO_ACTION",
+		},
+		{
+			"phase": 7,
+			"name": "Controlled repost waves",
+			"repair_classes": ["FAILED_RIV"],
+			"candidate_count": riv_total,
+			"root_chain_count": int((by.get("FAILED_RIV") or {}).get("safe_to_retry") or 0),
+			"expected_downstream_healed": "moving-average + dependent Manufacture",
+			"repost_requirement": "RIV preflight REQUIRED; refuse poison closure",
+			"risk": "CRITICAL",
+			"blocking_dependencies": ["I1_NEGATIVE_RATE_REPAIR", "WRONG_RATE"],
+		},
+		{
+			"phase": 8,
+			"name": "SLE_GL_DRIFT / GL reconciliation",
+			"repair_classes": ["SLE_GL_DRIFT", "GL"],
+			"candidate_count": drift_total + gl_total,
+			"root_chain_count": drift_total + gl_total,
+			"expected_downstream_healed": "GL balance after SLE healthy",
+			"repost_requirement": "no — selective GL only",
+			"risk": "HIGH",
+			"blocking_dependencies": ["FAILED_RIV"],
+		},
+		{
+			"phase": 9,
+			"name": "Residual manual negative-stock cases",
+			"repair_classes": [],
+			"candidate_count": None,
+			"root_chain_count": None,
+			"expected_downstream_healed": "operator-driven chronology / inbound",
+			"repost_requirement": "only after user confirms operational cause",
+			"risk": "HIGH",
+			"blocking_dependencies": ["all prior phases"],
+			"notes": "See negative_stock_report.build_negative_stock_root_report",
+		},
+	]
 
 
 def _status_bucket(row) -> str:
@@ -120,6 +304,21 @@ def _agg(rows, repair_class, *, risk, expected_kpi, notes="") -> dict:
 		sql += int(r.get("sql_updates") or r.get("sql_updates_estimate") or r.get("replay_count") or 1)
 		replay += int(r.get("replay_count") or r.get("rows") or 0)
 	ready = buckets["READY"]
+	# Compact sample for Master Plan V2 root-cause graph (no full row dump).
+	sample_rows = []
+	for r in (rows or [])[:80]:
+		sample_rows.append(
+			{
+				"voucher": r.get("voucher") or r.get("voucher_no") or r.get("outbound_document"),
+				"item": r.get("item") or r.get("item_code"),
+				"warehouse": r.get("warehouse") or r.get("s_warehouse") or r.get("t_warehouse"),
+				"status": r.get("planner_status") or r.get("status") or r.get("drift_status") or r.get("i1_status") or r.get("i4_status"),
+				"confidence": r.get("confidence"),
+				"patient_zero": r.get("patient_zero") or r.get("root_patient_zero"),
+				"topic": r.get("topic"),
+				"required_prerequisite": r.get("required_prerequisite"),
+			}
+		)
 	return {
 		"repair_class": repair_class,
 		"priority": CLASS_PRIORITY.get(repair_class, 99),
@@ -143,6 +342,7 @@ def _agg(rows, repair_class, *, risk, expected_kpi, notes="") -> dict:
 		"notes": notes,
 		"can_bulk": False,
 		"promotion_status": "NOT_PROVEN",
+		"sample_rows": sample_rows,
 	}
 
 
@@ -204,8 +404,16 @@ def _class_zero(company):
 
 	scan = scan_zero_rate_rows(company=company)
 	rows = scan.get("rows") or []
+	# Actionable only — legitimate scrap zeros are NO_ACTION_REQUIRED.
+	actionable_rows = [
+		r
+		for r in rows
+		if not r.get("no_action_required")
+		and r.get("status") not in ("NO_ACTION_REQUIRED", "Z0_LEGITIMATE_ZERO", "LEGITIMATE_SCRAP_ZERO_RATE")
+		and r.get("zero_class") not in ("LEGITIMATE_SCRAP_ZERO_RATE", "Z0_LEGITIMATE_ZERO")
+	]
 	out = _agg(
-		rows,
+		actionable_rows,
 		"ZERO_RATE",
 		risk="MEDIUM",
 		expected_kpi={"Zero Rate": "cluster campaigns only"},
@@ -213,6 +421,12 @@ def _class_zero(company):
 	)
 	out["by_confidence"] = scan.get("by_confidence")
 	out["by_class"] = scan.get("by_class")
+	out["by_zero_reason"] = scan.get("by_zero_reason")
+	out["raw_count"] = scan.get("raw_count") or len(rows)
+	out["no_action_required_count"] = scan.get("no_action_required_count") or 0
+	out["legitimate_scrap_zero_count"] = scan.get("legitimate_scrap_zero_count") or 0
+	out["actionable_count"] = scan.get("actionable_count") or len(actionable_rows)
+	out["sample_rows"] = actionable_rows[:50]
 	out["promotion_status"] = "PRODUCTION_PROVEN_SMALL_CLUSTER"
 	return out
 

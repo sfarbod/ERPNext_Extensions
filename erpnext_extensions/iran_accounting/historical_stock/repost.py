@@ -118,6 +118,17 @@ def preview_repost_selected(
 	gate = chain_integrity(item_code, warehouse, vouchers)
 	if not gate.get("ok"):
 		ok = False
+	# v5.3.0: RIV preflight + dependency-closure / expected-GL impact preview.
+	from erpnext_extensions.iran_accounting.historical_stock.riv_preflight import riv_preflight_gate
+
+	preflight = riv_preflight_gate(
+		item_code,
+		warehouse,
+		posting_date=from_date,
+		company=company,
+	)
+	if not preflight.get("eligible"):
+		ok = False
 	return {
 		"item": item_code,
 		"warehouse": warehouse,
@@ -134,8 +145,15 @@ def preview_repost_selected(
 		"affected_voucher_count": len(vouchers),
 		"failed_rivs": failed,
 		"integrity": gate,
+		"preflight": preflight,
+		"impact_preview": {
+			"closure_counts": (preflight.get("closure") or {}).get("counts"),
+			"gl_blockers": preflight.get("gl_blockers") or [],
+			"poison_blockers_n": len(preflight.get("poison_blockers") or []),
+		},
 		"status": STATUS_SAFE_TO_REPOST if ok else STATUS_UNSAFE_TO_REPOST,
 		"eligible": ok,
+		"reason": None if ok else (preflight.get("reason") or gate.get("reason") or "unsafe"),
 		"estimated_runtime_s": max(1.0, sle_n * 0.02),
 	}
 

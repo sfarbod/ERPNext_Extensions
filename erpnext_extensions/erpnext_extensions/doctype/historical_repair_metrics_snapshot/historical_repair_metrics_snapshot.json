@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "allow_copy": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-09-20 12:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "scanned_at",
+  "freshness",
+  "source",
+  "job_id",
+  "column_break_1",
+  "metrics_json",
+  "timing_json",
+  "extra_json"
+ ],
+ "fields": [
+  {"fieldname": "company", "fieldtype": "Data", "label": "Company", "in_list_view": 1, "in_standard_filter": 1, "reqd": 1},
+  {"fieldname": "scanned_at", "fieldtype": "Datetime", "label": "Scanned At", "in_list_view": 1},
+  {"fieldname": "freshness", "fieldtype": "Select", "label": "Freshness", "options": "FRESH\nSTALE\nSCANNING\nFAILED\nNOT_SCANNED", "default": "NOT_SCANNED", "in_list_view": 1},
+  {"fieldname": "source", "fieldtype": "Data", "label": "Source"},
+  {"fieldname": "job_id", "fieldtype": "Data", "label": "Job Id"},
+  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
+  {"fieldname": "metrics_json", "fieldtype": "Code", "label": "Metrics JSON", "options": "JSON"},
+  {"fieldname": "timing_json", "fieldtype": "Code", "label": "Timing JSON", "options": "JSON"},
+  {"fieldname": "extra_json", "fieldtype": "Code", "label": "Extra JSON", "options": "JSON"}
+ ],
+ "links": [],
+ "modified": "2026-09-20 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ERPNext Extensions",
+ "name": "Historical Repair Metrics Snapshot",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 0, "export": 1, "print": 0, "read": 1, "report": 1, "role": "System Manager", "share": 0, "write": 1},
+  {"create": 0, "delete": 0, "email": 0, "export": 1, "print": 0, "read": 1, "report": 1, "role": "Stock Manager", "share": 0, "write": 0},
+  {"create": 0, "delete": 0, "email": 0, "export": 0, "print": 0, "read": 1, "report": 0, "role": "Stock User", "share": 0, "write": 0}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "company",
+ "track_changes": 1
+}

@@ -41,8 +41,19 @@ def transition_is_invalid(prev, row) -> str | None:
 	return None
 
 
-def find_patient_zero_identity(item, warehouse, batch: str | None = None) -> dict | None:
-	"""First invalid SLE on an item+warehouse identity. Batch is optional."""
+def find_patient_zero_identity(
+	item,
+	warehouse,
+	batch: str | None = None,
+	*,
+	as_of=None,
+) -> dict | None:
+	"""First invalid SLE on an item+warehouse identity. Batch is optional.
+
+	``as_of`` — when set (posting_datetime of the row under repair), only consider
+	SLE at or before that instant. A later zero inbound must not block an earlier
+	EXACT reconstructable issue/transfer.
+	"""
 	if not item or not warehouse:
 		return None
 	import frappe
@@ -64,18 +75,26 @@ def find_patient_zero_identity(item, warehouse, batch: str | None = None) -> dic
 	)
 	# Warehouse patient-zero first. A later poisoned lot often depends on an
 	# earlier leftover on a different batch of the same identity.
-	found = find_patient_zero(rows, batch=None)
+	found = find_patient_zero(rows, batch=None, as_of=as_of)
 	if batch and found:
-		same = find_patient_zero(rows, batch=batch)
+		same = find_patient_zero(rows, batch=batch, as_of=as_of)
 		if same:
 			return same
 	return found
 
 
-def find_patient_zero(rows: list, *, batch: str | None = None) -> dict | None:
-	"""``rows`` must already be ordered posting_datetime ASC, creation ASC."""
+def find_patient_zero(rows: list, *, batch: str | None = None, as_of=None) -> dict | None:
+	"""``rows`` must already be ordered posting_datetime ASC, creation ASC.
+
+	``as_of`` — ignore SLE strictly after this posting_datetime so a later
+	patient-zero candidate cannot block an earlier reconstructable root.
+	"""
+	as_of_s = str(as_of) if as_of else None
 	prev = None
 	for row in rows:
+		row_dt = g(row, "posting_datetime")
+		if as_of_s and row_dt and str(row_dt) > as_of_s:
+			break
 		if batch:
 			canon = g(row, "canonical_batch") or g(row, "batch_no") or ""
 			if canon and canon != batch:

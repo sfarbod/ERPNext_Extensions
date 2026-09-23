@@ -9,6 +9,7 @@ from frappe.utils import flt, now_datetime
 from erpnext_extensions.iran_accounting.historical_stock import (
 	HISTORICAL_REPAIR_FLAG,
 	STATUS_BLOCKED,
+	STATUS_RECONSTRUCTABLE,
 	STATUS_REPAIRED,
 )
 from erpnext_extensions.iran_accounting.historical_stock.audit import append_entry, finish_run, start_run
@@ -31,6 +32,41 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 	try:
 		for raw in rows or []:
 			try:
+				purpose = str(raw.get("purpose") or "")
+				if not purpose and (raw.get("voucher") or raw.get("voucher_no")):
+					purpose = str(
+						frappe.db.get_value(
+							"Stock Entry", raw.get("voucher") or raw.get("voucher_no"), "purpose"
+						)
+						or ""
+					)
+				if purpose in (
+					"Material Transfer",
+					"Material Transfer for Manufacture",
+					"Send to Subcontractor",
+				):
+					from erpnext_extensions.iran_accounting.historical_stock.transfer_convergence import (
+						ALREADY_REPAIRED,
+						transfer_already_balanced,
+					)
+
+					bal = transfer_already_balanced({**raw, "purpose": purpose})
+					if bal:
+						classified_rows.append(
+							(
+								raw,
+								{
+									**raw,
+									"purpose": purpose,
+									"status": ALREADY_REPAIRED,
+									"_skip_write": True,
+									"eligible": False,
+									"proposed_rate": bal.get("auth_rate"),
+								},
+								{},
+							)
+						)
+						continue
 				classified = classify_zero_row(_load_detail(raw))
 				merged = {**classified, **{k: v for k, v in raw.items() if v not in (None, "")}}
 				from erpnext_extensions.iran_accounting.historical_stock import STATUS_RECONSTRUCTABLE
@@ -81,6 +117,40 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 					patient = {"voucher_no": patient}
 				classified_rows.append((raw, merged, patient))
 			except Exception as exc:
+				# Idempotent transfer: COMPLETE after successful prior repair is not a failure.
+				msg = str(exc)
+				if "RATE_REPAIR_COMPLETE" in msg or "already valued" in msg.lower():
+					from erpnext_extensions.iran_accounting.historical_stock.transfer_convergence import (
+						ALREADY_REPAIRED,
+						transfer_already_balanced,
+					)
+
+					purpose = str(raw.get("purpose") or "")
+					if not purpose and (raw.get("voucher") or raw.get("voucher_no")):
+						purpose = str(
+							frappe.db.get_value(
+								"Stock Entry",
+								raw.get("voucher") or raw.get("voucher_no"),
+								"purpose",
+							)
+							or ""
+						)
+					bal = transfer_already_balanced({**raw, "purpose": purpose}) if purpose else None
+					if bal:
+						classified_rows.append(
+							(
+								raw,
+								{
+									**raw,
+									"purpose": purpose,
+									"status": ALREADY_REPAIRED,
+									"_skip_write": True,
+									"eligible": False,
+								},
+								{},
+							)
+						)
+						continue
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
 		if blocked and not dry_run:
 			finish_run(log, applied=0, blocked=len(blocked), error="aborted: no partial commits")
@@ -106,13 +176,75 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 		from erpnext_extensions.iran_accounting.historical_stock.snapshot import capture_identity_snapshot
 
 		for raw, merged, patient in classified_rows:
+			if merged.get("_skip_write") or str(merged.get("status") or "") == "ALREADY_REPAIRED":
+				applied.append(
+					{
+						**merged,
+						"written": False,
+						"status": "ALREADY_REPAIRED",
+						"economic_writes": 0,
+						"database_backup_recommended": True,
+					}
+				)
+				append_entry(log, merged, written=False)
+				continue
+			purpose = str(merged.get("purpose") or "")
+			if not purpose and merged.get("voucher"):
+				purpose = str(frappe.db.get_value("Stock Entry", merged["voucher"], "purpose") or "")
+				merged["purpose"] = purpose
+			from erpnext_extensions.iran_accounting.historical_stock.transfer_valuation import (
+				TRANSFER_PURPOSES,
+			)
+
+			is_transfer = purpose in TRANSFER_PURPOSES
 			if dry_run:
-				applied.append({**merged, "written": False, "status": "DRY_RUN", "database_backup_recommended": True})
+				if is_transfer:
+					from erpnext_extensions.iran_accounting.historical_stock.transfer_convergence import (
+						apply_transfer_repair_group,
+					)
+
+					preview = apply_transfer_repair_group(merged, patient=patient, dry_run=True)
+					applied.append(
+						{
+							**merged,
+							"written": False,
+							"status": "DRY_RUN",
+							"transfer_preview": preview,
+							"database_backup_recommended": True,
+						}
+					)
+				else:
+					applied.append(
+						{**merged, "written": False, "status": "DRY_RUN", "database_backup_recommended": True}
+					)
 				append_entry(log, merged, written=False)
 				continue
 			snap = capture_identity_snapshot(merged["voucher"], merged.get("item"), merged.get("warehouse"), merged.get("batch"))
 			merged["snapshot_before"] = snap
 			merged["full_rollback_possible"] = snap.get("full_rollback_possible")
+			if is_transfer:
+				from erpnext_extensions.iran_accounting.historical_stock.transfer_convergence import (
+					apply_transfer_repair_group,
+				)
+
+				xfer = apply_transfer_repair_group(merged, patient=patient, dry_run=False)
+				written = bool(xfer.get("written"))
+				applied.append(
+					{
+						**merged,
+						"written": written,
+						"status": xfer.get("status") or STATUS_REPAIRED,
+						"transfer_apply": xfer,
+						"replay": xfer.get("replays"),
+						"economic_writes": xfer.get("economic_writes") or 0,
+					}
+				)
+				append_entry(
+					log,
+					{**merged, "transfer_apply": xfer, "snapshot_before": snap},
+					written=written,
+				)
+				continue
 			_write_se_row(merged)
 			_write_sle_incoming(merged)
 			replay = replay_from_patient_zero(
@@ -154,9 +286,18 @@ def repair_zero_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 
 
 def repair_wrong_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
-	"""Repair EXACT wrong/zero rates. SLE-only implied SVD uses SABB/SLE writers."""
+	"""Repair EXACT wrong/zero rates. SLE-only implied SVD uses SABB/SLE writers.
+
+	Rows that already carry a Stock Entry Detail identity must not also run the
+	SLE-only writer — that double-apply always sets written=True and breaks
+	Transfer idempotency after a successful Transfer Repair Group apply.
+	"""
 	se_rows = [r for r in rows or [] if r.get("voucher_detail") or r.get("surface") != "SLE"]
-	sle_rows = [r for r in rows or [] if r.get("surface") == "SLE"]
+	sle_rows = [
+		r
+		for r in rows or []
+		if r.get("surface") == "SLE" and not r.get("voucher_detail")
+	]
 	result = (
 		repair_zero_rate_selected(se_rows, dry_run=dry_run)
 		if se_rows
@@ -181,11 +322,15 @@ def repair_wrong_rate_selected(rows: list[dict], *, dry_run=True) -> dict:
 			continue
 		write_sle_transaction_rates(r.get("voucher"), r.get("item"))
 		sync_sabb_from_sle(r.get("voucher"), r.get("item"))
-		result.setdefault("applied", []).append({**r, "written": True, "status": STATUS_REPAIRED})
+		result.setdefault("applied", []).append(
+			{**r, "written": True, "status": STATUS_REPAIRED, "economic_writes": 1}
+		)
 	return result
 
 
 def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock import CONFIDENCE_EXACT
+
 	applied = []
 	blocked = []
 	log = start_run("MANUFACTURE", dry_run=dry_run)
@@ -196,31 +341,110 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 			try:
 				preview = preview_manufacture_voucher(vn)
 				from erpnext_extensions.iran_accounting.historical_stock.planner import assert_ready
+				from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+					sync_sabb_from_sle,
+					sync_sle_from_stock_entry_detail,
+					write_sle_transaction_rates,
+				)
 
-				assert_ready(preview)
-				if dry_run:
-					applied.append({**preview, "written": False})
+				sle_drift = _manufacture_sle_disagrees_with_se(vn)
+				se_healthy = preview.get("status") == "HEALTHY" or (
+					not preview.get("needs_repair") and preview.get("confidence") == CONFIDENCE_EXACT
+				)
+				if se_healthy and not sle_drift:
+					applied.append({**preview, "written": False, "status": "ALREADY_HEALTHY"})
 					append_entry(log, preview, written=False)
 					continue
-				doc = frappe.get_doc("Stock Entry", vn)
-				apply_manufacture_preview_to_doc(doc)
-				from erpnext_extensions.iran_accounting.stock_entry import persist_irr_stock_entry_header_and_rows
+				if se_healthy and sle_drift:
+					preview = {
+						**preview,
+						"needs_repair": True,
+						"status": STATUS_RECONSTRUCTABLE,
+						"confidence": CONFIDENCE_EXACT,
+						"eligible": True,
+						"sle_se_drift": True,
+						"source_of_truth": "5.3.0_se_to_sle_sync",
+					}
+				assert_ready(preview)
+				if dry_run:
+					applied.append({**preview, "written": False, "sle_se_drift": sle_drift})
+					append_entry(log, preview, written=False)
+					continue
+				savepoint = f"mfg_{frappe.generate_hash(length=8)}"
+				frappe.db.savepoint(savepoint)
+				try:
+					doc = frappe.get_doc("Stock Entry", vn)
+					if not preview.get("sle_se_drift"):
+						apply_manufacture_preview_to_doc(doc)
+						from erpnext_extensions.iran_accounting.stock_entry import (
+							persist_irr_stock_entry_header_and_rows,
+						)
 
-				persist_irr_stock_entry_header_and_rows(doc)
-				item = (doc.items or [None])[0]
-				wh = item.t_warehouse or item.s_warehouse if item else None
-				replay = None
-				if item and wh:
-					replay = replay_from_patient_zero(item.item_code, wh, item.batch_no, from_dt=doc.posting_date)
-					from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
-						sync_sabb_from_sle,
-						write_sle_transaction_rates,
+						persist_irr_stock_entry_header_and_rows(doc)
+
+					targets = []
+					for change in preview.get("changed_rows") or []:
+						after = (change or {}).get("after") or {}
+						item_code = after.get("item_code") or change.get("item")
+						wh = after.get("t_warehouse") or after.get("s_warehouse")
+						batch = after.get("batch_no")
+						if item_code and wh:
+							targets.append((item_code, wh, batch))
+					if not targets:
+						for d in doc.items or []:
+							if d.is_finished_item or getattr(d, "secondary_item_type", None) == "Scrap" or d.t_warehouse:
+								if d.item_code and (d.t_warehouse or d.s_warehouse):
+									targets.append(
+										(d.item_code, d.t_warehouse or d.s_warehouse, d.batch_no)
+									)
+
+					sle_sync = sync_sle_from_stock_entry_detail(vn)
+					replayed = []
+					seen = set()
+					for item_code, wh, batch in targets:
+						key = (item_code, wh, batch or "")
+						if key in seen:
+							continue
+						seen.add(key)
+						neg_before = _count_neg_valuation(item_code, wh)
+						# Phase 5C: bound replay at posting_datetime (not date midnight).
+						from_dt = f"{doc.posting_date} {doc.posting_time or '00:00:00'}"
+						replay = replay_from_patient_zero(
+							item_code, wh, batch, from_dt=from_dt
+						)
+						if not replay.get("ok"):
+							raise frappe.ValidationError(
+								f"Manufacture identity replay blocked for {item_code} / {wh}: "
+								f"{replay.get('status')}: {replay.get('reason')} "
+								f"(voucher={replay.get('voucher')})"
+							)
+						sync_sle_from_stock_entry_detail(vn, item_code)
+						write_sle_transaction_rates(vn, item_code)
+						sync_sabb_from_sle(vn, item_code)
+						neg_after = _count_neg_valuation(item_code, wh)
+						if neg_after > neg_before:
+							raise frappe.ValidationError(
+								f"Manufacture replay introduced negative valuation_rate "
+								f"on {item_code} / {wh} (before={neg_before}, after={neg_after}). "
+								"Apply aborted — identity must be healed before retry."
+							)
+						replayed.append(
+							{"item": item_code, "warehouse": wh, "batch": batch, "replay": replay}
+						)
+					applied.append(
+						{
+							**preview,
+							"written": True,
+							"status": STATUS_REPAIRED,
+							"sle_synced": len(sle_sync),
+							"replay": replayed,
+							"replay_identities": len(replayed),
+						}
 					)
-
-					write_sle_transaction_rates(vn, item.item_code)
-					sync_sabb_from_sle(vn, item.item_code)
-				applied.append({**preview, "written": True, "status": STATUS_REPAIRED, "replay": replay})
-				append_entry(log, preview, written=True)
+					append_entry(log, preview, written=True)
+				except Exception:
+					frappe.db.rollback(save_point=savepoint)
+					raise
 			except Exception as exc:
 				blocked.append({"row": raw, "error": str(exc), "status": STATUS_BLOCKED})
 	finally:
@@ -232,6 +456,49 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 		"applied": applied,
 		"blocked": blocked,
 	}
+
+
+def _count_neg_valuation(item_code, warehouse) -> int:
+	if not item_code or not warehouse:
+		return 0
+	return int(
+		frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabStock Ledger Entry`
+			WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+			  AND valuation_rate < -0.0001
+			""",
+			(item_code, warehouse),
+		)[0][0]
+	)
+
+
+def _manufacture_sle_disagrees_with_se(voucher_no: str) -> bool:
+	"""True when any inbound SLE rate materially disagrees with SE Detail amount/qty."""
+	from erpnext_extensions.iran_accounting.historical_stock import RATE_EPS
+
+	rows = frappe.db.sql(
+		"""
+		SELECT sle.actual_qty, sle.incoming_rate, sle.outgoing_rate,
+		       sed.amount, sed.basic_amount, sed.qty, sed.valuation_rate, sed.basic_rate
+		FROM `tabStock Ledger Entry` sle
+		JOIN `tabStock Entry Detail` sed ON sed.name = sle.voucher_detail_no
+		WHERE sle.voucher_type='Stock Entry' AND sle.voucher_no=%s AND sle.is_cancelled=0
+		  AND ABS(sle.actual_qty) > 0
+		""",
+		(voucher_no,),
+		as_dict=True,
+	)
+	for r in rows:
+		qty = abs(flt(r.qty) or flt(r.actual_qty))
+		if qty <= 0:
+			continue
+		amount = abs(flt(r.amount if r.amount is not None else r.basic_amount))
+		expected = amount / qty if amount else abs(flt(r.valuation_rate or r.basic_rate))
+		current = abs(flt(r.incoming_rate if flt(r.actual_qty) > 0 else r.outgoing_rate))
+		if abs(expected - current) > max(1.0, RATE_EPS):
+			return True
+	return False
 
 
 def _ensure_pz_row_in_cache(pz_voucher: str, cache: dict) -> None:
@@ -330,6 +597,12 @@ def _write_se_row(row: dict) -> None:
 def _write_sle_incoming(row: dict) -> None:
 	rate = flt(row["proposed_rate"])
 	qty = flt(row.get("qty") or 0)
+	purpose = str(row.get("purpose") or "")
+	is_transfer = purpose in (
+		"Material Transfer",
+		"Material Transfer for Manufacture",
+		"Send to Subcontractor",
+	)
 	sles = frappe.db.sql(
 		"""
 		SELECT name, actual_qty, voucher_detail_no
@@ -345,9 +618,14 @@ def _write_sle_incoming(row: dict) -> None:
 			None,
 			"",
 		):
-			# Still update both legs of a transfer for this item.
+			# Still update both legs of a transfer for this item when not transfer-scoped.
 			pass
 		qty_signed = flt(sle.actual_qty)
+		# Transfer Repair Group: never overwrite outgoing SVD — it is the chronological
+		# authority. Only the inbound leg receives the proposed rate here; finalize
+		# rebalances inbound to post-write outgoing if needed.
+		if is_transfer and qty_signed < 0:
+			continue
 		svd = rate * qty_signed
 		values = {
 			"incoming_rate": rate,

@@ -203,6 +203,7 @@ def evaluate_row(row: dict | None, *, cache: dict | None = None) -> dict:
 
 
 def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
+	raw_confidence = (row or {}).get("confidence")
 	decision = evaluate_row(row, cache=cache)
 	out = dict(row or {})
 	out["planner"] = decision
@@ -211,6 +212,16 @@ def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
 	out["blocked"] = bool(decision["blocked"])
 	out["reason"] = decision["reason"]
 	out["skip_reason"] = decision["reason"]
+	# Stamp planner confidence (e.g. LIKELY → EXACT via promoted_likely_sim_cleared)
+	# so Scan / blockers / campaigns see the effective auto-repair confidence.
+	if decision.get("confidence"):
+		out["confidence"] = decision["confidence"]
+	if raw_confidence is not None:
+		out["raw_confidence"] = raw_confidence
+	elif decision.get("confidence"):
+		out["raw_confidence"] = decision["confidence"]
+	if decision.get("dependency"):
+		out["dependency"] = decision["dependency"]
 	# Preserve structured integrity blocker codes for SLE_GL_DRIFT (I1/I4/…).
 	if out.get("topic") in (TOPIC_SLE_GL_DRIFT, "SLE_GL_DRIFT") or out.get("repair_class") == SLE_GL_DRIFT_REPAIR:
 		out["integrity_blocker"] = row.get("blocker") or row.get("integrity_blocker")
@@ -226,6 +237,24 @@ def attach_plan(row: dict, *, cache: dict | None = None) -> dict:
 	out["required_prerequisite"] = decision["required_prerequisite"]
 	if decision["patient_zero"] and not out.get("patient_zero"):
 		out["patient_zero"] = {"voucher_no": decision["patient_zero"]}
+	if decision.get("manual_reason"):
+		out["manual_reason"] = decision["manual_reason"]
+	# Phase 5: stamp machine-readable MANUAL reason for Wrong Rate rows.
+	topic = str(out.get("topic") or "")
+	ps = str(out.get("planner_status") or "")
+	if topic in ("WRONG_RATE", "WRONG") or out.get("flags") or out.get("mismatch_class"):
+		from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import wrong_rate_bucket
+		from erpnext_extensions.iran_accounting.historical_stock.manual_reason import (
+			classify_wrong_manual_reason,
+		)
+
+		if wrong_rate_bucket(out) == "manual" or ps in (
+			"RATE_AMBIGUOUS",
+			"RATE_MANUAL",
+			"MANUAL",
+			"AMBIGUOUS",
+		):
+			classify_wrong_manual_reason(out)
 	from erpnext_extensions.iran_accounting.historical_stock.dependency import stamp_dependency
 
 	return stamp_dependency(out, cache=cache, decision=decision)
@@ -455,7 +484,14 @@ def _evaluate_posting(row, decision, cache) -> dict:
 	if opt in (STATUS_MIDNIGHT, STATUS_MIDNIGHT_REVIEW):
 		return _not_ready(decision, PLAN_MANUAL, "MIDNIGHT_REVIEW — posting-date boundary requires manual review")
 	if opt in (STATUS_INSUFFICIENT_STOCK, STATUS_REAL_STOCK_SHORTAGE):
-		return _not_ready(decision, PLAN_BLOCKED, "REAL_STOCK_SHORTAGE — timestamp change refused")
+		decision["manual_reason"] = "MANUAL_NEGATIVE_STOCK_HISTORY"
+		decision["manual_lane"] = "USER_ACTION_REQUIRED"
+		decision["po_class"] = "REAL_STOCK_SHORTAGE"
+		return _not_ready(
+			decision,
+			PLAN_BLOCKED,
+			"REAL_STOCK_SHORTAGE — historical shortage; timestamp change refused (USER_ACTION_REQUIRED)",
+		)
 	if row.get("confidence") == CONFIDENCE_AMBIGUOUS or opt in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
 		return _not_ready(decision, PLAN_AMBIGUOUS, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
 	if row.get("confidence") == CONFIDENCE_MANUAL or opt in (STATUS_MANUAL_REVIEW,):
@@ -674,6 +710,7 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	man_status = PLAN_RATE_MANUAL if is_wrong_rate else PLAN_MANUAL
 	wait_dep = PLAN_WAITING_RATE_DEPENDENCY if is_wrong_rate else PLAN_WAITING_RATE_REPAIR
 	# Already-valued / rebuild-complete: rate surface is healthy (amount micro-gaps stay complete).
+	# v5.3.0: refuse false COMPLETE when current/expected rates are poisoned.
 	if status == STATUS_RATE_REBUILD_COMPLETE or str(row.get("source") or row.get("source_of_truth") or "") == "already_valued":
 		# Prefer SE basic_rate (current_rate) — attach_rate_analysis may set current=0 from SLE.
 		cur = flt(
@@ -686,15 +723,86 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			if row.get("proposed_rate") is not None
 			else (row.get("expected") if row.get("expected") is not None else cur)
 		)
-		if abs(cur) > RATE_EPS or abs(exp) > RATE_EPS:
+		from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+			refuse_false_rate_rebuild_complete,
+		)
+
+		refusal = refuse_false_rate_rebuild_complete(
+			current_rate=cur,
+			expected_rate=exp,
+			source=row.get("source") or row.get("source_of_truth"),
+			status=status,
+			allow_zero=bool(row.get("allow_zero_valuation_rate")),
+		)
+		if refusal:
+			# Fall through into normal rate evaluation with poison/reconstruction semantics.
+			row = dict(row)
+			row["status"] = refusal["status"]
+			row["source"] = "requires_authoritative_reconstruction"
+			row["source_of_truth"] = "requires_authoritative_reconstruction"
+			row["false_rate_rebuild_complete"] = True
+			row["blocker"] = refusal["blocker"]
+			status = refusal["status"]
+			decision["false_rate_rebuild_complete"] = True
+			decision["message"] = refusal["message"]
+		elif abs(cur - exp) > 1.0 and abs(exp) > RATE_EPS:
+			# v5.3.0 Phase 5D: SE/SLE "already valued" agreement is NOT complete when an
+			# authoritative expected (e.g. Transfer outgoing SVD) disagrees — MATCHED_BUT_CORRUPT.
+			row = dict(row)
+			row["status"] = STATUS_RECONSTRUCTABLE
+			row["matched_but_corrupt"] = True
+			row["source"] = "requires_authoritative_reconstruction"
+			row["source_of_truth"] = row.get("source_of_truth") or "requires_authoritative_reconstruction"
+			row["eligible"] = True
+			status = STATUS_RECONSTRUCTABLE
+			decision["matched_but_corrupt"] = True
+			decision["message"] = (
+				f"MATCHED_BUT_CORRUPT — document rates agree at {cur} but authoritative "
+				f"expected is {exp}; refusing false RATE_REPAIR_COMPLETE"
+			)
+			# Fall through to READY evaluation below.
+		elif abs(cur) > RATE_EPS or abs(exp) > RATE_EPS:
 			return _not_ready(
 				decision,
 				PLAN_RATE_REPAIR_COMPLETE,
 				"RATE_REPAIR_COMPLETE — already valued / rates match",
 				patient=patient,
 			)
+	# Phase 5: foreign patient-zero wins over AMBIGUOUS/MANUAL catch-all.
+	# Downstream symptoms must not inflate Wrong Rate MANUAL.
+	pz_name = None
+	if isinstance(patient, dict):
+		pz_name = patient.get("voucher_no") or patient.get("voucher")
+	elif patient:
+		pz_name = str(patient)
+	if not pz_name:
+		pz_name = _patient_name(row)
+	if pz_name and voucher and pz_name != voucher:
+		if not _rate_patient_cleared(pz_name, cache, row=row):
+			return _not_ready(
+				decision,
+				PLAN_WAITING_PATIENT_ZERO,
+				f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {pz_name}",
+				patient=pz_name,
+				prerequisite=pz_name,
+				dependency="upstream_patient_zero",
+			)
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
+		decision["manual_reason"] = decision.get("manual_reason") or "MANUAL_RATE_SOURCES_DISAGREE"
 		return _not_ready(decision, amb_status, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
+	# Material Receipt without authoritative source → USER review (never auto-READY).
+	if (
+		status == "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW"
+		or row.get("user_action_required")
+		or row.get("zero_class") == "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW"
+	):
+		return _not_ready(
+			decision,
+			man_status,
+			row.get("message")
+			or row.get("recommended_user_action")
+			or "MATERIAL_RECEIPT_ZERO_RATE_USER_REVIEW — enter valuation rate on the receipt; do not invent",
+		)
 	if status in (STATUS_MANUAL_REVIEW, Z0_LEGITIMATE_ZERO) and confidence == CONFIDENCE_MANUAL:
 		return _not_ready(decision, man_status, f"MANUAL — {status or 'operator review required'}")
 	if confidence == CONFIDENCE_MANUAL or status == Z0_LEGITIMATE_ZERO:
@@ -825,8 +933,32 @@ def _rate_patient_cleared(patient: str, cache: dict, row: dict | None = None) ->
 		status = str(prow.get("status") or "")
 		source = str(prow.get("source") or prow.get("source_of_truth") or "")
 		if ps == PLAN_RATE_REPAIR_COMPLETE or status == STATUS_RATE_REBUILD_COMPLETE:
+			from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+				refuse_false_rate_rebuild_complete,
+			)
+
+			refusal = refuse_false_rate_rebuild_complete(
+				current_rate=prow.get("current_rate", prow.get("current")),
+				expected_rate=prow.get("proposed_rate", prow.get("expected")),
+				source=source,
+				status=status,
+			)
+			if refusal:
+				return False
 			return True
 		if source == "already_valued":
+			from erpnext_extensions.iran_accounting.historical_stock.authoritative_rate import (
+				refuse_false_rate_rebuild_complete,
+			)
+
+			refusal = refuse_false_rate_rebuild_complete(
+				current_rate=prow.get("current_rate", prow.get("current")),
+				expected_rate=prow.get("proposed_rate", prow.get("expected")),
+				source=source,
+				status=status,
+			)
+			if refusal:
+				return False
 			return True
 		cur = flt(prow.get("current") if prow.get("current") is not None else prow.get("current_rate"))
 		exp = flt(prow.get("expected") if prow.get("expected") is not None else prow.get("proposed_rate"))
@@ -1080,12 +1212,23 @@ def _gl_expected_map_state(voucher) -> dict:
 			row.setdefault("voucher_type", "Stock Entry")
 			row.setdefault("voucher_no", voucher)
 			gl_map.append(row)
+		# v5.3.0: align IRR map to currency precision BEFORE the postability gate so
+		# classify/apply agree with make_gl_entries (which also aligns). Does not
+		# widen allowance — still refuse true imbalances after alignment.
+		try:
+			from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
+				align_irr_gl_map_to_currency_precision,
+			)
+
+			align_irr_gl_map_to_currency_precision(se, gl_map)
+		except Exception:
+			pass
 		currency = frappe.get_cached_value("Company", se.company, "default_currency")
 		precision = get_field_precision(frappe.get_meta("GL Entry").get_field("debit"), currency=currency)
 		diff, _trx = get_debit_credit_difference(gl_map, precision)
 		allowance = get_debit_credit_allowance("Stock Entry", precision)
-		raw_deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in expected)
-		raw_cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in expected)
+		raw_deb = sum(flt(e.get("debit") if isinstance(e, dict) else getattr(e, "debit", 0)) for e in gl_map)
+		raw_cre = sum(flt(e.get("credit") if isinstance(e, dict) else getattr(e, "credit", 0)) for e in gl_map)
 		return {
 			"nonempty": True,
 			"balanced": abs(raw_deb - raw_cre) <= abs(flt(allowance)),
@@ -1094,6 +1237,7 @@ def _gl_expected_map_state(voucher) -> dict:
 			"precision": precision,
 			"allowance": allowance,
 			"raw_diff": abs(raw_deb - raw_cre),
+			"irr_aligned": True,
 		}
 	except Exception:
 		return empty
@@ -1343,26 +1487,39 @@ def _posting_revalidate(row, moves, from_dt, cache) -> str | None:
 	warehouse = row.get("warehouse")
 	if not item or not warehouse:
 		return None
-	key = ("sim", item, warehouse, row.get("batch") or "", str(from_dt))
+	move_key = tuple(sorted(str(m.get("document") or "") for m in (moves or [])))
+	key = ("sim", item, warehouse, row.get("batch") or "", str(from_dt), move_key)
 	if key in cache:
 		return cache[key]
 	reason = None
 	try:
 		from erpnext_extensions.iran_accounting.stock_posting_order.optimizer import simulate_running
-		from erpnext_extensions.iran_accounting.stock_posting_order.repair import _identity_window
+		from erpnext_extensions.iran_accounting.stock_posting_order.repair import (
+			_identity_window,
+			_identity_window_for_moves,
+		)
 		from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
 
-		sles = _identity_window(item, warehouse, row.get("batch"), from_dt)
-		if sles:
+		base = _identity_window(item, warehouse, row.get("batch"), from_dt)
+		prop_sles = _identity_window_for_moves(item, warehouse, row.get("batch"), from_dt, moves)
+		if base or prop_sles:
 			opening = D(row.get("opening_qty") or 0)
+			base_names = {r.name for r in base}
+			injected = [r for r in prop_sles if r.name not in base_names]
+			# opening_at_from_dt already includes injected vouchers' historical qty.
+			# Proposed order re-applies them at new timestamps — reverse them out of opening.
+			opening_prop = opening - sum((D(r.actual_qty) for r in injected), D(0))
 			times = {m["document"]: get_datetime(m["new"]) for m in moves}
 			times.setdefault(
 				row["inbound_document"],
 				get_datetime(row.get("proposed_inbound_time") or row["current_inbound_time"]),
 			)
 			times.setdefault(row["outbound_document"], get_datetime(row["proposed_outbound_time"]))
-			current = simulate_running(sles, opening)
-			proposed = simulate_running(sles, opening, times)
+			current = simulate_running(base, opening) if base else {
+				"min_qty": opening,
+				"final_qty": opening,
+			}
+			proposed = simulate_running(prop_sles or base, opening_prop, times)
 			if current["min_qty"] >= 0:
 				reason = "Revalidation failed: repair no longer needed"
 			elif proposed["min_qty"] < 0:

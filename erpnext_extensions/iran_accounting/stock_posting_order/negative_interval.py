@@ -30,9 +30,13 @@ from erpnext_extensions.iran_accounting.stock_posting_order.ordering import (
 	add_seconds,
 	crosses_posting_date,
 	format_datetime,
-	sle_sort_key,
 )
-from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
+from erpnext_extensions.iran_accounting.stock_posting_order.simulation import (
+	D,
+	align_movements_to_qty_after,
+	is_authoritative_shortage,
+	shortage_evidence,
+)
 
 # Measured windows for reporting; dependency evidence can exceed them.
 SEARCH_WINDOW_SECONDS = (60, 5 * 60, 30 * 60)
@@ -54,8 +58,12 @@ def _dt(row):
 
 
 def walk_running(series: list, opening=0) -> list[dict]:
-	"""ERPNext order: posting_datetime ASC, creation ASC. Uses actual_qty, not qty_after."""
-	ordered = sorted(series, key=sle_sort_key)
+	"""ERPNext order: posting_datetime ASC, creation ASC.
+
+	Aligns movements to ``qty_after_transaction`` so Opening Stock RECO and
+	similar absolute-balance rows contribute stock even when ``actual_qty`` is 0.
+	"""
+	ordered = align_movements_to_qty_after(series, opening=opening)
 	run = D(opening)
 	out = []
 	for row in ordered:
@@ -74,11 +82,37 @@ def walk_running(series: list, opening=0) -> list[dict]:
 def find_negative_intervals(series: list, opening=0) -> list[dict]:
 	"""Each interval starts at the first SLE that drives running qty below 0."""
 	walked = walk_running(series, opening)
+	# Series opening evidence (empty-ledger or prior boundary).
+	series_opening = {
+		"opening_qty": D(opening),
+		"opening_source": "SIMULATION_OPENING",
+		"opening_source_voucher": None,
+		"opening_source_voucher_type": None,
+		"opening_source_datetime": None,
+	}
+	if walked and D(opening) == 0:
+		# Reconstruct opening from any prior state encoded via qty_after alignment
+		# already applied inside walk_running; report first inbound/RECO as source
+		# when the first effective movement is positive.
+		first = walked[0]
+		if _qty(first["row"]) > 0 and first["running_qty_after"] >= 0:
+			series_opening = {
+				"opening_qty": D(0),
+				"opening_source_voucher": _g(first["row"], "voucher_no"),
+				"opening_source_voucher_type": _g(first["row"], "voucher_type"),
+				"opening_source_datetime": str(_g(first["row"], "posting_datetime") or ""),
+				"opening_source": _g(first["row"], "voucher_type") or "SLE",
+			}
 	intervals = []
 	i = 0
 	while i < len(walked):
 		step = walked[i]
 		if step["running_qty_after"] >= 0 or step["running_qty_before"] < 0:
+			i += 1
+			continue
+		# Contract: native qty_after >= 0 cannot be REAL_STOCK_SHORTAGE.
+		native_qa = _g(step["row"], "qty_after_transaction")
+		if native_qa is not None and native_qa != "" and not is_authoritative_shortage(qty_after=native_qa):
 			i += 1
 			continue
 		start = i
@@ -99,6 +133,24 @@ def find_negative_intervals(series: list, opening=0) -> list[dict]:
 		gap = None
 		if in_row is not None:
 			gap = int((_dt(in_row) - _dt(out_row)).total_seconds())
+		min_qty = min(s["running_qty_after"] for s in walked[start : end + 1])
+		ev = shortage_evidence(
+			opening=series_opening,
+			qty_before=step["running_qty_before"],
+			movement_qty=_qty(out_row),
+			qty_after=step["running_qty_after"],
+			min_historical_qty=min_qty,
+			first_negative_voucher=_g(out_row, "voucher_no"),
+			first_negative_datetime=_dt(out_row),
+			identity_scope=(
+				f"{_g(out_row, 'item_code')}|{_g(out_row, 'warehouse')}|"
+				f"{_g(out_row, 'canonical_batch') or _g(out_row, 'batch_no') or ''}"
+			),
+			batch=_g(out_row, "canonical_batch") or _g(out_row, "batch_no"),
+			sabb=_g(out_row, "serial_and_batch_bundle"),
+			simulation_start=_g(walked[0]["row"], "posting_datetime") if walked else None,
+			simulation_end=_g(walked[-1]["row"], "posting_datetime") if walked else None,
+		)
 		intervals.append(
 			{
 				"outbound": out_row,
@@ -109,9 +161,11 @@ def find_negative_intervals(series: list, opening=0) -> list[dict]:
 				"previous_qty": step["running_qty_before"],
 				"recovered": recover is not None,
 				"gap_seconds": gap,
-				"min_qty": min(s["running_qty_after"] for s in walked[start : end + 1]),
+				"min_qty": min_qty,
 				"walked_start": start,
 				"walked_end": end,
+				"shortage_evidence": ev,
+				"series_opening": series_opening,
 			}
 		)
 		i = recover + 1 if recover is not None else len(walked)
@@ -239,8 +293,10 @@ def propose_outbound_after_inbound(interval: dict, series: list) -> dict:
 		_g(inbound, "voucher_no"): in_dt,
 		_g(outbound, "voucher_no"): proposed,
 	}
-	current = simulate_running(series, 0)
-	proposed_sim = simulate_running(series, 0, times)
+	# Align absolute-balance rows (Opening RECO) so reorder simulation matches ledger.
+	aligned = align_movements_to_qty_after(series, opening=0)
+	current = simulate_running(aligned, 0)
+	proposed_sim = simulate_running(aligned, 0, times)
 	if proposed_sim["min_qty"] < 0:
 		return {"ok": False, "status": STATUS_REAL_STOCK_SHORTAGE, "proposed": proposed_sim, "current": current}
 	if proposed_sim["final_qty"] != current["final_qty"]:
@@ -279,8 +335,9 @@ def _cross_item_safe(outbound_voucher, times: dict, by_voucher_all: dict, by_ide
 		series = by_identity.get(key) or []
 		if not series:
 			continue
-		cur = simulate_running(series, 0)
-		prop = simulate_running(series, 0, times)
+		aligned = align_movements_to_qty_after(series, opening=0)
+		cur = simulate_running(aligned, 0)
+		prop = simulate_running(aligned, 0, times)
 		if prop["min_qty"] < 0 and (cur["min_qty"] >= 0 or prop["min_qty"] < cur["min_qty"]):
 			return False
 		if prop["final_qty"] != cur["final_qty"]:
@@ -322,12 +379,24 @@ def classify_interval(
 		return {**base, "status": STATUS_VALUATION_POISON, "confidence": CONFIDENCE_AMBIGUOUS, "eligible": False}
 
 	if not interval["recovered"] or inbound is None:
+		native_qa = _g(outbound, "qty_after_transaction")
+		if native_qa is not None and native_qa != "" and not is_authoritative_shortage(qty_after=native_qa):
+			return {
+				**base,
+				"status": "NO_REPAIR_NEEDED",
+				"optimizer_status": "NO_REPAIR_NEEDED",
+				"confidence": CONFIDENCE_EXACT,
+				"eligible": False,
+				"dependency_reason": "authoritative_qty_after_non_negative",
+				"shortage_evidence": interval.get("shortage_evidence"),
+			}
 		return {
 			**base,
 			"status": STATUS_REAL_STOCK_SHORTAGE,
 			"confidence": CONFIDENCE_EXACT,
 			"eligible": False,
 			"dependency_reason": "never_recovered",
+			"shortage_evidence": interval.get("shortage_evidence"),
 		}
 
 	if _unrelated(confidence, inbound, outbound):
@@ -518,7 +587,45 @@ def interval_to_scan_row(interval: dict, classified: dict) -> dict:
 		"current_outbound_time": format_datetime(out_dt),
 		"proposed_inbound_time": classified.get("proposed_inbound") or (format_datetime(in_dt) if in_dt else ""),
 		"proposed_outbound_time": classified.get("proposed_outbound") or "",
-		"opening_qty": str(interval["previous_qty"]),
+		"opening_qty": str(
+			(interval.get("shortage_evidence") or {}).get("opening_qty")
+			or interval.get("previous_qty")
+		),
+		"qty_before": str(
+			(interval.get("shortage_evidence") or {}).get("qty_before")
+			or interval.get("previous_qty")
+		),
+		"movement_qty": str(
+			(interval.get("shortage_evidence") or {}).get("movement_qty")
+			or _qty(outbound)
+		),
+		"qty_after": str(
+			(interval.get("shortage_evidence") or {}).get("qty_after")
+			or interval.get("negative_amount")
+		),
+		"minimum_historical_qty": str(
+			(interval.get("shortage_evidence") or {}).get("minimum_historical_qty")
+			or interval.get("min_qty")
+		),
+		"opening_source_voucher": (interval.get("shortage_evidence") or {}).get(
+			"opening_source_voucher"
+		),
+		"opening_source_datetime": (interval.get("shortage_evidence") or {}).get(
+			"opening_source_datetime"
+		),
+		"opening_source": (interval.get("shortage_evidence") or {}).get("opening_source"),
+		"first_negative_voucher": (interval.get("shortage_evidence") or {}).get(
+			"first_negative_voucher"
+		)
+		or classified.get("negative_voucher"),
+		"first_negative_datetime": (interval.get("shortage_evidence") or {}).get(
+			"first_negative_datetime"
+		)
+		or classified.get("negative_start"),
+		"identity_scope": (interval.get("shortage_evidence") or {}).get("identity_scope"),
+		"simulation_start": (interval.get("shortage_evidence") or {}).get("simulation_start"),
+		"simulation_end": (interval.get("shortage_evidence") or {}).get("simulation_end"),
+		"shortage_evidence": interval.get("shortage_evidence") or classified.get("shortage_evidence"),
 		"min_qty_before": classified.get("min_qty_before") or str(interval["min_qty"]),
 		"min_qty_after": classified.get("min_qty_after") or "",
 		"final_qty_before": classified.get("final_qty_before") or "",
@@ -576,6 +683,8 @@ def scan_series(
 		if skip_same_second and classified.get("detection") == "SAME_TIME":
 			continue
 		row = interval_to_scan_row(interval, classified)
+		if (row.get("optimizer_status") or row.get("status")) == "NO_REPAIR_NEEDED":
+			continue
 		# signature filled by scanner
 		rows.append(row)
 	return rows

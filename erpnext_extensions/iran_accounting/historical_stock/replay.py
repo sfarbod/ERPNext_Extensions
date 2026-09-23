@@ -46,10 +46,30 @@ def replay_from_patient_zero(item_code, warehouse, batch=None, *, from_dt=None) 
 	prev = _fetch_previous(item_code, warehouse, from_dt)
 	if prev:
 		reason = sle_poison_reason(prev)
-		if reason and not _zero_rate_poison_ok(reason) and reason != "qty_after_zero_nonzero_value":
-			# leftover value at qty 0 is the chain we are repairing
+		# Phase 5C: leftover value at qty≈0 must NOT seed manufacture/transfer replay.
+		# Opening stock_value≠0 with qty≈0 makes inbound valuation_rate negative and
+		# then inverts outbound SVD (30300042 Quarantine incident).
+		if reason == "qty_after_zero_nonzero_value" or (
+			abs(D(prev.qty_after_transaction)) <= QTY_EPS and abs(D(prev.stock_value)) > 1
+		):
+			return {
+				"ok": False,
+				"status": "VALUATION_POISON_DEPENDENCY",
+				"reason": "qty_after_zero_nonzero_value_opening",
+				"voucher": prev.voucher_no,
+				"opening_qty": flt(prev.qty_after_transaction),
+				"opening_value": flt(prev.stock_value),
+			}
+		if reason and not _zero_rate_poison_ok(reason):
 			if abs(D(prev.qty_after_transaction)) > QTY_EPS:
 				return {"ok": False, "status": "VALUATION_POISON_DEPENDENCY", "reason": reason}
+		if flt(prev.valuation_rate) < -0.0001:
+			return {
+				"ok": False,
+				"status": "VALUATION_POISON_DEPENDENCY",
+				"reason": "negative_valuation_rate_opening",
+				"voucher": prev.voucher_no,
+			}
 	rows = _fetch_sles(item_code, warehouse, from_dt, before=False)
 	for row in rows:
 		reason = sle_poison_reason(row)
@@ -62,10 +82,43 @@ def replay_from_patient_zero(item_code, warehouse, batch=None, *, from_dt=None) 
 			}
 	opening_qty = D(prev.qty_after_transaction) if prev else D(0)
 	opening_value = D(prev.stock_value) if prev else D(0)
+	# Never carry a material leftover value when qty is ~0.
+	if abs(opening_qty) <= QTY_EPS:
+		opening_qty = D(0)
+		opening_value = D(0)
 	series = replay_series(rows, opening_qty, opening_value)
+	# Pre-write validation: refuse inverted SVD / neg valuation (30300042 class).
+	for step in series:
+		vr = D(step["valuation_rate"])
+		svd = D(step["stock_value_difference"])
+		# Find matching qty from rows
+		if vr < -D("0.0001"):
+			return {
+				"ok": False,
+				"status": "VALUATION_POISON_DEPENDENCY",
+				"reason": "replay_would_create_negative_valuation_rate",
+				"voucher": step.get("voucher_no"),
+				"valuation_rate": flt(vr),
+			}
 	touched = []
 	for i, row in enumerate(rows):
 		step = series[i]
+		qty = D(row.actual_qty)
+		svd = D(step["stock_value_difference"])
+		if qty < 0 and svd > VALUE_EPS:
+			return {
+				"ok": False,
+				"status": "VALUATION_POISON_DEPENDENCY",
+				"reason": "replay_would_invert_outgoing_svd",
+				"voucher": row.voucher_no,
+			}
+		if qty > 0 and svd < -VALUE_EPS:
+			return {
+				"ok": False,
+				"status": "VALUATION_POISON_DEPENDENCY",
+				"reason": "replay_would_invert_incoming_svd",
+				"voucher": row.voucher_no,
+			}
 		frappe.db.set_value(
 			"Stock Ledger Entry",
 			row.name,

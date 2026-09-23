@@ -128,6 +128,65 @@ def document_issue_rates(rows: list[dict]) -> dict:
 	return {item: (v[1] / v[0]) for item, v in pool.items() if v[0] > QTY_EPS}
 
 
+def _i1_dependency_cycle_resolution(voucher_no: str, replay_blockers: list, common: dict) -> dict | None:
+	"""v5.3.0 — break I1 ↔ Wrong Rate COMPLETE ↔ Manufacture MANUAL cycles.
+
+	When replay is blocked by this voucher's own negative/exploded rates, and
+	``preview_manufacture_voucher`` is EXACT/eligible, route the operator to
+	Manufacture repair instead of a false Wrong Rate COMPLETE dead-end.
+	"""
+	self_blocked = any(str(voucher_no) in str(b) for b in (replay_blockers or []))
+	if not self_blocked:
+		# Still detect exploded co-items that manufacture can reprice.
+		pass
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
+			preview_manufacture_voucher,
+		)
+
+		preview = preview_manufacture_voucher(voucher_no)
+	except Exception:
+		return None
+	if not preview.get("needs_repair"):
+		return None
+	if preview.get("eligible") and preview.get("confidence") == CONFIDENCE_EXACT:
+		return {
+			"dependency_cycle": True,
+			"cycle_kind": "I1_SELF_POISON_MANUFACTURE_EXACT",
+			"required_action": f"Repair Manufacture {voucher_no} first (EXACT contract preview)",
+			"required_prerequisite": voucher_no,
+			"manufacture_preview_status": preview.get("status"),
+			"manufacture_confidence": preview.get("confidence"),
+			"message": (
+				"WAITING_I1 — dependency cycle resolved: this voucher's negative/exploded "
+				f"rates are the patient-zero. Manufacture repair is EXACT "
+				f"(after_rates_healthy={preview.get('after_rates_healthy')}). "
+				"Do not wait on Wrong Rate RATE_REBUILD_COMPLETE for matched poison rates."
+			),
+			"no_repair_path": False,
+			"stop_reason": None,
+		}
+	if preview.get("fg_negative") and preview.get("after_rates_healthy"):
+		return {
+			"dependency_cycle": True,
+			"cycle_kind": "I1_FALSE_COMPLETE_RISK",
+			"required_action": f"Repair Manufacture {voucher_no} (contract yields healthy AFTER rates)",
+			"manufacture_preview_status": preview.get("status"),
+			"message": (
+				"WAITING_I1 — manufacture contract produces healthy AFTER rates but "
+				f"confidence/status is {preview.get('confidence')}/{preview.get('status')}. "
+				"False RATE_REBUILD_COMPLETE on matched poison SE+SLE must not block this."
+			),
+		}
+	return {
+		"dependency_cycle": bool(self_blocked),
+		"cycle_kind": "I1_WAITING_UPSTREAM" if not self_blocked else "I1_SELF_POISON_NOT_EXACT",
+		"required_action": (
+			f"Repair upstream poison before I1 ({(replay_blockers or ['unknown'])[0]})"
+		),
+	}
+
+
 def classify_i1_voucher(voucher_no: str) -> dict:
 	"""Classify one Manufacture voucher against the I1 pool contract."""
 	header = frappe.db.get_value(
@@ -278,7 +337,11 @@ def classify_i1_voucher(voucher_no: str) -> dict:
 			for reason in _replay_blockers(item_code, warehouse, common["posting_datetime"])
 		)
 	if replay_blockers:
-		return {
+		# v5.3.0: detect self/circular dependency — when this Manufacture voucher is
+		# itself the poison root and the output contract yields healthy AFTER rates,
+		# route to MANUFACTURE repair instead of a Wrong Rate COMPLETE dead-end.
+		cycle = _i1_dependency_cycle_resolution(voucher_no, replay_blockers, common)
+		payload = {
 			**common,
 			"status": I1_WAITING,
 			"i1_status": I1_WAITING,
@@ -290,6 +353,9 @@ def classify_i1_voucher(voucher_no: str) -> dict:
 				"write would leave SE and SLE disagreeing."
 			),
 		}
+		if cycle:
+			payload.update(cycle)
+		return payload
 
 	proposed_fg_rate = corrected_fg_amount / fg_qty
 	sql_updates = len(proposed_secondary) + 1  # secondary rows + FG row

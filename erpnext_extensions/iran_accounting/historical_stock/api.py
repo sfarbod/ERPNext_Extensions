@@ -92,7 +92,21 @@ def scan_all(company=None):
 	"""Synchronous Scan All (compat / small tenants). Prefer start_scan_all_job on UI."""
 	_guard()
 	# Dashboard Scan All skips manufacture get_doc loops; Manufacture tab still scans itself.
-	return run_full_integrity_scan(company=company or None, include_manufacture=False)
+	result = run_full_integrity_scan(company=company or None, include_manufacture=False)
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+			save_metrics_snapshot,
+		)
+
+		save_metrics_snapshot(
+			company=company or None,
+			dashboard=(result or {}).get("dashboard") or {},
+			timing=(result or {}).get("timing") or {},
+			source="scan_all_sync",
+		)
+	except Exception:
+		pass
+	return result
 
 
 @frappe.whitelist()
@@ -113,6 +127,76 @@ def get_scan_all_job(job_id=None):
 	if not job_id:
 		frappe.throw("job_id required")
 	return _get(job_id)
+
+
+@frappe.whitelist()
+def cancel_scan_all_job(job_id=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.scan_job import cancel_scan_all_job as _cancel
+
+	if not job_id:
+		frappe.throw("job_id required")
+	return _cancel(job_id)
+
+
+@frappe.whitelist()
+def get_dashboard_summary_api(company=None):
+	"""Fast page-load summary from metrics snapshot + worker state. No full scan."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+		get_dashboard_summary,
+	)
+
+	return get_dashboard_summary(company=company or None)
+
+
+@frappe.whitelist()
+def worker_status_api():
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+		worker_queue_status,
+	)
+
+	return worker_queue_status("long")
+
+
+@frappe.whitelist()
+def rescan_item_warehouse_api(company=None, item_code=None, warehouse=None, limit=500):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.incremental_rescan import (
+		rescan_item_warehouse,
+	)
+
+	return rescan_item_warehouse(
+		company=company or None,
+		item_code=item_code,
+		warehouse=warehouse,
+		limit=limit,
+	)
+
+
+@frappe.whitelist()
+def rescan_voucher_api(company=None, voucher=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.incremental_rescan import (
+		rescan_voucher,
+	)
+
+	return rescan_voucher(company=company or None, voucher=voucher)
+
+
+@frappe.whitelist()
+def rescan_root_api(company=None, root_id=None, voucher=None, item_code=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.incremental_rescan import rescan_root
+
+	return rescan_root(
+		company=company or None,
+		root_id=root_id,
+		voucher=voucher,
+		item_code=item_code,
+		warehouse=warehouse,
+	)
 
 
 @frappe.whitelist()
@@ -826,6 +910,38 @@ def master_repair_plan_api(company=None):
 
 
 @frappe.whitelist()
+def riv_preflight_api(item_code=None, warehouse=None, posting_date=None, company=None):
+	"""Read-only RIV preflight + dependency-closure + impact preview (v5.3.0)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.riv_preflight import riv_preflight_gate
+
+	if not item_code or not warehouse:
+		frappe.throw("item_code and warehouse are required")
+	return riv_preflight_gate(
+		item_code,
+		warehouse,
+		posting_date=posting_date or None,
+		company=company or None,
+	)
+
+
+@frappe.whitelist()
+def preview_repost_impact_api(item_code=None, warehouse=None, posting_date=None, company=None):
+	"""Read-only repost impact preview (v5.3.0)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.riv_preflight import preview_repost_impact
+
+	if not item_code or not warehouse:
+		frappe.throw("item_code and warehouse are required")
+	return preview_repost_impact(
+		item_code,
+		warehouse,
+		posting_date=posting_date or None,
+		company=company or None,
+	)
+
+
+@frappe.whitelist()
 def validate_dashboard_api(company=None):
 	"""Compare Dashboard ↔ Scan ↔ Planner ↔ SQL ↔ Queue for every KPI (read-only)."""
 	_guard()
@@ -1025,6 +1141,66 @@ def warehouse_apply_api(row=None, dry_run=True):
 	if not parsed:
 		frappe.throw("A warehouse repair row is required")
 	return apply_warehouse_repair(parsed, dry_run=is_dry)
+
+
+@frappe.whitelist()
+def scan_blockers_api(
+	company=None,
+	lane=None,
+	issue_type=None,
+	item_code=None,
+	warehouse=None,
+	batch_no=None,
+	status=None,
+	severity=None,
+	sync=0,
+	limit=500,
+):
+	"""List Historical Repair Blockers; optionally sync from live scans first."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.blockers import (
+		list_blockers,
+		scan_and_sync_blockers,
+	)
+
+	sync_result = None
+	if cint(sync):
+		sync_result = scan_and_sync_blockers(company=company or None, limit=cint(limit) or 500)
+	listed = list_blockers(
+		company=company or None,
+		lane=lane or None,
+		issue_type=issue_type or None,
+		item_code=item_code or None,
+		warehouse=warehouse or None,
+		batch_no=batch_no or None,
+		status=status or None,
+		severity=severity or None,
+		limit=cint(limit) or 500,
+	)
+	listed["sync"] = sync_result
+	return listed
+
+
+@frappe.whitelist()
+def recheck_blocker_api(name=None):
+	_guard()
+	if not name:
+		frappe.throw("Blocker name is required")
+	from erpnext_extensions.iran_accounting.historical_stock.blockers import recheck_blocker
+
+	return recheck_blocker(name)
+
+
+@frappe.whitelist()
+def sync_blockers_api(company=None, include_tool_limits=1, limit=500):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.blockers import scan_and_sync_blockers
+
+	return scan_and_sync_blockers(
+		company=company or None,
+		include_tool_limits=bool(cint(include_tool_limits)),
+		limit=cint(limit) or 500,
+	)
 
 
 # Re-export posting-order APIs so the page can use one namespace.

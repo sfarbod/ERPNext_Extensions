@@ -353,6 +353,18 @@ def scan_i4_leftover(
 	stamped = stamp_scan_result({"count": len(classified), "rows": classified, "by_status": _count(classified, "i4_status")})
 	stamped["rows"] = filter_rows_by_planner(stamped["rows"], repair_class=I4_LEFTOVER_REPAIR)
 	stamped["count"] = len(stamped["rows"])
+	# Phase 5 KPI contract
+	identities = {
+		(r.get("item") or r.get("item_code"), r.get("warehouse"))
+		for r in stamped["rows"]
+		if (r.get("item") or r.get("item_code")) and r.get("warehouse")
+	}
+	stamped["raw_count"] = stamped["count"]
+	stamped["actionable_count"] = stamped["count"]
+	stamped["root_identity_count"] = len(identities)
+	stamped["ready_count"] = sum(
+		1 for r in stamped["rows"] if r.get("eligible") or r.get("i4_status") == "READY_I4"
+	)
 	return stamped
 
 
