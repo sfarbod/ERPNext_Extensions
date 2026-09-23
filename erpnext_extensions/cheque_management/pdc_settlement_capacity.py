@@ -5,9 +5,15 @@
 
 Used for over-allocation prevention. Does not post accounting entries.
 
-**PDC reservation rule (direct settlement):** only allocations on submitted cheques **without** a posted
-Register Journal Entry (``Receive`` / ``Payable Issue`` on ``PDC Journal Reference``) consume capacity.
-Draft cheques (``docstatus = 0``) never appear in those sums.
+**Invoice PDC reservation (``sum_effective_pdc_allocations_to_reference``):** only allocations on
+submitted cheques **without** a posted Register Journal Entry (``Receive`` / ``Payable Issue``)
+consume capacity. Draft cheques never appear. After Register JE, invoice exposure is expected
+via Payment Ledger.
+
+**Payment Request PDC coverage (``sum_payment_request_pdc_coverage_allocations``):** Register JE
+for payable/receivable cheques does **not** reference the Payment Request / Payment Ledger, so
+PR coverage must **not** drop when that JE posts (avoids false zero coverage / inflated remaining).
+Draft + submitted direct allocations to the PR reserve capacity; Cancelled / Replaced do not.
 """
 
 from __future__ import annotations
@@ -30,6 +36,9 @@ from erpnext_extensions.cheque_management.pdc_workflow_state_machine import (
 SETTLEMENT_REFERENCE_DOCTYPES: frozenset[str] = frozenset(
 	("Sales Invoice", "Purchase Invoice", "Payment Request")
 )
+
+# PR coverage excludes these workflow states (traceability list may still show Cancelled PDCs).
+_PR_COVERAGE_EXCLUDED_WORKFLOW = frozenset({"Cancelled", "Replaced"})
 
 
 def _effective_exclude_pdc_name(exclude_pdc: str | None) -> str:
@@ -234,6 +243,42 @@ def sum_effective_pdc_allocations_to_reference(
 	return float(row[0][0]) if row else 0.0
 
 
+def sum_payment_request_pdc_coverage_allocations(
+	payment_request: str,
+	*,
+	exclude_pdc: str | None = None,
+) -> float:
+	"""Sum direct PDC allocation amounts that cover a Payment Request for capacity / desk display.
+
+	Unlike :func:`sum_effective_pdc_allocations_to_reference` (invoice / JE-aware):
+
+	* **Includes Draft** (``docstatus = 0``) so a planning cheque reserves remaining capacity.
+	* **Includes Submitted** even after Register JE — payable/receivable Register JE does not
+	  allocate against the Payment Request, so excluding those rows incorrectly zeros coverage.
+	* Uses **allocation** amounts (not full cheque amount).
+	* Excludes Cancelled / Replaced.
+	"""
+	pr = (payment_request or "").strip()
+	if not pr:
+		return 0.0
+	excl = _effective_exclude_pdc_name(exclude_pdc)
+	row = frappe.db.sql(
+		"""
+		select coalesce(sum(a.amount), 0)
+		from `tabPDC Allocation` a
+		inner join `tabPost Dated Cheque` p on p.name = a.parent
+		where a.reference_doctype = 'Payment Request' and a.reference_name = %s
+			and coalesce(a.allocation_mode, 'direct_settlement') = 'direct_settlement'
+			and coalesce(p.allocation_mode, 'direct_settlement') = 'direct_settlement'
+			and ifnull(p.docstatus, 0) < 2
+			and ifnull(p.workflow_state, '') not in ('Cancelled', 'Replaced')
+			and (%s = '' or p.name != %s)
+		""",
+		(pr, excl, excl),
+	)
+	return float(row[0][0]) if row else 0.0
+
+
 def sum_effective_pdc_allocations_via_payment_request_to_invoice(
 	invoice_doctype: str,
 	invoice_name: str,
@@ -380,7 +425,7 @@ def get_pr_remaining_capacity(
 	pe_sum = flt(
 		sum_payment_entry_allocations_to_payment_request(pr, exclude_payment_entry=exclude_payment_entry)
 	)
-	pdc_sum = flt(sum_effective_pdc_allocations_to_reference("Payment Request", pr, exclude_pdc=exclude_pdc))
+	pdc_sum = flt(sum_payment_request_pdc_coverage_allocations(pr, exclude_pdc=exclude_pdc))
 	return flt(gt - pe_sum - pdc_sum)
 
 
@@ -534,6 +579,7 @@ __all__ = [
 	"sum_effective_pdc_via_pr_to_invoice",
 	"sum_payment_entry_allocations_to_payment_request",
 	"sum_payment_entry_allocations_to_reference",
+	"sum_payment_request_pdc_coverage_allocations",
 	"sum_submitted_pr_totals_for_invoice",
 	"validate_invoice_pr_issuance_ceiling",
 ]

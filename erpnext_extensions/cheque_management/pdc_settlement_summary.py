@@ -4,8 +4,8 @@
 """Read-only settlement visibility for Sales Invoice, Purchase Invoice, and Payment Request.
 
 SI/PI use Payment Ledger outstanding and :mod:`pdc_settlement_capacity` for ``remaining_balance``.
-Payment Request uses ``grand_total - PE - effective PDC`` for ledger/document outstanding and remaining
-(so the desk never mixes in stale DB ``outstanding_amount`` or capacity-only zeros).
+Payment Request uses ``grand_total - PE - PR PDC coverage`` for ledger/document outstanding and remaining
+(so the desk never mixes in stale DB ``outstanding_amount`` or incorrectly zeros coverage after Register JE).
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from erpnext_extensions.cheque_management.pdc_settlement_capacity import (
 	sum_effective_pdc_allocations_via_payment_request_to_invoice,
 	sum_payment_entry_allocations_to_payment_request,
 	sum_payment_entry_allocations_to_reference,
+	sum_payment_request_pdc_coverage_allocations,
 )
 
 PDC_ADVANCE_APP_ROW_STATUSES = ("posted", "reversed")
@@ -177,10 +178,9 @@ def get_settlement_summary_for_reference(
 	if rdt == "Payment Request":
 		# Do **not** use raw ``outstanding_amount`` from DB for display: ERPNext often leaves it 0 for Draft /
 		# pre-submit PRs. The desk must show one consistent decomposition everywhere:
-		#   unpaid / remaining = grand_total - submitted PE - effective PDC
-		# Do not derive ``remaining_balance`` from :func:`get_remaining_settlement_capacity` here: that path
-		# calls ``get_pr_remaining_capacity``, which returns 0 when the PR is not settlement-eligible and can
-		# disagree with the unpaid amount shown beside ``document_outstanding`` / the table.
+		#   unpaid / remaining = grand_total - submitted PE - PR PDC coverage
+		# PR PDC coverage uses :func:`sum_payment_request_pdc_coverage_allocations` (Draft + Submitted
+		# allocations; Register JE does not clear PR coverage). Invoice paths keep JE-aware effective sums.
 		if not is_payment_request_settlement_eligible(row):
 			pe_sum = 0.0
 			pdc_direct = 0.0
@@ -197,6 +197,7 @@ def get_settlement_summary_for_reference(
 				"effective_pdc_amount_direct": pdc_direct,
 				"effective_pdc_amount_via_pr": pdc_via,
 				"effective_pdc_amount": 0.0,
+				"pdc_advance_applied_amount": 0.0,
 				"ledger_outstanding": computed_unpaid,
 				"document_outstanding": computed_unpaid,
 				"remaining_balance": computed_unpaid,
@@ -204,7 +205,7 @@ def get_settlement_summary_for_reference(
 			}
 
 		pe_sum = sum_payment_entry_allocations_to_payment_request(rnm)
-		pdc_direct = sum_effective_pdc_allocations_to_reference("Payment Request", rnm)
+		pdc_direct = sum_payment_request_pdc_coverage_allocations(rnm)
 		pdc_via = 0.0
 		pdc_total = flt(pdc_direct) + flt(pdc_via)
 		computed_unpaid = flt(gt - pe_sum - pdc_total)
@@ -218,6 +219,7 @@ def get_settlement_summary_for_reference(
 			"effective_pdc_amount_direct": pdc_direct,
 			"effective_pdc_amount_via_pr": pdc_via,
 			"effective_pdc_amount": pdc_total,
+			"pdc_advance_applied_amount": 0.0,
 			"ledger_outstanding": computed_unpaid,
 			"document_outstanding": computed_unpaid,
 			"remaining_balance": computed_unpaid,

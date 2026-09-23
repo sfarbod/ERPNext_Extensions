@@ -132,37 +132,45 @@ function pdc_settlement_fully_covered_html() {
 }
 
 function pdc_payment_request_neutral_path_guidance_html() {
-	const immediate = __(
-		"Use <b>Create</b> → <b>Payment</b> for an immediate bank payment (Payment Entry)."
-	);
-	const deferred = __("Use <b>Create Post Dated Cheque</b> for deferred settlement by cheque.");
+	// Keep HTML markup outside __() so translations cannot leave literal <b>/<div> tags as text,
+	// and so frappe.utils.is_html / .html() always receive real markup.
+	const deferred = `${__("Use")} <b>${frappe.utils.escape_html(
+		__("Create Post Dated Cheque")
+	)}</b> ${__("for deferred settlement by cheque.")}`;
+	const immediate = `${__("Use")} <b>${frappe.utils.escape_html(__("Create"))}</b> → <b>${frappe.utils.escape_html(
+		__("Payment")
+	)}</b> ${__("for an immediate bank payment (Payment Entry).")}`;
 	return `<div class="alert alert-light border mt-2 mb-0 p-2 small pdc-path-guidance">
-		<div class="mb-1"><strong>${__("Settlement options")}</strong></div>
+		<div class="mb-1"><strong>${frappe.utils.escape_html(__("Settlement options"))}</strong></div>
 		<div>${deferred}</div>
 		<div class="mt-1">${immediate}</div>
 	</div>`;
 }
 
 function pdc_settlement_path_guidance_html(is_pdc_mode) {
-	const immediate = __(
-		"Use <b>Create</b> → <b>Payment</b> to record an immediate bank payment (Payment Entry)."
-	);
-	const deferred = __("Use <b>Create Post Dated Cheque</b> for deferred settlement by cheque.");
+	const deferred = `${__("Use")} <b>${frappe.utils.escape_html(
+		__("Create Post Dated Cheque")
+	)}</b> ${__("for deferred settlement by cheque.")}`;
+	const immediate = `${__("Use")} <b>${frappe.utils.escape_html(__("Create"))}</b> → <b>${frappe.utils.escape_html(
+		__("Payment")
+	)}</b> ${__("to record an immediate bank payment (Payment Entry).")}`;
 	if (is_pdc_mode === true) {
 		return `<div class="alert alert-light border mt-2 mb-0 p-2 small pdc-path-guidance">
-			<div class="mb-1"><strong>${__("Recommended (this Mode of Payment)")}</strong>: ${deferred}</div>
-			<div><strong>${__("Immediate payment (exception)")}</strong>: ${immediate}</div>
+			<div class="mb-1"><strong>${frappe.utils.escape_html(
+				__("Recommended (this Mode of Payment)")
+			)}</strong>: ${deferred}</div>
+			<div><strong>${frappe.utils.escape_html(__("Immediate payment (exception)"))}</strong>: ${immediate}</div>
 		</div>`;
 	}
 	if (is_pdc_mode === false) {
 		return `<div class="alert alert-light border mt-2 mb-0 p-2 small pdc-path-guidance">
-			<div class="mb-1"><strong>${__("Recommended")}</strong>: ${immediate}</div>
-			<div><strong>${__("Deferred cheque")}</strong>: ${deferred}</div>
+			<div class="mb-1"><strong>${frappe.utils.escape_html(__("Recommended"))}</strong>: ${immediate}</div>
+			<div><strong>${frappe.utils.escape_html(__("Deferred cheque"))}</strong>: ${deferred}</div>
 		</div>`;
 	}
 	return `<div class="alert alert-light border mt-2 mb-0 p-2 small pdc-path-guidance">
-		<div class="mb-1"><strong>${__("Immediate payment")}</strong>: ${immediate}</div>
-		<div><strong>${__("Deferred cheque")}</strong>: ${deferred}</div>
+		<div class="mb-1"><strong>${frappe.utils.escape_html(__("Immediate payment"))}</strong>: ${immediate}</div>
+		<div><strong>${frappe.utils.escape_html(__("Deferred cheque"))}</strong>: ${deferred}</div>
 	</div>`;
 }
 
@@ -397,10 +405,16 @@ function pdc_render_payment_request_path_ui(frm) {
 		rem,
 	});
 
-	const headline = __(
-		"<b>Create Post Dated Cheque</b> is available when this Payment Request is settlement-eligible (independent of Mode of Payment). For immediate bank payment use <b>Create</b> → <b>Payment</b>."
-	);
-	frm.dashboard.set_headline(`<div class="small">${headline}</div>`, "blue", true);
+	const headline = `<div class="small"><b>${frappe.utils.escape_html(
+		__("Create Post Dated Cheque")
+	)}</b> ${frappe.utils.escape_html(
+		__(
+			"is available when this Payment Request is settlement-eligible (independent of Mode of Payment). For immediate bank payment use"
+		)
+	)} <b>${frappe.utils.escape_html(__("Create"))}</b> → <b>${frappe.utils.escape_html(
+		__("Payment")
+	)}</b>.</div>`;
+	frm.dashboard.set_headline(headline, "blue", true);
 
 	const open_pdc = () => erpnext_extensions.cheque_management.open_pdc_from_form(frm);
 	// Leave ERPNext **Create Payment Entry** as ``btn-primary``; PDC is a second action (default style).

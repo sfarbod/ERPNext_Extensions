@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Farbod Siyahpoosh and contributors
 # For license information, please see license.txt
 
-"""v5.3.2 — Payment Request dashboard links to related Post Dated Cheques.
+"""v5.3.1 — Payment Request dashboard links to related Post Dated Cheques.
 
 Covers count/list identity (A–G) without mutating settlement logic.
 
