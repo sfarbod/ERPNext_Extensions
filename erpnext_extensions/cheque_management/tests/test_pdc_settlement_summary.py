@@ -91,7 +91,7 @@ class TestPdcSettlementSummaryPaymentRequest(unittest.TestCase):
 				return_value=30.0,
 			),
 			patch(
-				"erpnext_extensions.cheque_management.pdc_settlement_summary.sum_effective_pdc_allocations_to_reference",
+				"erpnext_extensions.cheque_management.pdc_settlement_summary.sum_payment_request_pdc_coverage_allocations",
 				return_value=20.0,
 			),
 		):
@@ -100,6 +100,57 @@ class TestPdcSettlementSummaryPaymentRequest(unittest.TestCase):
 		self.assertEqual(s["document_outstanding"], 50.0)
 		self.assertEqual(s["ledger_outstanding"], 50.0)
 		self.assertEqual(s["remaining_balance"], 50.0)
+		self.assertEqual(s["effective_pdc_amount"], 20.0)
+		self.assertEqual(s["pdc_advance_applied_amount"], 0.0)
+
+	def test_eligible_pr_keeps_coverage_after_register_je_semantics(self):
+		"""Summary uses PR coverage helper (not JE-excluding invoice effective sum)."""
+		row = {
+			"grand_total": 100.0,
+			"outstanding_amount": 0.0,
+			"company": "Test Co",
+			"currency": "SAR",
+			"docstatus": 1,
+			"workflow_state": "Approved",
+		}
+		meta = MagicMock()
+		meta.has_field = lambda f: f in ("grand_total", "outstanding_amount", "workflow_state")
+		fake_db = type(
+			"DB",
+			(),
+			{"exists": staticmethod(lambda dt, nm: True), "get_value": staticmethod(lambda *a, **k: row)},
+		)()
+		fake_frappe = type(
+			"F",
+			(),
+			{
+				"db": fake_db,
+				"has_permission": staticmethod(lambda *a, **k: True),
+				"get_meta": staticmethod(lambda dt: meta),
+			},
+		)()
+		with (
+			patch.object(pss, "frappe", fake_frappe),
+			patch(
+				"erpnext_extensions.cheque_management.pdc_settlement_summary.is_payment_request_settlement_eligible",
+				return_value=True,
+			),
+			patch(
+				"erpnext_extensions.cheque_management.pdc_settlement_summary.sum_payment_entry_allocations_to_payment_request",
+				return_value=0.0,
+			),
+			patch(
+				"erpnext_extensions.cheque_management.pdc_settlement_summary.sum_payment_request_pdc_coverage_allocations",
+				return_value=80.0,
+			),
+			patch(
+				"erpnext_extensions.cheque_management.pdc_settlement_summary.sum_effective_pdc_allocations_to_reference",
+				return_value=0.0,  # would be 0 after Register JE — must not be used for PR
+			),
+		):
+			s = pss.get_settlement_summary_for_reference("Payment Request", "PR-80")
+		self.assertEqual(s["effective_pdc_amount"], 80.0)
+		self.assertEqual(s["remaining_balance"], 20.0)
 
 
 class TestPdcSettlementSummaryWorkflowStateOptional(unittest.TestCase):

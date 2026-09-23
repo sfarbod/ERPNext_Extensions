@@ -315,7 +315,8 @@ def prepare_post_dated_cheque_prefill_from_source(
 
 	# Capacity is always for the **source** document (e.g. Payment Request uses PR ``grand_total`` / PE / PDC,
 	# not the linked invoice total). Prefill uses full remaining; users may lower **cheque_amount** for a
-	# partial cheque — the PDC form client keeps a single allocation row aligned with **cheque_amount**.
+	# partial cheque — Draft client + server sync clamp a *single* allocation row when it would otherwise
+	# exceed the reduced cheque amount (see ``sync_single_pdc_allocation_on_reduced_cheque_amount``).
 	remaining = flt(summary.get("remaining_balance"))
 	if remaining <= 1e-9:
 		out["message"] = _(

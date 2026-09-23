@@ -290,6 +290,42 @@ def apply_pdc_allocation_row_defaults_from_parent(doc) -> None:
 			row.party = py
 
 
+def sync_single_pdc_allocation_on_reduced_cheque_amount(doc) -> bool:
+	"""Fix stale single-row allocation when Draft ``cheque_amount`` is reduced below that row.
+
+	Safe because a single allocation row has an unambiguous target: clamp it to the new
+	cheque amount. Multi-row allocations are **not** auto-redistributed — choosing which
+	row to shrink is a business decision and must remain user-driven; the existing
+	``Allocated Amount cannot exceed Cheque Amount`` guard still rejects those cases.
+
+	Does **not**:
+	- run on submitted/cancelled PDCs (``docstatus != 0``);
+	- increase allocation when cheque amount rises (preserves manual under-allocation);
+	- touch rows when there is more than one allocation.
+
+	Returns True when a row amount was adjusted.
+	"""
+	if cint(getattr(doc, "docstatus", 0) or 0) != 0:
+		return False
+
+	rows = list(getattr(doc, "allocations", None) or [])
+	if len(rows) != 1:
+		return False
+
+	cheque_amt = flt(getattr(doc, "cheque_amount", None))
+	if cheque_amt <= 0:
+		return False
+
+	row = rows[0]
+	row_amt = flt(getattr(row, "amount", None))
+	# Stale over-allocation only (cheque reduced below existing single allocation).
+	if row_amt <= cheque_amt + _EPS:
+		return False
+
+	row.amount = cheque_amt
+	return True
+
+
 def sync_pdc_allocation_summary_amounts(doc) -> None:
 	"""Set ``allocated_amount`` / ``unallocated_amount`` from child ``amount``; enforce sum ≤ ``cheque_amount``."""
 	total = 0.0
@@ -1030,6 +1066,7 @@ __all__ = [
 	"is_pdc_allocation_effective",
 	"pdc_allocation_effective_milestone_workflow_state",
 	"sanitize_pdc_allocation_child_rows",
+	"sync_single_pdc_allocation_on_reduced_cheque_amount",
 	"sync_pdc_allocation_summary_amounts",
 	"validate_post_dated_cheque_allocation_mode_immutability",
 	"validate_pdc_allocation_rows",

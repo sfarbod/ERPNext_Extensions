@@ -49,6 +49,7 @@ from erpnext_extensions.cheque_management.pdc_allocation import (
 	pdc_allocation_effective_milestone_workflow_state,
 	sanitize_pdc_allocation_child_rows,
 	sync_pdc_allocation_summary_amounts,
+	sync_single_pdc_allocation_on_reduced_cheque_amount,
 	validate_pdc_allocation_rows,
 	validate_pdc_allocation_workflow_milestone,
 	validate_post_dated_cheque_allocation_mode_immutability,
@@ -2596,6 +2597,9 @@ class PostDatedCheque(Document):
 		autofill_pdc_allocations_from_parent_reference(self)
 		sanitize_pdc_allocation_child_rows(self)
 		apply_pdc_allocation_row_defaults_from_parent(self)
+		# Draft single-row: clamp stale allocation when cheque_amount was reduced (v5.3.1).
+		# Runs before summary validation so API/import paths match Desk UX; multi-row unchanged.
+		sync_single_pdc_allocation_on_reduced_cheque_amount(self)
 		sync_pdc_allocation_summary_amounts(self)
 		# Ensure settlement-capacity helpers can exclude this cheque consistently even when invoked
 		# indirectly during workflow transitions (before_update_after_submit -> validate()).
