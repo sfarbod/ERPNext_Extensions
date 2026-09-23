@@ -44,20 +44,43 @@ function pdc_safe_flt(v) {
 }
 
 /**
- * When opening PDC from Payment Request / invoice with a single prefilled allocation row, both
- * cheque_amount and allocated_amount default to full remaining capacity. If the user lowers
- * cheque_amount for a partial cheque, keep the one row in sync so validation does not fail.
+ * Draft (or new unsaved) only — never rewrite Registered/Submitted allocations.
+ */
+function pdc_can_sync_draft_allocation(frm) {
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	if (pdc_is_new_unsaved(frm)) {
+		return true;
+	}
+	const ds = frm.doc.docstatus;
+	return ds === 0 || ds === "0";
+}
+
+/**
+ * When PDC has a single allocation row and the user reduces cheque_amount below that row,
+ * clamp the row to cheque_amount so summary validation does not fail with a stale
+ * "Allocated Amount cannot exceed Cheque Amount" error (PR/invoice create-from-source UX).
+ *
+ * Safe only for exactly one row — multi-row redistribution is ambiguous and must stay manual.
+ * Does not inflate under-allocation when cheque_amount increases.
  */
 function pdc_sync_single_allocation_to_cheque_amount(frm) {
-	if (!frm || !frm.doc || !pdc_is_new_unsaved(frm)) {
+	if (!frm || !frm.doc || !pdc_can_sync_draft_allocation(frm)) {
 		return;
 	}
 	const rows = frm.doc.allocations || [];
+	// Multi-row: do not guess which allocation to shrink.
 	if (rows.length !== 1) {
 		return;
 	}
 	const ch = pdc_safe_flt(frm.doc.cheque_amount);
 	const row = rows[0];
+	const amt = pdc_safe_flt(row.amount);
+	// Stale over-allocation only (cheque reduced); preserve intentional under-allocation.
+	if (!(ch > 0) || !(amt > ch + 1e-6)) {
+		return;
+	}
 	if (frm._pdc_sync_alloc_from_cheque) {
 		return;
 	}
@@ -69,6 +92,9 @@ function pdc_sync_single_allocation_to_cheque_amount(frm) {
 			frappe.model.set_value(cdt, cdn, "amount", ch);
 		} else {
 			row.amount = ch;
+		}
+		if (frm.fields_dict && frm.fields_dict.allocations && frm.fields_dict.allocations.refresh) {
+			frm.refresh_field("allocations");
 		}
 	} finally {
 		frm._pdc_sync_alloc_from_cheque = false;
