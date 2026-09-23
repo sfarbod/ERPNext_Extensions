@@ -664,16 +664,33 @@ def _erpnext_manufacture_state_is_valid(doc) -> bool:
 def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	"""Canonical Iran Manufacture output contract (submit and RIV).
 
-	Component Scrap is always priced at this voucher's issued rate. A valid
-	finished-good rate does not skip that step. Product reject then splits the
-	remaining pool. Independent by-product keeps ERPNext valuation only when
-	the finished good remains non-negative and component scrap already matches.
+	v5.3.3 drafts and stamped documents: Component Scrap at issued rate, then
+	equivalent-unit Stage Output allocation when Co-Products participate.
+	Submitted historical documents without a contract stamp are left untouched
+	so RIV cannot silently repair or re-cost them.
 	"""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
 		return False
 	if not is_irr_company(doc.company):
 		return False
+
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		allocate_stage_output_cost,
+		snapshot_equivalent_factors_from_sources,
+		stamp_contract_version,
+		uses_v533_contract,
+		validate_job_card_secondary_match,
+	)
+
+	if not uses_v533_contract(doc):
+		return False
+
+	stamp_contract_version(doc)
+	validate_job_card_secondary_match(doc)
+	snapshot_equivalent_factors_from_sources(doc)
 	component_applied = apply_component_scrap_issued_rates(doc)
+	if allocate_stage_output_cost(doc):
+		return True
 	if _has_product_reject(doc):
 		return allocate_scrap_absorbed_cost(doc, method) or component_applied
 	if component_applied:

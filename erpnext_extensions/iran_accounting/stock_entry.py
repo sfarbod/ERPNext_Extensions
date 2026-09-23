@@ -136,14 +136,16 @@ def on_submit_stock_entry(doc, method=None):
 	assert_stock_entry_valuation_integrity(doc)
 	for row in doc.get("items") or []:
 		row.db_update()
-	doc.db_set(
-		{
-			"total_incoming_value": doc.total_incoming_value,
-			"total_outgoing_value": doc.total_outgoing_value,
-			"value_difference": doc.value_difference,
-		},
-		update_modified=False,
-	)
+	header_update = {
+		"total_incoming_value": doc.total_incoming_value,
+		"total_outgoing_value": doc.total_outgoing_value,
+		"value_difference": doc.value_difference,
+	}
+	if doc.get("custom_manufacturing_costing_contract_version"):
+		header_update["custom_manufacturing_costing_contract_version"] = doc.get(
+			"custom_manufacturing_costing_contract_version"
+		)
+	doc.db_set(header_update, update_modified=False)
 	from erpnext_extensions.iran_accounting.domain.stock_entry_ledger_contract import (
 		enforce_stock_entry_ledger_contract,
 	)
@@ -162,27 +164,40 @@ def persist_irr_stock_entry_header_and_rows(doc) -> None:
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
 	for row in doc.get("items") or []:
+		row_update = {
+			"basic_rate": row.basic_rate,
+			"basic_amount": row.get("basic_amount"),
+			"amount": row.amount,
+			"valuation_rate": row.valuation_rate,
+			"additional_cost": row.get("additional_cost"),
+			"landed_cost_voucher_amount": row.get("landed_cost_voucher_amount"),
+		}
+		for field in (
+			"custom_output_class",
+			"custom_output_equivalent_factor",
+			"custom_physical_conversion",
+			"custom_equivalent_qty",
+			"custom_common_uom",
+			"custom_parent_co_product",
+		):
+			if row.get(field) not in (None, ""):
+				row_update[field] = row.get(field)
 		frappe.db.set_value(
 			"Stock Entry Detail",
 			row.name,
-			{
-				"basic_rate": row.basic_rate,
-				"basic_amount": row.get("basic_amount"),
-				"amount": row.amount,
-				"valuation_rate": row.valuation_rate,
-				"additional_cost": row.get("additional_cost"),
-				"landed_cost_voucher_amount": row.get("landed_cost_voucher_amount"),
-			},
+			row_update,
 			update_modified=False,
 		)
-	doc.db_set(
-		{
-			"total_incoming_value": doc.total_incoming_value,
-			"total_outgoing_value": doc.total_outgoing_value,
-			"value_difference": doc.value_difference,
-		},
-		update_modified=False,
-	)
+	header_update = {
+		"total_incoming_value": doc.total_incoming_value,
+		"total_outgoing_value": doc.total_outgoing_value,
+		"value_difference": doc.value_difference,
+	}
+	if doc.get("custom_manufacturing_costing_contract_version"):
+		header_update["custom_manufacturing_costing_contract_version"] = doc.get(
+			"custom_manufacturing_costing_contract_version"
+		)
+	doc.db_set(header_update, update_modified=False)
 
 
 def on_submit_landed_cost_voucher(doc, method=None):
