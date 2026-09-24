@@ -473,7 +473,45 @@ def _classify_sle_mismatch(sle, cache=None) -> dict:
 		valuation_rate=sle.valuation_rate,
 		svd=svd,
 	)
-	current = flt(sle.outgoing_rate if qty < 0 else sle.incoming_rate)
+	column_rate = flt(sle.outgoing_rate if qty < 0 else sle.incoming_rate)
+	vr = flt(sle.valuation_rate)
+	# After leftover-MA / native rebuild, valuation_rate + SVD are correct while the
+	# optional outgoing_rate column may remain 0. That is not Wrong Rate READY.
+	if abs(implied) > RATE_EPS and abs(vr - implied) <= 1:
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		return attach_rate_analysis(
+			{
+				"topic": "WRONG_RATE",
+				"surface": "SLE",
+				"voucher": sle.voucher_no,
+				"voucher_detail": sle.voucher_detail_no,
+				"sle": sle.name,
+				"purpose": sle.purpose,
+				"item": sle.item_code,
+				"warehouse": sle.warehouse,
+				"qty": qty,
+				"current": vr,
+				"expected": implied,
+				"difference": 0.0,
+				"source": "valuation_matches_svd",
+				"source_of_truth": "valuation_matches_svd",
+				"confidence": CONFIDENCE_EXACT,
+				"flags": [],
+				"status": "NO_ACTION_REQUIRED",
+				"eligible": False,
+				"no_action_required": True,
+				"kpi_bucket": "complete",
+				"planner_status": "RATE_REPAIR_COMPLETE",
+				"current_rate": vr,
+				"proposed_rate": implied,
+				"current_valuation_rate": vr,
+				"current_outgoing_rate": flt(sle.outgoing_rate),
+				"message": "SLE valuation_rate already matches SVD; stale outgoing_rate column ignored",
+			},
+			sle,
+		)
+	current = column_rate
 	use_implied = bool(flags) and abs(implied) > RATE_EPS and abs(current) <= RATE_EPS
 	expected = implied if use_implied else current
 	confidence = CONFIDENCE_EXACT if use_implied else (CONFIDENCE_LIKELY if flags else CONFIDENCE_AMBIGUOUS)

@@ -161,8 +161,10 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			source_rate = abs(orate)
 			source_kind = "outgoing_sle_rate"
 		elif abs(oq) > QTY_EPS and abs(svd) <= VALUE_EPS and abs(orate) <= RATE_EPS:
-			# Qty left source with zero economic value — do NOT invent from previous_healthy
-			# and do NOT copy a sibling detail rate.
+			# Qty left source with zero economic value on THIS SLE.
+			# Material Transfer: previous healthy tip at the same s_warehouse is the
+			# ERPNext native rate to restore (lost outgoing rate) — never a sibling detail.
+			# Material Issue / Consumption: refuse invention (may be user zero / other root).
 			out["evidence"]["outgoing_sle"] = {
 				"name": out_sle.name,
 				"warehouse": out_sle.warehouse,
@@ -173,20 +175,26 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 				"stock_value": out_sle.stock_value,
 				"voucher_detail_no": getattr(out_sle, "voucher_detail_no", None),
 			}
-			out["classification"] = WAITING_UPSTREAM
-			out["confidence"] = CONFIDENCE_AMBIGUOUS
-			out["reason"] = (
-				"outgoing qty moved with zero stock_value_difference / zero outgoing_rate "
-				"— refuse sibling/previous_healthy invention; repair this identity upstream first"
-			)
-			out["authoritative_source"] = None
-			out["expected_rate"] = 0.0
-			upstream = _source_upstream_health(item, s_wh, posting_dt, batch=batch, cache=cache)
-			out["upstream_health"] = upstream.get("status") or "unknown"
-			out["dependency_closure"] = list(upstream.get("dependencies") or [])
-			if upstream.get("root_voucher"):
-				out["root_voucher"] = upstream["root_voucher"]
-			return out
+			if purpose not in (
+				"Material Transfer",
+				"Material Transfer for Manufacture",
+				"Send to Subcontractor",
+			):
+				out["classification"] = WAITING_UPSTREAM
+				out["confidence"] = CONFIDENCE_AMBIGUOUS
+				out["reason"] = (
+					"outgoing qty moved with zero stock_value_difference / zero outgoing_rate "
+					"— refuse sibling/previous_healthy invention; repair this identity upstream first"
+				)
+				out["authoritative_source"] = None
+				out["expected_rate"] = 0.0
+				upstream = _source_upstream_health(item, s_wh, posting_dt, batch=batch, cache=cache)
+				out["upstream_health"] = upstream.get("status") or "unknown"
+				out["dependency_closure"] = list(upstream.get("dependencies") or [])
+				if upstream.get("root_voucher"):
+					out["root_voucher"] = upstream["root_voucher"]
+				return out
+			# Transfer-family: fall through to previous_healthy_source_sle below.
 		out["evidence"]["outgoing_sle"] = {
 			"name": out_sle.name,
 			"warehouse": out_sle.warehouse,
@@ -290,6 +298,14 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["confidence"] = CONFIDENCE_EXACT
 		out["classification"] = EXACT
 		out["reason"] = f"target rate {current_rate} ≠ source outgoing_rate {expected}"
+	elif purpose in TRANSFER_PURPOSES and source_kind == "previous_healthy_source_sle":
+		# Lost outgoing rate on transfer: restore from same-warehouse tip before posting.
+		out["confidence"] = CONFIDENCE_EXACT
+		out["classification"] = EXACT
+		out["reason"] = (
+			f"transfer lost outgoing rate; restore from previous healthy source SLE "
+			f"{expected} (not sibling detail)"
+		)
 	elif purpose in TRANSFER_PURPOSES:
 		out["confidence"] = CONFIDENCE_EXACT
 		out["classification"] = RECONSTRUCTABLE
