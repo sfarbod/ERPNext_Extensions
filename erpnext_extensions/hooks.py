@@ -162,6 +162,7 @@ after_migrate = [
 	"erpnext_extensions.cheque_management.pdc_accounting_dimensions.after_migrate",
 	"erpnext_extensions.facility_management.facility_accounting_dimensions.after_migrate",
 	"erpnext_extensions.iran_accounting.integration.bootstrap.apply",
+	"erpnext_extensions.iran_accounting.custom_fields.after_migrate",
 	"erpnext_extensions.extentionhrms.install.after_migrate",
 	"erpnext_extensions.consignment_stock.install.after_migrate",
 	"erpnext_extensions.asset_usage_depreciation.install.after_migrate",
@@ -435,7 +436,11 @@ doc_events = {
 	},
 	"Repost Item Valuation": {
 		"validate": "erpnext_extensions.consignment_stock.material_loan.repost_guards.validate_repost_item_valuation",
-		"on_update_after_submit": "erpnext_extensions.consignment_stock.material_loan.repost_guards.on_repost_completed",
+		"on_update": "erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+		"on_update_after_submit": [
+			"erpnext_extensions.consignment_stock.material_loan.repost_guards.on_repost_completed",
+			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+		],
 	},
 	"Landed Cost Voucher": {
 		"on_submit": "erpnext_extensions.iran_accounting.stock_entry.on_submit_landed_cost_voucher",

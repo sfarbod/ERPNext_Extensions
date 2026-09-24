@@ -902,6 +902,49 @@ def i1_root_cause_api(voucher=None):
 
 
 @frappe.whitelist()
+def scan_leftover_ma_api(company=None, item_code=None, warehouse=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import scan_leftover_ma
+
+	return scan_leftover_ma(company=company or None, item_code=item_code or None, warehouse=warehouse or None)
+
+
+@frappe.whitelist()
+def dry_run_leftover_ma_api(rows=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import repair_leftover_ma_selected
+
+	return repair_leftover_ma_selected(_parse(rows), dry_run=True)
+
+
+@frappe.whitelist()
+def repair_leftover_ma_selected_api(rows=None, dry_run=True):
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import repair_leftover_ma_selected
+
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact leftover-MA rows are required")
+	return repair_leftover_ma_selected(parsed, dry_run=is_dry)
+
+
+@frappe.whitelist()
+def classify_zero_provenance_api(item_code=None, warehouse=None, posting_date=None, posting_time=None):
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.zero_provenance import (
+		classify_zero_provenance,
+		provenance_as_of,
+	)
+
+	if not item_code or not warehouse:
+		frappe.throw("item_code and warehouse are required")
+	if posting_date:
+		return provenance_as_of(item_code, warehouse, posting_date, posting_time)
+	return classify_zero_provenance(item=item_code, warehouse=warehouse)
+
+
+@frappe.whitelist()
 def master_repair_plan_api(company=None):
 	_guard()
 	from erpnext_extensions.iran_accounting.historical_stock.master_plan import build_master_repair_plan

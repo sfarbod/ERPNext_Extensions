@@ -79,7 +79,11 @@ def _mark_stale_if_needed(job: dict) -> dict:
 			age = (get_datetime(now_datetime()) - get_datetime(queued_at)).total_seconds()
 		except Exception:
 			age = 0
-		if age >= 600:
+		# A live worker draining short/default is not a dead long queue. Only
+		# stale when the long queue is idle (no recent dequeue) for 30 minutes.
+		busy = (workers.get("last_dequeue_age_seconds") or 10**9) <= 600
+		queued_ahead = cint(workers.get("queued_jobs") or 0)
+		if age >= 1800 and not busy and queued_ahead == 0:
 			job["status"] = "STALE_JOB"
 			job["phase"] = "stale_queued"
 			job["error"] = f"Job remained QUEUED for {int(age)}s despite workers — check RQ."
@@ -275,6 +279,14 @@ def run_scan_all_job(company=None, scan_job_id=None, user=None, **_kwargs):
 	if not job_id:
 		return
 	job = _load(job_id) or {"job_id": job_id, "company": company, "user": user}
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+			mark_queue_consumed,
+		)
+
+		mark_queue_consumed("long")
+	except Exception:
+		pass
 	job.update(
 		{
 			"status": "RUNNING",
@@ -369,3 +381,15 @@ def run_scan_all_job(company=None, scan_job_id=None, user=None, **_kwargs):
 		if str(active or "") == str(job_id):
 			frappe.cache().delete_value(_active_key(company or "_"))
 	return {"job_id": job_id, "status": job.get("status")}
+
+
+def ping_long_queue(flag: str | None = None):
+	"""Harmless worker consume probe. Never used as a Scan All substitute."""
+	from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import (
+		mark_queue_consumed,
+	)
+
+	mark_queue_consumed("long")
+	if flag:
+		frappe.cache().set_value(str(flag), "done", expires_in_sec=120)
+	return {"ok": True, "flag": flag}

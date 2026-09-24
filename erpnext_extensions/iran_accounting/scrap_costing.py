@@ -55,6 +55,7 @@ identity are all left strictly alone.
 from __future__ import annotations
 
 import frappe
+from frappe import _
 from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.currency import (
@@ -69,6 +70,23 @@ from erpnext_extensions.iran_accounting.rounding import (
 )
 
 SCRAP_ROW_TYPE = "Scrap"
+STAGE_SECONDARY_TYPES = frozenset({"Co-Product", "By-Product", "Additional Finished Good"})
+CLASS_MAIN_FG = "MAIN_FG"
+CLASS_MAIN_PRODUCT_REJECT = "MAIN_PRODUCT_REJECT"
+CLASS_CO_PRODUCT = "CO_PRODUCT"
+CLASS_CO_PRODUCT_REJECT = "CO_PRODUCT_REJECT"
+CLASS_COMPONENT_SCRAP = "COMPONENT_SCRAP"
+CLASS_OTHER_OUTPUT = "OTHER_OUTPUT"
+OUTPUT_CLASSES = (
+	CLASS_MAIN_FG,
+	CLASS_MAIN_PRODUCT_REJECT,
+	CLASS_CO_PRODUCT,
+	CLASS_CO_PRODUCT_REJECT,
+	CLASS_COMPONENT_SCRAP,
+	CLASS_OTHER_OUTPUT,
+)
+ISSUED_RATE_TOLERANCE = 1.0
+MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
 
 
 def _is_incoming(row) -> bool:
@@ -107,6 +125,97 @@ def is_scrap_row(row) -> bool:
 	# Scrap items on this site are independent items carrying the code of the
 	# material they came from (13100018 -> Z13100018).
 	return bool(frappe.db.get_value("Item", item_code, "custom_main_item_code"))
+
+
+def _is_source_only(row) -> bool:
+	return bool(row.get("s_warehouse")) and not row.get("t_warehouse")
+
+
+def _item_main_code(item_code: str | None) -> str | None:
+	if not item_code:
+		return None
+	return frappe.db.get_value("Item", item_code, "custom_main_item_code")
+
+
+def _consumed_item_codes(doc) -> set[str]:
+	codes: set[str] = set()
+	for row in doc.get("items") or []:
+		if not _is_source_only(row):
+			continue
+		item_code = row.get("item_code")
+		if item_code:
+			codes.add(item_code)
+	return codes
+
+
+def _component_family_consumed(doc, row, consumed: set[str]) -> bool:
+	item_code = row.get("item_code")
+	if item_code and item_code in consumed:
+		return True
+	main = _item_main_code(item_code)
+	return bool(main and main in consumed)
+
+
+def _resolved_finished_item(doc, fg_rows) -> str | None:
+	if len(fg_rows) == 1:
+		return fg_rows[0].get("item_code")
+	if doc.get("job_card"):
+		finished = frappe.db.get_value("Job Card", doc.job_card, "finished_good")
+		if finished:
+			return finished
+	if doc.get("work_order"):
+		production = frappe.db.get_value("Work Order", doc.work_order, "production_item")
+		if production:
+			return production
+	return fg_rows[0].get("item_code") if fg_rows else None
+
+
+def classify_manufacture_outputs(doc) -> dict[str, list]:
+	"""Deterministic incoming-row classes. Ambiguous scrap is OTHER_OUTPUT."""
+	classified = {name: [] for name in OUTPUT_CLASSES}
+	rows = doc.get("items") or []
+	fg_rows = [row for row in rows if row.get("is_finished_item") and _is_incoming(row)]
+	finished_item = _resolved_finished_item(doc, fg_rows)
+	for row in fg_rows:
+		classified[CLASS_MAIN_FG].append(row)
+
+	consumed = _consumed_item_codes(doc)
+	co_items: set[str] = set()
+	for row in rows:
+		if row in fg_rows or not _is_incoming(row):
+			continue
+		if secondary_item_type_of(row) in STAGE_SECONDARY_TYPES:
+			classified[CLASS_CO_PRODUCT].append(row)
+			if row.get("item_code"):
+				co_items.add(row.get("item_code"))
+
+	for row in rows:
+		if row in fg_rows or not _is_incoming(row):
+			continue
+		if row in classified[CLASS_CO_PRODUCT]:
+			continue
+		if not is_scrap_row(row):
+			classified[CLASS_OTHER_OUTPUT].append(row)
+			continue
+		item_code = row.get("item_code")
+		main = _item_main_code(item_code)
+		if is_product_reject(row, finished_item):
+			classified[CLASS_MAIN_PRODUCT_REJECT].append(row)
+		elif item_code in co_items or (main and main in co_items):
+			classified[CLASS_CO_PRODUCT_REJECT].append(row)
+		elif _component_family_consumed(doc, row, consumed):
+			classified[CLASS_COMPONENT_SCRAP].append(row)
+		else:
+			classified[CLASS_OTHER_OUTPUT].append(row)
+	return classified
+
+
+def _row_label(row) -> str:
+	idx = row.get("idx")
+	item = row.get("item_code") or _("(no item)")
+	if idx:
+		return _("Row #{0} {1}").format(idx, item)
+	return str(item)
 
 
 def permit_scrap_zero_valuation(doc, method=None) -> None:
@@ -220,40 +329,112 @@ def is_product_reject(row, finished_item: str | None) -> bool:
 	return frappe.db.get_value("Item", item_code, "custom_main_item_code") == finished_item
 
 
-def _issued_rate(doc, item_code: str) -> float:
+def _consume_rows_for_item(doc, item_code: str) -> list:
+	rows = []
+	if not item_code:
+		return rows
+	for row in doc.get("items") or []:
+		if not _is_source_only(row):
+			continue
+		if row.get("item_code") != item_code:
+			continue
+		rows.append(row)
+	return rows
+
+
+def _weighted_issued_rate(rows) -> float:
+	qty = 0.0
+	amount = 0.0
+	for row in rows:
+		qty += _row_qty(row)
+		amount += flt(row.get("basic_amount"))
+	return (amount / qty) if qty > 0 else 0.0
+
+
+def _issued_rate(doc, item_code: str, batch_no: str | None = None) -> float:
 	"""The rate this material left WIP at on this very document.
 
 	A rejected component is the same material coming back out, so it carries
 	the value it was issued at. Nothing is invented: if the document does not
 	consume that item, no rate is returned and ERPNext's own figure stands.
+
+	When ``batch_no`` matches consume rows, that batch's weighted rate wins.
+	Otherwise the item-family weighted average is used.
 	"""
-	qty = 0.0
-	amount = 0.0
-	for row in doc.get("items") or []:
-		if not row.get("s_warehouse") or row.get("t_warehouse"):
-			continue
-		if row.get("item_code") != item_code:
-			continue
-		value = row.get("transfer_qty")
-		if value in (None, ""):
-			value = row.get("qty")
-		qty += flt(value)
-		amount += flt(row.get("basic_amount"))
-	return (amount / qty) if qty > 0 else 0.0
+	rows = _consume_rows_for_item(doc, item_code)
+	if batch_no:
+		matched = [row for row in rows if row.get("batch_no") == batch_no]
+		if matched:
+			rate = _weighted_issued_rate(matched)
+			if rate > 0:
+				return rate
+	return _weighted_issued_rate(rows)
 
 
 def _issued_rate_for_component(doc, row) -> float:
 	"""Issued rate for component scrap, including Z-code → main item fallback."""
 	item_code = row.get("item_code")
-	rate = _issued_rate(doc, item_code)
+	batch_no = row.get("batch_no")
+	rate = _issued_rate(doc, item_code, batch_no)
 	if rate > 0:
 		return rate
 	if not item_code:
 		return 0.0
-	main = frappe.db.get_value("Item", item_code, "custom_main_item_code")
+	main = _item_main_code(item_code)
 	if main and main != item_code:
-		return _issued_rate(doc, main)
+		return _issued_rate(doc, main, batch_no)
 	return 0.0
+
+
+def apply_component_scrap_issued_rates(doc) -> bool:
+	"""Price every COMPONENT_SCRAP row at this voucher's issued rate.
+
+	Target-warehouse / stale batch valuation is ignored. Unmatched scrap
+	does not invent a rate — it fails closed.
+	"""
+	classified = classify_manufacture_outputs(doc)
+	currency = get_company_currency(doc.company)
+	applied = False
+	for row in classified[CLASS_COMPONENT_SCRAP]:
+		rate = _issued_rate_for_component(doc, row)
+		if rate <= 0:
+			frappe.throw(
+				_(
+					"Component Scrap {0} has no matching consumed material on this Manufacture. "
+					"The scrap rate must follow the issued/consumption rate of the same item "
+					"on this voucher; destination warehouse valuation is not used."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		_apply(row, round_monetary_rate(rate, currency), currency)
+		applied = True
+	for row in classified[CLASS_OTHER_OUTPUT]:
+		if not is_scrap_row(row):
+			continue
+		frappe.throw(
+			_(
+				"Scrap {0} cannot be classified as Component Scrap, Main Product Reject, "
+				"or Co-Product Reject. Add a matching consumed row or correct the secondary type."
+			).format(_row_label(row)),
+			frappe.ValidationError,
+		)
+	return applied
+
+
+def _component_scrap_matches_issued_rate(doc, currency: str | None = None) -> bool:
+	"""False when any Component Scrap rate differs from the issued rate."""
+	currency = currency or get_company_currency(doc.company)
+	classified = classify_manufacture_outputs(doc)
+	for row in classified[CLASS_COMPONENT_SCRAP]:
+		expected = _issued_rate_for_component(doc, row)
+		if expected <= 0:
+			return False
+		expected = round_monetary_rate(expected, currency)
+		if abs(flt(row.get("basic_rate")) - expected) > ISSUED_RATE_TOLERANCE:
+			return False
+		if not flt(row.get("basic_rate")):
+			return False
+	return True
 
 
 def _restore_finished_good_as_residual(doc, fg_row) -> bool:
@@ -449,11 +630,11 @@ def _has_product_reject(doc) -> bool:
 
 
 def _erpnext_manufacture_state_is_valid(doc) -> bool:
-	"""True when ERPNext numbers already satisfy FG ≥ 0 and the output pool.
+	"""True when ERPNext numbers already satisfy FG ≥ 0, the output pool,
+	and Component Scrap already matches this voucher's issued rate.
 
-	Used so healthy documents (25720-class warehouse/batch scrap) are not
-	rewritten to issued-rate scrap on RIV. Poisoned warehouse scrap that makes
-	FG negative still runs issued-rate + residual restore.
+	Zero or stale destination-warehouse scrap is never healthy merely because
+	the finished good is non-negative.
 	"""
 	rows = doc.get("items") or []
 	fg_rows = [row for row in rows if row.get("is_finished_item") and row.get("t_warehouse")]
@@ -463,6 +644,8 @@ def _erpnext_manufacture_state_is_valid(doc) -> bool:
 	if flt(fg.get("amount")) < 0 or flt(fg.get("valuation_rate")) < 0:
 		return False
 	if any(flt(row.get("amount")) < 0 for row in rows if _is_incoming(row)):
+		return False
+	if not _component_scrap_matches_issued_rate(doc):
 		return False
 	outgoing = sum(flt(row.get("amount")) for row in rows if row.get("s_warehouse"))
 	other_incoming = sum(
@@ -481,17 +664,44 @@ def _erpnext_manufacture_state_is_valid(doc) -> bool:
 def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	"""Canonical Iran Manufacture output contract (submit and RIV).
 
-	Product reject always splits the remaining pool. Component scrap is priced
-	at this voucher's issued rate when ERPNext warehouse/batch valuation would
-	make FG negative or exceed the pool. Independent by-product keeps ERPNext
-	valuation only when the finished good remains non-negative (I5 fails closed).
+	v5.3.3 drafts and stamped documents: Component Scrap at issued rate, then
+	equivalent-unit Stage Output allocation when Co-Products participate.
+	Submitted historical documents without a contract stamp are left untouched
+	so RIV cannot silently repair or re-cost them.
 	"""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
 		return False
 	if not is_irr_company(doc.company):
 		return False
+
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		allocate_stage_output_cost,
+		snapshot_equivalent_factors_from_sources,
+		stamp_contract_version,
+		uses_v533_contract,
+		validate_job_card_secondary_match,
+	)
+
+	if not uses_v533_contract(doc):
+		return False
+
+	stamp_contract_version(doc)
+	validate_job_card_secondary_match(doc)
+	snapshot_equivalent_factors_from_sources(doc)
+	component_applied = apply_component_scrap_issued_rates(doc)
+	if allocate_stage_output_cost(doc):
+		return True
 	if _has_product_reject(doc):
-		return allocate_scrap_absorbed_cost(doc, method)
+		return allocate_scrap_absorbed_cost(doc, method) or component_applied
+	if component_applied:
+		good_rows = [
+			row
+			for row in (doc.get("items") or [])
+			if row.get("is_finished_item") and row.get("t_warehouse")
+		]
+		if len(good_rows) == 1:
+			_restore_finished_good_as_residual(doc, good_rows[0])
+		return True
 	if _erpnext_manufacture_state_is_valid(doc):
 		return False
 	return allocate_scrap_absorbed_cost(doc, method)

@@ -27,6 +27,9 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	I1_REPAIRED,
 	I1_WAITING,
 	I4_LEFTOVER_REPAIR,
+	LEFTOVER_MA_READY,
+	LEFTOVER_MA_REPAIR,
+	TOPIC_LEFTOVER_MA,
 	I4_READY,
 	I4_REPAIRED,
 	I4_REPLAY_REQUIRED,
@@ -73,6 +76,7 @@ PLAN_READY_IDENTITY = "READY_IDENTITY_REPAIR"
 PLAN_WAREHOUSE_ESCALATION = "WAREHOUSE_ESCALATION_REQUIRED"
 PLAN_INVALID_GRAPH = "INVALID_DEPENDENCY_GRAPH"
 PLAN_READY_I4 = I4_READY
+PLAN_READY_LEFTOVER_MA = LEFTOVER_MA_READY
 PLAN_WAITING_I4 = I4_WAITING
 PLAN_I4_REPLAY_REQUIRED = I4_REPLAY_REQUIRED
 PLAN_I4_REPAIRED = I4_REPAIRED
@@ -116,6 +120,7 @@ PLAN_STATUSES = (
 	PLAN_WAREHOUSE_ESCALATION,
 	PLAN_INVALID_GRAPH,
 	PLAN_READY_I4,
+	PLAN_READY_LEFTOVER_MA,
 	PLAN_WAITING_I4,
 	PLAN_I4_REPLAY_REQUIRED,
 	PLAN_I4_REPAIRED,
@@ -143,6 +148,7 @@ READY_STATUSES = (
 	PLAN_READY_WO,
 	PLAN_READY_IDENTITY,
 	PLAN_READY_I4,
+	PLAN_READY_LEFTOVER_MA,
 	PLAN_READY_I1,
 	PLAN_READY_WRONG_RATE,
 	READY_GL_ONLY,
@@ -195,6 +201,8 @@ def evaluate_row(row: dict | None, *, cache: dict | None = None) -> dict:
 		return _evaluate_i1(row, decision, patient)
 	if topic in (TOPIC_I4, "I4_LEFTOVER") or row.get("repair_class") == I4_LEFTOVER_REPAIR:
 		return _evaluate_i4(row, decision, patient)
+	if topic in (TOPIC_LEFTOVER_MA, "LEFTOVER_MA") or row.get("repair_class") == LEFTOVER_MA_REPAIR:
+		return _evaluate_leftover_ma(row, decision, patient)
 	if topic == "SLE_BIN":
 		return _evaluate_sle_bin(row, decision, patient)
 	if topic in ("MANUFACTURE",):
@@ -1646,3 +1654,29 @@ def _gl_row_count(voucher) -> int:
 		)
 	except Exception:
 		return 0
+
+
+def _evaluate_leftover_ma(row, decision, patient) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock import (
+		LEFTOVER_MA_FAILED_POSTCONDITION,
+		LEFTOVER_MA_MANUAL,
+		LEFTOVER_MA_REPAIRED,
+	)
+
+	status = str(row.get("leftover_ma_status") or row.get("status") or "")
+	sql = cint(row.get("sql_updates") or 0)
+	if status in ("NO_ACTION", LEFTOVER_MA_REPAIRED):
+		return _not_ready(decision, PLAN_NO_REPAIR_PATH, status, patient=patient)
+	if status == LEFTOVER_MA_FAILED_POSTCONDITION:
+		return _not_ready(decision, PLAN_MANUAL, row.get("reason") or "FAILED_POSTCONDITION", patient=patient)
+	if status == LEFTOVER_MA_MANUAL or row.get("confidence") == CONFIDENCE_AMBIGUOUS:
+		return _not_ready(decision, PLAN_MANUAL, row.get("reason") or "MANUAL leftover-MA", patient=patient)
+	if status == LEFTOVER_MA_READY and sql > 0 and row.get("confidence") == CONFIDENCE_EXACT:
+		return _ready(
+			decision,
+			sql=sql,
+			replay=cint(row.get("replay_count") or 1),
+			reason=row.get("reason") or "READY_LEFTOVER_MA",
+			planner_status=PLAN_READY_LEFTOVER_MA,
+		)
+	return _not_ready(decision, PLAN_MANUAL, row.get("reason") or "leftover-MA not READY", patient=patient)

@@ -402,6 +402,10 @@ class TestRecalculateWrapperNoPersist(unittest.TestCase):
 		)
 		engine = mock.Mock()
 		engine.company = "اسپاد فارمد دارو"
+		# A bare Mock invents repost_doc.item_code and would treat FG as
+		# out-of-scope, swallowing the I2 throw. Declare the target explicitly.
+		engine.repost_doc = None
+		engine.args = None
 		with (
 			mock.patch(
 				"erpnext_extensions.iran_accounting.domain.riv_valuation_guard.is_irr_company",

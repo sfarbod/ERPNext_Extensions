@@ -300,7 +300,31 @@ def voucher_ledger_snapshot(voucher_type: str, voucher_no: str):
 	return fetch_gl_rows(voucher_type, voucher_no), fetch_sle_rows(voucher_type, voucher_no)
 
 
+def ensure_company_fiscal_years(company: str) -> None:
+	"""Link ``company`` to every enabled Fiscal Year so integration posts can run.
+
+	ERPNext treats a Fiscal Year with any ``Fiscal Year Company`` child as exclusive
+	to those companies. Isolated test companies (e.g. ``_AUD Replan Company``)
+	must not hide FY 1404/1405 from the IRR operating company.
+	"""
+	if not company:
+		return
+	years = frappe.get_all("Fiscal Year", filters={"disabled": 0}, pluck="name")
+	changed = False
+	for year in years:
+		exists = frappe.db.exists("Fiscal Year Company", {"parent": year, "company": company})
+		if exists:
+			continue
+		fy = frappe.get_doc("Fiscal Year", year)
+		fy.append("companies", {"company": company})
+		fy.save(ignore_permissions=True)
+		changed = True
+	if changed:
+		frappe.cache().hdel("fiscal_years", company)
+
+
 def enable_perpetual_inventory(company: str) -> None:
+	ensure_company_fiscal_years(company)
 	if not cint(erpnext.is_perpetual_inventory_enabled(company)):
 		frappe.db.set_value("Company", company, "enable_perpetual_inventory", 1)
 
