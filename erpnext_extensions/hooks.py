@@ -436,7 +436,11 @@ doc_events = {
 	},
 	"Repost Item Valuation": {
 		"validate": "erpnext_extensions.consignment_stock.material_loan.repost_guards.validate_repost_item_valuation",
-		"on_update_after_submit": "erpnext_extensions.consignment_stock.material_loan.repost_guards.on_repost_completed",
+		"on_update": "erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+		"on_update_after_submit": [
+			"erpnext_extensions.consignment_stock.material_loan.repost_guards.on_repost_completed",
+			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+		],
 	},
 	"Landed Cost Voucher": {
 		"on_submit": "erpnext_extensions.iran_accounting.stock_entry.on_submit_landed_cost_voucher",

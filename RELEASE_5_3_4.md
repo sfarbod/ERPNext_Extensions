@@ -164,7 +164,9 @@ Mismatch is `FAILED_POSTCONDITION: REPORT_LEDGER_MISMATCH`. A failed official
 RIV is `FAILED_RIV`. Matching Completed Stock Ledger Prepared Reports are
 deleted after a successful persist so Desk cannot serve a pre-repair snapshot.
 
-Historical Repair Scan All requires a live RQ worker. Dead registrations
-(empty queues + stale heartbeat) are ignored. A `bench worker` whose RQ
-object has empty `queues` but a fresh heartbeat counts as listening to the
-Procfile `short` / `default` / `long` queues.
+Historical Repair Scan All requires a worker that can consume the `long`
+queue. Dead registrations (empty queues, state `?`, stale heartbeat) are
+ignored. A heartbeat alone is not treated as a listener. Availability is
+true only when an RQ worker is subscribed to `long` with a live state, or
+when a job was recently dequeued from that queue. `WORKER_UNAVAILABLE`
+must stay visible if the queue cannot consume jobs.

@@ -60,10 +60,11 @@ def _queue_name_matches(qname: str, queue: str) -> bool:
 	return qname.endswith(f":{queue}")
 
 
-# RQ 2 / bench worker often registers with an empty ``queues`` list. A fresh
-# heartbeat still means the process is dequeuing the Procfile queues.
-_WORKER_HEARTBEAT_FRESH_SECONDS = 180
-_DEFAULT_BENCH_QUEUES = ("short", "default", "long")
+# RQ worker TTL is typically several minutes. 10 minutes still rejects Sep-old ghosts.
+_WORKER_HEARTBEAT_FRESH_SECONDS = 600
+_LAST_DEQUEUE_FRESH_SECONDS = 600
+_LAST_DEQUEUE_PREFIX = "hr_worker_last_dequeue:"
+_DEAD_STATES = {"?", "suspended", "busy expired"}
 
 
 def _worker_queue_names(worker) -> list[str]:
@@ -101,15 +102,60 @@ def _worker_heartbeat_fresh(worker) -> bool:
 		return False
 
 
+def mark_queue_consumed(queue: str = "long") -> None:
+	"""Record that a real worker just dequeued ``queue`` (Scan All / ping)."""
+	try:
+		frappe.cache().set_value(
+			f"{_LAST_DEQUEUE_PREFIX}{queue}",
+			str(now_datetime()),
+			expires_in_sec=3600,
+		)
+	except Exception:
+		pass
+
+
+def last_dequeue_age_seconds(queue: str = "long") -> float | None:
+	try:
+		raw = frappe.cache().get_value(f"{_LAST_DEQUEUE_PREFIX}{queue}")
+	except Exception:
+		return None
+	if not raw:
+		return None
+	try:
+		return (get_datetime(now_datetime()) - get_datetime(raw)).total_seconds()
+	except Exception:
+		return None
+
+
+def _recent_dequeue(queue: str) -> bool:
+	age = last_dequeue_age_seconds(queue)
+	return age is not None and 0 <= age <= _LAST_DEQUEUE_FRESH_SECONDS
+
+
+def _worker_listens(worker, queue: str) -> bool:
+	"""A consumable listener has a real queue subscription, a live state, and a heartbeat."""
+	state = ""
+	try:
+		state = str(worker.get_state() or "")
+	except Exception:
+		state = ""
+	if state.lower() in _DEAD_STATES:
+		return False
+	if not _worker_heartbeat_fresh(worker):
+		return False
+	qnames = _worker_queue_names(worker)
+	if not qnames:
+		# Empty subscription list is a dead/ghost RQ registration. Do not infer
+		# short/default/long from a heartbeat alone — jobs then stay Queued.
+		return False
+	return any(_queue_name_matches(qn, queue) for qn in qnames)
+
+
 def worker_queue_status(queue: str = "long") -> dict:
-	"""Detect whether an RQ worker is listening for ``queue``.
+	"""Detect whether an RQ worker can consume ``queue``.
 
-	During controlled campaigns workers/scheduler are often paused. The UI must
-	surface WORKER_UNAVAILABLE instead of QUEUED 0% forever.
-
-	A dead RQ registration (empty queues + stale heartbeat) is not a listener.
-	A live ``bench worker`` whose RQ object has empty ``queues`` but a fresh
-	heartbeat is treated as listening to the Procfile queues.
+	Registration with empty queues, state ``?``, or a stale heartbeat is
+	WORKER_UNAVAILABLE. A heartbeat alone is not proof of consumption.
 	"""
 	out = {
 		"queue": queue,
@@ -118,6 +164,7 @@ def worker_queue_status(queue: str = "long") -> dict:
 		"available": False,
 		"queued_jobs": 0,
 		"worker_names": [],
+		"last_dequeue_age_seconds": None,
 		"message": "",
 	}
 	try:
@@ -129,20 +176,13 @@ def worker_queue_status(queue: str = "long") -> dict:
 		out["workers_total"] = len(workers)
 		matched_qnames = set()
 		for w in workers:
-			qnames = _worker_queue_names(w)
-			fresh = _worker_heartbeat_fresh(w)
-			# Empty queue list + stale/missing heartbeat = dead registration.
-			if not qnames and not fresh:
+			if not _worker_listens(w, queue):
 				continue
-			if not qnames and fresh:
-				qnames = list(_DEFAULT_BENCH_QUEUES)
-			for qn in qnames:
+			out["workers_for_queue"] += 1
+			out["worker_names"].append(w.name)
+			for qn in _worker_queue_names(w):
 				if _queue_name_matches(qn, queue):
-					out["workers_for_queue"] += 1
-					out["worker_names"].append(w.name)
 					matched_qnames.add(qn)
-					break
-		# Count jobs on bare + any matched prefixed queue name.
 		queued = 0
 		seen = set()
 		for qn in [queue, *sorted(matched_qnames)]:
@@ -154,14 +194,19 @@ def worker_queue_status(queue: str = "long") -> dict:
 			except Exception:
 				pass
 		out["queued_jobs"] = queued
-		out["available"] = out["workers_for_queue"] > 0
+		out["last_dequeue_age_seconds"] = last_dequeue_age_seconds(queue)
+		# Subscription is required. A recent successful dequeue is independent
+		# proof the queue is consumable (RQ 2 may hide queue names).
+		out["available"] = out["workers_for_queue"] > 0 or _recent_dequeue(queue)
 		if not out["available"]:
 			out["message"] = (
 				"Background workers are paused or not listening to the long queue. "
 				"Start workers or use a supported foreground/read-only summary refresh."
 			)
-		else:
+		elif out["workers_for_queue"] > 0:
 			out["message"] = f"{out['workers_for_queue']} worker(s) listening on '{queue}'"
+		else:
+			out["message"] = f"long queue recently consumed (last dequeue {int(out['last_dequeue_age_seconds'] or 0)}s ago)"
 	except Exception as exc:
 		out["message"] = f"Worker probe failed: {exc}"
 		out["available"] = False

@@ -10,6 +10,7 @@ Opening-state / incomplete chains stay MANUAL.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from time import perf_counter
 
@@ -328,6 +329,110 @@ def stamp_patient_zero_valuation_rate(item, warehouse, root_voucher) -> dict:
 	return {"ok": True, "stamped": True, "valuation_rate": expected, "previous": vr}
 
 
+def find_leftover_ma_patient_zeros(item, warehouse) -> list:
+	"""Zero inbound + leftover value + zero Avg Rate — the RIV poison pattern."""
+	if not item or not warehouse:
+		return []
+	return frappe.db.sql(
+		"""
+		SELECT name, voucher_no, qty_after_transaction, stock_value, valuation_rate,
+		       incoming_rate, stock_value_difference, actual_qty
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND IFNULL(is_cancelled,0)=0
+		  AND actual_qty > 0
+		  AND ABS(IFNULL(incoming_rate,0)) <= %s
+		  AND ABS(IFNULL(stock_value_difference,0)) <= 1
+		  AND qty_after_transaction > %s
+		  AND stock_value > 1
+		  AND ABS(IFNULL(valuation_rate,0)) <= 1
+		""",
+		(item, warehouse, RATE_EPS, QTY_EPS),
+		as_dict=True,
+	)
+
+
+def replay_downstream_after_patient_zero(item, warehouse, root_voucher) -> dict:
+	"""Replay from the first SLE after the stamped leftover inbound.
+
+	``update_entries_after`` inclusive of the patient-zero can rewrite
+	``valuation_rate`` back to 0. Downstream-only replay uses the stamped
+	row as previous SLE so outgoing consumes leftover MA.
+	"""
+	root = frappe.db.get_value(
+		"Stock Ledger Entry",
+		{"voucher_no": root_voucher, "item_code": item, "warehouse": warehouse, "is_cancelled": 0},
+		["name", "posting_date", "posting_time", "posting_datetime"],
+		as_dict=True,
+	)
+	if not root:
+		return {"ok": False, "replayed": False, "reason": "root SLE missing"}
+	nxt = frappe.db.sql(
+		"""
+		SELECT name, posting_date, posting_time, voucher_no
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND IFNULL(is_cancelled,0)=0
+		  AND name != %s
+		  AND posting_datetime > %s
+		ORDER BY posting_datetime, creation
+		LIMIT 1
+		""",
+		(item, warehouse, root.name, root.posting_datetime or f"{root.posting_date} {root.posting_time}"),
+		as_dict=True,
+	)
+	if not nxt:
+		return {"ok": True, "replayed": False}
+	row = nxt[0]
+	posting_time = row.posting_time
+	if hasattr(posting_time, "total_seconds"):
+		secs = int(posting_time.total_seconds())
+		posting_time = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
+	from erpnext.stock.stock_ledger import update_entries_after
+
+	update_entries_after(
+		{
+			"item_code": item,
+			"warehouse": warehouse,
+			"posting_date": str(row.posting_date),
+			"posting_time": str(posting_time),
+		},
+		allow_zero_rate=True,
+		allow_negative_stock=False,
+	)
+	return {"ok": True, "replayed": True, "from_voucher": row.voucher_no, "from_sle": row.name}
+
+
+def restore_leftover_ma_after_riv(item=None, warehouse=None) -> dict:
+	"""Re-stamp leftover MA after a vanilla RIV that zeroed patient-zero VR."""
+	stamped = []
+	for row in find_leftover_ma_patient_zeros(item, warehouse):
+		r = stamp_patient_zero_valuation_rate(item, warehouse, row.voucher_no)
+		if not r.get("stamped"):
+			continue
+		stamped.append(row.voucher_no)
+		replay_downstream_after_patient_zero(item, warehouse, row.voucher_no)
+		stamp_patient_zero_valuation_rate(item, warehouse, row.voucher_no)
+	if stamped:
+		invalidate_stock_ledger_prepared_reports(item)
+	return {"ok": True, "stamped": len(stamped), "vouchers": stamped}
+
+
+def on_repost_item_valuation_update(doc, method=None):
+	"""Hook: after official RIV completes, leftover-MA must survive."""
+	if str(getattr(doc, "status", "") or "") != "Completed":
+		return
+	if frappe.flags.get("leftover_ma_riv_hook"):
+		return
+	item = getattr(doc, "item_code", None)
+	warehouse = getattr(doc, "warehouse", None)
+	if not item or not warehouse:
+		return
+	frappe.flags.leftover_ma_riv_hook = True
+	try:
+		restore_leftover_ma_after_riv(item, warehouse)
+	finally:
+		frappe.flags.leftover_ma_riv_hook = False
+
+
 def leftover_ma_desk_postcondition(
 	item,
 	warehouse,
@@ -432,13 +537,18 @@ def _stock_ledger_filters(item, warehouse) -> dict:
 	}
 
 
-def invalidate_stock_ledger_prepared_reports(item) -> int:
-	"""Delete Completed Stock Ledger snapshots that still pin this item."""
+def invalidate_stock_ledger_prepared_reports(item, company=None) -> int:
+	"""Delete Stock Ledger snapshots Desk can still serve for this item.
+
+	Item-specific and company-wide (empty item_code) Completed/Started rows
+	are both removed so a fresh Generate cannot reuse a pre-repair file.
+	"""
 	if not item:
 		return 0
 	rows = frappe.db.sql(
-		"""SELECT name FROM `tabPrepared Report`
-		   WHERE report_name='Stock Ledger' AND status='Completed'
+		"""SELECT name, filters FROM `tabPrepared Report`
+		   WHERE report_name='Stock Ledger'
+		     AND status IN ('Completed','Started','Error','Queued')
 		     AND filters LIKE %s""",
 		(f"%{item}%",),
 		as_dict=True,
@@ -446,7 +556,13 @@ def invalidate_stock_ledger_prepared_reports(item) -> int:
 	deleted = 0
 	for row in rows:
 		try:
-			frappe.delete_doc("Prepared Report", row.name, ignore_permissions=True, force=True, delete_permanently=True)
+			frappe.delete_doc(
+				"Prepared Report",
+				row.name,
+				ignore_permissions=True,
+				force=True,
+				delete_permanently=True,
+			)
 			deleted += 1
 		except Exception:
 			continue
@@ -931,7 +1047,10 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 				"persist": persist,
 				"riv": riv,
 			}
-		# RIV can rewrite patient-zero valuation_rate back to 0. Re-stamp.
+		# RIV can rewrite patient-zero valuation_rate back to 0. Re-stamp
+		# and replay only the later issues so outgoing uses leftover MA.
+		stamp_patient_zero_valuation_rate(item, warehouse, root_voucher)
+		replay_downstream_after_patient_zero(item, warehouse, root_voucher)
 		stamp_patient_zero_valuation_rate(item, warehouse, root_voucher)
 
 	pc = _pc()

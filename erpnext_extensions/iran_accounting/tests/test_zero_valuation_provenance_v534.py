@@ -456,6 +456,8 @@ class TestLedgerPostcondition(unittest.TestCase):
 
 class TestWorkerQueueDetection(unittest.TestCase):
 	def test_empty_queue_registration_is_unavailable(self):
+		from datetime import datetime
+
 		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import worker_queue_status
 
 		class _Dead:
@@ -463,14 +465,20 @@ class TestWorkerQueueDetection(unittest.TestCase):
 			queues = []
 			last_heartbeat = None
 
+			def get_state(self):
+				return "?"
+
 		class _Live:
 			name = "live"
-			last_heartbeat = None
+			last_heartbeat = datetime.now()
 
 			class _Q:
 				name = "workspace-development-frappe-bench:long"
 
 			queues = [_Q()]
+
+			def get_state(self):
+				return "idle"
 
 		with patch(
 			"frappe.utils.background_jobs.get_redis_conn",
@@ -481,6 +489,9 @@ class TestWorkerQueueDetection(unittest.TestCase):
 		), patch(
 			"rq.Queue",
 			side_effect=lambda *a, **k: [],
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot._recent_dequeue",
+			return_value=False,
 		):
 			dead = worker_queue_status("long")
 		self.assertFalse(dead["available"])
@@ -495,12 +506,15 @@ class TestWorkerQueueDetection(unittest.TestCase):
 		), patch(
 			"rq.Queue",
 			side_effect=lambda *a, **k: [],
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot._recent_dequeue",
+			return_value=False,
 		):
 			live = worker_queue_status("long")
 		self.assertTrue(live["available"])
 		self.assertEqual(live["workers_for_queue"], 1)
 
-	def test_fresh_heartbeat_empty_queues_is_live(self):
+	def test_fresh_heartbeat_empty_queues_is_unavailable(self):
 		from datetime import datetime
 
 		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import worker_queue_status
@@ -510,10 +524,16 @@ class TestWorkerQueueDetection(unittest.TestCase):
 			queues = []
 			last_heartbeat = datetime.now()
 
+			def get_state(self):
+				return "idle"
+
 		class _StaleEmpty:
 			name = "ghost"
 			queues = []
 			last_heartbeat = datetime(2026, 9, 6, 12, 30, 23)
+
+			def get_state(self):
+				return "?"
 
 		with patch(
 			"frappe.utils.background_jobs.get_redis_conn",
@@ -524,9 +544,12 @@ class TestWorkerQueueDetection(unittest.TestCase):
 		), patch(
 			"rq.Queue",
 			side_effect=lambda *a, **k: [],
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot._recent_dequeue",
+			return_value=False,
 		):
 			live = worker_queue_status("long")
-		self.assertTrue(live["available"])
+		self.assertFalse(live["available"])
 
 		with patch(
 			"frappe.utils.background_jobs.get_redis_conn",
@@ -537,6 +560,38 @@ class TestWorkerQueueDetection(unittest.TestCase):
 		), patch(
 			"rq.Queue",
 			side_effect=lambda *a, **k: [],
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot._recent_dequeue",
+			return_value=False,
 		):
 			stale = worker_queue_status("long")
 		self.assertFalse(stale["available"])
+
+
+class TestLeftoverMaRivHook(unittest.TestCase):
+	def test_hook_ignores_non_completed_riv(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+			on_repost_item_valuation_update,
+		)
+
+		doc = SimpleNamespace(status="Queued", item_code="16100066", warehouse="WH")
+		# Must not query / stamp when RIV is still queued.
+		on_repost_item_valuation_update(doc)
+
+	def test_stamp_refuses_valued_inbound(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+			stamp_patient_zero_valuation_rate,
+		)
+
+		row = SimpleNamespace(
+			name="sle",
+			qty_after_transaction=529,
+			stock_value=2647827252,
+			valuation_rate=0,
+			incoming_rate=100,
+			stock_value_difference=700,
+		)
+		with patch("frappe.db.get_value", return_value=row):
+			out = stamp_patient_zero_valuation_rate("I", "W", "V")
+		self.assertFalse(out["ok"])
+		self.assertFalse(out["stamped"])
