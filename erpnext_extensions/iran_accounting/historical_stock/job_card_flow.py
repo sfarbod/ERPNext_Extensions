@@ -275,4 +275,62 @@ def scan_job_card_flow(company=None, job_card=None, limit=500) -> dict:
 		"broken": by[JC_BROKEN],
 		"manual": by[JC_MANUAL],
 		"rows": rows,
+		"reason_groups": group_job_card_reasons(rows),
 	}
+
+
+def group_job_card_reasons(rows: list[dict]) -> dict:
+	"""Recurring patterns for BROKEN / MANUAL — no per-card manual review first."""
+	groups = defaultdict(lambda: {"count": 0, "examples": []})
+	for row in rows or []:
+		status = row.get("status")
+		if status not in (JC_BROKEN, JC_MANUAL):
+			continue
+		key = _job_card_reason_key(row)
+		g = groups[key]
+		g["count"] += 1
+		if len(g["examples"]) < 5:
+			g["examples"].append(
+				{
+					"job_card": row.get("job_card"),
+					"status": status,
+					"job_card_status": row.get("job_card_status"),
+					"transferred": row.get("transferred"),
+					"returned": row.get("returned"),
+					"consumed": row.get("consumed"),
+					"scrap": row.get("scrap"),
+					"remaining": row.get("remaining"),
+					"residual": row.get("residual"),
+				}
+			)
+	return dict(sorted(groups.items(), key=lambda kv: -kv[1]["count"]))
+
+
+def _job_card_reason_key(row: dict) -> str:
+	if not row.get("linked"):
+		return "missing_or_ambiguous_job_card_link"
+	reason = str(row.get("reason") or "")
+	if reason == "completed imbalance":
+		res = flt(row.get("residual"))
+		if res > 0:
+			return "completed_qty_residual_positive"
+		if res < 0:
+			return "completed_qty_residual_negative"
+		return "completed_imbalance"
+	if "open" in reason.lower() and "consumed more" in reason.lower():
+		return "open_over_consumption"
+	if "open remainder" in reason.lower():
+		return "open_paykar_remainder_mismatch"
+	if not flt(row.get("transferred")) and (
+		flt(row.get("consumed")) or flt(row.get("returned")) or flt(row.get("scrap"))
+	):
+		return "consume_without_transfer"
+	if flt(row.get("transferred")) and not (
+		flt(row.get("returned")) or flt(row.get("consumed")) or flt(row.get("scrap"))
+	):
+		if row.get("completed"):
+			return "transfer_without_consumption_completed"
+		return "transfer_only_open_no_paykar_bin"
+	if not row.get("vouchers"):
+		return "no_linked_stock_entries"
+	return reason or "unclassified"

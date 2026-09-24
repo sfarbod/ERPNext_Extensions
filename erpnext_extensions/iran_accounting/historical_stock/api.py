@@ -1278,41 +1278,49 @@ def verify_repair_api(item_code=None, warehouse=None, voucher=None):
 
 @frappe.whitelist()
 def repair_safe_api(rows=None, dry_run=True):
-	"""Repair only READY roots. The tool chooses the family executor."""
+	"""ONE mutation path: plan → repair → (caller) repost → verify."""
 	is_dry = _dry(dry_run, True)
 	require_write_if_applying(is_dry)
 	parsed = _parse(rows)
 	if not parsed:
 		frappe.throw("Exact READY root rows are required")
-	from erpnext_extensions.iran_accounting.historical_stock.simple_model import (
-		PRIMARY_READY,
-		FAMILY_VALUATION,
-		primary_state,
-		root_family,
-		REASON_LEFTOVER_MA,
-		reason_code,
-	)
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import repair_safe_roots
 
-	applied = []
-	blocked = []
-	for raw in parsed:
-		state = primary_state(raw)
-		if state != PRIMARY_READY and str(raw.get("leftover_ma_status") or "") != "READY_LEFTOVER_MA":
-			blocked.append({"row": raw, "error": f"not READY ({state})", "status": "BLOCKED"})
-			continue
-		family = root_family(raw)
-		reason = reason_code(raw)
-		if reason == REASON_LEFTOVER_MA or raw.get("topic") == "LEFTOVER_MA":
-			from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
-				repair_leftover_ma_selected,
-			)
+	return repair_safe_roots(parsed, dry_run=is_dry)
 
-			applied.append(repair_leftover_ma_selected([raw], dry_run=is_dry))
-		elif family == FAMILY_VALUATION and raw.get("topic") in ("WRONG_RATE", None):
-			applied.append(repair_wrong_rate_selected([raw], dry_run=is_dry))
-		else:
-			blocked.append({"row": raw, "error": f"no safe executor for {family}/{reason}", "status": "MANUAL"})
-	return {"dry_run": is_dry, "applied": applied, "blocked": blocked}
+
+@frappe.whitelist()
+def plan_roots_api(rows=None):
+	"""Build RepairPlan objects for selected findings (read-only)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import compress_roots, plan
+
+	parsed = _parse(rows)
+	plans = [plan(r).to_dict() for r in parsed]
+	return {"count": len(plans), "plans": plans, "compression": compress_roots(parsed)}
+
+
+@frappe.whitelist()
+def compress_wrong_rate_roots_api(company=None, limit=4000):
+	"""Group Wrong Rate findings into causal roots."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import compress_roots
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+
+	scan = scan_wrong_rates(company=company or None, limit=cint(limit) or 4000)
+	rows = scan.get("rows") or []
+	ready = [
+		r
+		for r in rows
+		if str(r.get("planner_status") or r.get("rate_status") or "").startswith("READY")
+		or r.get("eligible")
+	]
+	return {
+		"scan_count": len(rows),
+		"ready_findings": len(ready),
+		"all": compress_roots(rows),
+		"ready": compress_roots(ready),
+	}
 
 
 # Re-export posting-order APIs so the page can use one namespace.

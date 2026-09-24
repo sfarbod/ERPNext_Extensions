@@ -157,7 +157,8 @@ def reason_code(row: dict | None) -> str:
 	}:
 		return explicit
 	topic = str(row.get("topic") or row.get("repair_class") or "").upper()
-	if "LEFTOVER_MA" in topic:
+	ps = str(row.get("planner_status") or row.get("rate_status") or row.get("leftover_ma_status") or "").upper()
+	if "LEFTOVER_MA" in topic or "LEFTOVER_MA" in ps:
 		return REASON_LEFTOVER_MA
 	if "POSTING" in topic:
 		return REASON_POSTING_ORDER
@@ -167,9 +168,9 @@ def reason_code(row: dict | None) -> str:
 		return REASON_GL_DRIFT
 	if "BIN" in topic or "I4" in topic:
 		return REASON_BIN_DRIFT
-	if "ZERO" in topic:
+	if "ZERO" in topic or "ZERO" in ps:
 		return REASON_ZERO_RATE
-	if "WRONG" in topic:
+	if "WRONG" in topic or "WRONG" in ps or row.get("flags") or row.get("mismatch_class"):
 		return REASON_WRONG_RATE
 	return explicit or topic or "UNSPECIFIED"
 
