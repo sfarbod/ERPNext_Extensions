@@ -263,8 +263,17 @@ def already_matches(current_rows: list, series: list[dict]) -> bool:
 		value_tol = max(1.0, qty)
 		if abs(flt(_gv(row, "stock_value")) - flt(step["stock_value"])) > value_tol:
 			return False
+		# Outgoing SLE.outgoing_rate is often left 0 while SVD carries the value.
+		# Prefer SVD/qty (report out rate) over the optional outgoing_rate column.
 		if flt(_gv(row, "actual_qty")) < -QTY_EPS:
-			if abs(flt(_gv(row, "outgoing_rate")) - flt(step["outgoing_rate"])) > 1:
+			aq = abs(flt(_gv(row, "actual_qty")))
+			cur_out = abs(flt(_gv(row, "outgoing_rate")))
+			if cur_out <= RATE_EPS and aq > QTY_EPS:
+				cur_out = abs(flt(_gv(row, "stock_value_difference"))) / aq
+			exp_out = abs(flt(step.get("outgoing_rate") or 0))
+			if exp_out <= RATE_EPS and aq > QTY_EPS:
+				exp_out = abs(flt(step.get("stock_value_difference") or 0)) / aq
+			if abs(cur_out - exp_out) > 1:
 				return False
 	return True
 
