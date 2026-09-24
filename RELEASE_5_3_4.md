@@ -112,8 +112,9 @@ Safety gates did not increase.
 
 Covers depleted-then-free receipt, leftover-MA replay, old-rate-not-evidence,
 qty+value+zero-stamp block, opening-state MANUAL, idempotency, safety flags,
-planner READY/AMBIGUOUS, stamp eligibility, and outgoing `allow_zero` not
-bypassing a valued lot.
+planner READY/AMBIGUOUS, stamp eligibility, outgoing `allow_zero` not
+bypassing a valued lot, honest worker-queue detection (empty queues / fresh
+heartbeat is not available), and the RIV hook ignoring non-Completed docs.
 
 v5.3.3 Historical Repair regressions remain green.
 
@@ -157,16 +158,28 @@ A Completed leftover-MA repair also requires:
 - Desk `query_report.run(..., ignore_prepared_report=True)` Avg Rate matches
   direct `stock_ledger.execute` (Stock Ledger is a Prepared Report)
 - any created RIV is `Completed`, not `Queued` / `Failed`
+- **wait for that RIV to finish** before marking the repair Completed
 - `valuation_rate` on the zero inbound SLE is leftover value / qty even if
   vanilla RIV leaves that field at 0 while `stock_value` stays leftover
+- after a later official RIV, the same leftover MA is restored (hook
+  `on_repost_item_valuation_update`) and only **downstream** SLEs are replayed
+  so the zero inbound is not given an invented incoming rate
 
 Mismatch is `FAILED_POSTCONDITION: REPORT_LEDGER_MISMATCH`. A failed official
 RIV is `FAILED_RIV`. Matching Completed Stock Ledger Prepared Reports are
 deleted after a successful persist so Desk cannot serve a pre-repair snapshot.
 
-Historical Repair Scan All requires a worker that can consume the `long`
-queue. Dead registrations (empty queues, state `?`, stale heartbeat) are
-ignored. A heartbeat alone is not treated as a listener. Availability is
-true only when an RQ worker is subscribed to `long` with a live state, or
-when a job was recently dequeued from that queue. `WORKER_UNAVAILABLE`
-must stay visible if the queue cannot consume jobs.
+A heartbeat alone is not a listener. `WORKER_UNAVAILABLE` stays visible if
+the `long` queue cannot consume jobs (empty subscription, state `?`, stale
+heartbeat, and no recent dequeue). Scan All / Stock Ledger Generate / RIV
+must go `Queued → Started → Completed` on a real worker. Completing a job
+in-process is not acceptance.
+
+Development `bench start` Procfile must run:
+
+- `web` (`bench serve`)
+- `schedule`
+- `worker` (`short,default,long`)
+- `worker_long` (`long`)
+
+so a normal Development restart keeps a long-queue listener.
