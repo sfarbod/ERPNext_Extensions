@@ -378,6 +378,81 @@ class TestLedgerPostcondition(unittest.TestCase):
 		)
 		self.assertFalse(decision["eligible"])
 
+	def test_g_queued_riv_blocks_completion(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import _riv_status_blocks_completion
+
+		self.assertEqual(_riv_status_blocks_completion("Queued"), "RIV still Queued")
+		self.assertEqual(_riv_status_blocks_completion("Failed"), "FAILED_RIV")
+		self.assertIsNone(_riv_status_blocks_completion("Completed"))
+
+	def test_stamp_patient_zero_sets_leftover_ma(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import stamp_patient_zero_valuation_rate
+
+		row = {
+			"name": "sle-root",
+			"qty_after_transaction": 529,
+			"stock_value": 2647827252,
+			"valuation_rate": 0,
+			"incoming_rate": 0,
+			"stock_value_difference": 0,
+		}
+		with patch(
+			"frappe.db.get_value",
+			return_value=SimpleNamespace(**row),
+		), patch("frappe.db.set_value") as setv:
+			out = stamp_patient_zero_valuation_rate("B", "W", "FREE")
+		self.assertTrue(out["stamped"])
+		self.assertAlmostEqual(out["valuation_rate"], 2647827252 / 529, places=4)
+		setv.assert_called_once()
+
+	def test_stamp_refuses_valued_inbound(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import stamp_patient_zero_valuation_rate
+
+		row = {
+			"name": "sle-root",
+			"qty_after_transaction": 529,
+			"stock_value": 2647827252,
+			"valuation_rate": 0,
+			"incoming_rate": 100,
+			"stock_value_difference": 700,
+		}
+		with patch("frappe.db.get_value", return_value=SimpleNamespace(**row)), patch("frappe.db.set_value") as setv:
+			out = stamp_patient_zero_valuation_rate("B", "W", "FREE")
+		self.assertFalse(out["ok"])
+		setv.assert_not_called()
+
+	def test_f_desk_api_zero_is_report_mismatch(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import leftover_ma_desk_postcondition
+
+		rows = [
+			_sle(voucher_no="FREE", actual_qty=7, qty_after_transaction=529, incoming_rate=0, valuation_rate=5005344.52, stock_value=2647827252, stock_value_difference=0),
+		]
+		exec_rows = [
+			{"voucher_no": "FREE", "valuation_rate": 5005344.52, "incoming_rate": 0, "stock_value": 2647827252, "qty_after_transaction": 529, "actual_qty": 7, "stock_value_difference": 0},
+		]
+		api = {"result": [{"voucher_no": "FREE", "valuation_rate": 0, "incoming_rate": 0, "stock_value": 2647827252}]}
+		with patch(
+			"erpnext.stock.report.stock_ledger.stock_ledger.execute",
+			return_value=([], exec_rows),
+		), patch(
+			"frappe.desk.query_report.run",
+			return_value=api,
+		), patch(
+			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma._stock_ledger_filters",
+			return_value={"company": "C", "item_code": ["B"], "warehouse": ["W"]},
+		):
+			pc = leftover_ma_desk_postcondition(
+				"B",
+				"W",
+				root_voucher="FREE",
+				expected_ma=5005344.52,
+				expected_stock_value=2647827252,
+				rows=rows,
+				bin_row={"actual_qty": 529, "stock_value": 2647827252, "valuation_rate": 5005344.52},
+			)
+		self.assertFalse(pc["ok"])
+		self.assertEqual(pc["status"], "FAILED_POSTCONDITION: REPORT_LEDGER_MISMATCH")
+
 
 class TestWorkerQueueDetection(unittest.TestCase):
 	def test_empty_queue_registration_is_unavailable(self):
@@ -386,9 +461,11 @@ class TestWorkerQueueDetection(unittest.TestCase):
 		class _Dead:
 			name = "dead"
 			queues = []
+			last_heartbeat = None
 
 		class _Live:
 			name = "live"
+			last_heartbeat = None
 
 			class _Q:
 				name = "workspace-development-frappe-bench:long"
@@ -422,3 +499,44 @@ class TestWorkerQueueDetection(unittest.TestCase):
 			live = worker_queue_status("long")
 		self.assertTrue(live["available"])
 		self.assertEqual(live["workers_for_queue"], 1)
+
+	def test_fresh_heartbeat_empty_queues_is_live(self):
+		from datetime import datetime
+
+		from erpnext_extensions.iran_accounting.historical_stock.metrics_snapshot import worker_queue_status
+
+		class _LiveEmpty:
+			name = "bench-worker"
+			queues = []
+			last_heartbeat = datetime.now()
+
+		class _StaleEmpty:
+			name = "ghost"
+			queues = []
+			last_heartbeat = datetime(2026, 9, 6, 12, 30, 23)
+
+		with patch(
+			"frappe.utils.background_jobs.get_redis_conn",
+			return_value=object(),
+		), patch(
+			"rq.Worker.all",
+			return_value=[_LiveEmpty()],
+		), patch(
+			"rq.Queue",
+			side_effect=lambda *a, **k: [],
+		):
+			live = worker_queue_status("long")
+		self.assertTrue(live["available"])
+
+		with patch(
+			"frappe.utils.background_jobs.get_redis_conn",
+			return_value=object(),
+		), patch(
+			"rq.Worker.all",
+			return_value=[_StaleEmpty()],
+		), patch(
+			"rq.Queue",
+			side_effect=lambda *a, **k: [],
+		):
+			stale = worker_queue_status("long")
+		self.assertFalse(stale["available"])

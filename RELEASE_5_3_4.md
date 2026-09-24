@@ -152,6 +152,19 @@ If expected MA is nonzero but that report source still shows zero, status is
 `FAILED_POSTCONDITION`. Persist prefers ERPNext `update_entries_after`
 (Moving Average replay from the zero inbound forward).
 
-Historical Repair Scan All requires a live RQ worker listening on `long`
-(site-prefixed `…:long` is accepted). Dead RQ registrations with empty queues
-are ignored. `WORKER_UNAVAILABLE` is shown only when no such worker exists.
+A Completed leftover-MA repair also requires:
+
+- Desk `query_report.run(..., ignore_prepared_report=True)` Avg Rate matches
+  direct `stock_ledger.execute` (Stock Ledger is a Prepared Report)
+- any created RIV is `Completed`, not `Queued` / `Failed`
+- `valuation_rate` on the zero inbound SLE is leftover value / qty even if
+  vanilla RIV leaves that field at 0 while `stock_value` stays leftover
+
+Mismatch is `FAILED_POSTCONDITION: REPORT_LEDGER_MISMATCH`. A failed official
+RIV is `FAILED_RIV`. Matching Completed Stock Ledger Prepared Reports are
+deleted after a successful persist so Desk cannot serve a pre-repair snapshot.
+
+Historical Repair Scan All requires a live RQ worker. Dead registrations
+(empty queues + stale heartbeat) are ignored. A `bench worker` whose RQ
+object has empty `queues` but a fresh heartbeat counts as listening to the
+Procfile `short` / `default` / `long` queues.

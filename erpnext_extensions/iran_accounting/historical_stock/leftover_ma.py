@@ -21,10 +21,12 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_EXACT,
 	HISTORICAL_REPAIR_FLAG,
 	LEFTOVER_MA_FAILED_POSTCONDITION,
+	LEFTOVER_MA_FAILED_RIV,
 	LEFTOVER_MA_MANUAL,
 	LEFTOVER_MA_READY,
 	LEFTOVER_MA_REPAIR,
 	LEFTOVER_MA_REPAIRED,
+	LEFTOVER_MA_REPORT_MISMATCH,
 	LEFTOVER_MA_WAITING,
 	QTY_EPS,
 	RATE_EPS,
@@ -291,6 +293,229 @@ def leftover_ma_postcondition(
 	}
 
 
+def stamp_patient_zero_valuation_rate(item, warehouse, root_voucher) -> dict:
+	"""Minimum correction: leftover MA on the zero inbound SLE.
+
+	Vanilla ``update_entries_after`` / RIV can leave ``valuation_rate=0`` on an
+	authorized zero-value receipt while ``stock_value`` stays the leftover
+	balance. Stock Ledger Avg Rate is ``valuation_rate``, so that row must be
+	stamped to leftover_value / qty. Incoming rate and SVD stay 0.
+	"""
+	row = frappe.db.get_value(
+		"Stock Ledger Entry",
+		{"voucher_no": root_voucher, "item_code": item, "warehouse": warehouse, "is_cancelled": 0},
+		["name", "qty_after_transaction", "stock_value", "valuation_rate", "incoming_rate", "stock_value_difference"],
+		as_dict=True,
+	)
+	if not row:
+		return {"ok": False, "stamped": False, "reason": "root SLE missing"}
+	qa = flt(row.qty_after_transaction)
+	sv = flt(row.stock_value)
+	vr = flt(row.valuation_rate)
+	if qa <= QTY_EPS or sv <= VALUE_EPS:
+		return {"ok": True, "stamped": False, "reason": "not a valued leftover position"}
+	expected = sv / qa
+	if abs(vr - expected) <= 1:
+		return {"ok": True, "stamped": False, "valuation_rate": vr}
+	if abs(flt(row.incoming_rate)) > RATE_EPS or abs(flt(row.stock_value_difference)) > 1:
+		return {"ok": False, "stamped": False, "reason": "refusing to stamp a valued inbound"}
+	frappe.db.set_value(
+		"Stock Ledger Entry",
+		row.name,
+		{"valuation_rate": expected},
+		update_modified=False,
+	)
+	return {"ok": True, "stamped": True, "valuation_rate": expected, "previous": vr}
+
+
+def leftover_ma_desk_postcondition(
+	item,
+	warehouse,
+	*,
+	root_voucher,
+	expected_ma,
+	expected_stock_value,
+	rows=None,
+	bin_row=None,
+) -> dict:
+	"""Compare SLE, direct execute, and the Desk report API.
+
+	Desk default is a Prepared Report. Generate-equivalent is
+	``query_report.run(..., ignore_prepared_report=True)``.
+	"""
+	sle_pc = leftover_ma_postcondition(
+		item,
+		warehouse,
+		root_voucher=root_voucher,
+		expected_ma=expected_ma,
+		expected_stock_value=expected_stock_value,
+		rows=rows,
+		bin_row=bin_row,
+	)
+	if not sle_pc.get("ok"):
+		return sle_pc
+	filters = _stock_ledger_filters(item, warehouse)
+	try:
+		from erpnext.stock.report.stock_ledger.stock_ledger import execute as sl_execute
+
+		_cols, exec_rows = sl_execute(frappe._dict(filters))
+	except Exception as exc:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": f"Stock Ledger execute failed: {exc}",
+		}
+	exec_root = next((r for r in (exec_rows or []) if _gv(r, "voucher_no") == root_voucher), None)
+	if not exec_root:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_POSTCONDITION,
+			"reason": "root voucher missing from Stock Ledger execute",
+		}
+	if flt(expected_ma) > VALUE_EPS and abs(flt(_gv(exec_root, "valuation_rate"))) <= RATE_EPS:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_REPORT_MISMATCH,
+			"reason": "REPORT_LEDGER_MISMATCH: execute Avg Rate is zero",
+		}
+	try:
+		from frappe.desk.query_report import run as qr_run
+
+		api = qr_run(
+			"Stock Ledger",
+			filters=dict(filters),
+			ignore_prepared_report=True,
+			are_default_filters=False,
+		)
+	except Exception as exc:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_REPORT_MISMATCH,
+			"reason": f"REPORT_LEDGER_MISMATCH: Desk API failed: {exc}",
+		}
+	api_root = next((r for r in (api.get("result") or []) if _gv(r, "voucher_no") == root_voucher), None)
+	if not api_root:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_REPORT_MISMATCH,
+			"reason": "REPORT_LEDGER_MISMATCH: root voucher missing from Desk API",
+		}
+	if flt(expected_ma) > VALUE_EPS and abs(flt(_gv(api_root, "valuation_rate"))) <= RATE_EPS:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_REPORT_MISMATCH,
+			"reason": "REPORT_LEDGER_MISMATCH: Desk API Avg Rate is zero",
+		}
+	if abs(flt(_gv(api_root, "valuation_rate")) - flt(_gv(exec_root, "valuation_rate"))) > 1:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_REPORT_MISMATCH,
+			"reason": "REPORT_LEDGER_MISMATCH: Desk API Avg Rate != execute",
+		}
+	return {
+		**sle_pc,
+		"execute_valuation_rate": flt(_gv(exec_root, "valuation_rate")),
+		"api_valuation_rate": flt(_gv(api_root, "valuation_rate")),
+	}
+
+
+def _stock_ledger_filters(item, warehouse) -> dict:
+	company = frappe.db.get_value("Warehouse", warehouse, "company")
+	return {
+		"company": company,
+		"from_date": "2000-01-01",
+		"to_date": str(frappe.utils.today()),
+		"item_code": [item],
+		"warehouse": [warehouse],
+		"valuation_field_type": "Currency",
+		"segregate_serial_batch_bundle": 1,
+	}
+
+
+def invalidate_stock_ledger_prepared_reports(item) -> int:
+	"""Delete Completed Stock Ledger snapshots that still pin this item."""
+	if not item:
+		return 0
+	rows = frappe.db.sql(
+		"""SELECT name FROM `tabPrepared Report`
+		   WHERE report_name='Stock Ledger' AND status='Completed'
+		     AND filters LIKE %s""",
+		(f"%{item}%",),
+		as_dict=True,
+	)
+	deleted = 0
+	for row in rows:
+		try:
+			frappe.delete_doc("Prepared Report", row.name, ignore_permissions=True, force=True, delete_permanently=True)
+			deleted += 1
+		except Exception:
+			continue
+	return deleted
+
+
+def _riv_status_blocks_completion(status) -> str | None:
+	st = str(status or "")
+	if st in ("Queued", "In Progress"):
+		return f"RIV still {st}"
+	if st == "Failed":
+		return LEFTOVER_MA_FAILED_RIV
+	return None
+
+
+def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, allow_zero_rate=True) -> dict:
+	"""Official ERPNext RIV (Item + Warehouse) executed through ``repost()``.
+
+	Submit alone leaves the document Queued — that is not a completed repair.
+	"""
+	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+		execute_reposting_entry,
+	)
+
+	company = frappe.db.get_value("Warehouse", warehouse, "company")
+	doc = frappe.get_doc(
+		{
+			"doctype": "Repost Item Valuation",
+			"based_on": "Item and Warehouse",
+			"item_code": item,
+			"warehouse": warehouse,
+			"company": company,
+			"posting_date": str(posting_date),
+			"posting_time": str(posting_time),
+			"allow_negative_stock": 0,
+			"allow_zero_rate": 1 if allow_zero_rate else 0,
+			"recalculate_valuation_rate": 0,
+			"recreate_stock_ledgers": 0,
+		}
+	)
+	doc.flags.ignore_permissions = True
+	doc.insert()
+	doc.submit()
+	# Normal lifecycle enqueues via scheduler. Execute the same worker target
+	# so Historical Repair never marks Completed on a queued RIV.
+	try:
+		execute_reposting_entry(doc.name)
+	except Exception as exc:
+		frappe.db.set_value("Repost Item Valuation", doc.name, {"status": "Failed", "error_log": str(exc)[:1000]})
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_RIV,
+			"riv_name": doc.name,
+			"riv_status": "Failed",
+			"reason": str(exc)[:500],
+		}
+	st = frappe.db.get_value("Repost Item Valuation", doc.name, ["status", "error_log"], as_dict=True)
+	block = _riv_status_blocks_completion(st.status)
+	if block:
+		return {
+			"ok": False,
+			"status": LEFTOVER_MA_FAILED_RIV if st.status == "Failed" else LEFTOVER_MA_FAILED_POSTCONDITION,
+			"riv_name": doc.name,
+			"riv_status": st.status,
+			"reason": block if st.status != "Failed" else (st.error_log or "FAILED_RIV"),
+		}
+	return {"ok": True, "riv_name": doc.name, "riv_status": st.status}
+
+
 def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
 	"""ERPNext-native replay from the zero inbound forward (Moving Average)."""
 	sle = frappe.db.get_value(
@@ -317,7 +542,14 @@ def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
 		allow_zero_rate=True,
 		allow_negative_stock=False,
 	)
-	return {"ok": True, "path": "update_entries_after"}
+	stamp = stamp_patient_zero_valuation_rate(item, warehouse, root_voucher)
+	return {
+		"ok": True,
+		"path": "update_entries_after",
+		"posting_date": str(sle.posting_date),
+		"posting_time": str(posting_time),
+		"stamp": stamp,
+	}
 
 
 def classify_leftover_ma_identity(item, warehouse) -> dict:
@@ -640,7 +872,7 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 	expected_sv = flt((sim.get("series") or [{}])[0].get("stock_value") or sim.get("opening_value") or 0)
 
 	def _pc():
-		return leftover_ma_postcondition(
+		return leftover_ma_desk_postcondition(
 			item,
 			warehouse,
 			root_voucher=root_voucher,
@@ -649,8 +881,10 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 		)
 
 	if sim.get("already_repaired"):
+		stamp_patient_zero_valuation_rate(item, warehouse, root_voucher)
 		pc = _pc()
 		if pc.get("ok"):
+			invalidate_stock_ledger_prepared_reports(item)
 			return {
 				"status": LEFTOVER_MA_REPAIRED,
 				"leftover_ma_status": LEFTOVER_MA_REPAIRED,
@@ -677,6 +911,28 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 		persist = persist_via_update_entries_after(item, warehouse, root_voucher)
 	except Exception as exc:
 		persist = {"ok": False, "path": "update_entries_after", "reason": str(exc)[:500]}
+
+	riv = None
+	if persist.get("ok") and persist.get("posting_date"):
+		riv = create_and_run_narrow_riv(
+			item,
+			warehouse,
+			posting_date=persist.get("posting_date"),
+			posting_time=persist.get("posting_time"),
+		)
+		persist["riv"] = riv
+		if not riv.get("ok"):
+			return {
+				"status": riv.get("status") or LEFTOVER_MA_FAILED_RIV,
+				"leftover_ma_status": riv.get("status") or LEFTOVER_MA_FAILED_RIV,
+				"economic_writes": 0,
+				"applied": False,
+				"reason": riv.get("reason") or "FAILED_RIV",
+				"persist": persist,
+				"riv": riv,
+			}
+		# RIV can rewrite patient-zero valuation_rate back to 0. Re-stamp.
+		stamp_patient_zero_valuation_rate(item, warehouse, root_voucher)
 
 	pc = _pc()
 	writes = 0
@@ -723,6 +979,7 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 
 	last = series[-1]
 	gl = _rebuild_gl(sim.get("touched_vouchers") or [])
+	pr_deleted = invalidate_stock_ledger_prepared_reports(item)
 	return {
 		"status": STATUS_REPAIRED,
 		"leftover_ma_status": LEFTOVER_MA_REPAIRED,
@@ -736,6 +993,8 @@ def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
 		"gl": gl,
 		"postcondition": pc,
 		"persist": persist,
+		"riv": riv,
+		"prepared_reports_invalidated": pr_deleted,
 	}
 
 

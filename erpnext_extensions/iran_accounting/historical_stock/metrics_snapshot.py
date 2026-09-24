@@ -60,11 +60,56 @@ def _queue_name_matches(qname: str, queue: str) -> bool:
 	return qname.endswith(f":{queue}")
 
 
+# RQ 2 / bench worker often registers with an empty ``queues`` list. A fresh
+# heartbeat still means the process is dequeuing the Procfile queues.
+_WORKER_HEARTBEAT_FRESH_SECONDS = 180
+_DEFAULT_BENCH_QUEUES = ("short", "default", "long")
+
+
+def _worker_queue_names(worker) -> list[str]:
+	names: list[str] = []
+	try:
+		names = [q.name for q in (worker.queues or []) if getattr(q, "name", None)]
+	except Exception:
+		names = []
+	if not names:
+		for meth in ("queue_names", "queue_keys"):
+			try:
+				got = getattr(worker, meth, lambda: [])()
+				names = [str(n) for n in (got or []) if n]
+				if names:
+					break
+			except Exception:
+				continue
+	return names
+
+
+def _worker_heartbeat_fresh(worker) -> bool:
+	hb = getattr(worker, "last_heartbeat", None)
+	if not hb:
+		return False
+	try:
+		from datetime import datetime, timezone
+
+		raw = str(hb)
+		aware_utc = ("+" in raw) or raw.endswith("Z")
+		naive = get_datetime(raw.split("+")[0].replace("Z", ""))
+		now = datetime.now(timezone.utc).replace(tzinfo=None) if aware_utc else datetime.now()
+		age = (now - naive).total_seconds()
+		return age <= _WORKER_HEARTBEAT_FRESH_SECONDS
+	except Exception:
+		return False
+
+
 def worker_queue_status(queue: str = "long") -> dict:
 	"""Detect whether an RQ worker is listening for ``queue``.
 
 	During controlled campaigns workers/scheduler are often paused. The UI must
 	surface WORKER_UNAVAILABLE instead of QUEUED 0% forever.
+
+	A dead RQ registration (empty queues + stale heartbeat) is not a listener.
+	A live ``bench worker`` whose RQ object has empty ``queues`` but a fresh
+	heartbeat is treated as listening to the Procfile queues.
 	"""
 	out = {
 		"queue": queue,
@@ -84,14 +129,13 @@ def worker_queue_status(queue: str = "long") -> dict:
 		out["workers_total"] = len(workers)
 		matched_qnames = set()
 		for w in workers:
-			qnames = []
-			try:
-				qnames = [q.name for q in (w.queues or [])]
-			except Exception:
-				qnames = []
-			# Stale RQ registrations have no queues and must not count as available.
-			if not qnames:
+			qnames = _worker_queue_names(w)
+			fresh = _worker_heartbeat_fresh(w)
+			# Empty queue list + stale/missing heartbeat = dead registration.
+			if not qnames and not fresh:
 				continue
+			if not qnames and fresh:
+				qnames = list(_DEFAULT_BENCH_QUEUES)
 			for qn in qnames:
 				if _queue_name_matches(qn, queue):
 					out["workers_for_queue"] += 1
