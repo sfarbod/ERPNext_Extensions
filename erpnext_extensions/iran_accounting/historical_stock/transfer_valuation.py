@@ -394,13 +394,17 @@ def apply_transfer_reconstruction_to_row(row: dict, *, cache: dict | None = None
 		row["expected_rate"] = exp
 		row["source_of_truth"] = evidence.get("authoritative_source")
 		row["rate_source"] = evidence.get("authoritative_source")
-		row["confidence"] = evidence.get("confidence") or CONFIDENCE_LIKELY
+		# Keep out of Wrong Rate READY: evidence may be EXACT but auto-apply unsafe.
+		row["confidence"] = CONFIDENCE_AMBIGUOUS
 		row["status"] = "MANUAL_REVIEW"
 		row["eligible"] = False
+		row["sql_updates"] = 0
 		row["difference"] = exp - flt(row.get("current_rate") or row.get("current") or 0)
 		row["message"] = evidence.get("reason")
-		row["wrong_reason"] = "ISSUE_RATE_NEEDS_CORROBORATION"
-		row["manual_lane"] = USER_ACTION_REQUIRED
+		row["wrong_reason"] = "TRANSFER_LOST_RATE_NEEDS_RIV_STABLE_APPLY"
+		row["manual_lane"] = TOOL_LIMIT
+		row["planner_status"] = "MANUAL"
+		row["kpi_bucket"] = "manual"
 		return row
 
 	if cls == USER_ACTION_REQUIRED:

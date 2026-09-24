@@ -694,12 +694,15 @@ def finalize_transfer_repair_group(row: dict, *, from_dt=None) -> dict:
 		)
 		result["economic_writes"] += 1
 
-	# Bounded target replay from THIS voucher's posting time only (not distant PZ).
-	replay_from = from_dt or out_leg.posting_datetime
-	if t_wh:
-		result["replay_target"] = replay_from_patient_zero(
-			item, t_wh, None, from_dt=replay_from
-		)
+	# Do NOT full-replay the target warehouse chronology here.
+	# Prior canary (28696) rewrote 1400+ vouchers and inflated I1 while source RIV
+	# failed on unrelated GL imbalance. Pair is finalized on THIS voucher only;
+	# callers may enqueue a scoped official RIV afterward.
+	result["replay_target"] = {
+		"skipped": True,
+		"reason": "unbounded_target_replay_disabled_pending_i1_safe_path",
+		"from_dt": str(replay_from) if replay_from else None,
+	}
 
 	out_leg, in_leg = transfer_pair_legs(voucher, item, voucher_detail=detail, batch=batch)
 	result["pair_ok"] = pair_value_consistent(
