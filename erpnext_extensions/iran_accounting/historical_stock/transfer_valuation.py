@@ -299,12 +299,14 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["classification"] = EXACT
 		out["reason"] = f"target rate {current_rate} ≠ source outgoing_rate {expected}"
 	elif purpose in TRANSFER_PURPOSES and source_kind == "previous_healthy_source_sle":
-		# Lost outgoing rate on transfer: restore from same-warehouse tip before posting.
+		# Evidence is deterministic, but auto-apply still unsafe: source RIV can fail
+		# GL balance on unrelated vouchers and broad target replay inflates I1.
+		# Keep reconstructable for operators; do not stamp Wrong Rate READY.
 		out["confidence"] = CONFIDENCE_EXACT
-		out["classification"] = EXACT
+		out["classification"] = RECONSTRUCTABLE
 		out["reason"] = (
-			f"transfer lost outgoing rate; restore from previous healthy source SLE "
-			f"{expected} (not sibling detail)"
+			f"transfer lost outgoing rate; previous healthy source SLE {expected} "
+			"(not sibling) — MANUAL until source+target RIV-stable apply is proven"
 		)
 	elif purpose in TRANSFER_PURPOSES:
 		out["confidence"] = CONFIDENCE_EXACT
