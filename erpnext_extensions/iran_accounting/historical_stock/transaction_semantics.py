@@ -127,15 +127,16 @@ PURPOSE_REGISTRY: dict[str, dict[str, Any]] = {
 	"Manufacture": {
 		"policy": RECONSTRUCT_MANUFACTURE,
 		"label": "Native manufacturing cost / issued-pool reconstruction",
+		# Never invent FG/source rates from previous_healthy_sle or unrelated batch
+		# inward — that resurrected sibling leftover MA (false EXACT READY). Use
+		# manufacture_native residual / same-voucher pool only.
 		"allowed_auto_sources": frozenset(
 			{
 				"same_voucher_issued_rate",
 				"manufacture_pool",
+				"manufacture_consumed_svd_residual",
 				"version",
 				"version+batch_inward",
-				"batch_inward",
-				"previous_healthy_sle",
-				"source_transfer_sle",
 			}
 		),
 		"kpi_bucket": "ZERO_RATE_RECONSTRUCTABLE",
@@ -186,7 +187,12 @@ def may_auto_propose_rate(purpose: str | None, source: str | None) -> bool:
 	if policy == NO_INVENT_RATE:
 		# Strict: only document-local / explicit receipt sources.
 		return source in allowed and not source.startswith("previous_healthy") and source != "batch_inward"
-	if policy in (RECONSTRUCT_FROM_SOURCE, RECONSTRUCT_MANUFACTURE, RECONSTRUCT_REPACK):
+	if policy == RECONSTRUCT_MANUFACTURE:
+		# Strict manufacture: no previous_healthy / lone batch_inward invention.
+		if source.startswith("previous_healthy") or source in ("batch_inward", "source_transfer_sle"):
+			return False
+		return source in allowed or source.split("+")[0] in {a.split("+")[0] for a in allowed}
+	if policy in (RECONSTRUCT_FROM_SOURCE, RECONSTRUCT_REPACK):
 		return source in allowed or source.split("+")[0] in {a.split("+")[0] for a in allowed}
 	return source in allowed or source.split("+")[0] in {a.split("+")[0] for a in allowed}
 

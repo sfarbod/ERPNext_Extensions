@@ -616,6 +616,13 @@ def classify_zero_row(row, _cache=None) -> dict:
 		)
 
 		result = apply_transfer_reconstruction_to_row(result, cache=_cache)
+	# Manufacture FG/source zeros: native residual contract — never previous_healthy.
+	if purpose == "Manufacture":
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
+			apply_manufacture_valuation_to_row,
+		)
+
+		result = apply_manufacture_valuation_to_row(result, cache=_cache)
 	return result
 
 

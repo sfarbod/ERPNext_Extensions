@@ -345,37 +345,56 @@ def apply_manufacture_valuation_to_row(row: dict, *, cache: dict | None = None) 
 		row["status"] = "DEPENDENCY_REPAIR_REQUIRED"
 		row["confidence"] = CONFIDENCE_AMBIGUOUS
 		row["eligible"] = False
+		row["actionable"] = True
 		row["proposed_rate"] = 0.0
+		row["proposed_amount"] = 0.0
 		row["source_of_truth"] = "waiting_upstream_manufacture_source"
+		row["rate_source"] = "waiting_upstream_manufacture_source"
 		row["wrong_reason"] = "WAITING_MANUFACTURE_INPUTS"
+		row["zero_reason"] = "MANUFACTURE_DEPENDENCY"
 		row["manual_lane"] = WAITING_UPSTREAM
 		row["message"] = ev.get("reason")
 		if ev.get("patient_zero"):
 			row["patient_zero"] = ev["patient_zero"]
-		row["kpi_bucket"] = "waiting"
+		row["kpi_bucket"] = "ZERO_RATE_WAITING_UPSTREAM"
 		row["planner_status"] = "WAITING_RATE_DEPENDENCY"
 		return row
 	if cls == LEGITIMATE:
 		row["status"] = "NO_ACTION_REQUIRED"
 		row["confidence"] = CONFIDENCE_EXACT
 		row["eligible"] = False
+		row["actionable"] = False
 		row["no_action_required"] = True
-		row["source_of_truth"] = ev.get("source_of_truth")
+		row["proposed_rate"] = 0.0
+		row["proposed_amount"] = 0.0
+		row["source_of_truth"] = ev.get("source_of_truth") or "manufacture_zero_consumption_pool"
+		row["rate_source"] = row["source_of_truth"]
 		row["message"] = ev.get("reason")
-		row["kpi_bucket"] = "legitimate"
+		row["kpi_bucket"] = "NO_ACTION"
 		row["manual_lane"] = None
 		row["planner_status"] = "RATE_REPAIR_COMPLETE"
+		row["zero_class"] = "Z0_LEGITIMATE_ZERO"
+		row["zero_reason"] = "LEGITIMATE_ZERO"
+		row["wrong_reason"] = "LEGITIMATE_ZERO_MANUFACTURE"
 		return row
 	if cls == HEALTHY:
+		# FG already matches residual. Source/scrap zero SE basic on a healthy
+		# voucher must NOT invent previous_healthy — mark no-action.
 		row["status"] = "NO_ACTION_REQUIRED"
 		row["confidence"] = CONFIDENCE_EXACT
 		row["eligible"] = False
+		row["actionable"] = False
 		row["no_action_required"] = True
-		row["source_of_truth"] = ev.get("source_of_truth")
+		row["proposed_rate"] = 0.0
+		row["source_of_truth"] = ev.get("source_of_truth") or "manufacture_fg_matches_residual"
+		row["rate_source"] = row["source_of_truth"]
 		row["message"] = ev.get("reason")
-		row["kpi_bucket"] = "complete"
+		row["kpi_bucket"] = "NO_ACTION"
 		row["manual_lane"] = None
 		row["planner_status"] = "RATE_REPAIR_COMPLETE"
+		row["zero_class"] = "Z0_LEGITIMATE_ZERO"
+		row["zero_reason"] = "LEGITIMATE_ZERO"
+		row["wrong_reason"] = "MANUFACTURE_HEALTHY"
 		return row
 	if cls == EXACT and ev.get("eligible"):
 		# Only stamp FG detail rows
@@ -385,21 +404,28 @@ def apply_manufacture_valuation_to_row(row: dict, *, cache: dict | None = None) 
 			row["status"] = "MANUAL_REVIEW"
 			row["confidence"] = CONFIDENCE_MANUAL
 			row["eligible"] = False
+			row["actionable"] = True
+			row["proposed_rate"] = 0.0
 			row["message"] = "Manufacture source/scrap row — repair via FG residual contract on finished item"
+			row["zero_reason"] = "MANUFACTURE_DEPENDENCY"
+			row["kpi_bucket"] = "ZERO_RATE_WAITING_UPSTREAM"
+			row["planner_status"] = "WAITING_RATE_DEPENDENCY"
 			return row
 		exp = flt(ev.get("expected_target_rate"))
 		row["proposed_rate"] = exp
 		row["expected"] = exp
 		row["expected_rate"] = exp
-		row["source_of_truth"] = ev.get("source_of_truth")
-		row["rate_source"] = ev.get("source_of_truth")
+		row["source_of_truth"] = "manufacture_consumed_svd_residual"
+		row["rate_source"] = "manufacture_consumed_svd_residual"
 		row["confidence"] = CONFIDENCE_EXACT
 		row["status"] = "RECONSTRUCTABLE"
 		row["eligible"] = True
+		row["actionable"] = True
 		row["difference"] = exp - flt(row.get("current_rate") or row.get("current") or 0)
 		row["message"] = ev.get("reason")
 		row["wrong_reason"] = "MANUFACTURE_NATIVE_FG_RESIDUAL"
-		row["kpi_bucket"] = "ready"
+		row["zero_reason"] = "AUTHORITATIVE_SOURCE_EXISTS_BUT_RATE_IS_ZERO"
+		row["kpi_bucket"] = "ZERO_RATE_RECONSTRUCTABLE"
 		# Prefer FG detail identity
 		if ev.get("fg_rows"):
 			fr = ev["fg_rows"][0]
@@ -410,8 +436,11 @@ def apply_manufacture_valuation_to_row(row: dict, *, cache: dict | None = None) 
 	row["status"] = "MANUAL_REVIEW"
 	row["confidence"] = ev.get("confidence") or CONFIDENCE_MANUAL
 	row["eligible"] = False
+	row["actionable"] = True
+	row["proposed_rate"] = 0.0
 	row["message"] = ev.get("reason")
 	row["wrong_reason"] = "MANUAL_MANUFACTURE_NATIVE"
+	row["zero_reason"] = "MANUAL"
 	return row
 
 

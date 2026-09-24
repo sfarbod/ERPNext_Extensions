@@ -262,7 +262,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Leftover MA": int(lma.get("count") or 0),
 		"READY_LEFTOVER_MA": int(lma.get("ready_count") or 0),
 		"MANUAL_LEFTOVER_MA": int(lma.get("manual_count") or 0),
-		"Proven Legitimate Zero": int((lma.get("by_status") or {}).get("NO_ACTION") or 0),
+		"Proven Legitimate Zero": int((lma.get("by_status") or {}).get("NO_ACTION") or 0)
+		+ int(zero_no_action or 0),
 		"Wrong Rate READY": wr_ready,
 		"Wrong Rate WAITING": wr_waiting,
 		"Wrong Rate MANUAL": wr_manual,
