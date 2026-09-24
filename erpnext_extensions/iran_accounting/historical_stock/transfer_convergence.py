@@ -873,9 +873,72 @@ def apply_transfer_repair_group(row: dict, *, patient: dict | None = None, dry_r
 	elif isinstance(from_dt, dict):
 		from_dt = f"{from_dt.get('posting_date')} {from_dt.get('posting_time') or '00:00:00'}"
 
+	sp = f"xfer_{frappe.generate_hash(length=8)}"
+	frappe.db.savepoint(sp)
+
 	_write_se_row(merged)
+	# When this transfer lost its outgoing rate (zero SVD), establish source debit
+	# BEFORE target credit. Never credit the target alone — that invents value (I1/PZ).
+	out_leg, in_leg = transfer_pair_legs(
+		merged["voucher"],
+		merged["item"],
+		voucher_detail=merged.get("voucher_detail"),
+		batch=merged.get("batch") or merged.get("batch_no") or "",
+	)
+	wrote_source = False
+	if out_leg and abs(flt(out_leg.stock_value_difference)) <= VALUE_EPS and abs(exp) > RATE_EPS:
+		oq = flt(out_leg.actual_qty)
+		if abs(oq) > QTY_EPS:
+			# Write every outgoing SLE for this voucher+item (multi-row transfers).
+			outs = frappe.db.sql(
+				"""
+				SELECT name, actual_qty, voucher_detail_no
+				FROM `tabStock Ledger Entry`
+				WHERE voucher_no=%s AND item_code=%s AND actual_qty < 0 AND IFNULL(is_cancelled,0)=0
+				""",
+				(merged["voucher"], merged["item"]),
+				as_dict=True,
+			)
+			for sle in outs:
+				aq = flt(sle.actual_qty)
+				frappe.db.set_value(
+					"Stock Ledger Entry",
+					sle.name,
+					{
+						"outgoing_rate": abs(exp),
+						"incoming_rate": 0,
+						"stock_value_difference": abs(exp) * aq,  # aq negative → negative SVD
+					},
+					update_modified=False,
+				)
+			wrote_source = True
+	if not wrote_source and out_leg and abs(flt(out_leg.stock_value_difference)) <= VALUE_EPS:
+		frappe.db.rollback(save_point=sp)
+		return {
+			"status": WAITING_UPSTREAM,
+			"written": False,
+			"economic_writes": 0,
+			"message": "refuse target-only transfer write — source outgoing SVD still zero",
+			"reconstruction": recon,
+			"dry_run": False,
+			"applied": False,
+			"aborted": True,
+		}
 	_write_sle_incoming(merged)
 	fin = finalize_transfer_repair_group(merged, from_dt=from_dt)
+	if not fin.get("pair_ok") and fin.get("status") == WAITING_UPSTREAM:
+		frappe.db.rollback(save_point=sp)
+		return {
+			"status": WAITING_UPSTREAM,
+			"written": False,
+			"economic_writes": 0,
+			"message": fin.get("message") or "pair finalize failed after source write — rolled back",
+			"finalize": fin,
+			"reconstruction": recon,
+			"dry_run": False,
+			"applied": False,
+			"aborted": True,
+		}
 	write_sle_transaction_rates(merged["voucher"], merged["item"])
 	sync_sabb_from_sle(merged["voucher"], merged["item"])
 
@@ -883,7 +946,7 @@ def apply_transfer_repair_group(row: dict, *, patient: dict | None = None, dry_r
 	return {
 		"status": STATUS_REPAIRED if (fin.get("pair_ok") or after) else REPAIRED_BUT_STILL_EXACT,
 		"written": True,
-		"economic_writes": 1 + int(fin.get("economic_writes") or 0),
+		"economic_writes": 1 + int(fin.get("economic_writes") or 0) + (1 if wrote_source else 0),
 		"finalize": fin,
 		"replays": {"target": fin.get("replay_target")},
 		"auth_rate": fin.get("auth_rate") or exp,
@@ -892,4 +955,5 @@ def apply_transfer_repair_group(row: dict, *, patient: dict | None = None, dry_r
 		"dry_run": False,
 		"applied": True,
 		"proposed_rate": fin.get("auth_rate") or exp,
+		"source_debit_written": wrote_source,
 	}
