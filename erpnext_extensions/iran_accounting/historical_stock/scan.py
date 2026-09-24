@@ -116,7 +116,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		1 for r in (i4.get("rows") or []) if r.get("eligible") or r.get("i4_status") == "READY_I4"
 	)
 	# Phase 2 maturity KPIs — canonical Wrong Rate buckets (exclude COMPLETE from active).
-	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets
+	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets, wrong_rate_bucket
 
 	wr_buckets = count_wrong_rate_buckets(wrong.get("rows") or [])
 	wr_ready = wr_buckets.get("ready") or 0
@@ -125,6 +125,46 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	wr_complete = wr_buckets.get("complete") or 0
 	# Active Wrong Rate problem count (excludes RATE_REPAIR_COMPLETE / already-valued).
 	wrong_n = wr_buckets.get("active") or 0
+	# Score units (v5.3.7): compress WAITING symptoms onto unique patient-zero /
+	# voucher roots so 200 downstream WAITING rows of one PZ do not each add a
+	# full Wrong Rate penalty. READY + MANUAL remain 1:1. Dashboard Wrong Rate
+	# stays the raw active count (not gamed).
+	def _root_key(row) -> str:
+		pz = row.get("patient_zero") or {}
+		if isinstance(pz, dict) and pz.get("voucher_no"):
+			return f"pz:{pz['voucher_no']}"
+		v = row.get("voucher") or row.get("voucher_no")
+		return f"v:{v}" if v else f"row:{id(row)}"
+
+	wr_rows = wrong.get("rows") or []
+	wr_ready_rows = [r for r in wr_rows if wrong_rate_bucket(r) == "ready"]
+	wr_manual_rows = [r for r in wr_rows if wrong_rate_bucket(r) == "manual"]
+	wr_waiting_rows = [r for r in wr_rows if wrong_rate_bucket(r) == "waiting"]
+	wr_waiting_roots = {_root_key(r) for r in wr_waiting_rows}
+	wr_manual_roots = {_root_key(r) for r in wr_manual_rows}
+	# READY stays 1:1 (actionable corruption). MANUAL/WAITING compress to unique
+	# causal roots so sibling symptoms of one PZ do not each full-penalize.
+	wrong_score_units = (
+		len(wr_ready_rows) + len(wr_manual_roots) * 0.5 + len(wr_waiting_roots) * 0.35
+	)
+
+	# Zero Rate score units: NO_ACTION / legitimate excluded via zero_n=actionable.
+	# WAITING_UPSTREAM compresses to unique roots at half the actionable weight.
+	zero_rows = zero.get("rows") or []
+	zero_waiting_rows = [
+		r
+		for r in zero_rows
+		if r.get("status")
+		in (
+			"DEPENDENCY_REPAIR_REQUIRED",
+			"VALUATION_POISON_DEPENDENCY",
+		)
+		or "WAITING" in str(r.get("planner_status") or "")
+	]
+	zero_waiting_roots = {_root_key(r) for r in zero_waiting_rows}
+	zero_non_waiting = max(0, zero_n - len(zero_waiting_rows))
+	zero_score_units = zero_non_waiting * 0.5 + len(zero_waiting_roots) * 0.25
+
 	riv_by = riv.get("by_status") or {}
 	riv_actionable = int(riv.get("actionable_count") or 0)
 	if not riv_actionable and riv.get("rows"):
@@ -193,13 +233,14 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ int(lma.get("repairable") or 0)
 	)
 	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
-	# v5.3.0: include I1 and manufacture-linked negative-rate pressure in the score.
+	# v5.3.7: Wrong/Zero WAITING compressed to unique roots; SABB is derived-state
+	# (report bundle) weighted like waiting-bin, not as primary SLE corruption.
 	i1_n = int(i1.get("count") or 0)
 	penalty = (
 		posting_n * 0.25
-		+ zero_n * 0.5
-		+ wrong_n
-		+ sabb_n
+		+ zero_score_units
+		+ wrong_score_units
+		+ sabb_n * 0.15
 		+ bin_n * 1.0
 		+ bin_waiting * 0.15
 		+ gl_n * 1.5
@@ -216,7 +257,11 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
-		"Integrity Score Version": "5.3.5",
+		"Integrity Score Version": "5.3.7",
+		"Wrong Rate Score Units": round(wrong_score_units, 2),
+		"Zero Rate Score Units": round(zero_score_units, 2),
+		"Wrong Rate Waiting Roots": len(wr_waiting_roots),
+		"Zero Rate Waiting Roots": len(zero_waiting_roots),
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
 		"Wrong Rate Complete": wr_complete,
@@ -418,6 +463,13 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 
 
 def _broken_sabb() -> int:
+	"""Count Serial and Batch Bundle rows that disagree with SLE economics.
+
+	v5.3.7: compare ``sabb.total_amount`` to SLE ``stock_value_difference``
+	(currency precision), not ``avg_rate`` vs ``|SVD|/qty`` — fractional qty
+	makes unit-rate noise look like thousands of false Broken SABB rows.
+	Caps at 500 for dashboard parity.
+	"""
 	import frappe
 
 	try:
@@ -429,10 +481,9 @@ def _broken_sabb() -> int:
 					FROM `tabSerial and Batch Bundle` sabb
 					JOIN `tabStock Ledger Entry` sle
 						ON sle.serial_and_batch_bundle=sabb.name AND sle.is_cancelled=0
-					WHERE ABS(IFNULL(sabb.avg_rate,0)) > 0.0001
-					  AND ABS(
-					        IFNULL(sabb.avg_rate,0)
-					        - IFNULL(IF(sle.actual_qty<0, sle.outgoing_rate, sle.incoming_rate),0)
+					WHERE ABS(
+					        IFNULL(sabb.total_amount,0)
+					        - IFNULL(sle.stock_value_difference,0)
 					      ) > 1
 					LIMIT 500
 				) t

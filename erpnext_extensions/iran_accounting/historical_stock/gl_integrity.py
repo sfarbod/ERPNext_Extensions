@@ -38,6 +38,61 @@ def _sle_abs_inventory_value(voucher_no: str) -> float:
 	return abs(flt(row[0][0] if row else 0))
 
 
+def _inventory_account(amap: dict, warehouse: str | None) -> str | None:
+	if not warehouse:
+		return None
+	info = amap.get(warehouse) if amap else None
+	if isinstance(info, dict):
+		return info.get("account")
+	return info
+
+
+def _empty_gl_is_legitimate(voucher_no: str, purpose: str = "") -> dict:
+	"""True when ERPNext correctly posts no GL (same stock account / zero value).
+
+	Material Transfer / Repack / Manufacture between warehouses that share one
+	inventory account produce an empty GL map — that is G0, not G2_MISSING.
+	Zero-SVD manufactures with no posted GL are also healthy.
+	"""
+	out = {
+		"legitimate": False,
+		"reason": None,
+		"inventory_accounts": [],
+		"expected_gl_rows": 0,
+	}
+	if not voucher_no or not frappe.db.exists("Stock Entry", voucher_no):
+		return out
+	se = frappe.get_doc("Stock Entry", voucher_no)
+	try:
+		amap = se.get_inventory_account_map() or {}
+		expected = se.get_gl_entries(amap) or []
+	except Exception as exc:
+		out["reason"] = f"expected_gl_error:{exc}"
+		return out
+	out["expected_gl_rows"] = len(expected)
+	accounts: set[str] = set()
+	for row in se.items:
+		for wh in (row.s_warehouse, row.t_warehouse):
+			acc = _inventory_account(amap, wh)
+			if acc:
+				accounts.add(str(acc))
+	out["inventory_accounts"] = sorted(accounts)
+	sle_abs = _sle_abs_inventory_value(voucher_no)
+	if expected:
+		out["reason"] = "expected_gl_nonempty"
+		return out
+	if sle_abs <= VALUE_EPS:
+		out["legitimate"] = True
+		out["reason"] = "zero_sle_value_no_gl_expected"
+		return out
+	if len(accounts) <= 1:
+		out["legitimate"] = True
+		out["reason"] = "single_inventory_account_nets_to_zero_gl"
+		return out
+	out["reason"] = "cross_account_but_empty_expected_gl"
+	return out
+
+
 def classify_stock_entry_gl(voucher_no: str) -> dict:
 	se = frappe.db.get_value(
 		"Stock Entry",
@@ -83,8 +138,13 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		# Micro IRR tolerance only for large economic magnitudes (not tiny GL stubs).
 		return scale >= 10_000 and diff <= 1000
 
+	empty_legit = None
 	if se.docstatus == 1 and not gl:
-		klass = G2_MISSING
+		empty_legit = _empty_gl_is_legitimate(voucher_no, purpose)
+		if empty_legit.get("legitimate"):
+			klass = G0_HEALTHY
+		else:
+			klass = G2_MISSING
 	elif abs(debit - credit) > VALUE_EPS:
 		klass = G3_UNBALANCED
 	elif poisoned:
@@ -118,6 +178,10 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 	else:
 		role = GL_MANUAL
 
+	reason = klass
+	if empty_legit and empty_legit.get("legitimate"):
+		reason = f"G0_HEALTHY — {empty_legit.get('reason')}"
+
 	return {
 		"topic": "GL",
 		"voucher": voucher_no,
@@ -130,12 +194,13 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		"expected_credit": expected,
 		"sle_abs_value": sle_abs,
 		"difference": abs(debit - credit) if klass == G3_UNBALANCED else abs(gl_inventory - (sle_abs if sle_abs > VALUE_EPS else expected)),
-		"reason": klass,
+		"reason": reason,
 		"eligible": klass in (G1_ECONOMICALLY_WRONG, G2_MISSING, G3_UNBALANCED) and not poisoned,
 		"confidence": CONFIDENCE_LIKELY if klass == G1_ECONOMICALLY_WRONG else CONFIDENCE_EXACT,
 		"gl_rows": len(gl),
 		"sle_poisoned": bool(poisoned),
 		"is_root": role == GL_ROOT,
+		"empty_gl_legitimacy": empty_legit,
 		"dimensions": [
 			{
 				"account": r.account,
