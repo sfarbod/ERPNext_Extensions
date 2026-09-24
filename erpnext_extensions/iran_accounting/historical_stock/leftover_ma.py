@@ -417,7 +417,12 @@ def restore_leftover_ma_after_riv(item=None, warehouse=None) -> dict:
 
 
 def on_repost_item_valuation_update(doc, method=None):
-	"""Hook: after official RIV completes, leftover-MA must survive."""
+	"""After official RIV completes, leftover-MA must survive.
+
+	ERPNext worker completion is ``repost()`` → ``set_status("Completed")`` →
+	``Document.db_set``. ``db_set`` runs ``on_change``, not ``on_update``.
+	Bind this function to ``on_change`` (and keep on_update for full saves).
+	"""
 	if str(getattr(doc, "status", "") or "") != "Completed":
 		return
 	if frappe.flags.get("leftover_ma_riv_hook"):

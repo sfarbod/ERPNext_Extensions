@@ -436,6 +436,10 @@ doc_events = {
 	},
 	"Repost Item Valuation": {
 		"validate": "erpnext_extensions.consignment_stock.material_loan.repost_guards.validate_repost_item_valuation",
+		# Worker RIV completes via Document.db_set("status", "Completed"), which
+		# runs on_change — not on_update. on_update / on_update_after_submit only
+		# cover a full save path and miss execute_reposting_entry.
+		"on_change": "erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
 		"on_update": "erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
 		"on_update_after_submit": [
 			"erpnext_extensions.consignment_stock.material_loan.repost_guards.on_repost_completed",
