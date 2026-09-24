@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from erpnext_extensions.iran_accounting.historical_stock.job_card_flow import (
 	JC_BALANCED,
@@ -183,3 +184,157 @@ class TestJobCardEquation(unittest.TestCase):
 	def test_paykar_token(self):
 		self.assertTrue(warehouse_is_paykar("انبار پایکار تولید"))
 		self.assertFalse(warehouse_is_paykar("انبار ملزومات مصرفی اسپاد"))
+
+	def test_shared_paykar_bin_caps_to_equation_remainder(self):
+		"""Bin over-count across open Job Cards must not force MANUAL."""
+		from unittest.mock import patch
+
+		from erpnext_extensions.iran_accounting.historical_stock.job_card_flow import (
+			reconstruct_job_card_flow,
+		)
+
+		jc = SimpleNamespace(
+			name="JC-OPEN-1",
+			status="Work In Progress",
+			work_order="WO-1",
+			docstatus=0,
+			for_quantity=100,
+			total_completed_qty=0,
+			company="C",
+		)
+		se = SimpleNamespace(
+			name="STE-T",
+			purpose="Material Transfer for Manufacture",
+			is_return=0,
+			work_order="WO-1",
+			job_card="JC-OPEN-1",
+		)
+		detail = SimpleNamespace(
+			item_code="RM1",
+			qty=1000,
+			s_warehouse="Approved",
+			t_warehouse="انبار پایکار خط تولید",
+			is_scrap_item=0,
+			is_finished_item=0,
+		)
+
+		def gv(doctype, name=None, fieldname=None, as_dict=False, **kwargs):
+			# signatures: get_value(dt, name, fields, as_dict=) OR get_value(dt, filters, fieldname)
+			if doctype == "Job Card":
+				return jc
+			if doctype == "Bin":
+				return 50000.0
+			return None
+
+		with (
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.job_card_flow.frappe.db.get_value",
+				side_effect=gv,
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.job_card_flow._stock_entries_for_job_card",
+				return_value=([se], True),
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.job_card_flow.frappe.db.sql",
+				return_value=[detail],
+			),
+		):
+			out = reconstruct_job_card_flow("JC-OPEN-1")
+		self.assertTrue(out.get("shared_paykar_bin"))
+		self.assertEqual(out["status"], JC_OPEN_VALID)
+		self.assertAlmostEqual(out["remaining"], 1000.0)
+		self.assertAlmostEqual(out["residual"], 0.0)
+
+
+class TestManufactureWrongRateProvenance(unittest.TestCase):
+	def test_manufacture_refuses_previous_healthy_exact(self):
+		from unittest.mock import patch
+
+		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+
+		raw = type(
+			"R",
+			(),
+			{
+				"name": "sed1",
+				"parent": "STE-MFG-1",
+				"item_code": "FG1",
+				"qty": 10,
+				"basic_rate": 0,
+				"valuation_rate": 0,
+				"amount": 0,
+				"s_warehouse": None,
+				"t_warehouse": "FG-WH",
+				"batch_no": None,
+				"purpose": "Manufacture",
+				"posting_date": "2026-01-01",
+				"posting_time": "10:00:00",
+				"company": "C",
+				"allow_zero_valuation_rate": 0,
+				"is_finished_item": 1,
+				"is_scrap_item": 0,
+				"serial_and_batch_bundle": None,
+			},
+		)()
+
+		def fake_classify(raw_row, _cache=None):
+			return {
+				"voucher": "STE-MFG-1",
+				"voucher_detail": "sed1",
+				"item": "FG1",
+				"qty": 10,
+				"current_rate": 0,
+				"proposed_rate": 3107,
+				"expected": 3107,
+				"confidence": "EXACT",
+				"eligible": True,
+				"status": "RECONSTRUCTABLE",
+				"source_of_truth": "previous_healthy_sle",
+				"purpose": "Manufacture",
+				"is_finished_item": 1,
+				"flags": ["ZERO_BASIC_RATE"],
+			}
+
+		with (
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.wrong_rate._scan_se_flags",
+				return_value=[raw],
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.wrong_rate._scan_sle_flags",
+				return_value=[],
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.wrong_rate.classify_zero_row",
+				side_effect=fake_classify,
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.manufacture.preview_manufacture_voucher",
+				return_value={
+					"status": "HEALTHY",
+					"eligible": False,
+					"expected_target_rate": 0,
+					"input_health": {"status": "healthy"},
+				},
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.wrong_rate._paired_sle_rate",
+				return_value=0,
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.wrong_rate._force_include_patient_zeros",
+				lambda *a, **k: None,
+			),
+		):
+			scan = scan_wrong_rates(voucher="STE-MFG-1", limit=10)
+		rows = scan.get("rows") or []
+		self.assertTrue(rows)
+		row = rows[0]
+		self.assertNotEqual(row.get("confidence"), "EXACT")
+		self.assertFalse(row.get("eligible"))
+		self.assertEqual(row.get("wrong_reason"), "MANUAL_MANUFACTURE_GENERIC_RATE")
+
+
+if __name__ == "__main__":
+	unittest.main()

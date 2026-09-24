@@ -392,19 +392,19 @@ def execute(plan_obj: RepairPlan, *, dry_run: bool = True) -> dict:
 
 		out = repair_posting_order_selected([row], dry_run=dry_run)
 	elif reason == REASON_BIN_DRIFT:
-		from erpnext_extensions.iran_accounting.stock_posting_order.replay import _update_bin
+		from erpnext_extensions.iran_accounting.stock_posting_order.replay import _bin_from_last_sle
 
 		if dry_run:
 			out = {
 				"ok": True,
 				"dry_run": True,
-				"would": "rebuild_bin",
+				"would": "rebuild_bin_from_last_sle",
 				"item": plan_obj.item,
 				"warehouse": plan_obj.warehouse,
 			}
 		else:
-			_update_bin(plan_obj.item, plan_obj.warehouse)
-			out = {"ok": True, "written": True, "economic_writes": 0, "path": "bin_rebuild"}
+			_bin_from_last_sle(plan_obj.item, plan_obj.warehouse)
+			out = {"ok": True, "written": True, "economic_writes": 0, "path": "bin_rebuild_from_last_sle"}
 	elif reason == REASON_GL_DRIFT:
 		from erpnext_extensions.iran_accounting.historical_stock.gl_integrity import rebuild_gl_for_voucher
 

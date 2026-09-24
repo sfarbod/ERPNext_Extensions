@@ -211,11 +211,18 @@ def reconstruct_job_card_flow(job_card: str) -> dict:
 
 	completed = _job_card_is_completed(jc.status, jc.docstatus)
 	remaining = None
+	shared_paykar_bin = False
 	if not completed and items and paykar_wh:
 		remaining = 0.0
 		for item in items:
 			for wh in paykar_wh:
 				remaining += flt(frappe.db.get_value("Bin", {"item_code": item, "warehouse": wh}, "actual_qty"))
+		# Paykar bins are shared across open Job Cards. Bin.actual_qty is not
+		# attributable to one JC when it exceeds that JC's unconsumed transfer.
+		eq_rem = max(0.0, flt(transferred) - flt(returned) - flt(consumed) - flt(scrap))
+		if remaining > eq_rem + QTY_EPS:
+			shared_paykar_bin = True
+			remaining = eq_rem
 
 	classified = classify_job_card_equation(
 		transferred=transferred,
@@ -226,6 +233,10 @@ def reconstruct_job_card_flow(job_card: str) -> dict:
 		completed=completed,
 		linked=linked,
 	)
+	if shared_paykar_bin and classified.get("status") in (JC_OPEN_VALID, JC_BALANCED):
+		classified["reason"] = "open equation with valid Paykar remainder (shared bin capped to JC transfer)"
+	elif shared_paykar_bin:
+		classified["shared_paykar_bin"] = True
 	return {
 		"job_card": jc.name,
 		"work_order": jc.work_order,
@@ -236,6 +247,7 @@ def reconstruct_job_card_flow(job_card: str) -> dict:
 		"total_completed_qty": flt(jc.total_completed_qty),
 		"vouchers": vouchers,
 		"linked": linked,
+		"shared_paykar_bin": shared_paykar_bin,
 		"primary_state": "LEGITIMATE" if classified["status"] in (JC_BALANCED, JC_OPEN_VALID) else "MANUAL",
 		"root_family": "MANUFACTURE_FLOW",
 		"reason": "MANUFACTURE_FLOW",
@@ -320,6 +332,8 @@ def _job_card_reason_key(row: dict) -> str:
 	if "open" in reason.lower() and "consumed more" in reason.lower():
 		return "open_over_consumption"
 	if "open remainder" in reason.lower():
+		if row.get("shared_paykar_bin"):
+			return "open_shared_paykar_bin_capped"
 		return "open_paykar_remainder_mismatch"
 	if not flt(row.get("transferred")) and (
 		flt(row.get("consumed")) or flt(row.get("returned")) or flt(row.get("scrap"))

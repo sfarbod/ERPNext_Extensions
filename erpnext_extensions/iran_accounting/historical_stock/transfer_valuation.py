@@ -140,9 +140,12 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["classification"] = TOOL_LIMIT
 		return out
 
-	# --- Outgoing SLE on this voucher (source warehouse) ---
-	out_sle = _outgoing_sle(voucher, item, s_wh, batch=batch)
-	in_sle = _incoming_sle(voucher, item, t_wh, batch=batch)
+	# --- Outgoing SLE for THIS detail only (never a sibling row) ---
+	# Multi-batch Material Issue / Transfer often leave SLE.batch_no empty while
+	# Serial and Batch Bundle carries identity. Matching empty batch_no + LIMIT 1
+	# previously stole a sibling row's SVD (e.g. 223282) and stamped false EXACT.
+	out_sle = _outgoing_sle(voucher, item, s_wh, batch=batch, voucher_detail=detail)
+	in_sle = _incoming_sle(voucher, item, t_wh, batch=batch, voucher_detail=detail)
 
 	# Source rate from outgoing SVD / qty (authoritative economic value leaving source).
 	source_rate = 0.0
@@ -158,7 +161,8 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			source_rate = abs(orate)
 			source_kind = "outgoing_sle_rate"
 		elif abs(oq) > QTY_EPS and abs(svd) <= VALUE_EPS and abs(orate) <= RATE_EPS:
-			# Qty left source with zero economic value — do NOT invent from previous_healthy.
+			# Qty left source with zero economic value — do NOT invent from previous_healthy
+			# and do NOT copy a sibling detail rate.
 			out["evidence"]["outgoing_sle"] = {
 				"name": out_sle.name,
 				"warehouse": out_sle.warehouse,
@@ -167,12 +171,13 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 				"stock_value_difference": svd,
 				"qty_after": out_sle.qty_after_transaction,
 				"stock_value": out_sle.stock_value,
+				"voucher_detail_no": getattr(out_sle, "voucher_detail_no", None),
 			}
 			out["classification"] = WAITING_UPSTREAM
 			out["confidence"] = CONFIDENCE_AMBIGUOUS
 			out["reason"] = (
 				"outgoing qty moved with zero stock_value_difference / zero outgoing_rate "
-				"— refuse previous_healthy invention; repair upstream source valuation first"
+				"— refuse sibling/previous_healthy invention; repair this identity upstream first"
 			)
 			out["authoritative_source"] = None
 			out["expected_rate"] = 0.0
@@ -190,6 +195,7 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			"stock_value_difference": svd,
 			"qty_after": out_sle.qty_after_transaction,
 			"stock_value": out_sle.stock_value,
+			"voucher_detail_no": getattr(out_sle, "voucher_detail_no", None),
 		}
 
 	# Fallback: previous healthy SLE at source warehouse before posting.
@@ -253,23 +259,51 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["reason"] = "current rate already matches authoritative transfer source"
 		return out
 
-	# Confidence: SVD-based outgoing is EXACT; previous_healthy alone is RECONSTRUCTABLE.
-	if source_kind == "outgoing_sle_svd":
+	# Material Issue has no transfer target identity. A nonzero outgoing SVD on
+	# *this* detail merely restates the current SLE — it is not independent
+	# provenance for a zero-rate sibling. Refuse EXACT when purpose is Issue
+	# and current is already zero/corrupt relative to warehouse MA disagreement.
+	if purpose == "Material Issue" and source_kind in ("outgoing_sle_svd", "outgoing_sle_rate"):
+		# Issue reconstruction: outgoing SLE of this detail is the defect itself
+		# when current_rate≈0 and source_rate came from the same zero/nonzero row
+		# we are classifying. Independent proof must come from elsewhere.
+		if abs(current_rate) <= RATE_EPS:
+			out["classification"] = WAITING_UPSTREAM
+			out["confidence"] = CONFIDENCE_AMBIGUOUS
+			out["expected_rate"] = 0.0
+			out["authoritative_source"] = None
+			out["reason"] = (
+				"Material Issue zero rate — refuse treating this/sibling outgoing SVD as "
+				"independent EXACT provenance; require batch-inward or proven MA evidence"
+			)
+			return out
+
+	# Confidence: SVD-based outgoing is EXACT only for true transfers (source→target).
+	if purpose in TRANSFER_PURPOSES and source_kind == "outgoing_sle_svd":
 		out["confidence"] = CONFIDENCE_EXACT
 		out["classification"] = EXACT
 		out["reason"] = (
 			f"target rate {current_rate} ≠ source outgoing SVD rate {expected} "
 			f"(authoritative transfer propagation)"
 		)
-	elif source_kind == "outgoing_sle_rate":
+	elif purpose in TRANSFER_PURPOSES and source_kind == "outgoing_sle_rate":
 		out["confidence"] = CONFIDENCE_EXACT
 		out["classification"] = EXACT
 		out["reason"] = f"target rate {current_rate} ≠ source outgoing_rate {expected}"
-	else:
+	elif purpose in TRANSFER_PURPOSES:
 		out["confidence"] = CONFIDENCE_EXACT
 		out["classification"] = RECONSTRUCTABLE
 		out["reason"] = (
 			f"target rate {current_rate} ≠ previous healthy source SLE rate {expected}"
+		)
+	else:
+		# Material Issue / Consumption: previous_healthy may help but is not EXACT alone
+		# when warehouse MA and batch-inward disagree (checked by callers via sources).
+		out["confidence"] = CONFIDENCE_LIKELY
+		out["classification"] = RECONSTRUCTABLE
+		out["reason"] = (
+			f"issue/consumption rate {current_rate} ≠ candidate source rate {expected} "
+			f"({source_kind}); not EXACT without independent corroboration"
 		)
 	return out
 
@@ -315,7 +349,9 @@ def apply_transfer_reconstruction_to_row(row: dict, *, cache: dict | None = None
 		row["manual_lane"] = WAITING_UPSTREAM
 		return row
 
-	if cls in (EXACT, RECONSTRUCTABLE) and abs(exp) > RATE_EPS:
+	# Only true EXACT transfer provenance is auto-repairable.
+	# RECONSTRUCTABLE / LIKELY (e.g. Material Issue candidate rates) stay non-eligible.
+	if cls == EXACT and abs(exp) > RATE_EPS:
 		row["proposed_rate"] = exp
 		row["proposed_amount"] = exp * abs(flt(row.get("qty") or 0))
 		row["expected"] = exp
@@ -329,14 +365,24 @@ def apply_transfer_reconstruction_to_row(row: dict, *, cache: dict | None = None
 		row["message"] = evidence.get("reason")
 		row["wrong_reason"] = "TRANSFER_AUTHORITATIVE_RECONSTRUCTION"
 		row["manual_reason"] = None
-		# MATCHED_BUT_CORRUPT when SE==SLE but both disagree with expected.
 		cur = flt(row.get("current_rate") or row.get("basic_rate") or 0)
 		if abs(cur - exp) > 1 and abs(cur) > RATE_EPS:
-			flags = list(row.get("flags") or [])
-			if "MATCHED_BUT_CORRUPT" not in flags and abs(cur) > RATE_EPS:
-				# only flag when SE and SLE already agreed (caller may set)
-				pass
 			row["matched_but_corrupt_candidate"] = True
+		return row
+
+	if cls == RECONSTRUCTABLE and abs(exp) > RATE_EPS:
+		row["proposed_rate"] = exp
+		row["expected"] = exp
+		row["expected_rate"] = exp
+		row["source_of_truth"] = evidence.get("authoritative_source")
+		row["rate_source"] = evidence.get("authoritative_source")
+		row["confidence"] = evidence.get("confidence") or CONFIDENCE_LIKELY
+		row["status"] = "MANUAL_REVIEW"
+		row["eligible"] = False
+		row["difference"] = exp - flt(row.get("current_rate") or row.get("current") or 0)
+		row["message"] = evidence.get("reason")
+		row["wrong_reason"] = "ISSUE_RATE_NEEDS_CORROBORATION"
+		row["manual_lane"] = USER_ACTION_REQUIRED
 		return row
 
 	if cls == USER_ACTION_REQUIRED:
@@ -407,8 +453,13 @@ def collapse_transfer_roots(rows: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _outgoing_sle(voucher, item, warehouse=None, batch=None):
-	conds = [
+def _outgoing_sle(voucher, item, warehouse=None, batch=None, voucher_detail=None):
+	"""Resolve the outgoing SLE for one Stock Entry Detail.
+
+	Prefer ``voucher_detail_no``. Never fall back to a sibling detail when the
+	detail name is known — empty SLE.batch_no must not OR-match unrelated rows.
+	"""
+	base = [
 		"voucher_type='Stock Entry'",
 		"voucher_no=%s",
 		"item_code=%s",
@@ -417,28 +468,41 @@ def _outgoing_sle(voucher, item, warehouse=None, batch=None):
 	]
 	args: list = [voucher, item]
 	if warehouse:
-		conds.append("warehouse=%s")
+		base.append("warehouse=%s")
 		args.append(warehouse)
-	if batch:
-		conds.append("(batch_no=%s OR IFNULL(batch_no,'')='')")
-		args.append(batch)
-	rows = frappe.db.sql(
-		f"""
+
+	select = """
 		SELECT name, warehouse, actual_qty, outgoing_rate, incoming_rate, valuation_rate,
-		       stock_value_difference, stock_value, qty_after_transaction, posting_datetime, batch_no
+		       stock_value_difference, stock_value, qty_after_transaction, posting_datetime,
+		       batch_no, voucher_detail_no
 		FROM `tabStock Ledger Entry`
-		WHERE {" AND ".join(conds)}
+		WHERE {where}
 		ORDER BY posting_datetime, creation
 		LIMIT 1
-		""",
-		args,
-		as_dict=True,
-	)
+	"""
+
+	if voucher_detail:
+		conds = base + ["voucher_detail_no=%s"]
+		rows = frappe.db.sql(select.format(where=" AND ".join(conds)), args + [voucher_detail], as_dict=True)
+		if rows:
+			return rows[0]
+		# Detail known but no SLE linked — do not steal a sibling.
+		return None
+
+	if batch:
+		# Strict batch match only. Empty batch_no is not a wildcard for siblings.
+		conds = base + ["batch_no=%s"]
+		rows = frappe.db.sql(select.format(where=" AND ".join(conds)), args + [batch], as_dict=True)
+		if rows:
+			return rows[0]
+		return None
+
+	rows = frappe.db.sql(select.format(where=" AND ".join(base)), args, as_dict=True)
 	return rows[0] if rows else None
 
 
-def _incoming_sle(voucher, item, warehouse=None, batch=None):
-	conds = [
+def _incoming_sle(voucher, item, warehouse=None, batch=None, voucher_detail=None):
+	base = [
 		"voucher_type='Stock Entry'",
 		"voucher_no=%s",
 		"item_code=%s",
@@ -447,20 +511,34 @@ def _incoming_sle(voucher, item, warehouse=None, batch=None):
 	]
 	args: list = [voucher, item]
 	if warehouse:
-		conds.append("warehouse=%s")
+		base.append("warehouse=%s")
 		args.append(warehouse)
-	rows = frappe.db.sql(
-		f"""
+
+	select = """
 		SELECT name, warehouse, actual_qty, outgoing_rate, incoming_rate, valuation_rate,
-		       stock_value_difference, stock_value, qty_after_transaction, posting_datetime, batch_no
+		       stock_value_difference, stock_value, qty_after_transaction, posting_datetime,
+		       batch_no, voucher_detail_no
 		FROM `tabStock Ledger Entry`
-		WHERE {" AND ".join(conds)}
+		WHERE {where}
 		ORDER BY posting_datetime, creation
 		LIMIT 1
-		""",
-		args,
-		as_dict=True,
-	)
+	"""
+
+	if voucher_detail:
+		conds = base + ["voucher_detail_no=%s"]
+		rows = frappe.db.sql(select.format(where=" AND ".join(conds)), args + [voucher_detail], as_dict=True)
+		if rows:
+			return rows[0]
+		return None
+
+	if batch:
+		conds = base + ["batch_no=%s"]
+		rows = frappe.db.sql(select.format(where=" AND ".join(conds)), args + [batch], as_dict=True)
+		if rows:
+			return rows[0]
+		return None
+
+	rows = frappe.db.sql(select.format(where=" AND ".join(base)), args, as_dict=True)
 	return rows[0] if rows else None
 
 

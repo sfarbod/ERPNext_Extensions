@@ -202,6 +202,32 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 									row["flags"] = flags_pre
 				except Exception as exc:
 					row["manufacture_preview_error"] = str(exc)[:200]
+			# Manufacture identities must not inherit generic previous_healthy EXACT.
+			# Only the native manufacture output contract (or explicit manufacture_pool)
+			# may mark Manufacture WR as auto-repairable.
+			mfg = row.get("manufacture_preview") or {}
+			auth_ok = bool(
+				mfg.get("eligible")
+				and abs(flt(mfg.get("expected_target_rate") or 0)) > RATE_EPS
+				and str(row.get("source_of_truth") or "")
+				in (
+					"5.3.0_manufacture_output_contract",
+					"manufacture_pool",
+					"manufacture_output_contract",
+				)
+			)
+			if not auth_ok and row.get("confidence") == CONFIDENCE_EXACT:
+				row["confidence"] = CONFIDENCE_AMBIGUOUS
+				row["eligible"] = False
+				row["status"] = "DEPENDENCY_REPAIR_REQUIRED" if mfg.get("status") == "DEPENDENCY_REPAIR_REQUIRED" else "MANUAL_REVIEW"
+				row["wrong_reason"] = "MANUAL_MANUFACTURE_GENERIC_RATE"
+				row["manual_lane"] = "WAITING_UPSTREAM" if (mfg.get("input_health") or {}).get("status") == "poisoned" else "USER_ACTION_REQUIRED"
+				row["message"] = (
+					(mfg.get("planner_note") if isinstance(mfg, dict) else None)
+					or "Manufacture Wrong Rate — refuse generic previous_healthy/sibling EXACT; "
+					"require native manufacture valuation contract"
+				)
+				row["kpi_bucket"] = "manual"
 		flags = classify_rate_flags(
 			qty=row.get("qty"),
 			basic_rate=g(raw, "basic_rate"),
