@@ -1,9 +1,16 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Leftover Moving Average after an authorized zero-value inbound (v5.3.4).
+"""Leftover Moving Average after an authorized zero-value inbound (v5.3.5).
 
 The zero inbound itself is never given an invented rate. Quantity is added with
 incoming value 0. Warehouse MA becomes leftover_value / new_qty. Downstream
 outgoing consumes that reconstructed MA.
+
+This is a VALUATION reason, not a user workflow. It applies only to
+receipt-like inbounds (Material Receipt, Material Transfer, Purchase Receipt).
+
+Never apply leftover-MA to Manufacture, Material Transfer for Manufacture,
+scrap, Reject, Paykar, or finished-good / scrap rows. Those belong to
+MANUFACTURE_FLOW.
 
 Opening-state / incomplete chains stay MANUAL.
 """
@@ -45,8 +52,108 @@ from erpnext_extensions.iran_accounting.historical_stock.zero_provenance import 
 	classify_zero_provenance,
 	fetch_identity_chain,
 )
+from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+	warehouse_matches_scrap_reject_waste,
+)
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import _update_bin
 from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
+
+# Receipt-like purposes only. Manufacture / MTFM / scrap / Reject are
+# MANUFACTURE_FLOW — leftover-MA receipt logic must not run there.
+LEFTOVER_MA_RECEIPT_PURPOSES = frozenset({"Material Receipt", "Material Transfer"})
+MANUFACTURE_FLOW_PURPOSES = frozenset(
+	{
+		"Manufacture",
+		"Material Transfer for Manufacture",
+		"Material Consumption for Manufacture",
+		"Repack",
+	}
+)
+PAYKAR_WAREHOUSE_TOKENS = ("پایکار", "paykar")
+
+
+def leftover_ma_receipt_eligible(
+	*,
+	voucher_type=None,
+	purpose=None,
+	warehouse=None,
+	is_scrap_item=0,
+	is_finished_item=0,
+) -> tuple[bool, str]:
+	"""True only for receipt-like inbounds on a non-manufacture warehouse.
+
+	Unit-testable: no database. Callers pass Stock Entry purpose / flags.
+	"""
+	if cint(is_scrap_item) or cint(is_finished_item):
+		return False, "MANUFACTURE_FLOW"
+	if warehouse_matches_scrap_reject_waste(warehouse):
+		return False, "MANUFACTURE_FLOW"
+	wn = (warehouse or "").strip().lower()
+	if wn and any(tok in wn for tok in PAYKAR_WAREHOUSE_TOKENS):
+		return False, "MANUFACTURE_FLOW"
+	vt = str(voucher_type or "")
+	if vt == "Purchase Receipt":
+		return True, ""
+	if purpose in MANUFACTURE_FLOW_PURPOSES:
+		return False, "MANUFACTURE_FLOW"
+	if purpose in LEFTOVER_MA_RECEIPT_PURPOSES:
+		return True, ""
+	if vt == "Stock Entry" and purpose:
+		return False, "MANUFACTURE_FLOW"
+	if vt and vt not in ("Stock Entry", "Purchase Receipt", ""):
+		return False, "MANUFACTURE_FLOW"
+	# Unknown purpose (unit tests without a voucher) — allow classify to continue.
+	if not purpose and not vt:
+		return True, ""
+	return False, "MANUFACTURE_FLOW"
+
+
+def _voucher_flow_context(voucher, item) -> dict:
+	if not voucher:
+		return {"voucher_type": "", "purpose": None, "is_scrap_item": 0, "is_finished_item": 0}
+	se = frappe.db.get_value("Stock Entry", voucher, ["purpose", "is_return"], as_dict=True)
+	if se:
+		det = (
+			frappe.db.get_value(
+				"Stock Entry Detail",
+				{"parent": voucher, "item_code": item},
+				["is_scrap_item", "is_finished_item"],
+				as_dict=True,
+			)
+			or {}
+		)
+		return {
+			"voucher_type": "Stock Entry",
+			"purpose": se.purpose,
+			"is_scrap_item": cint(det.get("is_scrap_item")),
+			"is_finished_item": cint(det.get("is_finished_item")),
+		}
+	if frappe.db.exists("Purchase Receipt", voucher):
+		return {
+			"voucher_type": "Purchase Receipt",
+			"purpose": None,
+			"is_scrap_item": 0,
+			"is_finished_item": 0,
+		}
+	vt = frappe.db.get_value("Stock Ledger Entry", {"voucher_no": voucher}, "voucher_type")
+	return {
+		"voucher_type": vt or "",
+		"purpose": None,
+		"is_scrap_item": 0,
+		"is_finished_item": 0,
+	}
+
+
+def leftover_ma_blocked_by_manufacture_flow(voucher, item, warehouse) -> str | None:
+	ctx = _voucher_flow_context(voucher, item)
+	ok, reason = leftover_ma_receipt_eligible(
+		voucher_type=ctx.get("voucher_type"),
+		purpose=ctx.get("purpose"),
+		warehouse=warehouse,
+		is_scrap_item=ctx.get("is_scrap_item"),
+		is_finished_item=ctx.get("is_finished_item"),
+	)
+	return None if ok else reason
 
 
 def replay_leftover_ma_series(rows: list, opening_qty=0, opening_value=0, *, honor_zero_vouchers=None) -> list[dict]:
@@ -696,6 +803,8 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 			**base,
 			"leftover_ma_status": "NO_ACTION",
 			"status": "NO_ACTION",
+			"primary_state": "LEGITIMATE",
+			"root_family": "VALUATION",
 			"reason": "current lot is economically zero — no leftover-MA repair",
 			"sql_updates": 0,
 		}
@@ -713,6 +822,20 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 		}
 
 	root = zov["voucher"]
+	flow_block = leftover_ma_blocked_by_manufacture_flow(root, item, warehouse)
+	if flow_block:
+		return {
+			**base,
+			**zov,
+			"voucher": root,
+			"leftover_ma_status": LEFTOVER_MA_MANUAL,
+			"status": LEFTOVER_MA_MANUAL,
+			"primary_state": "MANUAL",
+			"root_family": "MANUFACTURE_FLOW",
+			"reason": flow_block,
+			"eligible": False,
+			"sql_updates": 0,
+		}
 	if not _zero_inbound_authorized(root, item):
 		return {
 			**base,
@@ -767,6 +890,9 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 		"patient_zero": {"voucher_no": root},
 		"leftover_ma_status": LEFTOVER_MA_READY,
 		"status": LEFTOVER_MA_READY,
+		"primary_state": "READY",
+		"root_family": "VALUATION",
+		"reason": "LEFTOVER_MA",
 		"eligible": True,
 		"confidence": CONFIDENCE_EXACT,
 		"reason": "READY_LEFTOVER_MA — authorized zero inbound on valued stock",
@@ -865,6 +991,17 @@ def scan_leftover_ma(company=None, item_code=None, warehouse=None, limit=2000) -
 	if warehouse:
 		conds.append("sle.warehouse=%s")
 		args.append(warehouse)
+	# Receipt-like inbounds only. Manufacture / MTFM never enter leftover-MA.
+	conds.append(
+		"""(
+			sle.voucher_type='Purchase Receipt'
+			OR EXISTS (
+				SELECT 1 FROM `tabStock Entry` se
+				WHERE se.name=sle.voucher_no
+				  AND se.purpose IN ('Material Receipt','Material Transfer')
+			)
+		)"""
+	)
 	if company:
 		conds.append(
 			"(sle.voucher_type<>'Stock Entry' OR EXISTS (SELECT 1 FROM `tabStock Entry` se WHERE se.name=sle.voucher_no AND se.company=%s))"
@@ -901,6 +1038,7 @@ def scan_leftover_ma(company=None, item_code=None, warehouse=None, limit=2000) -
 	stamped["ready_count"] = sum(1 for r in stamped["rows"] if r.get("leftover_ma_status") == LEFTOVER_MA_READY)
 	stamped["manual_count"] = sum(1 for r in stamped["rows"] if r.get("leftover_ma_status") == LEFTOVER_MA_MANUAL)
 	stamped["no_action_count"] = sum(1 for r in stamped["rows"] if r.get("leftover_ma_status") == "NO_ACTION")
+	stamped["repairable"] = stamped["ready_count"]
 	return stamped
 
 
@@ -982,6 +1120,9 @@ def repair_leftover_ma_selected(rows: list[dict], *, dry_run=True) -> dict:
 
 
 def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
+	flow_block = leftover_ma_blocked_by_manufacture_flow(root_voucher, item, warehouse)
+	if flow_block:
+		raise frappe.ValidationError(f"leftover-MA does not apply to {flow_block}")
 	sim = simulate_leftover_ma(item, warehouse, root_voucher=root_voucher)
 	if not sim.get("ok"):
 		raise frappe.ValidationError(sim.get("reason") or "leftover-MA simulation failed")

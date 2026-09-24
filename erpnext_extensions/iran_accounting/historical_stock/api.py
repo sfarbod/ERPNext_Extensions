@@ -1246,6 +1246,75 @@ def sync_blockers_api(company=None, include_tool_limits=1, limit=500):
 	)
 
 
+@frappe.whitelist()
+def scan_job_card_flow_api(company=None, job_card=None, limit=500):
+	"""Read-only Job Card material-flow recon (one row per Job Card)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.job_card_flow import scan_job_card_flow
+
+	return scan_job_card_flow(company=company or None, job_card=job_card or None, limit=cint(limit) or 500)
+
+
+@frappe.whitelist()
+def verify_repair_api(item_code=None, warehouse=None, voucher=None):
+	"""Post-repair check: chain integrity + leftover-MA postcondition when applicable."""
+	_guard()
+	out = {"primary_state": "MANUAL", "ok": False}
+	if voucher:
+		out["voucher"] = voucher_integrity(voucher)
+	if item_code and warehouse:
+		out["chain"] = chain_integrity(item_code, warehouse)
+		try:
+			from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+				classify_leftover_ma_identity,
+			)
+
+			out["leftover_ma"] = classify_leftover_ma_identity(item_code, warehouse)
+		except Exception as exc:
+			out["leftover_ma_error"] = str(exc)
+	out["ok"] = True
+	return out
+
+
+@frappe.whitelist()
+def repair_safe_api(rows=None, dry_run=True):
+	"""Repair only READY roots. The tool chooses the family executor."""
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact READY root rows are required")
+	from erpnext_extensions.iran_accounting.historical_stock.simple_model import (
+		PRIMARY_READY,
+		FAMILY_VALUATION,
+		primary_state,
+		root_family,
+		REASON_LEFTOVER_MA,
+		reason_code,
+	)
+
+	applied = []
+	blocked = []
+	for raw in parsed:
+		state = primary_state(raw)
+		if state != PRIMARY_READY and str(raw.get("leftover_ma_status") or "") != "READY_LEFTOVER_MA":
+			blocked.append({"row": raw, "error": f"not READY ({state})", "status": "BLOCKED"})
+			continue
+		family = root_family(raw)
+		reason = reason_code(raw)
+		if reason == REASON_LEFTOVER_MA or raw.get("topic") == "LEFTOVER_MA":
+			from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+				repair_leftover_ma_selected,
+			)
+
+			applied.append(repair_leftover_ma_selected([raw], dry_run=is_dry))
+		elif family == FAMILY_VALUATION and raw.get("topic") in ("WRONG_RATE", None):
+			applied.append(repair_wrong_rate_selected([raw], dry_run=is_dry))
+		else:
+			blocked.append({"row": raw, "error": f"no safe executor for {family}/{reason}", "status": "MANUAL"})
+	return {"dry_run": is_dry, "applied": applied, "blocked": blocked}
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair

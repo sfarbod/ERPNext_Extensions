@@ -216,7 +216,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
-		"Integrity Score Version": "5.3.0",
+		"Integrity Score Version": "5.3.5",
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
 		"Wrong Rate Complete": wr_complete,
@@ -278,6 +278,13 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Replay Pending": replay["pending"],
 		"Replay Complete": replay["complete"],
 		"Average Replay Time": replay["average_s"],
+		"Ready to Repair": repairable,
+		"Needs Review": (wrong.get("manual") or 0) + likely + int(lma.get("manual_count") or 0),
+		"Legitimate / No Action": int((lma.get("by_status") or {}).get("NO_ACTION") or 0)
+		+ int(zero_no_action or 0)
+		+ int(zero_scrap_legit or 0),
+		"Blocked": wr_waiting + int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0) + int(i1_by.get("WAITING_I1") or 0),
+		"Failed": riv_actionable,
 	}
 	return {
 		"start_local": start.isoformat(timespec="seconds"),
