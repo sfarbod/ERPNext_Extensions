@@ -233,34 +233,68 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ int(lma.get("repairable") or 0)
 	)
 	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
-	# v5.3.7: Wrong/Zero WAITING compressed to unique roots; SABB is derived-state
-	# (report bundle) weighted like waiting-bin, not as primary SLE corruption.
+	# v5.3.7 score audit (see Integrity Score Version):
+	# OLD (5.3.5): penalty = raw Zero*0.5 + raw Wrong*1 + SABB*1 + GL*1.5 + ...
+	#              score = 100 - 18*log10(1+penalty)
+	#   Effect: one Patient Zero with 200 WAITING symptoms scored like 200 roots;
+	#   100 same-account empty-GL false G2 alone capped Integrity near 60 forever.
+	# NEW (5.3.7): READY / Broken Bin / I1 keep full weight. MANUAL+WAITING compress
+	#   to unique patient-zero roots at soft weight. Coefficient 10 so a green-gate
+	#   site with only acknowledged MANUAL residuals can reach the 90s without
+	#   hiding raw Wrong Rate / Zero Rate / Patient Zero dashboard counts.
 	i1_n = int(i1.get("count") or 0)
+	zero_recon_n = int(zero_reconstructable or 0)
+	gl_residual = max(0, int(gl_n or 0) - int(gl_ready or 0))
+	ready_pressure = (
+		len(wr_ready_rows)
+		+ zero_recon_n
+		+ int(bin_n or 0)
+		+ i1_n
+		+ int(gl_ready or 0)
+		+ int(ready_i4 or 0)
+		+ int(lma.get("ready_count") or 0)
+	)
+	# Soft residual weights when the tool has no deterministic READY left and
+	# critical gates (I1 / Bin) are green — MANUAL/WAITING remain in raw KPIs.
+	soft = ready_pressure == 0 and i1_n == 0 and int(bin_n or 0) == 0
+	rw = 0.04 if soft else 0.12
+	zw = 0.03 if soft else 0.08
+	znw = 0.05 if soft else 0.25
+	riv_w = 0.12 if soft else 0.4
+	i4_w = 0.35 if soft else 0.75
 	penalty = (
 		posting_n * 0.25
-		+ zero_score_units
-		+ wrong_score_units
-		+ sabb_n * 0.15
+		+ len(wr_ready_rows) * 1.0
+		+ zero_recon_n * 0.5
+		+ zero_non_waiting * znw
+		+ len(wr_manual_roots) * rw
+		+ len(wr_waiting_roots) * rw
+		+ len(zero_waiting_roots) * zw
+		+ sabb_n * 0.05
 		+ bin_n * 1.0
 		+ bin_waiting * 0.15
-		+ gl_n * 1.5
-		# Score only actionable Failed RIV (not historical/superseded raw count).
-		+ riv_actionable * 1.5
-		+ i4_n * 0.75
+		+ gl_ready * 1.5
+		+ gl_residual * 0.2
+		+ riv_actionable * riv_w
+		+ i4_n * i4_w
 		+ i1_n * 1.25
 	)
 	from math import log10
 
-	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
+	# Soft-landing coefficient when only acknowledged residuals remain.
+	coeff = 8 if soft else 10
+	integrity_score = max(0, min(100, round(100 - coeff * log10(1 + penalty))))
 	i4_by = i4.get("by_status") or {}
 	i1_by = i1.get("by_status") or {}
 	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
 		"Integrity Score Version": "5.3.7",
+		"Integrity Penalty": round(penalty, 2),
 		"Wrong Rate Score Units": round(wrong_score_units, 2),
 		"Zero Rate Score Units": round(zero_score_units, 2),
 		"Wrong Rate Waiting Roots": len(wr_waiting_roots),
+		"Wrong Rate Manual Roots": len(wr_manual_roots),
 		"Zero Rate Waiting Roots": len(zero_waiting_roots),
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,

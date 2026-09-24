@@ -149,15 +149,32 @@ def classify_stock_entry_gl(voucher_no: str) -> dict:
 		klass = G3_UNBALANCED
 	elif poisoned:
 		klass = G4_POISONED_SLE
-	elif sle_abs > VALUE_EPS and _near(gl_inventory, sle_abs):
-		# GL matches SLE economic truth even when SE header totals are stale.
-		klass = G0_HEALTHY
-	elif transferish:
-		klass = G0_HEALTHY
-	elif expected > VALUE_EPS and not _near(gl_inventory, expected):
-		klass = G1_ECONOMICALLY_WRONG
 	else:
-		klass = G0_HEALTHY
+		# Prefer native expected GL map when available. Manufacture/Repack net SLE
+		# residual must NOT be compared to gross GL (false G1 on 36928-class).
+		posted_matches_native = False
+		try:
+			se_doc = frappe.get_doc("Stock Entry", voucher_no)
+			native = se_doc.get_gl_entries(se_doc.get_inventory_account_map()) or []
+			native_debit = sum(flt(getattr(e, "debit", None) or (e.get("debit") if isinstance(e, dict) else 0)) for e in native)
+			native_credit = sum(flt(getattr(e, "credit", None) or (e.get("credit") if isinstance(e, dict) else 0)) for e in native)
+			if native and _near(debit, native_debit) and _near(credit, native_credit):
+				posted_matches_native = True
+		except Exception:
+			posted_matches_native = False
+		if posted_matches_native:
+			klass = G0_HEALTHY
+		elif sle_abs > VALUE_EPS and _near(gl_inventory, sle_abs) and purpose not in (
+			"Manufacture",
+			"Repack",
+		):
+			klass = G0_HEALTHY
+		elif transferish:
+			klass = G0_HEALTHY
+		elif expected > VALUE_EPS and not _near(gl_inventory, expected):
+			klass = G1_ECONOMICALLY_WRONG
+		else:
+			klass = G0_HEALTHY
 
 	# Phase 2 role: root vs downstream / waiting
 	from erpnext_extensions.iran_accounting.historical_stock import (
