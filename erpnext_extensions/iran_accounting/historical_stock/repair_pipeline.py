@@ -189,21 +189,44 @@ def compress_roots(rows: list[dict]) -> dict:
 
 
 def plan(row: dict) -> RepairPlan:
-	"""Build a RepairPlan. Manufacturing-adjacent Wrong Rate → MANUAL."""
+	"""Build a RepairPlan. Manufacture uses native residual; generic WR stays MANUAL."""
 	annotated = annotate_row(row)
 	root = find_root(annotated)
 	family = root["family"]
 	reason = root["reason"]
 	state = root["primary_state"]
 	mfg = is_manufacture_adjacent(annotated)
+	native = annotated.get("manufacture_native") or {}
+	native_ready = (
+		mfg
+		and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE)
+		and annotated.get("eligible")
+		and str(annotated.get("source_of_truth") or "") == "historical_manufacture_consumed_svd"
+		and str(native.get("classification") or "") == "EXACT"
+	)
 	if mfg and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE, REASON_LEFTOVER_MA):
-		state = PRIMARY_MANUAL
 		family = FAMILY_MANUFACTURE_FLOW
 		reason = REASON_MANUFACTURE_FLOW
+		if native_ready:
+			state = PRIMARY_READY
+		elif annotated.get("no_action_required") or native.get("classification") in (
+			"LEGITIMATE",
+			"HEALTHY",
+		):
+			state = PRIMARY_LEGITIMATE
+		elif (
+			native.get("classification") == "WAITING_UPSTREAM"
+			or annotated.get("manual_lane") == "WAITING_UPSTREAM"
+		):
+			state = PRIMARY_WAITING
+		else:
+			state = PRIMARY_MANUAL
 	ops: list[str] = []
 	if state == PRIMARY_READY:
 		if reason == REASON_LEFTOVER_MA:
 			ops = ["stamp_leftover_ma", "narrow_riv", "desk_postcondition"]
+		elif reason == REASON_MANUFACTURE_FLOW:
+			ops = ["write_manufacture_fg_residual", "narrow_riv", "verify_rate"]
 		elif reason in (REASON_WRONG_RATE, REASON_ZERO_RATE):
 			ops = ["write_authoritative_rate", "identity_replay", "narrow_riv", "verify_rate"]
 		elif reason == REASON_POSTING_ORDER:
@@ -216,7 +239,7 @@ def plan(row: dict) -> RepairPlan:
 			ops = ["generic_ready_repair"]
 	blocked = None
 	if state != PRIMARY_READY:
-		blocked = annotated.get("reason") or f"not READY ({state})"
+		blocked = annotated.get("message") or annotated.get("reason") or f"not READY ({state})"
 	return RepairPlan(
 		root_id="|".join(
 			[
@@ -237,8 +260,11 @@ def plan(row: dict) -> RepairPlan:
 		expected_state={
 			"rate": annotated.get("proposed_rate")
 			or annotated.get("expected_value")
-			or annotated.get("expected_ma"),
-			"source": annotated.get("expected_source") or annotated.get("reconstruction_source"),
+			or annotated.get("expected_ma")
+			or native.get("expected_target_rate"),
+			"source": annotated.get("source_of_truth")
+			or annotated.get("expected_source")
+			or annotated.get("reconstruction_source"),
 		},
 		current_state={
 			"rate": annotated.get("current_value")
@@ -251,6 +277,11 @@ def plan(row: dict) -> RepairPlan:
 			"patient_zero": root.get("patient_zero"),
 			"flags": annotated.get("flags"),
 			"surface": annotated.get("surface"),
+			"manufacture_native": {
+				k: native.get(k)
+				for k in ("classification", "consumed_value", "scrap_value", "reason")
+				if native
+			},
 		},
 		operations=ops,
 		postconditions=[
@@ -265,9 +296,13 @@ def plan(row: dict) -> RepairPlan:
 		downstream_findings=int(annotated.get("downstream_count") or annotated.get("sql_updates") or 0),
 		row=annotated,
 		why_safe=(
-			"Authoritative expected rate; manufacturing quantities untouched; official RIV rebuilds descendants."
-			if state == PRIMARY_READY
-			else ""
+			"Manufacture FG residual from this voucher's consumed SLE SVD; quantities untouched."
+			if state == PRIMARY_READY and reason == REASON_MANUFACTURE_FLOW
+			else (
+				"Authoritative expected rate; manufacturing quantities untouched; official RIV rebuilds descendants."
+				if state == PRIMARY_READY
+				else ""
+			)
 		),
 		blocked_reason=blocked,
 	)
@@ -379,6 +414,12 @@ def execute(plan_obj: RepairPlan, *, dry_run: bool = True) -> dict:
 			[{"item": plan_obj.item, "warehouse": plan_obj.warehouse, **row}],
 			dry_run=dry_run,
 		)
+	elif reason == REASON_MANUFACTURE_FLOW:
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
+			repair_manufacture_valuation,
+		)
+
+		out = repair_manufacture_valuation(plan_obj.voucher or row.get("voucher"), dry_run=dry_run)
 	elif reason in (REASON_WRONG_RATE, REASON_ZERO_RATE):
 		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.apply import (
 			apply_wrong_rate_root,
