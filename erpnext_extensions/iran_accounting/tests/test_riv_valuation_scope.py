@@ -215,6 +215,47 @@ class TestRIVScopeAwareIntegrityAsserts(unittest.TestCase):
 			)
 		)
 
+	def test_se_level_assert_scopes_to_offending_item_not_voucher_membership(self):
+		"""Manufacture that consumes the RIV target but poisons an unrelated FG.
+
+		SE-level I2 must not abort the target RIV merely because the voucher also
+		lists the target item — only the offending row's item_code is blocking.
+		"""
+		from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+			ValuationIntegrityError,
+		)
+
+		engine = _engine(item_code="13100023")
+		doc = SimpleNamespace(
+			name="MAT-STE-2026-25740",
+			items=[
+				SimpleNamespace(item_code="13100023"),
+				SimpleNamespace(item_code="30100053"),
+			],
+		)
+
+		def poison_unrelated_fg():
+			raise ValuationIntegrityError(
+				"Stock valuation integrity (I2).\nitem_code=30100053\namount=-1"
+			)
+
+		with patch(
+			"erpnext_extensions.iran_accounting.domain.riv_valuation_scope.frappe.log_error",
+			create=True,
+		):
+			run_integrity_assert_in_riv_scope(engine, None, poison_unrelated_fg, doc=doc)
+		anomalies = get_out_of_scope_anomalies()
+		self.assertTrue(anomalies)
+		self.assertIn("30100053", anomalies[-1].get("exception") or "")
+
+		def poison_target_row():
+			raise ValuationIntegrityError(
+				"Stock valuation integrity (I2).\nitem_code=13100023\namount=-1"
+			)
+
+		with self.assertRaises(ValuationIntegrityError):
+			run_integrity_assert_in_riv_scope(engine, None, poison_target_row, doc=doc)
+
 	def test_batch_identity_is_logged_but_scope_is_item(self):
 		engine = _engine(item_code="13100134", warehouse="WH-Q")
 		sle = _sle(

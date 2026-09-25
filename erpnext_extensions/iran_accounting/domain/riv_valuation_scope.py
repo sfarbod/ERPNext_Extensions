@@ -379,8 +379,27 @@ def log_out_of_scope_integrity_anomaly(
 	return payload
 
 
+def _offending_item_code_from_exc(exc: Exception | None) -> str | None:
+	"""Parse item_code=… from ValuationIntegrityError message body."""
+	if exc is None:
+		return None
+	msg = cstr(exc)
+	for line in msg.splitlines():
+		line = line.strip()
+		if line.startswith("item_code="):
+			return cstr(line.split("=", 1)[1].strip()) or None
+	return None
+
+
 def run_integrity_assert_in_riv_scope(engine, sle, assert_fn, *, doc=None) -> None:
-	"""Run ``assert_fn``; re-raise only when the SLE/doc is in blocking scope."""
+	"""Run ``assert_fn``; re-raise only when the SLE/doc is in blocking scope.
+
+	SE-level asserts (doc set, sle None) used to block whenever *any* target item
+	appeared on the voucher. That aborted target-item RIV on Manufacture vouchers
+	that also consume the target but whose poison is an unrelated FG row.
+	Prefer the exception's ``item_code=`` payload: only that offending item is
+	blocking; other rows on the same voucher are out-of-scope legacy anomalies.
+	"""
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 		ValuationIntegrityError,
 	)
@@ -388,11 +407,16 @@ def run_integrity_assert_in_riv_scope(engine, sle, assert_fn, *, doc=None) -> No
 	try:
 		assert_fn()
 	except ValuationIntegrityError as exc:
-		blocking = (
-			is_stock_entry_in_riv_blocking_scope(engine, doc)
-			if doc is not None and sle is None
-			else is_sle_in_riv_blocking_scope(engine, sle)
-		)
+		targets = get_riv_target_item_codes(engine)
+		if targets is None:
+			raise
+		offending = _offending_item_code_from_exc(exc)
+		if offending:
+			blocking = offending in targets
+		elif doc is not None and sle is None:
+			blocking = is_stock_entry_in_riv_blocking_scope(engine, doc)
+		else:
+			blocking = is_sle_in_riv_blocking_scope(engine, sle)
 		if blocking:
 			raise
 		log_out_of_scope_integrity_anomaly(engine, sle=sle, doc=doc, exc=exc)

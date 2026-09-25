@@ -601,6 +601,14 @@ def _patch_general_ledger():
 		voucher_type = gl_map[0].voucher_type
 		voucher_no = gl_map[0].voucher_no
 		allowance = gl.get_debit_credit_allowance(voucher_type, precision)
+		# Zero-decimal currencies (IRR precision=0): one company-currency unit is the
+		# quantum. ERPNext Stock Entry allowance is hardcoded 0.5, so |diff|==1 never
+		# reaches make_round_off_gle (throw runs first; round-off needs |diff|>=1 and
+		# |diff|<=0.5 — impossible). Raise the stock-voucher allowance to one quantum
+		# so a legitimate 1 IRR residual posts to Company.round_off_account.
+		# Larger imbalances (e.g. 1000 IRR) still throw.
+		if precision == 0 and voucher_type not in ("Journal Entry", "Payment Entry"):
+			allowance = max(flt(allowance), 1.0)
 
 		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
 

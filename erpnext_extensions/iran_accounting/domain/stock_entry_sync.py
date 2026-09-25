@@ -68,7 +68,12 @@ def _sle_rate_from_row(row, ccy: str) -> float:
 
 
 def sync_irr_sle_from_stock_entry_row(sle) -> None:
-	"""SLE movement mirrors signed row.amount; rates mirror integer SE rates. Idempotent."""
+	"""SLE movement mirrors signed row.amount; rates mirror integer SE rates. Idempotent.
+
+	During Item-scoped RIV, out-of-scope legacy poison (different item_code than the
+	declared RIV target) must not abort the target repost — log and skip the Iran
+	mirror so vanilla SLE economics for that unrelated row are left alone.
+	"""
 	if not sle.company or not is_irr_company(sle.company):
 		return
 	if sle.voucher_type != "Stock Entry" or not sle.voucher_detail_no:
@@ -94,29 +99,44 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	if not row:
 		return
 
-	ccy = get_company_currency(sle.company)
-	magnitude = stock_entry_row_amount(row, sle.company)
-	movement = round_currency(
-		signed_movement_from_row_amount(
-			magnitude,
-			flt(sle.actual_qty),
-			sle=sle,
-			row=row,
-		),
-		ccy,
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ValuationIntegrityError,
+		throw_valuation_integrity,
 	)
-	rate = _sle_rate_from_row(row, ccy)
-	if flt(sle.actual_qty) > 0 and rate < 0:
-		from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
-			throw_valuation_integrity,
+
+	ccy = get_company_currency(sle.company)
+	try:
+		magnitude = stock_entry_row_amount(row, sle.company)
+		movement = round_currency(
+			signed_movement_from_row_amount(
+				magnitude,
+				flt(sle.actual_qty),
+				sle=sle,
+				row=row,
+			),
+			ccy,
+		)
+		rate = _sle_rate_from_row(row, ccy)
+		if flt(sle.actual_qty) > 0 and rate < 0:
+			throw_valuation_integrity(
+				"I1",
+				detail="incoming Stock Entry valuation_rate is negative",
+				sle=sle,
+				row=row,
+			)
+	except ValuationIntegrityError as exc:
+		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
+		if engine is None:
+			raise
+		from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
+			is_sle_in_riv_blocking_scope,
+			log_out_of_scope_integrity_anomaly,
 		)
 
-		throw_valuation_integrity(
-			"I1",
-			detail="incoming Stock Entry valuation_rate is negative",
-			sle=sle,
-			row=row,
-		)
+		if is_sle_in_riv_blocking_scope(engine, sle):
+			raise
+		log_out_of_scope_integrity_anomaly(engine, sle=sle, exc=exc)
+		return
 
 	# Movement is the source of truth for SVD. stock_value is reconstructed as
 	# previous + movement. On insert, qty_after_transaction is still the default 0

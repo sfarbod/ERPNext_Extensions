@@ -601,8 +601,6 @@ def finalize_transfer_repair_group(row: dict, *, from_dt=None) -> dict:
 	vouchers and can poison MA. Outgoing SVD on this voucher is the authority; only the
 	incoming leg (+ SE Detail) and a bounded target replay are adjusted.
 	"""
-	from erpnext_extensions.iran_accounting.historical_stock.replay import replay_from_patient_zero
-
 	voucher = row.get("voucher") or row.get("voucher_no")
 	item = row.get("item") or row.get("item_code")
 	detail = row.get("voucher_detail")
@@ -701,7 +699,7 @@ def finalize_transfer_repair_group(row: dict, *, from_dt=None) -> dict:
 	result["replay_target"] = {
 		"skipped": True,
 		"reason": "unbounded_target_replay_disabled_pending_i1_safe_path",
-		"from_dt": str(replay_from) if replay_from else None,
+		"from_dt": str(from_dt) if from_dt else None,
 	}
 
 	out_leg, in_leg = transfer_pair_legs(voucher, item, voucher_detail=detail, batch=batch)
