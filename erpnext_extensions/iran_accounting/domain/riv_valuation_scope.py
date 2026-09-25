@@ -124,6 +124,13 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 			# Do NOT merge items_to_be_repost — ERPNext expands that list with
 			# dependant_sle_voucher_detail_no hops (other items).
 			targets.add(cstr(item))
+			riv_name = cstr(_entry_get(repost_doc, "name") or "")
+			if riv_name:
+				try:
+					cache = frappe.flags.setdefault("iran_riv_declared_target_items", {})
+					cache.setdefault(riv_name, set(targets))
+				except Exception:
+					pass
 		else:
 			# Transaction-based RIV (no single item_code): use the JSON list.
 			# Prefer a frozen declaration cached on flags for this RIV name.
@@ -173,13 +180,38 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 	if targets:
 		return targets
 
-	# In-progress RIV without item list → fail-closed.
+	# Nested ``update_entries_after`` during an Item-scoped RIV often has no
+	# ``repost_doc`` (dependant FG warehouse walks). Without a declared target,
+	# out-of-scope soft-skip cannot run and unrelated FG I3 aborts the RIV.
+	# Resolve the active RIV's declared item_code when the through-RIV flag is set.
 	through_riv = False
 	try:
 		through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
 	except Exception:
 		through_riv = False
-	if repost_doc is not None or through_riv:
+	if through_riv:
+		try:
+			cache = frappe.flags.get("iran_riv_declared_target_items") or {}
+			for cached_set in cache.values():
+				if cached_set:
+					return set(cached_set)
+		except Exception:
+			pass
+		try:
+			active_item = frappe.db.get_value(
+				"Repost Item Valuation",
+				{"status": "In Progress"},
+				"item_code",
+				order_by="modified desc",
+			)
+		except Exception:
+			active_item = None
+		if active_item:
+			return {cstr(active_item)}
+		# Transaction-based active RIV with no item_code → fail-closed.
+		return None
+
+	if repost_doc is not None:
 		return None
 
 	return None
