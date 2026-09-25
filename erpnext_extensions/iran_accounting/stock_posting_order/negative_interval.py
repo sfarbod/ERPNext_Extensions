@@ -345,6 +345,89 @@ def _cross_item_safe(outbound_voucher, times: dict, by_voucher_all: dict, by_ide
 	return True
 
 
+def _warehouse_cross_item_safe(
+	outbound_voucher, times: dict, by_voucher_all: dict, by_identity: dict
+) -> bool:
+	"""Item+warehouse qty safety ignoring batch keys (ERPNext MA identity).
+
+	Batch-keyed ``_cross_item_safe`` can false-negative when SLE ``batch_no`` is
+	blank while SE/SABB carries the batch — common on Manufacture→MTfM pairs.
+	Warehouse-scoped sim is the authoritative qty chronology for posting-order.
+	"""
+	if not by_voucher_all or outbound_voucher not in by_voucher_all:
+		return True
+	touched = by_voucher_all.get(outbound_voucher) or []
+	seen: set[tuple] = set()
+	for row in touched:
+		item = _g(row, "item_code")
+		warehouse = _g(row, "warehouse")
+		wk = (item, warehouse)
+		if wk in seen:
+			continue
+		seen.add(wk)
+		# Prefer batchless warehouse series; else merge all batches for item+wh.
+		series = by_identity.get((item, warehouse, "")) or []
+		if not series:
+			merged = []
+			for key, rows in (by_identity or {}).items():
+				if len(key) >= 2 and key[0] == item and key[1] == warehouse:
+					merged.extend(rows)
+			series = merged
+		if not series:
+			continue
+		series = sorted(
+			series,
+			key=lambda r: (str(_g(r, "posting_datetime") or ""), str(_g(r, "creation") or "")),
+		)
+		aligned = align_movements_to_qty_after(series, opening=0)
+		cur = simulate_running(aligned, 0)
+		prop = simulate_running(aligned, 0, times)
+		if prop["min_qty"] < 0 and (cur["min_qty"] >= 0 or prop["min_qty"] < cur["min_qty"]):
+			return False
+		if prop["final_qty"] != cur["final_qty"]:
+			return False
+	return True
+
+
+def _is_mtfm_order_dependency(reason: str | None, inbound, outbound) -> bool:
+	"""Manufacture FG inbound then MTfM consume — proven POSTING_ORDER family."""
+	r = str(reason or "")
+	if "sfg_then_consume" in r:
+		return True
+	in_p = str(_g(inbound, "purpose") or "")
+	out_p = str(_g(outbound, "purpose") or "")
+	return in_p == "Manufacture" and out_p == "Material Transfer for Manufacture"
+
+
+def _proposal_payload(base: dict, proposal: dict, *, status: str, confidence, reason, eligible: bool) -> dict:
+	return {
+		**base,
+		"status": status,
+		"optimizer_status": status,
+		"confidence": confidence,
+		"dependency_reason": reason,
+		"eligible": eligible,
+		"moves": proposal.get("moves") or [],
+		"seconds_shifted": proposal.get("seconds_shifted"),
+		"minimum_seconds_required": proposal.get("seconds_shifted"),
+		"minimum_seconds_label": minimum_seconds_label(
+			"REPAIRABLE_SECONDS", proposal.get("seconds_shifted")
+		),
+		"proposed_outbound": format_datetime(proposal["proposed_outbound"])
+		if proposal.get("proposed_outbound")
+		else "",
+		"proposed_inbound": format_datetime(proposal["proposed_inbound"])
+		if proposal.get("proposed_inbound")
+		else "",
+		"min_qty_before": str((proposal.get("current") or {}).get("min_qty", "")),
+		"min_qty_after": str((proposal.get("proposed") or {}).get("min_qty", "")),
+		"final_qty_before": str((proposal.get("current") or {}).get("final_qty", "")),
+		"final_qty_after": str((proposal.get("proposed") or {}).get("final_qty", "")),
+		"docs_changed": proposal.get("docs_changed"),
+		"current": proposal.get("current"),
+		"proposed": proposal.get("proposed"),
+	}
+
 def classify_interval(
 	interval: dict,
 	*,
@@ -407,38 +490,32 @@ def classify_interval(
 		if external:
 			proposal = propose_outbound_after_inbound(interval, series)
 			if proposal.get("ok"):
-				if by_voucher_all and by_identity:
-					if not _cross_item_safe(_g(outbound, "voucher_no"), proposal["times"], by_voucher_all, by_identity):
-						return {
-							**base,
-							"status": STATUS_CROSS_ITEM_CONFLICT,
-							"confidence": confidence,
-							"dependency_reason": reason,
-							"eligible": False,
-						}
-				return {
-					**base,
-					"status": "CROSS_TIME_REPAIRABLE",
-					"optimizer_status": "CROSS_TIME_REPAIRABLE",
-					"confidence": CONFIDENCE_LIKELY,
-					"dependency_reason": reason or "external_inbound_recovers",
-					"eligible": False,
-					"moves": proposal["moves"],
-					"seconds_shifted": proposal["seconds_shifted"],
-					"minimum_seconds_required": proposal["seconds_shifted"],
-					"minimum_seconds_label": minimum_seconds_label(
-						"REPAIRABLE_SECONDS", proposal["seconds_shifted"]
-					),
-					"proposed_outbound": format_datetime(proposal["proposed_outbound"]),
-					"proposed_inbound": format_datetime(proposal["proposed_inbound"]),
-					"min_qty_before": str(proposal["current"]["min_qty"]),
-					"min_qty_after": str(proposal["proposed"]["min_qty"]),
-					"final_qty_before": str(proposal["current"]["final_qty"]),
-					"final_qty_after": str(proposal["proposed"]["final_qty"]),
-					"docs_changed": proposal["docs_changed"],
-					"current": proposal["current"],
-					"proposed": proposal["proposed"],
-				}
+				out_vn = _g(outbound, "voucher_no")
+				if by_voucher_all and by_identity and not _cross_item_safe(
+					out_vn, proposal["times"], by_voucher_all, by_identity
+				):
+					if not (
+						_is_mtfm_order_dependency(reason, inbound, outbound)
+						and _warehouse_cross_item_safe(
+							out_vn, proposal["times"], by_voucher_all, by_identity
+						)
+					):
+						return _proposal_payload(
+							base,
+							proposal,
+							status=STATUS_CROSS_ITEM_CONFLICT,
+							confidence=confidence,
+							reason=reason,
+							eligible=False,
+						)
+				return _proposal_payload(
+					base,
+					proposal,
+					status="CROSS_TIME_REPAIRABLE",
+					confidence=CONFIDENCE_LIKELY,
+					reason=reason or "external_inbound_recovers",
+					eligible=False,
+				)
 			# Single-move failed — try shifting every deficit outbound after the inbound.
 			from erpnext_extensions.iran_accounting.stock_posting_order.multi_move import (
 				try_external_multi_move,
@@ -514,39 +591,47 @@ def classify_interval(
 		}
 
 	times = proposal["times"]
+	out_vn = _g(outbound, "voucher_no")
 	if by_voucher_all and by_identity:
-		if not _cross_item_safe(_g(outbound, "voucher_no"), times, by_voucher_all, by_identity):
-			return {
-				**base,
-				"status": STATUS_CROSS_ITEM_CONFLICT,
-				"confidence": confidence,
-				"dependency_reason": reason,
-				"eligible": False,
-			}
+		if not _cross_item_safe(out_vn, times, by_voucher_all, by_identity):
+			# Manufacture→MTfM: batch-keyed false negatives are common when SLE
+			# batch_no is blank. Warehouse-scoped qty sim is authoritative.
+			if _is_mtfm_order_dependency(reason, inbound, outbound) and _warehouse_cross_item_safe(
+				out_vn, times, by_voucher_all, by_identity
+			):
+				status = "SAME_TIME_REPAIRABLE" if same_second else "CROSS_TIME_REPAIRABLE"
+				eligible = confidence == CONFIDENCE_EXACT
+				payload = _proposal_payload(
+					base,
+					proposal,
+					status=status,
+					confidence=confidence,
+					reason=reason,
+					eligible=eligible,
+				)
+				payload["cross_item_note"] = "warehouse_scoped_mtfm_order"
+				return payload
+			# Preserve proposed timestamps as evidence even when blocked.
+			blocked = _proposal_payload(
+				base,
+				proposal,
+				status=STATUS_CROSS_ITEM_CONFLICT,
+				confidence=confidence,
+				reason=reason,
+				eligible=False,
+			)
+			return blocked
 
 	status = "SAME_TIME_REPAIRABLE" if same_second else "CROSS_TIME_REPAIRABLE"
 	eligible = confidence == CONFIDENCE_EXACT
-	return {
-		**base,
-		"status": status,
-		"optimizer_status": status,
-		"confidence": confidence,
-		"dependency_reason": reason,
-		"eligible": eligible,
-		"moves": proposal["moves"],
-		"seconds_shifted": proposal["seconds_shifted"],
-		"minimum_seconds_required": proposal["seconds_shifted"],
-		"minimum_seconds_label": minimum_seconds_label("REPAIRABLE_SECONDS", proposal["seconds_shifted"]),
-		"proposed_outbound": format_datetime(proposal["proposed_outbound"]),
-		"proposed_inbound": format_datetime(proposal["proposed_inbound"]),
-		"min_qty_before": str(proposal["current"]["min_qty"]),
-		"min_qty_after": str(proposal["proposed"]["min_qty"]),
-		"final_qty_before": str(proposal["current"]["final_qty"]),
-		"final_qty_after": str(proposal["proposed"]["final_qty"]),
-		"docs_changed": proposal["docs_changed"],
-		"current": proposal["current"],
-		"proposed": proposal["proposed"],
-	}
+	return _proposal_payload(
+		base,
+		proposal,
+		status=status,
+		confidence=confidence,
+		reason=reason,
+		eligible=eligible,
+	)
 
 
 def interval_to_scan_row(interval: dict, classified: dict) -> dict:

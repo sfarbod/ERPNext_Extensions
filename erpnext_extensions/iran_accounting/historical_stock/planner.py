@@ -416,6 +416,23 @@ def plan_selection(rows: list | None) -> dict:
 	return plan
 
 
+def _mtfm_exact_unlocks_false_patient_zero(row: dict) -> bool:
+	"""EXACT MTfM transfer may proceed when named upstream tip is unpoisoned.
+
+	Planner WAITING_PATIENT_ZERO often points at a same-item warehouse tip that is
+	economically healthy (or a different batch). Repair pipeline already unlocks
+	these; keep Scan / assert_ready aligned so Ready drains and apply works.
+	"""
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import (
+			_material_transfer_for_manufacture_exact,
+		)
+
+		return bool(_material_transfer_for_manufacture_exact(row))
+	except Exception:
+		return False
+
+
 def assert_ready(row: dict, *, cache: dict | None = None) -> dict:
 	"""Apply-time gate. Raises with the same reason Scan/Impact already showed."""
 	import frappe
@@ -787,14 +804,20 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 		pz_name = _patient_name(row)
 	if pz_name and voucher and pz_name != voucher:
 		if not _rate_patient_cleared(pz_name, cache, row=row):
-			return _not_ready(
-				decision,
-				PLAN_WAITING_PATIENT_ZERO,
-				f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {pz_name}",
-				patient=pz_name,
-				prerequisite=pz_name,
-				dependency="upstream_patient_zero",
-			)
+			if _mtfm_exact_unlocks_false_patient_zero(row):
+				patient = None
+				decision["patient_zero"] = voucher
+				decision["dependency"] = "mtfm_exact_false_patient_zero_unlock"
+				decision["mtfm_exact_unlock"] = True
+			else:
+				return _not_ready(
+					decision,
+					PLAN_WAITING_PATIENT_ZERO,
+					f"{STATUS_DEPENDENCY_REPAIR_REQUIRED}: patient-zero is {pz_name}",
+					patient=pz_name,
+					prerequisite=pz_name,
+					dependency="upstream_patient_zero",
+				)
 	if confidence == CONFIDENCE_AMBIGUOUS or status in ("AMBIGUOUS_DEPENDENCY", "AMBIGUOUS_RELATIONSHIP"):
 		decision["manual_reason"] = decision.get("manual_reason") or "MANUAL_RATE_SOURCES_DISAGREE"
 		return _not_ready(decision, amb_status, "AMBIGUOUS — reconstruction sources disagree or relationship is unproven")
@@ -846,6 +869,12 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 			decision["patient_zero"] = voucher
 			decision["dependency"] = "circular_earliest_root"
 	still_waiting_pz = bool(patient and voucher and patient != voucher)
+	if still_waiting_pz and _mtfm_exact_unlocks_false_patient_zero(row):
+		patient = None
+		decision["patient_zero"] = voucher
+		decision["dependency"] = "mtfm_exact_false_patient_zero_unlock"
+		decision["mtfm_exact_unlock"] = True
+		still_waiting_pz = False
 	if still_waiting_pz:
 		return _not_ready(
 			decision,
