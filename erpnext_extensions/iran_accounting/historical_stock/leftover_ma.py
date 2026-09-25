@@ -728,7 +728,7 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 			"company": company,
 			"posting_date": str(posting_date),
 			"posting_time": str(posting_time),
-			"allow_negative_stock": 0,
+			"allow_negative_stock": 1,
 			"allow_zero_rate": 1 if allow_zero_rate else 0,
 			"recalculate_valuation_rate": 0,
 			"recreate_stock_ledgers": 0,
