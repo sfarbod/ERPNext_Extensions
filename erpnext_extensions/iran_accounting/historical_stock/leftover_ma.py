@@ -504,12 +504,24 @@ def replay_downstream_after_patient_zero(item, warehouse, root_voucher) -> dict:
 		posting_time = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
 	from erpnext.stock.stock_ledger import update_entries_after
 
+	# Attach a synthetic repost_doc so Iran RIV scope treats this replay as
+	# Item-scoped. Without it, dependant hops to other items fail-closed on I2.
+	synthetic_riv = frappe._dict(
+		{
+			"doctype": "Repost Item Valuation",
+			"name": f"leftover-ma:{item}:{warehouse}:{root_voucher}",
+			"item_code": item,
+			"warehouse": warehouse,
+			"based_on": "Item and Warehouse",
+		}
+	)
 	update_entries_after(
 		{
 			"item_code": item,
 			"warehouse": warehouse,
 			"posting_date": str(row.posting_date),
 			"posting_time": str(posting_time),
+			"repost_doc": synthetic_riv,
 		},
 		allow_zero_rate=True,
 		allow_negative_stock=False,
