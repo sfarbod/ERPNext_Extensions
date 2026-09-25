@@ -257,6 +257,69 @@ def classify_zero_row(row, _cache=None) -> dict:
 	)
 	scrap_role = scrap_valuation_role(row) if scrap_wh_context or is_scrap_row(row) else None
 
+	# Material Issue from a proven legitimate zero lot (depletion then free/zero
+	# Purchase Receipt, etc.) must stay zero — never WAITING on opening RECO or
+	# resurrect a pre-depletion rate (16100226 / free-PR-after-depletion contract).
+	if purpose == "Material Issue" and abs(flt(g(row, "basic_rate"))) <= RATE_EPS:
+		s_wh = g(row, "s_warehouse") or warehouse
+		if item and s_wh:
+			from erpnext_extensions.iran_accounting.historical_stock import ZP_PROVEN_LEGITIMATE_ZERO
+			from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+			from erpnext_extensions.iran_accounting.historical_stock.zero_provenance import (
+				classify_zero_provenance,
+			)
+
+			as_of = _row_posting_datetime(row)
+			# Tip strictly before this issue so the outgoing itself is not the chain tip.
+			prov = classify_zero_provenance(item=item, warehouse=s_wh, as_of=as_of)
+			if (
+				prov.get("provenance") == ZP_PROVEN_LEGITIMATE_ZERO
+				and prov.get("allow_zero_outgoing")
+				and abs(flt(prov.get("current_stock_value"))) <= VALUE_EPS
+			):
+				return attach_rate_analysis(
+					{
+						"topic": "ZERO_RATE",
+						"voucher": parent,
+						"voucher_detail": detail,
+						"idx": g(row, "idx"),
+						"purpose": purpose,
+						"item": item,
+						"warehouse": s_wh,
+						"s_warehouse": s_wh,
+						"t_warehouse": g(row, "t_warehouse"),
+						"batch": batch,
+						"sabb": g(row, "serial_and_batch_bundle"),
+						"qty": qty,
+						"current_rate": 0.0,
+						"current_amount": 0.0,
+						"historical_rate": 0.0,
+						"proposed_rate": 0.0,
+						"proposed_amount": 0.0,
+						"source_of_truth": "proven_legitimate_zero_lot",
+						"confidence": CONFIDENCE_EXACT,
+						"zero_class": Z0_LEGITIMATE_ZERO,
+						"zero_reason": "LEGITIMATE_AFTER_FULL_DEPLETION_OR_FREE_RECEIPT",
+						"status": NO_ACTION_REQUIRED,
+						"actionable": False,
+						"patient_zero": None,
+						"eligible": False,
+						"work_order": g(row, "work_order"),
+						"job_card": g(row, "job_card"),
+						"is_finished_item": g(row, "is_finished_item"),
+						"secondary_item_type": g(row, "secondary_item_type"),
+						"reconstruction_sources": {"zero_provenance": prov.get("reason")},
+						"rate_source": "proven_legitimate_zero_lot",
+						"no_action_required": True,
+						"kpi_bucket": "NO_ACTION",
+						"purpose_policy": sem.get("policy"),
+						"scrap_warehouse_context": scrap_wh_context,
+						"scrap_valuation_role": scrap_role,
+						"zero_provenance": prov.get("provenance"),
+					},
+					row,
+				)
+
 	if (
 		g(row, "allow_zero_valuation_rate")
 		or purpose == "Stock Reconciliation"
