@@ -92,7 +92,29 @@ class TestRIVValuationScopeHelpers(unittest.TestCase):
 		sle = _sle(item_code="20100064", warehouse="WH-FG")
 		self.assertFalse(is_sle_in_riv_blocking_scope(engine, sle))
 
-	def test_dependant_args_item_code_does_not_expand_targets(self):
+	
+	def test_through_riv_without_repost_doc_uses_active_item(self):
+		"""Nested update_entries_after during RIV often has no repost_doc."""
+		engine = SimpleNamespace(repost_doc=None, args=frappe._dict({"item_code": "20100064"}), company="C")
+		with patch.object(frappe.flags, "get", side_effect=lambda k, d=None: True if k == "through_repost_item_valuation" else d):
+			# force flags path used by get_riv_target_item_codes
+			pass
+		frappe.flags.through_repost_item_valuation = True
+		frappe.flags.iran_riv_declared_target_items = {"RIV-X": {"13100023"}}
+		try:
+			self.assertEqual(get_riv_target_item_codes(engine), {"13100023"})
+			# without cache, fall back to DB In Progress
+			frappe.flags.iran_riv_declared_target_items = {}
+			with patch(
+				"erpnext_extensions.iran_accounting.domain.riv_valuation_scope.frappe.db.get_value",
+				return_value="13100023",
+			):
+				self.assertEqual(get_riv_target_item_codes(engine), {"13100023"})
+		finally:
+			frappe.flags.through_repost_item_valuation = False
+			frappe.flags.iran_riv_declared_target_items = {}
+
+def test_dependant_args_item_code_does_not_expand_targets(self):
 		"""ERPNext mutates args.item_code while walking dependants — must not widen scope."""
 		engine = _engine(item_code="13100134", warehouse="WH-Q")
 		engine.args.item_code = "20100064"
