@@ -26,10 +26,23 @@ def transition_is_invalid(prev, row) -> str | None:
 	value = flt(g(row, "stock_value"))
 	after = flt(g(row, "qty_after_transaction"))
 	if qty > QTY_EPS and abs(incoming) < QTY_EPS and abs(svd) < VALUE_EPS:
-		if prev is not None:
-			prev_rate = abs(flt(g(prev, "valuation_rate"))) + abs(flt(g(prev, "incoming_rate")))
-			if prev_rate > VALUE_EPS:
-				return "nonzero_to_zero_incoming"
+		# Explicit allow_zero_valuation_rate on the Stock Entry Detail is document
+		# authority for a free/zero receipt (e.g. Rahkaran Material Receipt). That
+		# is LEGITIMATE_ZERO — not a Patient Zero root. Downstream zero consumers
+		# of that lot remain zero by conservation, not by corruption.
+		if _stock_entry_allows_zero_valuation(row):
+			return None
+		if prev is None:
+			return "zero_incoming_with_qty"
+		prev_value = abs(flt(g(prev, "stock_value")))
+		prev_rate = abs(flt(g(prev, "valuation_rate"))) + abs(flt(g(prev, "incoming_rate")))
+		# Zero-lot continuation: prior tip already had no stock value (including
+		# post-depletion qty=0/value=0, or a prior allow_zero receipt). A new
+		# zero inbound does not invent corruption — do not resurrect old rates.
+		if prev_value <= VALUE_EPS and prev_rate <= VALUE_EPS:
+			return None
+		if prev_rate > VALUE_EPS or prev_value > VALUE_EPS:
+			return "nonzero_to_zero_incoming"
 		return "zero_incoming_with_qty"
 	if abs(after) <= QTY_EPS and abs(value) > 1:
 		return "qty_after_zero_nonzero_value"
@@ -39,6 +52,27 @@ def transition_is_invalid(prev, row) -> str | None:
 	if abs(rate) > POISON_RATE:
 		return "exploded_rate"
 	return None
+
+
+def _stock_entry_allows_zero_valuation(row) -> bool:
+	"""True when the Stock Entry Detail for this SLE explicitly allows zero rate."""
+	import frappe
+
+	voucher = g(row, "voucher_no")
+	item = g(row, "item_code")
+	if not voucher or not item:
+		return False
+	# Detail may be resolved via voucher_detail_no when present on the SLE.
+	vdn = g(row, "voucher_detail_no")
+	if vdn:
+		return bool(frappe.db.get_value("Stock Entry Detail", vdn, "allow_zero_valuation_rate"))
+	return bool(
+		frappe.db.get_value(
+			"Stock Entry Detail",
+			{"parent": voucher, "item_code": item, "allow_zero_valuation_rate": 1},
+			"name",
+		)
+	)
 
 
 def find_patient_zero_identity(

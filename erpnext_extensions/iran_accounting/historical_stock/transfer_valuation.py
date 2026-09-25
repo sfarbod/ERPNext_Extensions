@@ -306,8 +306,10 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["reason"] = "no authoritative source valuation found for transfer/issue"
 		return out
 
-	# Expected target
-	expected = source_rate
+	# Expected target — round with builtin round (NOT flt(x, prec): without a
+	# bound site currency context flt(600000, 0) can collapse to 0).
+	rate_prec = _stock_rate_precision()
+	expected = round(flt(source_rate), rate_prec)
 	out["expected_rate"] = expected
 	out["expected_stock_value_difference"] = expected * abs(qty) if abs(qty) > QTY_EPS else 0.0
 	out["authoritative_source"] = source_kind
@@ -653,6 +655,14 @@ def _incoming_sle(voucher, item, warehouse=None, batch=None, voucher_detail=None
 
 	rows = frappe.db.sql(select.format(where=" AND ".join(base)), args, as_dict=True)
 	return rows[0] if rows else None
+
+
+def _stock_rate_precision() -> int:
+	"""Precision for Stock Entry Detail basic_rate (IRR commonly 0–2)."""
+	try:
+		return int(frappe.get_precision("Stock Entry Detail", "basic_rate") or 0)
+	except Exception:
+		return 0
 
 
 def _voucher_posting_date(voucher_type: str | None, voucher_no: str | None):
