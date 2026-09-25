@@ -508,6 +508,10 @@ def replay_downstream_after_patient_zero(item, warehouse, root_voucher) -> dict:
 	# (ERPNext update_data_in_repost expects a full Document with items_to_be_repost).
 	frappe.local.iran_leftover_ma_target_item = item
 	try:
+		# Historical leftover-MA replay walks dependant vouchers that may hit
+		# pre-existing negative qty on unrelated items. allow_negative_stock must
+		# match official RIV (True); False aborted Completed 28696-class TGT RIV
+		# in the on_change leftover-MA hook with Insufficient Stock on FG hops.
 		update_entries_after(
 			{
 				"item_code": item,
@@ -516,7 +520,7 @@ def replay_downstream_after_patient_zero(item, warehouse, root_voucher) -> dict:
 				"posting_time": str(posting_time),
 			},
 			allow_zero_rate=True,
-			allow_negative_stock=False,
+			allow_negative_stock=True,
 		)
 	finally:
 		frappe.local.iran_leftover_ma_target_item = None
@@ -785,7 +789,7 @@ def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
 				"posting_time": str(posting_time),
 			},
 			allow_zero_rate=True,
-			allow_negative_stock=False,
+			allow_negative_stock=True,
 		)
 	finally:
 		frappe.local.iran_leftover_ma_target_item = None
