@@ -32,6 +32,19 @@ def transition_is_invalid(prev, row) -> str | None:
 		# of that lot remain zero by conservation, not by corruption.
 		if _stock_entry_allows_zero_valuation(row):
 			return None
+		# Scrap / Reject / waste warehouse zero inbound is provenance-legitimate
+		# (do not resurrect a prior valued scrap MA as Patient Zero).
+		wh = g(row, "warehouse")
+		if wh:
+			from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+				is_scrap_reject_waste_warehouse,
+			)
+
+			if is_scrap_reject_waste_warehouse(wh):
+				return None
+		# Repack output that only conserves zero-valued source lines.
+		if _repack_conserves_zero_sources(row):
+			return None
 		if prev is None:
 			return "zero_incoming_with_qty"
 		prev_value = abs(flt(g(prev, "stock_value")))
@@ -73,6 +86,32 @@ def _stock_entry_allows_zero_valuation(row) -> bool:
 			"name",
 		)
 	)
+
+
+def _repack_conserves_zero_sources(row) -> bool:
+	"""Repack target zero inbound is legitimate when every source line is zero-valued."""
+	import frappe
+
+	from erpnext_extensions.iran_accounting.historical_stock import RATE_EPS
+
+	voucher = g(row, "voucher_no")
+	if not voucher:
+		return False
+	purpose = frappe.db.get_value("Stock Entry", voucher, "purpose")
+	if purpose != "Repack":
+		return False
+	sources = frappe.db.sql(
+		"""
+		SELECT basic_rate, amount
+		FROM `tabStock Entry Detail`
+		WHERE parent=%s AND IFNULL(s_warehouse, '') != ''
+		""",
+		voucher,
+		as_dict=True,
+	)
+	if not sources:
+		return False
+	return all(abs(flt(s.basic_rate)) <= RATE_EPS and abs(flt(s.amount)) <= VALUE_EPS for s in sources)
 
 
 def find_patient_zero_identity(
