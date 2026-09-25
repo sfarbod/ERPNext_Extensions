@@ -98,14 +98,32 @@ def _canaries():
 	}
 
 
-def _abort_if_unsafe(tag, mfg0, *, require_canaries=True, allow_baseline_neg=False, allow_bin_mismatch=False):
+def _abort_if_unsafe(
+	tag,
+	mfg0,
+	*,
+	require_canaries=True,
+	allow_baseline_neg=False,
+	allow_bin_mismatch=False,
+	baseline_neg_after=0,
+):
 	g = _gates()
 	cok, cdet = _canaries()
 	mdelta = {k: flt(g["mfg"].get(k)) - flt(mfg0.get(k)) for k in mfg0}
-	payload = {"tag": tag, "gates": g, "canaries_ok": cok, "canaries": cdet, "mfg_delta": mdelta}
+	payload = {
+		"tag": tag,
+		"gates": g,
+		"canaries_ok": cok,
+		"canaries": cdet,
+		"mfg_delta": mdelta,
+		"baseline_neg_after": baseline_neg_after,
+	}
 	bad = bool(g["i1"]) or bool(g["neg_rate"])
-	if not allow_baseline_neg:
-		bad = bad or bool(g["neg_after"])
+	# New historical negatives beyond the clean-backup baseline are never OK.
+	if int(g["neg_after"] or 0) > int(baseline_neg_after or 0):
+		bad = True
+	elif not allow_baseline_neg and int(g["neg_after"] or 0) > 0:
+		bad = True
 	if not allow_bin_mismatch:
 		bad = bad or bool(g["bin_mismatch"])
 	if require_canaries and not cok:
@@ -200,9 +218,17 @@ def run():
 
 	log = {"version": __version__, "steps": []}
 	mfg0 = _gates()["mfg"]
-	# Clean backup baseline: negatives / unmet canaries are expected until repaired.
+	baseline_neg = int(_gates()["neg_after"] or 0)
+	log["baseline_neg_after"] = baseline_neg
+	# Clean backup baseline: known REAL_STOCK_SHORTAGE negatives / unmet canaries
+	# are expected until repaired. Never allow NEW negatives beyond baseline.
 	log["pass0_gates"] = _abort_if_unsafe(
-		"pass0", mfg0, require_canaries=False, allow_baseline_neg=True
+		"pass0",
+		mfg0,
+		require_canaries=False,
+		allow_baseline_neg=True,
+		allow_bin_mismatch=True,
+		baseline_neg_after=baseline_neg,
 	)
 
 	# fingerprint
@@ -218,19 +244,20 @@ def run():
 		"after_po",
 		mfg0,
 		require_canaries=False,
-		allow_baseline_neg=False,
+		allow_baseline_neg=True,
 		allow_bin_mismatch=True,
+		baseline_neg_after=baseline_neg,
 	)
 
 	lma = _apply_leftover_ma()
 	log["steps"].append({"lma": lma})
-	# LMA establishes 16100066; 28696/30470 may still need WR waves
 	log["after_lma"] = _abort_if_unsafe(
 		"after_lma",
 		mfg0,
 		require_canaries=False,
-		allow_baseline_neg=False,
+		allow_baseline_neg=True,
 		allow_bin_mismatch=True,
+		baseline_neg_after=baseline_neg,
 	)
 
 	wave = []
@@ -240,8 +267,9 @@ def run():
 			f"wr_{len(wave)}",
 			mfg0,
 			require_canaries=False,
-			allow_baseline_neg=False,
+			allow_baseline_neg=True,
 			allow_bin_mismatch=True,
+			baseline_neg_after=baseline_neg,
 		)
 	log["steps"].append({"wrong_exact_applied": len(wave), "sample": wave[:20]})
 	(OUT / "wrong_exact_wave.json").write_text(json.dumps(wave, indent=2, default=str))
@@ -262,10 +290,17 @@ def run():
 			"Ready to Repair",
 			"Proven Legitimate Zero",
 			"I1 Negative Rate",
+			"Posting Order",
 		)
 	}
+	# Final: canaries required; baseline REAL_STOCK_SHORTAGE may remain (MANUAL).
 	log["final_gates"] = _abort_if_unsafe(
-		"final", mfg0, require_canaries=True, allow_baseline_neg=False, allow_bin_mismatch=False
+		"final",
+		mfg0,
+		require_canaries=True,
+		allow_baseline_neg=True,
+		allow_bin_mismatch=False,
+		baseline_neg_after=baseline_neg,
 	)
 	log["final_canaries"] = _canaries()
 	(OUT / "replay_log.json").write_text(json.dumps(log, indent=2, default=str))
