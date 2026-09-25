@@ -16,13 +16,37 @@ from frappe.utils import flt
 
 
 def _net_diff(gl_map, precision):
+	"""Independent of frappe.rounded (needs System Settings / bound local)."""
 	d = sum(flt(getattr(e, "debit", 0)) - flt(getattr(e, "credit", 0)) for e in gl_map)
-	d = flt(d, precision)
+	if precision is not None:
+		d = float(round(d, int(precision)))
 	return d, d
 
 
 class TestIRRStockEntryMustNotUseRoundOff(unittest.TestCase):
 	ADJ = "621301 - تعدیلات موجودی کالا - E"
+
+
+	def setUp(self):
+		"""Bind minimal frappe.local + rounding so flt(., precision) works off-site."""
+		import frappe
+		from frappe import _dict
+		from unittest.mock import patch
+		try:
+			_ = frappe.flags
+		except RuntimeError:
+			frappe.local.flags = _dict()
+			frappe.local.conf = _dict()
+		self._sys_settings_patch = patch(
+			"frappe.get_system_settings",
+			return_value="Banker's Rounding (legacy)",
+		)
+		self._sys_settings_patch.start()
+
+	def tearDown(self):
+		if getattr(self, "_sys_settings_patch", None):
+			self._sys_settings_patch.stop()
+
 
 	def _gl_entry(self, account, debit=0.0, credit=0.0):
 		data = {

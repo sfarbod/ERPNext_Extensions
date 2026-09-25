@@ -533,10 +533,15 @@ def _install_iran_process_debit_credit_difference(gl):
 				gl_map, precision, debit_credit_diff, trx_cur_debit_credit_diff
 			)
 		elif abs(debit_credit_diff) >= quantum:
-			if (
-				voucher_type == "Stock Entry"
-				and frappe.flags.get("skip_round_off_for_zero_value_stock_entry") == voucher_no
-			):
+			skip_zvt = False
+			try:
+				skip_zvt = (
+					voucher_type == "Stock Entry"
+					and frappe.flags.get("skip_round_off_for_zero_value_stock_entry") == voucher_no
+				)
+			except Exception:
+				skip_zvt = False
+			if skip_zvt:
 				zvt.absorb_gl_map_rounding_residual(
 					gl_map, precision, debit_credit_diff, trx_cur_debit_credit_diff
 				)

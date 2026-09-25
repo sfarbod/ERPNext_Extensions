@@ -206,6 +206,18 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			"voucher_detail_no": getattr(out_sle, "voucher_detail_no", None),
 		}
 
+	# Fallback: batch-inward SABB rate (voucher-level provenance for the batch).
+	# Prefer this over warehouse previous_healthy MA tip — mixed PR/transfer history
+	# at s_warehouse is not batch truth (29876: tip 1,078,584 vs batch inward 346,357).
+	if abs(source_rate) <= RATE_EPS and batch and item and posting_date:
+		batch_prov = _batch_inward_sabb_rate(
+			item, batch, before_date=posting_date, exclude_voucher=voucher
+		)
+		if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
+			source_rate = flt(batch_prov["rate"])
+			source_kind = "batch_inward_sabb_rate"
+			out["evidence"]["batch_inward_sabb"] = batch_prov
+
 	# Fallback: previous healthy SLE at source warehouse before posting.
 	if abs(source_rate) <= RATE_EPS and s_wh and posting_date:
 		prev = _previous_healthy(item, s_wh, posting_date, posting_time)
@@ -298,6 +310,13 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["confidence"] = CONFIDENCE_EXACT
 		out["classification"] = EXACT
 		out["reason"] = f"target rate {current_rate} ≠ source outgoing_rate {expected}"
+	elif purpose in TRANSFER_PURPOSES and source_kind == "batch_inward_sabb_rate":
+		out["confidence"] = CONFIDENCE_EXACT
+		out["classification"] = EXACT
+		out["reason"] = (
+			f"transfer lost outgoing rate; batch inward SABB rate {expected} "
+			f"(unanimous prior positive-qty Serial and Batch Entry for this batch)"
+		)
 	elif purpose in TRANSFER_PURPOSES and source_kind == "previous_healthy_source_sle":
 		# previous_healthy alone is NOT sufficient economic provenance.
 		# Warehouse MA tip can drift from batch/voucher truth (e.g. 13100023
@@ -564,6 +583,61 @@ def _incoming_sle(voucher, item, warehouse=None, batch=None, voucher_detail=None
 
 	rows = frappe.db.sql(select.format(where=" AND ".join(base)), args, as_dict=True)
 	return rows[0] if rows else None
+
+
+def _batch_inward_sabb_rate(
+	item: str,
+	batch: str,
+	*,
+	before_date,
+	exclude_voucher: str | None = None,
+) -> dict | None:
+	"""Unanimous prior positive-qty Serial and Batch Entry rate for item+batch.
+
+	Returns None when no inward rows exist or inward rates conflict (>1 distinct IRR).
+	Excludes the current voucher so corrupt SBE on the defective transfer itself
+	cannot self-authorize a rate.
+	"""
+	if not item or not batch or not before_date:
+		return None
+	if not frappe.db.table_exists("Serial and Batch Entry"):
+		return None
+	exclude_sql = ""
+	args: list = [batch, item, RATE_EPS, before_date]
+	if exclude_voucher:
+		exclude_sql = " AND sabb.voucher_no != %s "
+		args.append(exclude_voucher)
+	rows = frappe.db.sql(
+		f"""
+		SELECT sabb.voucher_type, sabb.voucher_no, sabb.posting_date,
+		       sbe.qty, sbe.incoming_rate
+		FROM `tabSerial and Batch Entry` sbe
+		JOIN `tabSerial and Batch Bundle` sabb ON sabb.name = sbe.parent
+		WHERE sbe.batch_no = %s
+		  AND sabb.item_code = %s
+		  AND IFNULL(sabb.is_cancelled, 0) = 0
+		  AND sbe.qty > 0
+		  AND ABS(IFNULL(sbe.incoming_rate, 0)) > %s
+		  AND (sabb.posting_date IS NULL OR sabb.posting_date <= %s)
+		  {exclude_sql}
+		ORDER BY sabb.posting_date, sabb.creation
+		""",
+		args,
+		as_dict=True,
+	)
+	if not rows:
+		return None
+	rates = sorted({flt(r.incoming_rate, 0) for r in rows if abs(flt(r.incoming_rate)) > RATE_EPS})
+	if len(rates) != 1:
+		return None
+	rate = rates[0]
+	return {
+		"rate": rate,
+		"inward_count": len(rows),
+		"vouchers": list(dict.fromkeys(r.voucher_no for r in rows)),
+		"first_voucher": rows[0].voucher_no,
+		"last_voucher": rows[-1].voucher_no,
+	}
 
 
 def _previous_healthy(item, warehouse, posting_date, posting_time) -> dict | None:
