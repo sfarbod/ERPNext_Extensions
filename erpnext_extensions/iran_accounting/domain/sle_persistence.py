@@ -45,6 +45,21 @@ def snapshot_sle_ledger_state(sle) -> dict | None:
 		return None
 
 
+def _assign_sle_field(sle, field, val) -> None:
+	"""Set an SLE field without assuming Document.set (dict rows may shadow it)."""
+	setter = getattr(type(sle), "set", None)
+	if callable(setter) and not isinstance(sle, dict):
+		try:
+			setter(sle, field, val)
+			return
+		except Exception:
+			pass
+	if hasattr(sle, "__setitem__"):
+		sle[field] = val
+		return
+	setattr(sle, field, val)
+
+
 def restore_out_of_scope_sle_ledger_state(engine, sle, pre) -> bool:
 	"""Restore SLE + warehouse running state after out-of-scope soft-skip.
 
@@ -57,13 +72,7 @@ def restore_out_of_scope_sle_ledger_state(engine, sle, pre) -> bool:
 	for field in _SLE_RESTORE_FIELDS:
 		if field not in pre:
 			continue
-		val = pre.get(field)
-		if hasattr(sle, "set"):
-			sle.set(field, val)
-		elif hasattr(sle, "__setitem__"):
-			sle[field] = val
-		else:
-			setattr(sle, field, val)
+		_assign_sle_field(sle, field, pre.get(field))
 	wh = getattr(engine, "wh_data", None) if engine is not None else None
 	if wh is not None:
 		wh.qty_after_transaction = flt(pre.get("qty_after_transaction"))
