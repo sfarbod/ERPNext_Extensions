@@ -103,6 +103,14 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 	``None`` means the caller must not soften integrity errors (non-RIV paths,
 	or RIV without a resolvable item target list).
 	"""
+	# Leftover-MA post-RIV / persist replay: scope to the declared identity item.
+	try:
+		leftover_target = getattr(frappe.local, "iran_leftover_ma_target_item", None)
+	except Exception:
+		leftover_target = None
+	if leftover_target:
+		return {cstr(leftover_target)}
+
 	if engine is None:
 		return None
 
