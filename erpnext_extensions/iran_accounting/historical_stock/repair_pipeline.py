@@ -50,6 +50,76 @@ MANUFACTURE_PURPOSES = frozenset(
 	}
 )
 
+# Rate-only Material Transfer for Manufacture may use the valuation writer when
+# transfer reconstruction is EXACT (batch/RECO). Never opens Manufacture FG qty.
+_TRANSFER_EXACT_SOURCES = frozenset(
+	{
+		"batch_inward_sabb_rate",
+		"batch_stock_reco_rate",
+		"stock_reco_corroborated_previous_healthy",
+		"outgoing_sle_svd",
+		"outgoing_sle_rate",
+	}
+)
+
+
+def _material_transfer_for_manufacture_exact(row: dict) -> bool:
+	"""True when MTfM has EXACT transfer provenance — safe rate write, no qty change."""
+	if _purpose(row) != "Material Transfer for Manufacture":
+		return False
+	if cint_safe(row.get("is_finished_item")) or cint_safe(row.get("is_scrap_item")):
+		return False
+	src = str(
+		row.get("source_of_truth")
+		or row.get("authoritative_source")
+		or row.get("rate_source")
+		or ""
+	)
+	conf = str(row.get("confidence") or "").upper()
+	if conf != "EXACT":
+		return False
+	tr = row.get("transfer_reconstruction") or {}
+	ok_src = src in _TRANSFER_EXACT_SOURCES or (
+		str(tr.get("authoritative_source") or "") in _TRANSFER_EXACT_SOURCES
+		and str(tr.get("confidence") or "").upper() == "EXACT"
+	)
+	if not ok_src:
+		return False
+	# False Patient Zero: upstream tip unpoisoned must not block EXACT transfer apply.
+	ps = str(row.get("planner_status") or "").upper()
+	if "WAITING_PATIENT_ZERO" in ps or row.get("patient_zero"):
+		pz = row.get("patient_zero")
+		pz_v = None
+		if isinstance(pz, dict):
+			pz_v = pz.get("voucher_no") or pz.get("voucher")
+		elif pz:
+			pz_v = str(pz)
+		if pz_v and pz_v != (row.get("voucher") or row.get("voucher_no")):
+			try:
+				from erpnext_extensions.iran_accounting.stock_posting_order.replay import (
+					sle_poison_reason,
+				)
+
+				poisoned = False
+				for sle in frappe.db.sql(
+					"""
+					SELECT actual_qty, qty_after_transaction, stock_value, valuation_rate,
+					       incoming_rate, outgoing_rate, stock_value_difference
+					FROM `tabStock Ledger Entry`
+					WHERE voucher_no=%s AND is_cancelled=0
+					""",
+					pz_v,
+					as_dict=True,
+				):
+					if sle_poison_reason(sle):
+						poisoned = True
+						break
+				if poisoned:
+					return False
+			except Exception:
+				return False
+	return True
+
 
 @dataclass
 class RepairPlan:
@@ -197,6 +267,7 @@ def plan(row: dict) -> RepairPlan:
 	state = root["primary_state"]
 	mfg = is_manufacture_adjacent(annotated)
 	native = annotated.get("manufacture_native") or {}
+	mtfm_exact = _material_transfer_for_manufacture_exact(annotated)
 	native_ready = (
 		mfg
 		and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE)
@@ -204,7 +275,20 @@ def plan(row: dict) -> RepairPlan:
 		and str(annotated.get("source_of_truth") or "") == "historical_manufacture_consumed_svd"
 		and str(native.get("classification") or "") == "EXACT"
 	)
-	if mfg and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE, REASON_LEFTOVER_MA):
+	if mtfm_exact and reason in (
+		REASON_WRONG_RATE,
+		REASON_ZERO_RATE,
+		REASON_MANUFACTURE_FLOW,
+	):
+		# Keep VALUATION / WRONG_RATE — do not coerce to MANUFACTURE_FLOW MANUAL.
+		# eligible may be False due to false WAITING_PATIENT_ZERO; mtfm_exact
+		# already verified the upstream tip is unpoisoned.
+		family = FAMILY_VALUATION
+		reason = REASON_WRONG_RATE
+		state = PRIMARY_READY
+		mfg = False
+		annotated["eligible"] = True
+	elif mfg and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE, REASON_LEFTOVER_MA):
 		family = FAMILY_MANUFACTURE_FLOW
 		reason = REASON_MANUFACTURE_FLOW
 		if native_ready:
