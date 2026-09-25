@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, getdate
 
 from erpnext_extensions.iran_accounting.historical_stock import (
 	CONFIDENCE_AMBIGUOUS,
@@ -26,6 +26,18 @@ from erpnext_extensions.iran_accounting.historical_stock import (
 )
 from erpnext_extensions.iran_accounting.historical_stock.util import g
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import sle_poison_reason
+
+# Voucher types whose ``posting_date`` is authoritative when SABB.posting_date is NULL.
+_VOUCHER_POSTING_DATE_TYPES = frozenset(
+	{
+		"Purchase Receipt",
+		"Stock Entry",
+		"Stock Reconciliation",
+		"Delivery Note",
+		"Purchase Invoice",
+		"Sales Invoice",
+	}
+)
 
 TRANSFER_PURPOSES = frozenset(
 	{
@@ -207,6 +219,7 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		}
 
 	# Fallback: Stock Reconciliation batch rate at source warehouse (inventory opening).
+	# Then Purchase Receipt Item valuation_rate (document authority for batch@warehouse).
 	# Then warehouse-scoped unanimous batch inward. Global multi-warehouse SABB rates
 	# often conflict; RECO / same-warehouse inward is voucher-level provenance.
 	if abs(source_rate) <= RATE_EPS and batch and item and posting_date:
@@ -216,26 +229,37 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			source_kind = "batch_stock_reco_rate"
 			out["evidence"]["batch_stock_reco"] = reco
 		else:
-			batch_prov = _batch_inward_sabb_rate(
+			pr_prov = _batch_purchase_receipt_rate(
 				item,
 				batch,
-				before_date=posting_date,
-				exclude_voucher=voucher,
 				warehouse=s_wh,
+				before_date=posting_date,
 			)
-			if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
-				source_rate = flt(batch_prov["rate"])
-				source_kind = "batch_inward_sabb_rate"
-				out["evidence"]["batch_inward_sabb"] = batch_prov
+			if pr_prov and abs(flt(pr_prov.get("rate"))) > RATE_EPS:
+				source_rate = flt(pr_prov["rate"])
+				source_kind = "batch_purchase_receipt_rate"
+				out["evidence"]["batch_purchase_receipt"] = pr_prov
 			else:
-				# Global unanimous inward only when warehouse-scoped is empty.
 				batch_prov = _batch_inward_sabb_rate(
-					item, batch, before_date=posting_date, exclude_voucher=voucher
+					item,
+					batch,
+					before_date=posting_date,
+					exclude_voucher=voucher,
+					warehouse=s_wh,
 				)
 				if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
 					source_rate = flt(batch_prov["rate"])
 					source_kind = "batch_inward_sabb_rate"
 					out["evidence"]["batch_inward_sabb"] = batch_prov
+				else:
+					# Global unanimous inward only when warehouse-scoped is empty.
+					batch_prov = _batch_inward_sabb_rate(
+						item, batch, before_date=posting_date, exclude_voucher=voucher
+					)
+					if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
+						source_rate = flt(batch_prov["rate"])
+						source_kind = "batch_inward_sabb_rate"
+						out["evidence"]["batch_inward_sabb"] = batch_prov
 
 	# Fallback: previous healthy SLE at source warehouse before posting.
 	if abs(source_rate) <= RATE_EPS and s_wh and posting_date:
@@ -341,6 +365,13 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["reason"] = (
 			f"transfer lost outgoing rate; batch inward SABB rate {expected} "
 			f"(unanimous prior positive-qty Serial and Batch Entry for this batch)"
+		)
+	elif purpose in TRANSFER_PURPOSES and source_kind == "batch_purchase_receipt_rate":
+		out["confidence"] = CONFIDENCE_EXACT
+		out["classification"] = EXACT
+		out["reason"] = (
+			f"transfer lost outgoing rate; Purchase Receipt valuation_rate {expected} "
+			f"for this batch at source warehouse before transfer (document authority)"
 		)
 	elif purpose in TRANSFER_PURPOSES and source_kind == "batch_stock_reco_rate":
 		out["confidence"] = CONFIDENCE_EXACT
@@ -624,6 +655,107 @@ def _incoming_sle(voucher, item, warehouse=None, batch=None, voucher_detail=None
 	return rows[0] if rows else None
 
 
+def _voucher_posting_date(voucher_type: str | None, voucher_no: str | None):
+	"""Resolve posting_date from the source voucher when SABB.posting_date is NULL.
+
+	Many Serial and Batch Bundle rows have NULL posting_date even when the parent
+	Purchase Receipt / Stock Entry is dated. Treating NULL as "always before"
+	lets *future* receipts poison unanimous inbound rates for earlier transfers.
+	"""
+	if not voucher_type or not voucher_no:
+		return None
+	if voucher_type not in _VOUCHER_POSTING_DATE_TYPES:
+		return None
+	if not frappe.db.exists(voucher_type, voucher_no):
+		return None
+	return frappe.db.get_value(voucher_type, voucher_no, "posting_date")
+
+
+def _effective_sabb_posting_date(row) -> object | None:
+	"""SABB posting_date, else the voucher's posting_date."""
+	pd = getattr(row, "posting_date", None) or (row.get("posting_date") if isinstance(row, dict) else None)
+	if pd:
+		return getdate(pd)
+	vt = getattr(row, "voucher_type", None) or (row.get("voucher_type") if isinstance(row, dict) else None)
+	vn = getattr(row, "voucher_no", None) or (row.get("voucher_no") if isinstance(row, dict) else None)
+	resolved = _voucher_posting_date(vt, vn)
+	return getdate(resolved) if resolved else None
+
+
+def _filter_rows_on_or_before(rows: list, before_date) -> list:
+	"""Keep rows whose effective posting_date is on/before before_date.
+
+	Rows with no resolvable posting_date are dropped (cannot prove chronology).
+	"""
+	if not before_date:
+		return list(rows or [])
+	cutoff = getdate(before_date)
+	out = []
+	for r in rows or []:
+		eff = _effective_sabb_posting_date(r)
+		if eff is None:
+			continue
+		if eff <= cutoff:
+			out.append(r)
+	return out
+
+
+def _batch_purchase_receipt_rate(
+	item: str,
+	batch: str,
+	*,
+	warehouse: str | None = None,
+	before_date=None,
+) -> dict | None:
+	"""Unanimous Purchase Receipt Item valuation_rate for item+batch before date.
+
+	Purchase Receipt is document-level receipt authority. When exactly one IRR
+	valuation_rate appears on submitted PR items for this batch (+ optional
+	warehouse) on/before ``before_date``, that rate is EXACT transfer provenance
+	— stronger than warehouse MA tip / previous_healthy SLE.
+	"""
+	if not item or not batch:
+		return None
+	wh_sql = ""
+	date_sql = ""
+	args: list = [batch, item, RATE_EPS]
+	if warehouse:
+		wh_sql = " AND IFNULL(pri.warehouse, '') = %s "
+		args.append(warehouse)
+	if before_date:
+		date_sql = " AND pr.posting_date <= %s "
+		args.append(before_date)
+	rows = frappe.db.sql(
+		f"""
+		SELECT pr.name AS voucher_no, pr.posting_date, pri.qty, pri.valuation_rate, pri.warehouse
+		FROM `tabPurchase Receipt Item` pri
+		JOIN `tabPurchase Receipt` pr ON pr.name = pri.parent
+		WHERE pri.batch_no = %s
+		  AND pri.item_code = %s
+		  AND pr.docstatus = 1
+		  AND ABS(IFNULL(pri.valuation_rate, 0)) > %s
+		  {wh_sql}
+		  {date_sql}
+		ORDER BY pr.posting_date, pr.creation
+		""",
+		args,
+		as_dict=True,
+	)
+	if not rows:
+		return None
+	rates = sorted({flt(r.valuation_rate, 0) for r in rows if abs(flt(r.valuation_rate)) > RATE_EPS})
+	if len(rates) != 1:
+		return None
+	return {
+		"rate": rates[0],
+		"receipt_count": len(rows),
+		"vouchers": list(dict.fromkeys(r.voucher_no for r in rows)),
+		"first_voucher": rows[0].voucher_no,
+		"last_voucher": rows[-1].voucher_no,
+		"warehouse": warehouse or rows[0].warehouse,
+	}
+
+
 def _batch_inward_sabb_rate(
 	item: str,
 	batch: str,
@@ -638,6 +770,9 @@ def _batch_inward_sabb_rate(
 	Excludes the current voucher so corrupt SBE on the defective transfer itself
 	cannot self-authorize a rate. When ``warehouse`` is set, only that warehouse's
 	inward rows are considered (avoids cross-warehouse mixed-rate false negatives).
+
+	SABB.posting_date is often NULL; effective chronology falls back to the parent
+	voucher posting_date so later Purchase Receipts cannot poison earlier transfers.
 	"""
 	if not item or not batch or not before_date:
 		return None
@@ -645,13 +780,14 @@ def _batch_inward_sabb_rate(
 		return None
 	exclude_sql = ""
 	wh_sql = ""
-	args: list = [batch, item, RATE_EPS, before_date]
+	args: list = [batch, item, RATE_EPS]
 	if exclude_voucher:
 		# NULL voucher_no must remain eligible (IFNULL so SQL NULL != x stays true).
 		exclude_sql = " AND IFNULL(sabb.voucher_no, '') != %s "
 		args.append(exclude_voucher)
 	if warehouse:
-		wh_sql = " AND sbe.warehouse = %s "
+		# Prefer entry warehouse; fall back to bundle warehouse when entry is blank.
+		wh_sql = " AND IFNULL(NULLIF(sbe.warehouse, ''), sabb.warehouse) = %s "
 		args.append(warehouse)
 	rows = frappe.db.sql(
 		f"""
@@ -664,7 +800,6 @@ def _batch_inward_sabb_rate(
 		  AND IFNULL(sabb.is_cancelled, 0) = 0
 		  AND sbe.qty > 0
 		  AND ABS(IFNULL(sbe.incoming_rate, 0)) > %s
-		  AND (sabb.posting_date IS NULL OR sabb.posting_date <= %s)
 		  {exclude_sql}
 		  {wh_sql}
 		ORDER BY sabb.posting_date, sabb.creation
@@ -672,6 +807,7 @@ def _batch_inward_sabb_rate(
 		args,
 		as_dict=True,
 	)
+	rows = _filter_rows_on_or_before(rows, before_date)
 	if not rows:
 		return None
 	rates = sorted({flt(r.incoming_rate, 0) for r in rows if abs(flt(r.incoming_rate)) > RATE_EPS})
@@ -706,17 +842,14 @@ def _batch_stock_reco_rate(
 	if not frappe.db.table_exists("Serial and Batch Entry"):
 		return None
 	wh_sql = ""
-	date_sql = ""
 	args: list = [batch, item, RATE_EPS]
 	if warehouse:
-		wh_sql = " AND sbe.warehouse = %s "
+		wh_sql = " AND IFNULL(NULLIF(sbe.warehouse, ''), sabb.warehouse) = %s "
 		args.append(warehouse)
-	if before_date:
-		date_sql = " AND (sabb.posting_date IS NULL OR sabb.posting_date <= %s) "
-		args.append(before_date)
 	rows = frappe.db.sql(
 		f"""
-		SELECT sabb.voucher_no, sabb.posting_date, sbe.qty, sbe.incoming_rate, sbe.warehouse
+		SELECT sabb.voucher_no, sabb.voucher_type, sabb.posting_date, sbe.qty,
+		       sbe.incoming_rate, sbe.warehouse
 		FROM `tabSerial and Batch Entry` sbe
 		JOIN `tabSerial and Batch Bundle` sabb ON sabb.name = sbe.parent
 		WHERE sbe.batch_no = %s
@@ -726,12 +859,13 @@ def _batch_stock_reco_rate(
 		  AND sbe.qty > 0
 		  AND ABS(IFNULL(sbe.incoming_rate, 0)) > %s
 		  {wh_sql}
-		  {date_sql}
 		ORDER BY sabb.posting_date, sabb.creation
 		""",
 		args,
 		as_dict=True,
 	)
+	if before_date:
+		rows = _filter_rows_on_or_before(rows, before_date)
 	if not rows:
 		return None
 	rates = sorted({flt(r.incoming_rate, 0) for r in rows if abs(flt(r.incoming_rate)) > RATE_EPS})
