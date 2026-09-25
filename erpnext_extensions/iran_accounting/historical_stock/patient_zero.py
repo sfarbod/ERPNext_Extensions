@@ -36,15 +36,20 @@ def transition_is_invalid(prev, row) -> str | None:
 		# (do not resurrect a prior valued scrap MA as Patient Zero).
 		wh = g(row, "warehouse")
 		if wh:
-			from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
-				is_scrap_reject_waste_warehouse,
-			)
+			try:
+				from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+					is_scrap_reject_waste_warehouse,
+				)
 
-			if is_scrap_reject_waste_warehouse(wh):
+				if is_scrap_reject_waste_warehouse(wh):
+					return None
+			except Exception:
+				pass
+		try:
+			if _repack_conserves_zero_sources(row):
 				return None
-		# Repack output that only conserves zero-valued source lines.
-		if _repack_conserves_zero_sources(row):
-			return None
+		except Exception:
+			pass
 		if prev is None:
 			return "zero_incoming_with_qty"
 		prev_value = abs(flt(g(prev, "stock_value")))
