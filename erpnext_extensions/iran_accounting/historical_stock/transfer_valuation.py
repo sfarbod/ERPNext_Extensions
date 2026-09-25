@@ -299,14 +299,16 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["classification"] = EXACT
 		out["reason"] = f"target rate {current_rate} ≠ source outgoing_rate {expected}"
 	elif purpose in TRANSFER_PURPOSES and source_kind == "previous_healthy_source_sle":
-		# Proven ERPNext MA tip at s_warehouse before this transfer. Safe to auto-apply
-		# once IRR Stock Entry one-quantum round-off reaches make_round_off_gle
-		# (precision-0 dead zone fixed); prior MANUAL gate was RIV GL Diff=1 / I1.
-		out["confidence"] = CONFIDENCE_EXACT
-		out["classification"] = EXACT
+		# previous_healthy alone is NOT sufficient economic provenance.
+		# Warehouse MA tip can drift from batch/voucher truth (e.g. 13100023
+		# chain at 346357 vs a later tip at 1,078,584). Require independent
+		# outgoing SVD/rate on this voucher, or an explicit provenance voucher
+		# (prior transfer/receipt), before READY/EXACT auto-apply.
+		out["confidence"] = CONFIDENCE_LIKELY
+		out["classification"] = RECONSTRUCTABLE
 		out["reason"] = (
 			f"transfer lost outgoing rate; previous healthy source SLE {expected} "
-			f"(authoritative warehouse MA tip, not sibling)"
+			f"is a candidate only — not EXACT without voucher-level provenance"
 		)
 	elif purpose in TRANSFER_PURPOSES:
 		out["confidence"] = CONFIDENCE_EXACT
