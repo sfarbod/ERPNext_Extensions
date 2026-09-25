@@ -840,6 +840,8 @@ def _patch_stock_ledger_engine():
 	)
 	from erpnext_extensions.iran_accounting.domain.sle_persistence import (
 		persist_processed_sle_if_possible,
+		restore_out_of_scope_sle_ledger_state,
+		snapshot_sle_ledger_state,
 	)
 	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 		sync_irr_sle_from_stock_entry_row,
@@ -868,8 +870,15 @@ def _patch_stock_ledger_engine():
 			)
 			frappe.local.iran_riv_update_entries_after = self
 			try:
+				pre = None
 				if company and is_irr_company(company):
-					assert_sle_valuation_integrity_before_vanilla(self, sle)
+					# Out-of-scope soft-skip: do not rewrite unrelated historical SLE.
+					# Still advance wh_data from the existing SLE so chronology continues.
+					if assert_sle_valuation_integrity_before_vanilla(self, sle) is False:
+						pre = snapshot_sle_ledger_state(sle)
+						restore_out_of_scope_sle_ledger_state(self, sle, pre)
+						return
+					pre = snapshot_sle_ledger_state(sle)
 				_orig_process_sle(self, sle)
 				if company and is_irr_company(company):
 					# I4 leftover-value is only valid after vanilla copied running qty.
@@ -888,7 +897,12 @@ def _patch_stock_ledger_engine():
 					restore_vanilla_zero_qty_terminal_stock_value(
 						sle, vanilla_stock_value, vanilla_qty_after
 					)
-					assert_sle_valuation_integrity_after_sync(sle, engine=self)
+					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
+						# Vanilla already wrote; restore pre-RIV economics so target
+						# RIV does not create new I1 on unrelated FG cascades.
+						restore_out_of_scope_sle_ledger_state(self, sle, pre)
+						persist_processed_sle_if_possible(sle)
+						return
 					persist_processed_sle_if_possible(sle)
 			finally:
 				frappe.local.iran_riv_update_entries_after = None

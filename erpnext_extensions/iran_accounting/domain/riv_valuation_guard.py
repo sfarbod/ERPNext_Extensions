@@ -482,17 +482,18 @@ def assert_stock_entry_valuation_integrity(doc, engine=None) -> None:
 	run_integrity_assert_in_riv_scope(engine, sle=None, assert_fn=_run, doc=doc)
 
 
-def assert_sle_valuation_integrity_before_vanilla(engine, sle) -> None:
+def assert_sle_valuation_integrity_before_vanilla(engine, sle) -> bool:
 	"""L2: knowable invalid state must not enter vanilla process_sle.
 
-	Out-of-scope legacy anomalies (different item than the RIV target) are
-	logged and do not abort the target RIV.
+	Returns True when vanilla may proceed. Returns False for out-of-scope soft
+	anomalies (caller must skip process_sle to preserve historical SLE).
+	Raises ValuationIntegrityError for in-scope poison.
 	"""
 	if not sle:
-		return
+		return True
 	company = getattr(engine, "company", None) or _entry_get(sle, "company")
 	if company and not is_irr_company(company):
-		return
+		return True
 
 	def _run():
 		assert_incoming_rate_not_negative(sle)
@@ -550,16 +551,21 @@ def assert_sle_valuation_integrity_before_vanilla(engine, sle) -> None:
 		run_integrity_assert_in_riv_scope,
 	)
 
-	run_integrity_assert_in_riv_scope(engine, sle, _run)
+	return run_integrity_assert_in_riv_scope(engine, sle, _run)
 
 
-def assert_sle_valuation_integrity_after_sync(sle, engine=None) -> None:
-	"""L3: after Iran SLE sync, before persist_processed_sle."""
+def assert_sle_valuation_integrity_after_sync(sle, engine=None) -> bool:
+	"""L3: after Iran SLE sync, before persist_processed_sle.
+
+	Returns True when persist may proceed. Returns False for out-of-scope soft
+	anomalies (caller must restore pre-vanilla ledger state — do not persist
+	newly computed negative rates on unrelated items).
+	"""
 	if not sle:
-		return
+		return True
 	company = _entry_get(sle, "company")
 	if not company or not is_irr_company(company):
-		return
+		return True
 
 	def _run():
 		assert_incoming_rate_not_negative(sle)
@@ -571,13 +577,13 @@ def assert_sle_valuation_integrity_after_sync(sle, engine=None) -> None:
 
 	if engine is None:
 		_run()
-		return
+		return True
 
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
 		run_integrity_assert_in_riv_scope,
 	)
 
-	run_integrity_assert_in_riv_scope(engine, sle, _run)
+	return run_integrity_assert_in_riv_scope(engine, sle, _run)
 
 
 def apply_irr_stock_entry_contract_after_calculate(doc) -> None:

@@ -157,7 +157,8 @@ class TestRIVScopeAwareIntegrityAsserts(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.riv_valuation_scope.frappe.log_error",
 			create=True,
 		):
-			assert_sle_valuation_integrity_before_vanilla(engine, sle)
+			ok = assert_sle_valuation_integrity_before_vanilla(engine, sle)
+		self.assertIs(ok, False)
 		anomalies = get_out_of_scope_anomalies()
 		self.assertTrue(anomalies)
 		self.assertEqual(anomalies[-1]["offending_item_code"], "20100064")
@@ -174,7 +175,7 @@ class TestRIVScopeAwareIntegrityAsserts(unittest.TestCase):
 			create=True,
 		):
 			bad_other = _sle(item_code="20100064", incoming_rate=-1, actual_qty=1)
-			assert_sle_valuation_integrity_after_sync(bad_other, engine=engine)
+			self.assertIs(assert_sle_valuation_integrity_after_sync(bad_other, engine=engine), False)
 
 	def test_non_riv_context_remains_fail_closed(self):
 		sle = _sle(item_code="20100064", incoming_rate=-1, actual_qty=1)

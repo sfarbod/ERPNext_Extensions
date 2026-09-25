@@ -7,6 +7,7 @@ import logging
 
 import frappe
 from frappe.model.document import Document
+from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.ledger_rounding import (
 	SLE_MONETARY_FIELDS,
@@ -16,6 +17,59 @@ from erpnext_extensions.iran_accounting.domain.ledger_rounding import (
 logger = logging.getLogger(__name__)
 
 _SLE_PERSIST_FIELDS = SLE_MONETARY_FIELDS + ("qty_after_transaction",)
+
+# Fields restored when out-of-scope RIV soft-skip rejects a newly computed SLE.
+_SLE_RESTORE_FIELDS = (
+	"incoming_rate",
+	"outgoing_rate",
+	"valuation_rate",
+	"stock_value",
+	"stock_value_difference",
+	"qty_after_transaction",
+)
+
+
+def snapshot_sle_ledger_state(sle) -> dict | None:
+	"""Capture pre-vanilla SLE economics for out-of-scope restore."""
+	name = _get_entry_value(sle, "name")
+	if not name:
+		return None
+	try:
+		return frappe.db.get_value(
+			"Stock Ledger Entry",
+			name,
+			list(_SLE_RESTORE_FIELDS),
+			as_dict=True,
+		)
+	except Exception:
+		return None
+
+
+def restore_out_of_scope_sle_ledger_state(engine, sle, pre) -> bool:
+	"""Restore SLE + warehouse running state after out-of-scope soft-skip.
+
+	Vanilla ``process_sle`` already mutated ``sle`` and ``engine.wh_data``. Put
+	both back to the pre-vanilla snapshot so target-item RIV does not create new
+	I1/I2 on unrelated FG cascades.
+	"""
+	if not pre:
+		return False
+	for field in _SLE_RESTORE_FIELDS:
+		if field not in pre:
+			continue
+		val = pre.get(field)
+		if hasattr(sle, "set"):
+			sle.set(field, val)
+		elif hasattr(sle, "__setitem__"):
+			sle[field] = val
+		else:
+			setattr(sle, field, val)
+	wh = getattr(engine, "wh_data", None) if engine is not None else None
+	if wh is not None:
+		wh.qty_after_transaction = flt(pre.get("qty_after_transaction"))
+		wh.stock_value = flt(pre.get("stock_value"))
+		wh.valuation_rate = flt(pre.get("valuation_rate"))
+	return True
 
 
 def persist_processed_sle_if_possible(sle) -> bool:
