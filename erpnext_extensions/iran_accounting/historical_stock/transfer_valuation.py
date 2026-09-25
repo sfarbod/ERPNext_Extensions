@@ -206,17 +206,36 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			"voucher_detail_no": getattr(out_sle, "voucher_detail_no", None),
 		}
 
-	# Fallback: batch-inward SABB rate (voucher-level provenance for the batch).
-	# Prefer this over warehouse previous_healthy MA tip — mixed PR/transfer history
-	# at s_warehouse is not batch truth (29876: tip 1,078,584 vs batch inward 346,357).
+	# Fallback: Stock Reconciliation batch rate at source warehouse (inventory opening).
+	# Then warehouse-scoped unanimous batch inward. Global multi-warehouse SABB rates
+	# often conflict; RECO / same-warehouse inward is voucher-level provenance.
 	if abs(source_rate) <= RATE_EPS and batch and item and posting_date:
-		batch_prov = _batch_inward_sabb_rate(
-			item, batch, before_date=posting_date, exclude_voucher=voucher
-		)
-		if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
-			source_rate = flt(batch_prov["rate"])
-			source_kind = "batch_inward_sabb_rate"
-			out["evidence"]["batch_inward_sabb"] = batch_prov
+		reco = _batch_stock_reco_rate(item, batch, warehouse=s_wh, before_date=posting_date)
+		if reco and abs(flt(reco.get("rate"))) > RATE_EPS:
+			source_rate = flt(reco["rate"])
+			source_kind = "batch_stock_reco_rate"
+			out["evidence"]["batch_stock_reco"] = reco
+		else:
+			batch_prov = _batch_inward_sabb_rate(
+				item,
+				batch,
+				before_date=posting_date,
+				exclude_voucher=voucher,
+				warehouse=s_wh,
+			)
+			if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
+				source_rate = flt(batch_prov["rate"])
+				source_kind = "batch_inward_sabb_rate"
+				out["evidence"]["batch_inward_sabb"] = batch_prov
+			else:
+				# Global unanimous inward only when warehouse-scoped is empty.
+				batch_prov = _batch_inward_sabb_rate(
+					item, batch, before_date=posting_date, exclude_voucher=voucher
+				)
+				if batch_prov and abs(flt(batch_prov.get("rate"))) > RATE_EPS:
+					source_rate = flt(batch_prov["rate"])
+					source_kind = "batch_inward_sabb_rate"
+					out["evidence"]["batch_inward_sabb"] = batch_prov
 
 	# Fallback: previous healthy SLE at source warehouse before posting.
 	if abs(source_rate) <= RATE_EPS and s_wh and posting_date:
@@ -225,6 +244,12 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 			source_rate = flt(prev["rate"])
 			source_kind = "previous_healthy_source_sle"
 			out["evidence"]["previous_source_sle"] = prev
+			# Promote when Stock Reconciliation for this batch@warehouse agrees —
+			# previous_healthy alone stays LIKELY; RECO corroboration is EXACT.
+			reco = _batch_stock_reco_rate(item, batch, warehouse=s_wh, before_date=posting_date)
+			if reco and abs(flt(reco.get("rate")) - source_rate) <= 1:
+				source_kind = "stock_reco_corroborated_previous_healthy"
+				out["evidence"]["batch_stock_reco"] = reco
 
 	# Upstream health at source warehouse
 	upstream = _source_upstream_health(item, s_wh, posting_dt, batch=batch, cache=cache)
@@ -316,6 +341,20 @@ def reconstruct_transfer_valuation(row: dict, *, cache: dict | None = None) -> d
 		out["reason"] = (
 			f"transfer lost outgoing rate; batch inward SABB rate {expected} "
 			f"(unanimous prior positive-qty Serial and Batch Entry for this batch)"
+		)
+	elif purpose in TRANSFER_PURPOSES and source_kind == "batch_stock_reco_rate":
+		out["confidence"] = CONFIDENCE_EXACT
+		out["classification"] = EXACT
+		out["reason"] = (
+			f"transfer lost outgoing rate; Stock Reconciliation batch rate {expected} "
+			f"at source warehouse is voucher-level inventory provenance"
+		)
+	elif purpose in TRANSFER_PURPOSES and source_kind == "stock_reco_corroborated_previous_healthy":
+		out["confidence"] = CONFIDENCE_EXACT
+		out["classification"] = EXACT
+		out["reason"] = (
+			f"transfer lost outgoing rate; previous healthy source SLE {expected} "
+			f"corroborated by Stock Reconciliation batch rate at source warehouse"
 		)
 	elif purpose in TRANSFER_PURPOSES and source_kind == "previous_healthy_source_sle":
 		# previous_healthy alone is NOT sufficient economic provenance.
@@ -591,22 +630,29 @@ def _batch_inward_sabb_rate(
 	*,
 	before_date,
 	exclude_voucher: str | None = None,
+	warehouse: str | None = None,
 ) -> dict | None:
 	"""Unanimous prior positive-qty Serial and Batch Entry rate for item+batch.
 
 	Returns None when no inward rows exist or inward rates conflict (>1 distinct IRR).
 	Excludes the current voucher so corrupt SBE on the defective transfer itself
-	cannot self-authorize a rate.
+	cannot self-authorize a rate. When ``warehouse`` is set, only that warehouse's
+	inward rows are considered (avoids cross-warehouse mixed-rate false negatives).
 	"""
 	if not item or not batch or not before_date:
 		return None
 	if not frappe.db.table_exists("Serial and Batch Entry"):
 		return None
 	exclude_sql = ""
+	wh_sql = ""
 	args: list = [batch, item, RATE_EPS, before_date]
 	if exclude_voucher:
-		exclude_sql = " AND sabb.voucher_no != %s "
+		# NULL voucher_no must remain eligible (IFNULL so SQL NULL != x stays true).
+		exclude_sql = " AND IFNULL(sabb.voucher_no, '') != %s "
 		args.append(exclude_voucher)
+	if warehouse:
+		wh_sql = " AND sbe.warehouse = %s "
+		args.append(warehouse)
 	rows = frappe.db.sql(
 		f"""
 		SELECT sabb.voucher_type, sabb.voucher_no, sabb.posting_date,
@@ -620,6 +666,7 @@ def _batch_inward_sabb_rate(
 		  AND ABS(IFNULL(sbe.incoming_rate, 0)) > %s
 		  AND (sabb.posting_date IS NULL OR sabb.posting_date <= %s)
 		  {exclude_sql}
+		  {wh_sql}
 		ORDER BY sabb.posting_date, sabb.creation
 		""",
 		args,
@@ -637,6 +684,65 @@ def _batch_inward_sabb_rate(
 		"vouchers": list(dict.fromkeys(r.voucher_no for r in rows)),
 		"first_voucher": rows[0].voucher_no,
 		"last_voucher": rows[-1].voucher_no,
+		"warehouse": warehouse,
+	}
+
+
+def _batch_stock_reco_rate(
+	item: str,
+	batch: str,
+	*,
+	warehouse: str | None = None,
+	before_date=None,
+) -> dict | None:
+	"""Unanimous Stock Reconciliation inward rate for item+batch (+ optional warehouse).
+
+	Stock Reconciliation is inventory opening/authority for a batch identity. When
+	exactly one IRR appears on RECO inward SABB rows, that rate is voucher-level
+	provenance — stronger than warehouse MA tip alone.
+	"""
+	if not item or not batch:
+		return None
+	if not frappe.db.table_exists("Serial and Batch Entry"):
+		return None
+	wh_sql = ""
+	date_sql = ""
+	args: list = [batch, item, RATE_EPS]
+	if warehouse:
+		wh_sql = " AND sbe.warehouse = %s "
+		args.append(warehouse)
+	if before_date:
+		date_sql = " AND (sabb.posting_date IS NULL OR sabb.posting_date <= %s) "
+		args.append(before_date)
+	rows = frappe.db.sql(
+		f"""
+		SELECT sabb.voucher_no, sabb.posting_date, sbe.qty, sbe.incoming_rate, sbe.warehouse
+		FROM `tabSerial and Batch Entry` sbe
+		JOIN `tabSerial and Batch Bundle` sabb ON sabb.name = sbe.parent
+		WHERE sbe.batch_no = %s
+		  AND sabb.item_code = %s
+		  AND sabb.voucher_type = 'Stock Reconciliation'
+		  AND IFNULL(sabb.is_cancelled, 0) = 0
+		  AND sbe.qty > 0
+		  AND ABS(IFNULL(sbe.incoming_rate, 0)) > %s
+		  {wh_sql}
+		  {date_sql}
+		ORDER BY sabb.posting_date, sabb.creation
+		""",
+		args,
+		as_dict=True,
+	)
+	if not rows:
+		return None
+	rates = sorted({flt(r.incoming_rate, 0) for r in rows if abs(flt(r.incoming_rate)) > RATE_EPS})
+	if len(rates) != 1:
+		return None
+	return {
+		"rate": rates[0],
+		"reco_count": len(rows),
+		"vouchers": list(dict.fromkeys(r.voucher_no for r in rows)),
+		"warehouse": warehouse or rows[0].warehouse,
+		"first_voucher": rows[0].voucher_no,
 	}
 
 

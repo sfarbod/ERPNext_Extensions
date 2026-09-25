@@ -92,6 +92,10 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 			frappe.db.rollback(save_point=sp)
 			return {"ok": False, "aborted": True, "dry_run": False, "out": out}
 
+		# Always stamp SE+SLE+SABB for the full voucher/item at expected —
+		# multi-row transfers need every detail aligned before any RIV.
+		_reassert_expected_on_surface(classified, expected)
+
 		# Explicit SLE rate write when surface=SLE (implied SVD → txn rate)
 		if classified.get("surface") == "SLE" or classified.get("sle"):
 			_write_sle_expected(classified, expected)
@@ -199,47 +203,75 @@ def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 
 
 def _reassert_expected_on_surface(row: dict, expected: float) -> None:
-	"""Force SE detail and/or SLE back to the planned authoritative rate."""
+	"""Force SE detail and/or SLE back to the planned authoritative rate.
+
+	For multi-row Material Transfers, write *every* SE detail for the
+	voucher+item (not only the scanned detail). Batch-wise RIV reads SABB
+	rates; SE→SLE→SABB must all agree before official RIV or later rows
+	collapse back to zero SVD (28696 canary).
+	"""
+	rate = abs(expected)
+	voucher = row.get("voucher") or row.get("voucher_no")
+	item = row.get("item") or row.get("item_code")
 	vd = row.get("voucher_detail")
-	if vd:
+
+	details = []
+	if voucher and item:
+		details = frappe.db.sql(
+			"""
+			SELECT name, qty FROM `tabStock Entry Detail`
+			WHERE parent=%s AND item_code=%s
+			""",
+			(voucher, item),
+			as_dict=True,
+		)
+	elif vd:
 		qty = flt(frappe.db.get_value("Stock Entry Detail", vd, "qty") or 0)
+		details = [frappe._dict(name=vd, qty=qty)]
+
+	for d in details:
+		qty = abs(flt(d.qty))
 		frappe.db.set_value(
 			"Stock Entry Detail",
-			vd,
+			d.name,
 			{
-				"basic_rate": abs(expected),
-				"valuation_rate": abs(expected),
-				"amount": abs(expected) * abs(qty),
-				"basic_amount": abs(expected) * abs(qty),
+				"basic_rate": rate,
+				"valuation_rate": rate,
+				"amount": rate * qty,
+				"basic_amount": rate * qty,
 			},
 			update_modified=False,
 		)
+
 	if row.get("surface") == "SLE" or row.get("sle"):
 		_write_sle_expected(row, expected)
-	elif row.get("voucher") and row.get("item"):
-		# SE surface: push detail rate into SLE rows for this voucher/item.
+	elif voucher and item:
 		from erpnext_extensions.iran_accounting.historical_stock.valuation_rebuild import (
+			sync_sabb_from_sle,
 			sync_sle_from_stock_entry_detail,
 		)
 
 		try:
-			sync_sle_from_stock_entry_detail(row.get("voucher"), row.get("item"))
+			sync_sle_from_stock_entry_detail(voucher, item)
 		except Exception:
 			pass
-		# Also force any still-zero SLE for this voucher/item to expected.
 		for sle in frappe.db.sql(
 			"""
 			SELECT name, actual_qty, incoming_rate, outgoing_rate
 			FROM `tabStock Ledger Entry`
 			WHERE voucher_no=%s AND item_code=%s AND IFNULL(is_cancelled,0)=0
 			""",
-			(row.get("voucher"), row.get("item")),
+			(voucher, item),
 			as_dict=True,
 		):
 			qty = flt(sle.actual_qty)
 			cur = flt(sle.outgoing_rate if qty < 0 else sle.incoming_rate)
-			if abs(cur - abs(expected)) > 1.0:
+			if abs(cur - rate) > 1.0:
 				_write_sle_expected({**row, "sle": sle.name}, expected)
+		try:
+			sync_sabb_from_sle(voucher, item)
+		except Exception:
+			pass
 
 
 def _write_sle_expected(row: dict, expected: float) -> None:
