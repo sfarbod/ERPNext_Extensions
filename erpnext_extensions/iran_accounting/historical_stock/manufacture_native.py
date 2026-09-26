@@ -122,7 +122,13 @@ def reconstruct_manufacture_valuation(voucher: str) -> dict[str, Any]:
 		if cint(d.is_scrap) or _is_scrap_like(d) or _is_byproduct_like(d):
 			val = abs(flt(d.basic_amount))
 			if val <= VALUE_EPS:
-				val = _incoming_secondary_value(d, sle)
+				# Documented zero scrap/sample — do not invent value from SLE.
+				# RIV may fill incoming_rate on a zero-rate QC row; using that
+				# SVD circularly changes the FG residual.
+				if abs(flt(d.basic_rate)) <= RATE_EPS and abs(flt(d.amount)) <= VALUE_EPS:
+					val = 0.0
+				else:
+					val = _incoming_secondary_value(d, sle)
 			if _is_byproduct_like(d) and not (cint(d.is_scrap) or _is_scrap_like(d)):
 				byproduct_value += val
 				byproducts.append({"detail": d, "sle": sle, "value": val})
@@ -131,9 +137,12 @@ def reconstruct_manufacture_valuation(voucher: str) -> dict[str, Any]:
 				scraps.append({"detail": d, "sle": sle, "value": val})
 			continue
 		if not d.s_warehouse:
-			# Other target-only non-FG rows still reduce residual via basic_amount when present.
+			# Other target-only non-FG rows reduce residual only by documented
+			# SE basic_amount. A zero document rate is a legitimate sample/QC
+			# receipt — do not invent a deduction from SLE (RIV may have filled
+			# an incoming_rate that would circularly change the FG residual).
 			if d.t_warehouse:
-				val = abs(flt(d.basic_amount)) or _incoming_secondary_value(d, sle)
+				val = abs(flt(d.basic_amount))
 				if val > VALUE_EPS:
 					byproduct_value += val
 					byproducts.append({"detail": d, "sle": sle, "value": val, "kind": "other_incoming"})

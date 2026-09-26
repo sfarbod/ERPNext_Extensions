@@ -41,6 +41,34 @@ class TestRepairPipeline(unittest.TestCase):
 		self.assertEqual(p.reason, REASON_WRONG_RATE)
 		self.assertIn("write_authoritative_rate", p.operations)
 
+	def test_manufacture_native_exact_residual_is_ready(self):
+		"""Scan stamps manufacture_consumed_svd_residual; plan must not stay MANUAL."""
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "READY_WRONG_RATE",
+				"eligible": True,
+				"confidence": "EXACT",
+				"voucher": "MAT-STE-2026-37090",
+				"item": "30100255",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"source_of_truth": "manufacture_consumed_svd_residual",
+				"proposed_rate": 4199641.909643788,
+				"manufacture_native": {
+					"classification": "EXACT",
+					"eligible": True,
+					"source_of_truth": "historical_manufacture_consumed_svd",
+					"expected_target_rate": 4199641.909643788,
+					"consumed_value": 6066585125.0,
+					"scrap_value": 1232797287.0,
+				},
+			}
+		)
+		self.assertEqual(p.primary_state, PRIMARY_READY)
+		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
+		self.assertIn("write_manufacture_fg_residual", p.operations)
+
 	def test_manufacture_wrong_rate_is_manual(self):
 		p = plan(
 			{
@@ -78,6 +106,18 @@ class TestRepairPipeline(unittest.TestCase):
 		cmp = compare_safety(before, after)
 		self.assertFalse(cmp["ok"])
 		self.assertTrue(any("I1" in f for f in cmp["failures"]))
+
+	def test_narrow_riv_applies_iran_runtime_before_execute(self):
+		"""bench execute is not before_request/before_job — RIV must self-bootstrap."""
+		import inspect
+
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+			create_and_run_narrow_riv,
+		)
+
+		src = inspect.getsource(create_and_run_narrow_riv)
+		self.assertIn("apply_iran_runtime()", src)
+		self.assertIn("integration.bootstrap", src)
 
 
 class TestWrongRateResidualContract(unittest.TestCase):

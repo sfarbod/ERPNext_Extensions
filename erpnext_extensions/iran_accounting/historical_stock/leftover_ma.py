@@ -713,7 +713,13 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 	"""Official ERPNext RIV (Item + Warehouse) executed through ``repost()``.
 
 	Submit alone leaves the document Queued — that is not a completed repair.
+	``bench execute`` is neither a request nor a job, so Iran GL patches must
+	be applied here — otherwise vanilla Stock Entry allowance (0.5) rejects a
+	legitimate one-quantum IRR residual and RIV poisons I1.
 	"""
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+
+	apply_iran_runtime()
 	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
 		execute_reposting_entry,
 	)

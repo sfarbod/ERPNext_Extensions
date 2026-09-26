@@ -267,13 +267,34 @@ def plan(row: dict) -> RepairPlan:
 	state = root["primary_state"]
 	mfg = is_manufacture_adjacent(annotated)
 	native = annotated.get("manufacture_native") or {}
+	if mfg and not native and (annotated.get("voucher") or annotated.get("voucher_no")):
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
+			reconstruct_manufacture_valuation,
+		)
+
+		try:
+			native = reconstruct_manufacture_valuation(
+				annotated.get("voucher") or annotated.get("voucher_no")
+			)
+			annotated["manufacture_native"] = native
+		except Exception:
+			native = {}
 	mtfm_exact = _material_transfer_for_manufacture_exact(annotated)
+	_NATIVE_EXACT_SOURCES = (
+		"historical_manufacture_consumed_svd",
+		"manufacture_consumed_svd_residual",
+	)
+	native_src = str(annotated.get("source_of_truth") or native.get("source_of_truth") or "")
 	native_ready = (
 		mfg
-		and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE)
-		and annotated.get("eligible")
-		and str(annotated.get("source_of_truth") or "") == "historical_manufacture_consumed_svd"
+		and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE, REASON_MANUFACTURE_FLOW)
 		and str(native.get("classification") or "") == "EXACT"
+		and native.get("eligible")
+		and (
+			annotated.get("eligible")
+			or native_src in _NATIVE_EXACT_SOURCES
+		)
+		and (not native_src or native_src in _NATIVE_EXACT_SOURCES)
 	)
 	if mtfm_exact and reason in (
 		REASON_WRONG_RATE,
@@ -288,7 +309,7 @@ def plan(row: dict) -> RepairPlan:
 		state = PRIMARY_READY
 		mfg = False
 		annotated["eligible"] = True
-	elif mfg and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE, REASON_LEFTOVER_MA):
+	elif mfg and reason in (REASON_WRONG_RATE, REASON_ZERO_RATE, REASON_LEFTOVER_MA, REASON_MANUFACTURE_FLOW):
 		family = FAMILY_MANUFACTURE_FLOW
 		reason = REASON_MANUFACTURE_FLOW
 		if native_ready:
@@ -487,6 +508,9 @@ def execute(plan_obj: RepairPlan, *, dry_run: bool = True) -> dict:
 
 	row = dict(plan_obj.row or {})
 	reason = plan_obj.reason
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+
+	apply_iran_runtime()
 	safety_before = capture_safety_fingerprint()
 
 	if reason == REASON_LEFTOVER_MA:
