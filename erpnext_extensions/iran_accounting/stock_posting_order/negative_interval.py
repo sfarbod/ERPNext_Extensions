@@ -110,9 +110,17 @@ def find_negative_intervals(series: list, opening=0) -> list[dict]:
 		if step["running_qty_after"] >= 0 or step["running_qty_before"] < 0:
 			i += 1
 			continue
-		# Contract: native qty_after >= 0 cannot be REAL_STOCK_SHORTAGE.
+		# Contract: native qty_after >= 0 cannot be REAL_STOCK_SHORTAGE
+		# when it is consistent with previous+actual. A stale qty_after that
+		# contradicts the signed movement is not authoritative — keep the
+		# reconstructed interval so consume-before-inbound can be repaired.
 		native_qa = _g(step["row"], "qty_after_transaction")
-		if native_qa is not None and native_qa != "" and not is_authoritative_shortage(qty_after=native_qa):
+		if (
+			native_qa is not None
+			and native_qa != ""
+			and not is_authoritative_shortage(qty_after=native_qa)
+			and not _g(step["row"], "_qty_after_inconsistent")
+		):
 			i += 1
 			continue
 		start = i

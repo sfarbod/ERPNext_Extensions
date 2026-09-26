@@ -243,5 +243,76 @@ class TestBatchedShortage(unittest.TestCase):
 		self.assertEqual(rows[0]["batch"], batch)
 
 
+class TestStaleQtyAfterConsumeBeforeInbound(unittest.TestCase):
+	"""Stored qty_after that contradicts previous+actual is not opening stock.
+
+	Manufacture consume before the supplying MTFM must stay visible so
+	CROSS_TIME posting-order can repair it. Patching actual_qty to the stale
+	qty_after hid the inversion (L4 class).
+	"""
+
+	def _series(self):
+		prev_in = _sle(
+			"sle-prev-in",
+			"MAT-STE-PREV-IN",
+			10,
+			"2026-04-19 16:00:00",
+			purpose="Material Transfer for Manufacture",
+			qty_after_transaction=10,
+			item_code="SFG",
+			warehouse="PAYKAR",
+		)
+		prev = _sle(
+			"sle-prev",
+			"MAT-STE-PREV",
+			-10,
+			"2026-04-19 17:00:00",
+			purpose="Manufacture",
+			qty_after_transaction=0,
+			item_code="SFG",
+			warehouse="PAYKAR",
+		)
+		consume = _sle(
+			"sle-consume",
+			"MAT-STE-CONSUME",
+			-1947,
+			"2026-04-19 18:00:00",
+			purpose="Manufacture",
+			qty_after_transaction=1,
+			item_code="SFG",
+			warehouse="PAYKAR",
+			work_order="WO-1",
+			job_card="JC-1",
+		)
+		inbound = _sle(
+			"sle-in",
+			"MAT-STE-MTFM",
+			1948,
+			"2026-04-19 18:02:16",
+			purpose="Material Transfer for Manufacture",
+			qty_after_transaction=1948,
+			item_code="SFG",
+			warehouse="PAYKAR",
+			work_order="WO-1",
+			job_card="JC-1",
+		)
+		return prev_in, prev, consume, inbound
+
+	def test_align_keeps_consume_qty_and_flags_inconsistent_qty_after(self):
+		prev_in, prev, consume, inbound = self._series()
+		aligned = align_movements_to_qty_after([prev_in, prev, consume, inbound])
+		self.assertEqual(aligned[2]["actual_qty"], -1947)
+		self.assertTrue(aligned[2].get("_qty_after_inconsistent"))
+		self.assertFalse(aligned[2].get("_effective_qty_patched"))
+
+	def test_interval_not_skipped_when_qty_after_is_stale_non_negative(self):
+		prev_in, prev, consume, inbound = self._series()
+		intervals = find_negative_intervals([prev_in, prev, consume, inbound], 0)
+		self.assertEqual(len(intervals), 1)
+		self.assertEqual(intervals[0]["outbound"]["voucher_no"], "MAT-STE-CONSUME")
+		self.assertEqual(intervals[0]["inbound"]["voucher_no"], "MAT-STE-MTFM")
+		self.assertLess(intervals[0]["negative_amount"], 0)
+
+
 if __name__ == "__main__":
 	unittest.main()

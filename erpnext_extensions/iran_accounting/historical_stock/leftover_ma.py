@@ -782,6 +782,10 @@ def create_and_run_narrow_riv(
 	# when atomic=True so a deadlock cannot leave a half-replayed chain.
 	if atomic:
 		frappe.db.commit()
+	neg0 = frappe.db.sql(
+		"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
+		WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
+	)[0][0]
 	# Normal lifecycle enqueues via scheduler. Execute the same worker target
 	# so Historical Repair never marks Completed on a queued RIV.
 	try:
@@ -790,6 +794,28 @@ def create_and_run_narrow_riv(
 		else:
 			execute_reposting_entry(doc.name)
 		if atomic:
+			neg1 = frappe.db.sql(
+				"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
+				WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
+			)[0][0]
+			if int(neg1) > int(neg0):
+				frappe.db.rollback()
+				frappe.db.set_value(
+					"Repost Item Valuation",
+					doc.name,
+					{
+						"status": "Failed",
+						"error_log": f"atomic RIV created new negative stock ({neg0}→{neg1})",
+					},
+				)
+				frappe.db.commit()
+				return {
+					"ok": False,
+					"status": LEFTOVER_MA_FAILED_RIV,
+					"riv_name": doc.name,
+					"riv_status": "Failed",
+					"reason": f"new negative stock {neg0}->{neg1}",
+				}
 			frappe.db.commit()
 	except Exception as exc:
 		if atomic:

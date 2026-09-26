@@ -93,6 +93,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			"landed_cost_voucher_amount",
 			"valuation_rate",
 			"amount",
+			"allow_zero_valuation_rate",
 		],
 		as_dict=True,
 	)
@@ -107,6 +108,22 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	ccy = get_company_currency(sle.company)
 	try:
 		magnitude = stock_entry_row_amount(row, sle.company)
+		# VALUED_SOURCE_ZERO_OUTGOING: document basic_rate/amount is 0 but
+		# vanilla moving-average already priced the consume from a valued
+		# warehouse layer. Stamping the document zero would wipe provenance.
+		# Legitimate free consumes keep allow_zero_valuation_rate=1.
+		if (
+			flt(sle.actual_qty) < 0
+			and abs(flt(magnitude)) <= 1e-6
+			and not cint(row.get("allow_zero_valuation_rate"))
+			and (
+				abs(flt(sle.stock_value_difference)) > 1e-6
+				or abs(flt(sle.outgoing_rate)) > 1e-6
+			)
+		):
+			if abs(flt(sle.outgoing_rate)) <= 1e-6 and abs(flt(sle.actual_qty)) > 1e-9:
+				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+			return
 		movement = round_currency(
 			signed_movement_from_row_amount(
 				magnitude,

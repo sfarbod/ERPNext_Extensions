@@ -20,7 +20,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 # ---------------------------------------------------------------------------
 # Explicit support allow-list (major.minor). Unknown versions → BLOCK.
@@ -343,7 +343,7 @@ def make_update_rate_on_stock_entry_wrapper(original):
 		row = frappe.db.get_value(
 			"Stock Entry Detail",
 			detail_no,
-			["name", "basic_rate"],
+			["name", "basic_rate", "allow_zero_valuation_rate"],
 			as_dict=True,
 		)
 		if not row:
@@ -359,6 +359,25 @@ def make_update_rate_on_stock_entry_wrapper(original):
 				).format(detail_no, outgoing_rate),
 				title=_("IRR Rate Guard"),
 			)
+
+		# VALUED_SOURCE_ZERO_OUTGOING: submitted basic_rate is 0 but vanilla
+		# already priced the consume from a valued warehouse layer
+		# (|stock_value_difference| / qty). Document zero is corrupt, not
+		# a free receipt. Authority is this SLE's vanilla SVD, not a nearby rate.
+		valued_source_zero_outgoing = (
+			flt(getattr(sle, "actual_qty", 0)) < 0
+			and abs(flt(row.basic_rate)) <= 1e-6
+			and not cint(row.get("allow_zero_valuation_rate"))
+			and abs(flt(outgoing_rate)) > 1e-6
+		)
+		if valued_source_zero_outgoing:
+			original(self, sle, outgoing_rate)
+			if sle.dependant_sle_voucher_detail_no and not self.is_manufacture_entry_with_sabb(sle):
+				self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
+			persist_irr_contract_after_recalculate(sle.voucher_no)
+			if hasattr(sle, "outgoing_rate"):
+				sle.outgoing_rate = flt(outgoing_rate)
+			return
 
 		# SKIP vanilla: frappe.db.set_value(..., "basic_rate", outgoing_rate)
 		# Keep submitted / contract basic_rate (already integer for IRR).

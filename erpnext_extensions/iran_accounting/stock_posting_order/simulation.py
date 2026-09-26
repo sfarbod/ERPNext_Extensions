@@ -39,11 +39,26 @@ def align_movements_to_qty_after(sles: list, *, opening: Decimal | int | float =
 			qa = D(qa_raw)
 			implied = qa - run
 			if abs(implied - aq) > QTY_EPS:
-				r["actual_qty"] = implied
-				r["_original_actual_qty"] = aq
-				r["_effective_qty_patched"] = True
-				aq = implied
-			run = qa
+				# Opening RECO / absolute-balance rows often store qty_after
+				# with actual_qty=0. A real signed movement whose stored
+				# qty_after contradicts previous+actual is stale, not opening
+				# stock — keep actual_qty so reconstructed running qty can
+				# see consume-before-inbound.
+				abs_balance_row = abs(aq) <= QTY_EPS
+				sign_conflict = (implied > QTY_EPS and aq < -QTY_EPS) or (
+					implied < -QTY_EPS and aq > QTY_EPS
+				)
+				if abs_balance_row and not sign_conflict:
+					r["actual_qty"] = implied
+					r["_original_actual_qty"] = aq
+					r["_effective_qty_patched"] = True
+					aq = implied
+					run = qa
+				else:
+					r["_qty_after_inconsistent"] = True
+					run += aq
+			else:
+				run = qa
 		else:
 			run += aq
 		out.append(r)
