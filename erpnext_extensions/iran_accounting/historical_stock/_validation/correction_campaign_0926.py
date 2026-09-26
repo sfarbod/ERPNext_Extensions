@@ -288,23 +288,26 @@ def apply_named_sabb_wave(*, limit: int = 1) -> dict:
 		if not rows:
 			log.append({"voucher": voucher, "skipped": "no_eligible"})
 			continue
-		live = execute(plan(dict(rows[0])), dry_run=False)
-		frappe.db.commit()
-		g = _gates()
-		md = mfg_delta(mfg0, mfg_fingerprint())
-		entry = {
-			"voucher": voucher,
-			"ok": live.get("ok"),
-			"state": live.get("primary_state"),
-			"source": rows[0].get("source_of_truth") or rows[0].get("rate_source"),
-			"gates": g,
-		}
-		log.append(entry)
-		if g["i1"] or g["neg_rate"] or int(g["neg_after"]) > int(baseline["neg_after"]):
-			_jdump("ABORT_named_sabb.json", entry)
-			raise RuntimeError(f"safety abort {voucher}")
-		if any(abs(flt(x)) > 1e-6 for x in md.values()):
-			raise RuntimeError(f"mfg qty changed after {voucher}")
+		# One voucher may carry several EXACT SABB identities.
+		for row in rows:
+			live = execute(plan(dict(row)), dry_run=False)
+			frappe.db.commit()
+			g = _gates()
+			md = mfg_delta(mfg0, mfg_fingerprint())
+			entry = {
+				"voucher": voucher,
+				"item": row.get("item"),
+				"ok": live.get("ok"),
+				"state": live.get("primary_state"),
+				"source": row.get("source_of_truth") or row.get("rate_source"),
+				"gates": g,
+			}
+			log.append(entry)
+			if g["i1"] or g["neg_rate"] or int(g["neg_after"]) > int(baseline["neg_after"]):
+				_jdump("ABORT_named_sabb.json", entry)
+				raise RuntimeError(f"safety abort {voucher} {row.get('item')}")
+			if any(abs(flt(x)) > 1e-6 for x in md.values()):
+				raise RuntimeError(f"mfg qty changed after {voucher}")
 	rebuild_bins()
 	out = {
 		"applied": len(log),

@@ -258,6 +258,17 @@ class TestManufactureNativeContract(FrappeTestCase):
 		self.assertEqual(ev["classification"], WAITING_UPSTREAM)
 		self.assertFalse(ev["eligible"])
 
+	def test_exploded_scrap_helper_uses_consume_rate(self):
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
+			_scrap_value_from_same_voucher_consume,
+		)
+
+		d = _detail(item_code="RM", qty=1, basic_rate=100000, basic_amount=100000, amount=100000)
+		sources = [{"item": "RM", "qty": 10, "sle_outgoing": 100, "sle_svd": 1000}]
+		self.assertEqual(_scrap_value_from_same_voucher_consume(d, sources), 100.0)
+		matched = _detail(item_code="RM", qty=1, basic_rate=100, basic_amount=100, amount=100)
+		self.assertIsNone(_scrap_value_from_same_voucher_consume(matched, sources))
+
 	def test_documented_zero_scrap_does_not_steal_fg_residual_from_sle(self):
 		se = frappe._dict(
 			name="STE-37090",

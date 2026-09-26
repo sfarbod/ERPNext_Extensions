@@ -555,6 +555,34 @@ def _is_byproduct_like(d) -> bool:
 	return "by-product" in sec.lower() or sec.lower() == "byproduct"
 
 
+def _scrap_value_from_same_voucher_consume(d, sources: list[dict]) -> float | None:
+	"""When scrap is the same item consumed on this voucher, scrap value is consume rate × qty.
+
+	Exploded SE scrap basic_rate (orders of magnitude above the source outgoing
+	rate) is not economic authority. Same-voucher consume SVD/qty is.
+	"""
+	item = str(d.item_code or "")
+	qty = abs(flt(d.qty))
+	if not item or qty <= QTY_EPS:
+		return None
+	peers = [s for s in sources if str(s.get("item") or "") == item and flt(s.get("qty") or 0) > QTY_EPS]
+	if not peers:
+		return None
+	peer = peers[0]
+	src_qty = abs(flt(peer.get("qty") or 0))
+	src_svd = abs(flt(peer.get("sle_svd") or 0))
+	src_rate = abs(flt(peer.get("sle_outgoing") or 0))
+	if src_rate <= RATE_EPS and src_qty > QTY_EPS and src_svd > VALUE_EPS:
+		src_rate = src_svd / src_qty
+	if src_rate <= RATE_EPS:
+		return None
+	se_rate = abs(flt(d.basic_rate))
+	# Only override when the document scrap rate is exploded vs the consume rate.
+	if se_rate > 0 and se_rate <= src_rate * 2:
+		return None
+	return src_rate * qty
+
+
 def _incoming_secondary_value(d, sle) -> float:
 	"""Prefer SLE inbound SVD; fall back to SE amount when SLE value is missing/zero."""
 	if sle and abs(flt(sle.stock_value_difference)) > VALUE_EPS:
