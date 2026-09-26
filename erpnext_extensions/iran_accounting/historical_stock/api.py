@@ -1323,6 +1323,43 @@ def compress_wrong_rate_roots_api(company=None, limit=4000):
 	}
 
 
+@frappe.whitelist()
+def production_preflight_api(manifest_id=None):
+	"""Read-only Production allowlist preflight."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.production_execution import (
+		DEFAULT_MANIFEST_ID,
+		preflight,
+	)
+
+	return preflight(manifest_id or DEFAULT_MANIFEST_ID)
+
+
+@frappe.whitelist()
+def production_dry_run_api(manifest_id=None):
+	"""Read-only Production allowlist dry run. Never mutates."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.production_execution import (
+		DEFAULT_MANIFEST_ID,
+		dry_run_manifest,
+	)
+
+	return dry_run_manifest(manifest_id or DEFAULT_MANIFEST_ID)
+
+
+@frappe.whitelist()
+def production_apply_api(manifest_id=None, confirm=None):
+	"""Mutate only MATCHED allowlisted roots. confirm must equal manifest_id."""
+	require_write_if_applying(False)
+	from erpnext_extensions.iran_accounting.historical_stock.production_execution import (
+		DEFAULT_MANIFEST_ID,
+		apply_manifest,
+	)
+
+	mid = manifest_id or DEFAULT_MANIFEST_ID
+	return apply_manifest(manifest_id=mid, confirm=confirm)
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair

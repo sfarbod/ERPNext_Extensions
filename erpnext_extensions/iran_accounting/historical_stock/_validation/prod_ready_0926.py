@@ -442,35 +442,8 @@ def apply_prod_safe_waves(roots: list[dict], *, baseline_neg: int, mfg0: dict) -
 				raise RuntimeError(f"safety abort after {v}: {entry}")
 		idx = cut
 		_jdump(OUT / f"wave_at_{cut}.json", {"done": done, "log_tail": log[-10:]})
-	# Drain remaining READY until none
+	# Production safety: never drain newly discovered READY. Manifest is authority.
 	extra = 0
-	while extra < 300:
-		scan = scan_wrong_rates(company=COMPANY, limit=5000)
-		ready = [
-			r
-			for r in (scan.get("rows") or [])
-			if r.get("eligible") and "READY" in str(r.get("planner_status") or "")
-		]
-		by_v = {}
-		for r in ready:
-			by_v.setdefault(r.get("voucher"), r)
-		todo = [v for v in by_v if v not in done]
-		if not todo:
-			break
-		for v in todo[:25]:
-			live = execute(plan(dict(by_v[v])), dry_run=False)
-			frappe.db.commit()
-			done.append(v)
-			extra += 1
-			g = _gates()
-			md = mfg_delta(mfg0, mfg_fingerprint())
-			if (
-				g["i1"]
-				or g["neg_rate"]
-				or int(g["neg_after"]) > baseline_neg
-				or any(abs(flt(x)) > 1e-6 for x in md.values())
-			):
-				raise RuntimeError(f"safety abort drain {v} gates={g} mfg_delta={md}")
 	out = {"planned_safe": len(safe), "applied": len(done), "log": log, "extra_drain": extra}
 	_jdump(OUT / "prod_safe_apply.json", out)
 	return out
