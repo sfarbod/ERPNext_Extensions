@@ -593,6 +593,7 @@ def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
 	)
 	from erpnext_extensions.iran_accounting.manufacture_rounding import (
 		align_manufacture_finished_good_residual,
+		correct_exploded_same_item_scrap_for_riv,
 	)
 	from erpnext_extensions.iran_accounting.scrap_costing import (
 		apply_iran_manufacture_output_contract,
@@ -601,6 +602,10 @@ def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
 	if not doc or not is_irr_company(doc.company):
 		return
 	apply_iran_manufacture_output_contract(doc)
+	if doc.purpose == "Manufacture":
+		# Warehouse-MA scrap from calculate_rate_and_amount can explode
+		# same-item scrap and make FG negative before residual alignment.
+		correct_exploded_same_item_scrap_for_riv(doc)
 	align_stock_entry_item_amounts(doc)
 	if doc.purpose == "Manufacture":
 		align_manufacture_finished_good_residual(doc)

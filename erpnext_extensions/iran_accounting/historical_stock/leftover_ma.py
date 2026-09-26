@@ -759,6 +759,14 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 	st = frappe.db.get_value("Repost Item Valuation", doc.name, ["status", "error_log"], as_dict=True)
 	block = _riv_status_blocks_completion(st.status)
 	if block:
+		# Deadlock / mid-flight abort leaves In Progress. Never keep that as a live job.
+		if st.status in ("Queued", "In Progress"):
+			frappe.db.set_value(
+				"Repost Item Valuation",
+				doc.name,
+				{"status": "Failed", "error_log": (st.error_log or block)[:1000]},
+			)
+			st.status = "Failed"
 		return {
 			"ok": False,
 			"status": LEFTOVER_MA_FAILED_RIV if st.status == "Failed" else LEFTOVER_MA_FAILED_POSTCONDITION,

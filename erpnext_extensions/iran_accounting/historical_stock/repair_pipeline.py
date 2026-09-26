@@ -326,10 +326,47 @@ def plan(row: dict) -> RepairPlan:
 			state = PRIMARY_WAITING
 		else:
 			state = PRIMARY_MANUAL
+	scrap_fg = annotated.get("manufacture_scrap_fg") or {}
+	_native_scrap_overflow = (
+		str(native.get("classification") or "") == "MANUAL"
+		and "exceeds consumption" in str(native.get("reason") or "")
+	)
+	if (
+		mfg
+		and reason == REASON_MANUFACTURE_FLOW
+		and state != PRIMARY_LEGITIMATE
+		and (annotated.get("voucher") or annotated.get("voucher_no"))
+		and not scrap_fg
+		and _native_scrap_overflow
+	):
+		try:
+			from erpnext_extensions.iran_accounting.historical_stock.manufacture_scrap_fg import (
+				analyze_manufacture_scrap_fg,
+			)
+
+			scrap_fg = analyze_manufacture_scrap_fg(
+				annotated.get("voucher") or annotated.get("voucher_no")
+			)
+			annotated["manufacture_scrap_fg"] = scrap_fg
+		except Exception:
+			scrap_fg = {}
+	scrap_fg_ready = (
+		mfg
+		and reason == REASON_MANUFACTURE_FLOW
+		and str(scrap_fg.get("classification") or "") == "EXACT"
+		and scrap_fg.get("eligible")
+	)
+	if scrap_fg_ready:
+		# Exploded scrap + FG is one identity — do not FG-only write.
+		state = PRIMARY_READY
+		family = FAMILY_MANUFACTURE_FLOW
+		reason = REASON_MANUFACTURE_FLOW
 	ops: list[str] = []
 	if state == PRIMARY_READY:
 		if reason == REASON_LEFTOVER_MA:
 			ops = ["stamp_leftover_ma", "narrow_riv", "desk_postcondition"]
+		elif reason == REASON_MANUFACTURE_FLOW and scrap_fg_ready:
+			ops = ["write_manufacture_scrap_fg", "narrow_riv", "verify_rate"]
 		elif reason == REASON_MANUFACTURE_FLOW:
 			ops = ["write_manufacture_fg_residual", "narrow_riv", "verify_rate"]
 		elif reason in (REASON_WRONG_RATE, REASON_ZERO_RATE):
@@ -523,11 +560,21 @@ def execute(plan_obj: RepairPlan, *, dry_run: bool = True) -> dict:
 			dry_run=dry_run,
 		)
 	elif reason == REASON_MANUFACTURE_FLOW:
-		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
-			repair_manufacture_valuation,
-		)
+		scrap_fg = (plan_obj.row or {}).get("manufacture_scrap_fg") or {}
+		if str(scrap_fg.get("classification") or "") == "EXACT" and scrap_fg.get("eligible"):
+			from erpnext_extensions.iran_accounting.historical_stock.manufacture_scrap_fg import (
+				repair_manufacture_scrap_fg,
+			)
 
-		out = repair_manufacture_valuation(plan_obj.voucher or row.get("voucher"), dry_run=dry_run)
+			out = repair_manufacture_scrap_fg(
+				plan_obj.voucher or row.get("voucher"), dry_run=dry_run
+			)
+		else:
+			from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
+				repair_manufacture_valuation,
+			)
+
+			out = repair_manufacture_valuation(plan_obj.voucher or row.get("voucher"), dry_run=dry_run)
 	elif reason in (REASON_WRONG_RATE, REASON_ZERO_RATE):
 		from erpnext_extensions.iran_accounting.historical_stock.wrong_rate_engine.apply import (
 			apply_wrong_rate_root,

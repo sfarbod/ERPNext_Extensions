@@ -26,6 +26,139 @@ def _row_capitalized_cost(row) -> float:
 	return flt(row.get("additional_cost")) + flt(row.get("landed_cost_voucher_amount"))
 
 
+def _row_qty(row) -> float:
+	value = row.get("transfer_qty")
+	if value in (None, ""):
+		value = row.get("qty")
+	return flt(value)
+
+
+def _row_basic_amount(row) -> float:
+	value = row.get("basic_amount")
+	if value in (None, ""):
+		value = row.get("amount")
+	return abs(flt(value))
+
+
+def _is_costed_out_output(row) -> bool:
+	"""Incoming scrap / costed-out secondary — mirrors ERPNext costed-out-of-FG."""
+	if row.get("is_finished_item"):
+		return False
+	if not row.get("t_warehouse"):
+		return False
+	if row.get("is_scrap_item"):
+		return True
+	sec = str(row.get("secondary_item_type") or row.get("type") or "").lower()
+	if sec in ("scrap", "by-product", "byproduct"):
+		return True
+	return str(row.get("valuation_type") or "") in ("Valuation Rate", "Manual")
+
+
+# Same threshold as MANUFACTURE_SCRAP_FG_RECONSTRUCTION. Warehouse scrap
+# above this multiple of same-voucher consume rate is exploded — but only
+# rewritten when it would make FG residual negative (37090 stays intact).
+EXPLODED_SAME_ITEM_SCRAP_RATIO = 2.0
+
+
+def correct_exploded_same_item_scrap_for_riv(doc) -> bool:
+	"""RIV recalculate must not re-price same-item scrap from an exploded warehouse.
+
+	``calculate_rate_and_amount`` fetches scrap from ``get_valuation_rate(t_warehouse)``.
+	When that warehouse moving average is itself exploded, scrap consumes more
+	than the source pool and FG goes negative (I2).
+
+	Authority: same-voucher consume ``basic_rate`` for the same item.
+	Gate: rewrite only when current scrap amounts make FG residual negative.
+	Healthy high warehouse scrap (37090-class) is left unchanged.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry":
+		return False
+	if getattr(doc, "purpose", None) != "Manufacture":
+		return False
+	try:
+		irr = is_irr_company(getattr(doc, "company", None))
+	except Exception:
+		# bench-less unit tests / missing cache — do not rewrite
+		return False
+	if not irr:
+		return False
+
+	items = doc.get("items") or []
+	fg_rows = [row for row in items if row.get("is_finished_item") and row.get("t_warehouse")]
+	if len(fg_rows) != 1:
+		return False
+
+	consume_rate_by_item: dict[str, float] = {}
+	outgoing = 0.0
+	for row in items:
+		if not row.get("s_warehouse"):
+			continue
+		qty = _row_qty(row)
+		amt = _row_basic_amount(row)
+		rate = abs(flt(row.get("basic_rate")))
+		if rate <= 0 and qty > 0 and amt > 0:
+			rate = amt / qty
+		outgoing += amt
+		item = row.get("item_code")
+		if item and qty > 0 and rate > 0:
+			consume_rate_by_item.setdefault(str(item), rate)
+
+	scrap_rows = [row for row in items if _is_costed_out_output(row)]
+	if not scrap_rows:
+		return False
+
+	scrap_value = sum(_row_basic_amount(row) for row in scrap_rows)
+	fg = fg_rows[0]
+	residual = outgoing - scrap_value
+	fg_negative = (
+		residual < -1.0
+		or flt(fg.get("basic_rate")) < -1.0
+		or flt(fg.get("basic_amount")) < -1.0
+		or flt(fg.get("amount")) < -1.0
+	)
+	if not fg_negative:
+		return False
+
+	currency = get_company_currency(doc.company)
+	changed = False
+	for row in scrap_rows:
+		item = str(row.get("item_code") or "")
+		peer_rate = consume_rate_by_item.get(item)
+		if not peer_rate:
+			continue
+		qty = _row_qty(row)
+		current_rate = abs(flt(row.get("basic_rate")))
+		if current_rate <= peer_rate * EXPLODED_SAME_ITEM_SCRAP_RATIO:
+			continue
+		material = round_currency(peer_rate * qty, currency)
+		row.basic_rate = round_monetary_rate(peer_rate, currency)
+		row.valuation_rate = row.basic_rate
+		row.basic_amount = material
+		row.amount = round_currency(material + _row_capitalized_cost(row), currency)
+		if hasattr(row, "allow_zero_valuation_rate"):
+			row.allow_zero_valuation_rate = 0
+		changed = True
+
+	if not changed:
+		return False
+
+	other_incoming = sum(
+		_row_basic_amount(row) for row in items if row.get("t_warehouse") and row is not fg
+	)
+	material = round_currency(outgoing - other_incoming, currency)
+	qty = _row_qty(fg)
+	if material < 0 or qty <= 0:
+		_refresh_header_totals(doc)
+		return True
+
+	fg.basic_amount = material
+	fg.basic_rate = round_monetary_rate(material / qty, currency)
+	fg.amount = round_currency(material + _row_capitalized_cost(fg), currency)
+	fg.valuation_rate = integer_valuation_rate_from_amount(fg.amount, qty, currency)
+	_refresh_header_totals(doc)
+	return True
+
+
 def align_manufacture_finished_good_residual(doc) -> None:
 	"""Single-FG Manufacture: absorb only true IRR rounding residuals.
 

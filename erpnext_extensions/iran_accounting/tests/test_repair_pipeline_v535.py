@@ -69,6 +69,35 @@ class TestRepairPipeline(unittest.TestCase):
 		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
 		self.assertIn("write_manufacture_fg_residual", p.operations)
 
+	def test_exploded_scrap_fg_plan_is_ready_coupled_write(self):
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "MANUAL",
+				"eligible": False,
+				"confidence": "EXACT",
+				"voucher": "STE-BOOM",
+				"item": "FG",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"source_of_truth": "historical_manufacture_consumed_svd",
+				"manufacture_native": {
+					"classification": "MANUAL",
+					"eligible": False,
+					"reason": "scrap/by-product value 8500000 exceeds consumption 1000",
+				},
+				"manufacture_scrap_fg": {
+					"classification": "EXACT",
+					"eligible": True,
+					"strategy": "MANUFACTURE_SCRAP_FG_RECONSTRUCTION",
+				},
+			}
+		)
+		self.assertEqual(p.primary_state, PRIMARY_READY)
+		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
+		self.assertIn("write_manufacture_scrap_fg", p.operations)
+		self.assertNotIn("write_manufacture_fg_residual", p.operations)
+
 	def test_healthy_manufacture_plan_is_not_ready_mutation(self):
 		p = plan(
 			{
