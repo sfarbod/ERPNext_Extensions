@@ -709,7 +709,42 @@ def _riv_status_blocks_completion(status) -> str | None:
 	return None
 
 
-def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, allow_zero_rate=True) -> dict:
+def _execute_repost_without_mid_commits(name) -> None:
+	"""Run native ``execute_reposting_entry`` without ERPNext's resume commits.
+
+	``repost_future_sle`` / ``update_data_in_repost`` commit after each
+	item-warehouse chunk so a timeout can resume. A MariaDB deadlock then
+	rolls back only the current chunk and leaves earlier SLE/Bin/GL writes
+	committed (the 13100134 / 30200016 partial-negative failure). Isolated
+	Historical Repair holds one transaction so deadlock/record-changed
+	returns the economic scope to the pre-RIV state.
+	"""
+	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+		execute_reposting_entry,
+	)
+
+	real_commit = frappe.db.commit
+
+	def _hold(*_a, **_k):
+		return None
+
+	frappe.db.commit = _hold
+	try:
+		execute_reposting_entry(name)
+	finally:
+		frappe.db.commit = real_commit
+
+
+def create_and_run_narrow_riv(
+	item,
+	warehouse,
+	*,
+	posting_date,
+	posting_time,
+	allow_zero_rate=True,
+	allow_negative_stock=True,
+	atomic=False,
+) -> dict:
 	"""Official ERPNext RIV (Item + Warehouse) executed through ``repost()``.
 
 	Submit alone leaves the document Queued — that is not a completed repair.
@@ -734,7 +769,7 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 			"company": company,
 			"posting_date": str(posting_date),
 			"posting_time": str(posting_time),
-			"allow_negative_stock": 1,
+			"allow_negative_stock": 1 if allow_negative_stock else 0,
 			"allow_zero_rate": 1 if allow_zero_rate else 0,
 			"recalculate_valuation_rate": 0,
 			"recreate_stock_ledgers": 0,
@@ -743,12 +778,25 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 	doc.flags.ignore_permissions = True
 	doc.insert()
 	doc.submit()
+	# Persist the RIV header only. Economic writes stay in the execute txn
+	# when atomic=True so a deadlock cannot leave a half-replayed chain.
+	if atomic:
+		frappe.db.commit()
 	# Normal lifecycle enqueues via scheduler. Execute the same worker target
 	# so Historical Repair never marks Completed on a queued RIV.
 	try:
-		execute_reposting_entry(doc.name)
+		if atomic:
+			_execute_repost_without_mid_commits(doc.name)
+		else:
+			execute_reposting_entry(doc.name)
+		if atomic:
+			frappe.db.commit()
 	except Exception as exc:
+		if atomic:
+			frappe.db.rollback()
 		frappe.db.set_value("Repost Item Valuation", doc.name, {"status": "Failed", "error_log": str(exc)[:1000]})
+		if atomic:
+			frappe.db.commit()
 		return {
 			"ok": False,
 			"status": LEFTOVER_MA_FAILED_RIV,
@@ -775,6 +823,67 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 			"reason": block if st.status != "Failed" else (st.error_log or "FAILED_RIV"),
 		}
 	return {"ok": True, "riv_name": doc.name, "riv_status": st.status}
+
+
+def create_and_run_isolated_riv(
+	item,
+	warehouse,
+	*,
+	posting_date,
+	posting_time,
+	allow_zero_rate=True,
+	allow_negative_stock=False,
+	max_attempts=2,
+) -> dict:
+	"""Single-flight RIV: no scheduler retry-as-In-Progress, no overlapping second RIV.
+
+	ERPNext ``repost()`` commits at start, then may commit inside SLE replay.
+	A MariaDB deadlock therefore rolls back only the *current* transaction and
+	marks the document In Progress for the scheduler. Historical Repair must
+	not leave that live, and must not start another identity while this one
+	is open.
+	"""
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+
+	apply_iran_runtime()
+	# Prevent on_submit immediate execution in tests AND scheduler-oriented flags.
+	prev_block = frappe.flags.get("dont_execute_stock_reposts")
+	frappe.flags.dont_execute_stock_reposts = True
+	# Atomic RIV holds one transaction for the full dependent walk.
+	try:
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 8
+	except Exception:
+		pass
+	attempts = []
+	try:
+		for attempt in range(1, int(max_attempts) + 1):
+			out = create_and_run_narrow_riv(
+				item,
+				warehouse,
+				posting_date=posting_date,
+				posting_time=posting_time,
+				allow_zero_rate=allow_zero_rate,
+				allow_negative_stock=allow_negative_stock,
+				atomic=True,
+			)
+			attempts.append({"attempt": attempt, **{k: out.get(k) for k in ("ok", "riv_name", "riv_status", "reason")}})
+			if out.get("ok"):
+				out["attempts"] = attempts
+				out["isolated"] = True
+				return out
+			reason = str(out.get("reason") or "")
+			recoverable = (
+				"deadlock" in reason.lower()
+				or "record has changed" in reason.lower()
+				or "RIV still" in reason
+			)
+			if not recoverable or attempt >= int(max_attempts):
+				out["attempts"] = attempts
+				out["isolated"] = True
+				return out
+		return {"ok": False, "isolated": True, "attempts": attempts, "reason": "exhausted"}
+	finally:
+		frappe.flags.dont_execute_stock_reposts = prev_block
 
 
 def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
