@@ -70,6 +70,7 @@ def remaining_exact_wrong() -> list[dict]:
 		and (r.get("purpose") or "") in PROVEN_PURPOSES
 		and r.get("voucher") not in blocked
 	]
+	# Residual READY rows on already-allowlisted vouchers are not new roots.
 	by_v = {}
 	for r in ready:
 		by_v.setdefault(r.get("voucher"), r)
@@ -257,6 +258,63 @@ def inspect_remaining() -> dict:
 		"pz": {"count": pz["count"], "by_topic": pz["by_topic"], "dashboard": pz["dashboard"]},
 	}
 	_jdump("inspect_remaining.json", out)
+	return out
+
+
+NAMED_SABB_WAVE = (
+	"MAT-STE-2026-28735",
+	"MAT-STE-2026-25407",
+	"MAT-STE-2026-25442",
+	"PO-JOB07505-1",
+	"MAT-STE-2026-25446",
+	"MAT-STE-2026-25715",
+	"MAT-STE-2026-25716",
+	"MAT-STE-2026-25741",
+	"MAT-STE-2026-25742",
+)
+
+
+def apply_named_sabb_wave(*, limit: int = 1) -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import plan, execute
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+	from erpnext_extensions.iran_accounting.historical_stock._validation.prod_ready_0926 import rebuild_bins
+
+	mfg0 = mfg_fingerprint()
+	baseline = _gates()
+	log = []
+	for voucher in NAMED_SABB_WAVE[:limit]:
+		scan = scan_wrong_rates(company=COMPANY, voucher=voucher, limit=30)
+		rows = [r for r in (scan.get("rows") or []) if r.get("eligible")]
+		if not rows:
+			log.append({"voucher": voucher, "skipped": "no_eligible"})
+			continue
+		live = execute(plan(dict(rows[0])), dry_run=False)
+		frappe.db.commit()
+		g = _gates()
+		md = mfg_delta(mfg0, mfg_fingerprint())
+		entry = {
+			"voucher": voucher,
+			"ok": live.get("ok"),
+			"state": live.get("primary_state"),
+			"source": rows[0].get("source_of_truth") or rows[0].get("rate_source"),
+			"gates": g,
+		}
+		log.append(entry)
+		if g["i1"] or g["neg_rate"] or int(g["neg_after"]) > int(baseline["neg_after"]):
+			_jdump("ABORT_named_sabb.json", entry)
+			raise RuntimeError(f"safety abort {voucher}")
+		if any(abs(flt(x)) > 1e-6 for x in md.values()):
+			raise RuntimeError(f"mfg qty changed after {voucher}")
+	rebuild_bins()
+	out = {
+		"applied": len(log),
+		"ok": sum(1 for e in log if e.get("ok")),
+		"log": log,
+		"gates": _gates(),
+		"canaries": canaries(),
+		"mfg_delta": mfg_delta(mfg0, mfg_fingerprint()),
+	}
+	_jdump(f"named_sabb_{limit}.json", out)
 	return out
 
 
@@ -634,6 +692,56 @@ def riv_37090() -> dict:
 	return out
 
 
+def remaining_wr_compression() -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+
+	scan = scan_wrong_rates(company=COMPANY, limit=5000)
+	rows = scan.get("rows") or []
+	by_v = {}
+	for r in rows:
+		by_v.setdefault(r.get("voucher"), r)
+	roots = list(by_v.values())
+	ready = [r for r in roots if r.get("eligible") and "READY" in str(r.get("planner_status") or "")]
+	out = {
+		"raw_rows": len(rows),
+		"unique_vouchers": len(roots),
+		"ready_vouchers": len(ready),
+		"ready_by_source": dict(Counter((r.get("source_of_truth") or r.get("rate_source") or "?") for r in ready)),
+		"ready_by_purpose": dict(Counter((r.get("purpose") or "?") for r in ready)),
+		"ready_by_confidence": dict(Counter((r.get("confidence") or "?") for r in ready)),
+		"ready_samples": [
+			{
+				"voucher": r.get("voucher"),
+				"item": r.get("item"),
+				"source": r.get("source_of_truth") or r.get("rate_source"),
+				"purpose": r.get("purpose"),
+				"confidence": r.get("confidence"),
+				"expected": r.get("expected") or r.get("proposed_rate"),
+			}
+			for r in ready[:25]
+		],
+		"by_status": dict(Counter(r.get("planner_status") for r in roots)),
+		"by_source": dict(Counter((r.get("source_of_truth") or r.get("rate_source") or "?") for r in roots)),
+		"by_purpose": dict(Counter((r.get("purpose") or "?") for r in roots)),
+		"by_confidence": dict(Counter((r.get("confidence") or "?") for r in roots)),
+		"manual_samples": [
+			{
+				"voucher": r.get("voucher"),
+				"item": r.get("item"),
+				"source": r.get("source_of_truth") or r.get("rate_source"),
+				"purpose": r.get("purpose"),
+				"confidence": r.get("confidence"),
+				"status": r.get("planner_status"),
+				"message": (r.get("message") or "")[:160],
+			}
+			for r in roots
+			if "MANUAL" in str(r.get("planner_status") or "") or str(r.get("confidence") or "") == "MANUAL"
+		][:30],
+	}
+	_jdump("wr_compression.json", out)
+	return out
+
+
 def leftover_and_ready() -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import scan_leftover_ma
 
@@ -781,4 +889,25 @@ def revert_37090_unproven_fg() -> dict:
 		"canaries": canaries(),
 	}
 	_jdump("revert_37090.json", out)
+	return out
+
+
+def riv_13100023_level2() -> dict:
+	"""Item + Warehouse + bounded start (34019 posting date)."""
+	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import create_and_run_narrow_riv
+
+	item = "13100023"
+	wh = "انبار approved اقلام بسته بندی اولیه اسپاد"
+	g0 = _gates()
+	riv = create_and_run_narrow_riv(item, wh, posting_date="2026-08-01", posting_time="18:10:00")
+	frappe.db.commit()
+	g1 = _gates()
+	out = {
+		**riv,
+		"gates0": g0,
+		"gates1": g1,
+		"poisoned": bool(g1["i1"] or g1["neg_rate"] or int(g1["neg_after"]) > int(g0["neg_after"])),
+		"canaries": canaries(),
+	}
+	_jdump("riv_13100023_level2.json", out)
 	return out

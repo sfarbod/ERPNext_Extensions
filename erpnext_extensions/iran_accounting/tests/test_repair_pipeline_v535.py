@@ -69,6 +69,26 @@ class TestRepairPipeline(unittest.TestCase):
 		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
 		self.assertIn("write_manufacture_fg_residual", p.operations)
 
+	def test_healthy_manufacture_plan_is_not_ready_mutation(self):
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "RATE_REPAIR_COMPLETE",
+				"status": "NO_ACTION_REQUIRED",
+				"no_action_required": True,
+				"eligible": False,
+				"confidence": "EXACT",
+				"voucher": "STE-H",
+				"item": "FG",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"source_of_truth": "historical_manufacture_consumed_svd",
+				"message": "FG already matches consumed-SVD residual rate",
+				"manufacture_native": {"classification": "HEALTHY", "eligible": False},
+			}
+		)
+		self.assertEqual(p.primary_state, "LEGITIMATE")
+
 	def test_manufacture_wrong_rate_is_manual(self):
 		p = plan(
 			{

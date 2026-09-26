@@ -736,6 +736,20 @@ def _evaluate_rate(row, decision, cache, patient) -> dict:
 	wait_dep = PLAN_WAITING_RATE_DEPENDENCY if is_wrong_rate else PLAN_WAITING_RATE_REPAIR
 	# Already-valued / rebuild-complete: rate surface is healthy (amount micro-gaps stay complete).
 	# v5.3.0: refuse false COMPLETE when current/expected rates are poisoned.
+	_native = row.get("manufacture_native")
+	_native_cls = _native.get("classification") if isinstance(_native, dict) else None
+	if (
+		row.get("no_action_required")
+		or status == "NO_ACTION_REQUIRED"
+		or _native_cls in ("HEALTHY", "LEGITIMATE")
+		or str(row.get("message") or "").startswith("FG already matches")
+	):
+		return _not_ready(
+			decision,
+			PLAN_RATE_REPAIR_COMPLETE,
+			row.get("message") or "RATE_REPAIR_COMPLETE — manufacture residual already matches",
+			patient=patient,
+		)
 	if status == STATUS_RATE_REBUILD_COMPLETE or str(row.get("source") or row.get("source_of_truth") or "") == "already_valued":
 		# Prefer SE basic_rate (current_rate) — attach_rate_analysis may set current=0 from SLE.
 		cur = flt(
