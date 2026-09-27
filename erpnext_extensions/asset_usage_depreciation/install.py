@@ -53,3 +53,8 @@ def after_migrate():
 	)
 
 	provision_asset_request_accounting_dimensions()
+	from erpnext_extensions.asset_usage_depreciation.services.depr_posting_guard import (
+		install_depreciation_idempotency_patch,
+	)
+
+	install_depreciation_idempotency_patch()
