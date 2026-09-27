@@ -190,7 +190,6 @@ def align_manufacture_finished_good_residual(doc) -> None:
 	tol = _residual_tolerance(currency)
 
 	outgoing_total = sum(flt(row.amount) for row in doc.get("items") or [] if row.get("s_warehouse"))
-	incoming_total = sum(flt(row.amount) for row in doc.get("items") or [] if row.get("t_warehouse"))
 
 	fg = fg_rows[0]
 	qty = flt(fg.transfer_qty if fg.get("transfer_qty") not in (None, "") else fg.get("qty"))
@@ -198,26 +197,38 @@ def align_manufacture_finished_good_residual(doc) -> None:
 		return
 
 	capitalized = _row_capitalized_cost(fg)
-	# Other incoming rows (scrap/secondary) keep their amounts.
-	other_incoming = incoming_total - flt(fg.amount)
-	composed_fg = round_currency(
-		flt(fg.basic_amount) + capitalized,
-		currency,
+	# Other incoming rows (scrap/secondary) keep their amounts — compute from
+	# peer rows, not from (incoming_total - fg.amount), so pool restore is stable
+	# even when the current FG amount is the wrong qty×rate figure.
+	other_incoming = sum(
+		flt(row.amount)
+		for row in doc.get("items") or []
+		if row.get("t_warehouse") and row is not fg
 	)
-	if capitalized > tol:
-		# Legitimate capitalization: only nudge FG amount within residual of composed truth.
-		target = composed_fg
-		if abs(flt(fg.amount) - target) > tol:
-			return
-		if abs(flt(fg.amount) - target) == 0:
-			_apply_integer_rates(fg, qty, currency)
+	if capitalized >= tol:
+		# Pool identity with capitalization (incl. add_cost == IRR quantum):
+		#   FG.amount + other_incoming = outgoing + FG capitalized costs
+		# Rate-first align alone yields qty×integer_rate + add_cost, which can
+		# drop a valid Manufacture residual (v5.3.30). Restore the pool here so
+		# additional_cost >= IRR tolerance cannot skip residual absorption.
+		pool_target = round_currency(outgoing_total - other_incoming + capitalized, currency)
+		expected_basic = round_currency(pool_target - capitalized, currency)
+		needs_pool = abs(flt(fg.amount) - pool_target) > tol or abs(flt(fg.basic_amount) - expected_basic) > tol
+		if needs_pool:
+			fg.basic_amount = expected_basic
+			fg.basic_rate = round_monetary_rate(
+				flt(expected_basic / qty) if qty else fg.basic_rate, currency
+			)
+			fg.amount = pool_target
+			fg.valuation_rate = integer_valuation_rate_from_amount(fg.amount, qty, currency)
 			_refresh_header_totals(doc)
 			return
-		_apply_fg_amount(fg, target, qty, currency)
+		_apply_integer_rates(fg, qty, currency)
 		_refresh_header_totals(doc)
 		return
 
 	# No material capitalization on FG: absorb Incoming vs Outgoing only within residual tol.
+	incoming_total = other_incoming + flt(fg.amount)
 	delta = abs(incoming_total - outgoing_total)
 	if delta > tol:
 		_apply_integer_rates(fg, qty, currency)

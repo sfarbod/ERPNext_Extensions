@@ -95,11 +95,25 @@ def _gl_stock_account_net(gl_rows: list[dict], company: str) -> float:
 	return net
 
 
+def _single_manufacture_fg_row(doc, row) -> bool:
+	"""True for the sole Manufacture finished-good incoming row (pool residual owner)."""
+	if getattr(doc, "purpose", None) != "Manufacture":
+		return False
+	if not row.get("is_finished_item") or not row.get("t_warehouse"):
+		return False
+	fg_count = sum(
+		1 for r in doc.get("items") or [] if r.get("is_finished_item") and r.get("t_warehouse")
+	)
+	return fg_count == 1
+
+
 def _assert_row_composition(doc, company: str) -> list[str]:
 	"""Verify rate-first IRR composition (verifier, not calculator).
 
 	- basic_rate / valuation_rate must be integer (IRR)
 	- basic_amount == ROUND_HALF_UP(transfer_qty × integer basic_rate)
+	  except single-FG Manufacture rows, which may absorb a valid Manufacture
+	  pool residual into basic_amount (amount remains authoritative for SLE)
 	- amount == basic_amount + additional_cost + LCV
 	- valuation_rate == ROUND_HALF_UP(amount / transfer_qty); amount remains authoritative
 	"""
@@ -127,7 +141,7 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 		if row.get("basic_rate") is not None and transfer_qty:
 			exp_basic = round_row_amount_financial(transfer_qty, row.basic_rate, ccy)
-			if abs(flt(row.basic_amount) - exp_basic) > tol:
+			if abs(flt(row.basic_amount) - exp_basic) > tol and not _single_manufacture_fg_row(doc, row):
 				failures.append(
 					_fail(
 						doc,

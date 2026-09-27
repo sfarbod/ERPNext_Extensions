@@ -66,12 +66,30 @@ def before_validate_stock_entry(doc, method=None):
 	permit_scrap_zero_valuation(doc)
 
 
+def apply_irr_manufacture_economic_finalize(doc) -> None:
+	"""Canonical Manufacture/IRR row finalize — order is load-bearing.
+
+	1. Rate-first integer IRR composition (qty × integer rate + capitalization)
+	2. Iran Manufacture output contract (component scrap + FG pool residual)
+	3. Manufacture FG residual / capitalization polish
+
+	Never run (1) after (2): rate-first rewrite destroys a valid Manufacture
+	residual and then the ledger contract rejects the voucher after SLE/GL
+	were already posted from the residual amounts (v5.3.30 / MAT-STE-2026-37736).
+	"""
+	align_stock_entry_item_amounts(doc)
+	apply_iran_manufacture_output_contract(doc)
+	align_manufacture_finished_good_residual(doc)
+
+
 def validate_stock_entry(doc, method=None):
 	from erpnext_extensions.iran_accounting.e2e_bootstrap import apply_stock_entry_site_defaults
 
 	apply_stock_entry_site_defaults(doc)
 	if not is_irr_company(doc.company):
 		return
+	# Totals polish sits between rate-first align and Manufacture residual restore
+	# so header figures use integer row components before pool absorption.
 	align_stock_entry_item_amounts(doc)
 	round_stock_entry_totals(doc)
 	# Runs after the controller's validate(), so the consumed rows are priced and
@@ -126,10 +144,9 @@ def on_submit_stock_entry(doc, method=None):
 	if not is_irr_company(doc.company):
 		return
 	# ERPNext may rewrite row rates from moving-average floats after before_submit.
-	# Re-apply the Iran Manufacture output contract, rate-first integers, then persist.
-	apply_iran_manufacture_output_contract(doc)
-	align_stock_entry_item_amounts(doc)
-	align_manufacture_finished_good_residual(doc)
+	# Re-finalize with the SAME order as validate: rate-first → Manufacture contract
+	# → residual. Persist must converge to the residual amounts SLE already used.
+	apply_irr_manufacture_economic_finalize(doc)
 	align_zero_value_transfer_totals(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
@@ -157,9 +174,12 @@ def persist_irr_stock_entry_header_and_rows(doc) -> None:
 	"""Persist IRR-aligned row economics and header totals (submit / LCV / RIV)."""
 	if not is_irr_company(doc.company):
 		return
-	align_stock_entry_item_amounts(doc)
-	if doc.purpose in ("Manufacture", "Repack"):
-		align_manufacture_finished_good_residual(doc)
+	if doc.purpose == "Manufacture":
+		apply_irr_manufacture_economic_finalize(doc)
+	else:
+		align_stock_entry_item_amounts(doc)
+		if doc.purpose == "Repack":
+			align_manufacture_finished_good_residual(doc)
 	align_zero_value_transfer_totals(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
