@@ -1,0 +1,307 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "company",
+  "status",
+  "column_break_main",
+  "chunk_size",
+  "max_inflight_chunks",
+  "queue_name",
+  "worker_concurrency",
+  "max_attempts",
+  "section_timing",
+  "started_at",
+  "completed_at",
+  "paused_at",
+  "column_break_timing",
+  "created_by_user",
+  "notes",
+  "section_counts",
+  "total_assets",
+  "pending_count",
+  "queued_count",
+  "processing_count",
+  "column_break_counts",
+  "success_count",
+  "already_repaired_count",
+  "manual_review_count",
+  "blocked_count",
+  "failed_count",
+  "retryable_failed_count",
+  "section_jes",
+  "total_jes_before",
+  "total_jes_cancelled",
+  "section_ops",
+  "last_error",
+  "exception_register_generated"
+ ],
+ "fields": [
+  {
+   "default": "AUD-ADRC-.YYYY.-",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "AUD-ADRC-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nReady\nRunning\nPaused\nCompleted\nCompleted With Exceptions\nStopped\nFailed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "20",
+   "fieldname": "chunk_size",
+   "fieldtype": "Int",
+   "label": "Chunk Size",
+   "reqd": 1
+  },
+  {
+   "default": "4",
+   "fieldname": "max_inflight_chunks",
+   "fieldtype": "Int",
+   "label": "Max Inflight Chunks",
+   "description": "Bounded feeder: queued+processing chunks kept at or below this."
+  },
+  {
+   "default": "long",
+   "fieldname": "queue_name",
+   "fieldtype": "Data",
+   "label": "Queue Name"
+  },
+  {
+   "default": "2",
+   "fieldname": "worker_concurrency",
+   "fieldtype": "Int",
+   "label": "Target Worker Concurrency"
+  },
+  {
+   "default": "3",
+   "fieldname": "max_attempts",
+   "fieldtype": "Int",
+   "label": "Max Attempts"
+  },
+  {
+   "fieldname": "section_timing",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "paused_at",
+   "fieldtype": "Datetime",
+   "label": "Paused At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_timing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "created_by_user",
+   "fieldtype": "Link",
+   "label": "Created By User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "section_counts",
+   "fieldtype": "Section Break",
+   "label": "Counts"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_assets",
+   "fieldtype": "Int",
+   "label": "Total Assets",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "pending_count",
+   "fieldtype": "Int",
+   "label": "Pending",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "queued_count",
+   "fieldtype": "Int",
+   "label": "Queued",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "processing_count",
+   "fieldtype": "Int",
+   "label": "Processing",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_counts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "success_count",
+   "fieldtype": "Int",
+   "label": "Success",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "already_repaired_count",
+   "fieldtype": "Int",
+   "label": "Already Repaired",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "manual_review_count",
+   "fieldtype": "Int",
+   "label": "Manual Review",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "blocked_count",
+   "fieldtype": "Int",
+   "label": "Blocked",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "failed_count",
+   "fieldtype": "Int",
+   "label": "Failed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "retryable_failed_count",
+   "fieldtype": "Int",
+   "label": "Retryable Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_jes",
+   "fieldtype": "Section Break",
+   "label": "Journal Entries"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_jes_before",
+   "fieldtype": "Int",
+   "label": "Total JEs Before",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "total_jes_cancelled",
+   "fieldtype": "Int",
+   "label": "Total JEs Cancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_ops",
+   "fieldtype": "Section Break",
+   "label": "Operations"
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "exception_register_generated",
+   "fieldtype": "Check",
+   "label": "Exception Register Generated",
+   "read_only": 1
+  }
+ ],
+ "links": [
+  {
+   "link_doctype": "Asset Depreciation Repair Campaign Item",
+   "link_fieldname": "campaign"
+  }
+ ],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Usage Depreciation",
+ "name": "Asset Depreciation Repair Campaign",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

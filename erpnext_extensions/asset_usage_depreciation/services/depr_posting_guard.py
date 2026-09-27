@@ -91,6 +91,22 @@ def guarded_make_journal_entry_for_depreciation(
 	):
 		return
 
+	# Campaign race: do not post while Asset is claimed by an active repair campaign
+	try:
+		from erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign import (
+			is_asset_claimed_by_active_campaign,
+		)
+
+		if is_asset_claimed_by_active_campaign(asset.name):
+			frappe.logger("asset_depr_idempotency").info(
+				"Skip depreciation posting for Asset %s — claimed by active repair campaign",
+				asset.name,
+			)
+			return
+	except Exception:
+		# DocTypes may not be migrated yet; never block posting on import/schema errors
+		pass
+
 	existing = resolve_existing_je_for_row(asset.name, depr_schedule, asset.company)
 	if existing:
 		je_debit = frappe.db.sql(
