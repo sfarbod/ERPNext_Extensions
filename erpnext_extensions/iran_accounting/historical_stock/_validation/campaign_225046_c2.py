@@ -321,20 +321,68 @@ def apply_ready_posting_order_wave() -> dict:
 	}
 
 
-def isolated_l4_30100022() -> dict:
-	"""L4: 30100022 warehouse layers after posting-order reconstruction. Stop on gates."""
-	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
-		create_and_run_isolated_riv,
-	)
-
-	layers = frappe.db.sql(
-		"""SELECT warehouse, MIN(posting_date) posting_date, MIN(posting_time) posting_time,
-		          MIN(posting_datetime) first_dt
-		FROM `tabStock Ledger Entry`
-		WHERE item_code='30100022' AND is_cancelled=0
-		GROUP BY warehouse ORDER BY first_dt""",
+def _l4_contract_ok() -> dict:
+	"""Hard L4 canaries: 30470 621301 residual, leftover-MA envelope, no new negatives."""
+	gl = frappe.db.sql(
+		"""SELECT account, ROUND(SUM(debit),2) d, ROUND(SUM(credit),2) c
+		FROM `tabGL Entry` WHERE voucher_no='MAT-STE-2026-30470' AND is_cancelled=0
+		GROUP BY account""",
 		as_dict=True,
 	)
+	uses_621301 = any("621301" in str(r.account) for r in gl)
+	uses_622515 = any("622515" in str(r.account) for r in gl)
+	ma = frappe.db.sql(
+		"""SELECT valuation_rate, stock_value, qty_after_transaction
+		FROM `tabStock Ledger Entry`
+		WHERE item_code='16100066' AND is_cancelled=0
+		  AND warehouse=%s
+		ORDER BY posting_datetime DESC, creation DESC LIMIT 1""",
+		("انبار ملزومات مصرفی اسپاد",),
+		as_dict=True,
+	)
+	rate = flt(ma[0].valuation_rate) if ma else 0
+	# leftover MA is ~5e6; a trillion-scale rate is fanout poison
+	ma_ok = 1 < rate < 1e8
+	zero = frappe.db.sql(
+		"""SELECT valuation_rate, stock_value FROM `tabStock Ledger Entry`
+		WHERE item_code='16100226' AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime DESC, creation DESC LIMIT 1""",
+		("انبار ملزومات مصرفی اسپاد",),
+		as_dict=True,
+	)
+	zero_ok = bool(zero) and abs(flt(zero[0].stock_value)) <= 1e-6
+	return {
+		"uses_621301": uses_621301,
+		"uses_622515": uses_622515,
+		"ma_rate": rate,
+		"ma_ok": ma_ok,
+		"zero_ok": zero_ok,
+		"ok": uses_621301 and not uses_622515 and ma_ok and zero_ok,
+	}
+
+
+def isolated_l4_30100022() -> dict:
+	"""L4: 30100022 warehouse layers after posting-order reconstruction. Stop on gates.
+
+	Start each warehouse at the first non-opening-reco SLE so a fiscal seed
+	does not walk the entire dependant Manufacture/Adjustment graph.
+	"""
+	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+		create_and_run_isolated_riv,
+		first_non_opening_repost_boundary,
+	)
+
+	whs = frappe.db.sql(
+		"""SELECT DISTINCT warehouse FROM `tabStock Ledger Entry`
+		WHERE item_code='30100022' AND is_cancelled=0""",
+		as_dict=True,
+	)
+	layers = []
+	for w in whs:
+		b = first_non_opening_repost_boundary("30100022", w.warehouse)
+		if b:
+			layers.append(b)
+	layers.sort(key=lambda r: str(r.posting_datetime))
 	s0 = c1._watch_snapshot()
 	results = []
 	stopped = None
@@ -354,9 +402,12 @@ def isolated_l4_30100022() -> dict:
 			WHERE item_code='30200016' AND is_cancelled=0"""
 		)[0][0]
 		neg_delta = int(after["gates"].get("neg_after") or 0) - int(s0["gates"].get("neg_after") or 0)
+		contract = _l4_contract_ok()
 		row = {
 			"warehouse": layer.warehouse,
-			"first_dt": str(layer.first_dt),
+			"first_dt": str(layer.posting_datetime),
+			"start_voucher": layer.voucher_no,
+			"start_type": layer.voucher_type,
 			"riv_ok": riv.get("ok"),
 			"riv_status": riv.get("riv_status"),
 			"reason": (riv.get("reason") or "")[:400],
@@ -364,9 +415,16 @@ def isolated_l4_30100022() -> dict:
 			"i1": after["gates"].get("i1"),
 			"min_30200016": min_302,
 			"open_riv_n": len(after["riv_open"]),
+			"contract": contract,
 		}
 		results.append(row)
-		if (not riv.get("ok")) or neg_delta > 0 or int(after["gates"].get("i1") or 0) or flt(min_302) < -0.0001:
+		if (
+			(not riv.get("ok"))
+			or neg_delta > 0
+			or int(after["gates"].get("i1") or 0)
+			or flt(min_302) < -0.0001
+			or not contract.get("ok")
+		):
 			stopped = {"at": layer.warehouse, "why": row}
 			break
 	s1 = c1._watch_snapshot()
@@ -425,6 +483,7 @@ def post_l4_canaries() -> dict:
 			"37090": out["37090"],
 		},
 	)
+	contract = _l4_contract_ok()
 	return {
 		"i1": out["gates"].get("i1"),
 		"neg_after": out["gates"].get("neg_after"),
@@ -434,6 +493,7 @@ def post_l4_canaries() -> dict:
 		"36933": out["36933"],
 		"37090": out["37090"],
 		"open_riv": (can or {}).get("open_riv_n") if isinstance(can, dict) else None,
+		"contract": contract,
 	}
 
 
@@ -475,6 +535,7 @@ def isolated_riv_30100294_valued_source() -> dict:
 	)
 	an1 = analyze_manufacture_scrap_fg("MAT-STE-2026-25274")
 	s1 = c1._watch_snapshot()
+	contract = _l4_contract_ok()
 	out = {
 		"riv1": r1,
 		"riv2": r2,
@@ -483,6 +544,7 @@ def isolated_riv_30100294_valued_source() -> dict:
 		"consume": consume,
 		"gates0": s0["gates"],
 		"gates1": s1["gates"],
+		"contract": contract,
 	}
 	_jdump("riv_30100294_valued_source.json", out)
 	return {
@@ -493,6 +555,8 @@ def isolated_riv_30100294_valued_source() -> dict:
 		"consume": consume,
 		"i1": s1["gates"].get("i1"),
 		"neg_delta": int(s1["gates"].get("neg_after") or 0) - int(s0["gates"].get("neg_after") or 0),
+		"contract_ok": contract.get("ok"),
+		"ma_rate": contract.get("ma_rate"),
 	}
 
 
@@ -790,6 +854,13 @@ def apply_ready_causal_wave(n: int = 1) -> dict:
 	for r in roots:
 		if r.get("role") != "ROOT":
 			continue
+		# Campaign READY set is SABB provenance only. Do not pick
+		# leftover-MA / test-fixture Material Transfer descendants.
+		if r.get("family") != "SABB":
+			continue
+		item = str(r.get("item") or "")
+		if item.startswith("2301") or item.startswith("RIV-"):
+			continue
 		if "پایکار" in str(r.get("warehouse") or "") and (r["item"], r["batch"]) in pairs:
 			continue
 		causal.append(r)
@@ -861,9 +932,14 @@ def isolated_l5_representative() -> dict:
 	"""Broad historical subset through isolated native RIV. Stop on first gate fail."""
 	from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
 		create_and_run_isolated_riv,
+		first_non_opening_repost_boundary,
 	)
 
 	# Resolve one identity per required economic family.
+	# Never open RIV from a fiscal-year opening Stock Reconciliation.
+	reco = first_non_opening_repost_boundary(
+		"30100022", "انبار Quarantine محصول نیمه ساخته اسپاد"
+	)
 	pr = frappe.db.sql(
 		"""SELECT item_code, warehouse, posting_date, posting_time
 		FROM `tabStock Ledger Entry`
@@ -875,7 +951,9 @@ def isolated_l5_representative() -> dict:
 		"""SELECT sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time
 		FROM `tabStock Ledger Entry` sle
 		JOIN `tabStock Entry` se ON se.name=sle.voucher_no
-		WHERE sle.is_cancelled=0 AND se.purpose LIKE '%%Return%%'
+		WHERE sle.is_cancelled=0
+		  AND (se.purpose LIKE '%%Return%%' OR IFNULL(se.is_return,0)=1)
+		  AND sle.item_code NOT BETWEEN '230111' AND '230119'
 		ORDER BY sle.posting_datetime LIMIT 1""",
 		as_dict=True,
 	)
@@ -884,14 +962,25 @@ def isolated_l5_representative() -> dict:
 		FROM `tabStock Ledger Entry` sle
 		JOIN `tabStock Entry` se ON se.name=sle.voucher_no
 		WHERE sle.is_cancelled=0 AND se.purpose='Repack'
+		  AND sle.item_code NOT BETWEEN '230111' AND '230119'
+		ORDER BY sle.posting_datetime LIMIT 1""",
+		as_dict=True,
+	)
+	mt = frappe.db.sql(
+		"""SELECT sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time
+		FROM `tabStock Ledger Entry` sle
+		JOIN `tabStock Entry` se ON se.name=sle.voucher_no
+		WHERE sle.is_cancelled=0 AND se.purpose='Material Transfer'
+		  AND sle.item_code NOT BETWEEN '230111' AND '230119'
+		  AND sle.item_code NOT IN ('16100066','16100226')
 		ORDER BY sle.posting_datetime LIMIT 1""",
 		as_dict=True,
 	)
 	families = [
 		("PR", pr[0] if pr else None),
-		("RECO", _earliest("30100022", "انبار Quarantine محصول نیمه ساخته اسپاد")),
+		("RECO", reco),
 		("SABB_MTFM", _earliest("13100134", "انبار approved اقلام بسته بندی اولیه اسپاد")),
-		("MT", _earliest("230113", "انبار ملزومات مصرفی اسپاد")),
+		("MT", mt[0] if mt else None),
 		("MTFM", _earliest("13100023", "انبار approved اقلام بسته بندی اولیه اسپاد")),
 		("RETURN", ret[0] if ret else None),
 		("MFG_NO_SCRAP", frappe.db.sql(
@@ -958,6 +1047,77 @@ def isolated_l5_representative() -> dict:
 		"ok": [e.get("ok") for e in log],
 		"i1": s1["gates"].get("i1"),
 		"neg_after": s1["gates"].get("neg_after"),
+	}
+
+
+def run_c1_then_l4_experiment() -> dict:
+	"""C1 mutations + PO + bounded L4 + 25274. Used after a fresh 22:50 restore."""
+	from erpnext_extensions.iran_accounting.historical_stock._validation.prod_ready_0926 import (
+		canaries,
+	)
+
+	base = c1.apply_baseline()
+	i4 = c1.apply_36853_i4()
+	l1 = c1.isolated_l1_canary()
+	l2 = c1.isolated_l2_bounded()
+	l3a = c1.isolated_l3_13100134_layered()
+	l3b = c1.isolated_l3_second_pass()
+	can = canaries()
+	pre = {
+		"30470_621301": (can.get("30470") or {}).get("uses_621301"),
+		"30470_622515": (can.get("30470") or {}).get("uses_622515_for_stock"),
+		"16100066": can.get("16100066"),
+	}
+	po = apply_ready_posting_order_wave()
+	if not po.get("ok"):
+		out = {"ok": False, "stage": "po", "po": po, "pre": pre}
+		_jdump("c1_l4_experiment.json", out)
+		return out
+	l4a = isolated_l4_30100022()
+	if not l4a.get("passed"):
+		out = {"ok": False, "stage": "l4a", "l4a": l4a, "pre": pre, "po": po}
+		_jdump("c1_l4_experiment.json", out)
+		return out
+	l4b = isolated_l4_30100022()
+	post = post_l4_canaries()
+	v25274 = isolated_riv_30100294_valued_source()
+	scan = kpis_after_fixes()
+	ok = bool(
+		l4a.get("passed")
+		and l4b.get("passed")
+		and (post.get("contract") or {}).get("ok")
+		and v25274.get("riv1_ok")
+		and v25274.get("neg_delta") == 0
+		and int((scan.get("gates") or {}).get("i1") or 0) == 0
+		and int((scan.get("gates") or {}).get("neg_after") or 0) == 0
+	)
+	out = {
+		"ok": ok,
+		"baseline": (base.get("rehearsal") or {}).get("applied_ok"),
+		"i4": i4,
+		"l1": l1,
+		"l2": l2,
+		"l3a": l3a,
+		"l3b": l3b,
+		"pre": pre,
+		"po": po,
+		"l4a": l4a,
+		"l4b": l4b,
+		"post": post,
+		"v25274": v25274,
+		"scan": scan,
+	}
+	_jdump("c1_l4_experiment.json", out)
+	return {
+		"ok": ok,
+		"score": scan.get("score"),
+		"l4a": l4a.get("passed"),
+		"l4b": l4b.get("passed"),
+		"contract": post.get("contract"),
+		"class_25274": v25274.get("class_after"),
+		"wrong_rate": scan.get("wrong_rate"),
+		"i1": (scan.get("gates") or {}).get("i1"),
+		"neg_after": (scan.get("gates") or {}).get("neg_after"),
 	}
 
 
@@ -1038,3 +1198,31 @@ def run_clean_final_replay_c2(tag: str = "A") -> dict:
 		"i1": (scan.get("gates") or {}).get("i1"),
 		"neg_after": (scan.get("gates") or {}).get("neg_after"),
 	}
+
+
+def cleanup_test_fixture_pollution() -> dict:
+	"""Cancel rate-first integration fixtures accidentally posted on the campaign site."""
+	ses = frappe.db.sql(
+		"""SELECT name FROM `tabStock Entry`
+		   WHERE name BETWEEN 'MAT-STE-2026-37771' AND 'MAT-STE-2026-37786'
+		   ORDER BY name DESC""",
+		as_dict=True,
+	)
+	cancelled = []
+	for r in ses:
+		doc = frappe.get_doc("Stock Entry", r.name)
+		if int(doc.docstatus) == 1:
+			doc.cancel()
+			cancelled.append(r.name)
+	frappe.db.sql(
+		"""UPDATE `tabRepost Item Valuation`
+		   SET status='Skipped'
+		   WHERE status IN ('Queued','In Progress')
+		     AND item_code BETWEEN '230111' AND '230119'"""
+	)
+	frappe.db.commit()
+	open_n = frappe.db.sql(
+		"""SELECT COUNT(*) FROM `tabRepost Item Valuation`
+		   WHERE status IN ('Queued','In Progress')"""
+	)[0][0]
+	return {"ok": True, "cancelled": cancelled, "open_riv": open_n}

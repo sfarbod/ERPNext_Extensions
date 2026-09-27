@@ -851,6 +851,33 @@ def create_and_run_narrow_riv(
 	return {"ok": True, "riv_name": doc.name, "riv_status": st.status}
 
 
+def first_non_opening_repost_boundary(item, warehouse) -> dict | None:
+	"""First SLE that is safe to open a historical Item+Warehouse RIV from.
+
+	A fiscal-year opening Stock Reconciliation is a company-wide seed. Native
+	dependant-item walk from that row rebuilds later Manufacture/Adjustment
+	chains that are not part of this identity. L3 (mid-year Purchase Receipt)
+	does not hit that; L4 did. Skip opening reco; start at the next movement.
+	"""
+	rows = frappe.db.sql(
+		"""SELECT item_code, voucher_type, voucher_no, warehouse, posting_date, posting_time,
+		          posting_datetime
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime, creation""",
+		(item, warehouse),
+		as_dict=True,
+	)
+	if not rows:
+		return None
+	for r in rows:
+		vt = str(r.voucher_type or "")
+		if vt == "Stock Reconciliation":
+			continue
+		return r
+	return rows[0]
+
+
 def create_and_run_isolated_riv(
 	item,
 	warehouse,

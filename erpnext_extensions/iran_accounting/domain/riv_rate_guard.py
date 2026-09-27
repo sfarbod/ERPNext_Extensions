@@ -22,6 +22,34 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
+# Manufacture consume only. Leftover-MA reconstruction uses Material Receipt /
+# Material Transfer with document-zero by design; writing warehouse MA onto
+# those rows exploded leftover value (trillion-scale 16100066).
+VALUED_SOURCE_ZERO_OUTGOING_PURPOSES = frozenset(
+	{
+		"Manufacture",
+		"Material Consumption for Manufacture",
+	}
+)
+
+
+def is_valued_source_zero_outgoing(*, actual_qty, basic_rate, allow_zero_valuation_rate, outgoing_rate, purpose) -> bool:
+	"""True when a Manufacture consume has a corrupt document-zero rate but vanilla MA is valued.
+
+	Authority is the RIV-computed outgoing_rate (warehouse moving average),
+	not a nearby/future/ABS rate. Legitimate free consumes keep
+	allow_zero_valuation_rate=1. Leftover-MA receipt purposes never qualify.
+	"""
+	if str(purpose or "") not in VALUED_SOURCE_ZERO_OUTGOING_PURPOSES:
+		return False
+	if flt(actual_qty) >= 0:
+		return False
+	if cint(allow_zero_valuation_rate):
+		return False
+	if abs(flt(basic_rate)) > 1e-6:
+		return False
+	return abs(flt(outgoing_rate)) > 1e-6
+
 # ---------------------------------------------------------------------------
 # Explicit support allow-list (major.minor). Unknown versions → BLOCK.
 # Fingerprints are normalized AST hashes of the unpatched ERPNext methods.
@@ -343,7 +371,7 @@ def make_update_rate_on_stock_entry_wrapper(original):
 		row = frappe.db.get_value(
 			"Stock Entry Detail",
 			detail_no,
-			["name", "basic_rate", "allow_zero_valuation_rate"],
+			["name", "basic_rate", "allow_zero_valuation_rate", "parent"],
 			as_dict=True,
 		)
 		if not row:
@@ -360,17 +388,18 @@ def make_update_rate_on_stock_entry_wrapper(original):
 				title=_("IRR Rate Guard"),
 			)
 
-		# VALUED_SOURCE_ZERO_OUTGOING: submitted basic_rate is 0 but vanilla
-		# already priced the consume from a valued warehouse layer
-		# (|stock_value_difference| / qty). Document zero is corrupt, not
-		# a free receipt. Authority is this SLE's vanilla SVD, not a nearby rate.
-		valued_source_zero_outgoing = (
-			flt(getattr(sle, "actual_qty", 0)) < 0
-			and abs(flt(row.basic_rate)) <= 1e-6
-			and not cint(row.get("allow_zero_valuation_rate"))
-			and abs(flt(outgoing_rate)) > 1e-6
-		)
-		if valued_source_zero_outgoing:
+		purpose = frappe.db.get_value("Stock Entry", row.parent or sle.voucher_no, "purpose")
+		# VALUED_SOURCE_ZERO_OUTGOING: submitted Manufacture basic_rate is 0
+		# but vanilla already priced the consume from a valued warehouse layer.
+		# Document zero is corrupt, not a free receipt. Authority is this
+		# SLE's vanilla outgoing_rate, not a nearby rate.
+		if is_valued_source_zero_outgoing(
+			actual_qty=getattr(sle, "actual_qty", 0),
+			basic_rate=row.basic_rate,
+			allow_zero_valuation_rate=row.get("allow_zero_valuation_rate"),
+			outgoing_rate=outgoing_rate,
+			purpose=purpose,
+		):
 			original(self, sle, outgoing_rate)
 			if sle.dependant_sle_voucher_detail_no and not self.is_manufacture_entry_with_sabb(sle):
 				self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
