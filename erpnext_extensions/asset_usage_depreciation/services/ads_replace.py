@@ -17,7 +17,11 @@ def replace_asset_depr_schedule(
 	new_rows: list[dict[str, Any]],
 	notes: str,
 ):
-	"""Cancel Active ADS without cancelling posted JEs; submit replacement with new rows."""
+	"""Cancel Active ADS without cancelling posted JEs; submit replacement with new rows.
+
+	Amounts on unposted rows must already be whole IRR (caller runs ads_amount_normalize).
+	``before_submit`` re-normalizes full unposted schedules as a safety net.
+	"""
 	new_ads = frappe.copy_doc(old_ads)
 	new_ads.depreciation_schedule = []
 	new_ads.amended_from = None
@@ -50,6 +54,11 @@ def replace_asset_depr_schedule(
 
 	old_ads.flags.should_not_cancel_depreciation_entries = True
 	old_ads.cancel()
+
+	# When schedule still has posted rows, skip full-schedule normalize in hooks
+	# (tail already normalized by caller). Full unposted schedules are normalized on submit.
+	if any(r.get("journal_entry") for r in new_rows):
+		new_ads.flags.skip_iran_ads_normalize = True
 
 	new_ads.submit()
 	return new_ads

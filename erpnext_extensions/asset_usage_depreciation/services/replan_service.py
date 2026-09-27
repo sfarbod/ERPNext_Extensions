@@ -29,6 +29,9 @@ from erpnext_extensions.asset_usage_depreciation.services.accounting_amounts imp
 	sum_unposted_amounts,
 	to_depr_amount,
 )
+from erpnext_extensions.asset_usage_depreciation.services.ads_amount_normalize import (
+	normalize_unposted_tail,
+)
 from erpnext_extensions.asset_usage_depreciation.services.locks import lock_ads, lock_asset
 from erpnext_extensions.asset_usage_depreciation.services.mode_a import apply_mode_a_extension
 from erpnext_extensions.asset_usage_depreciation.services.mode_b import apply_fixed_end_usage_adjustment
@@ -162,15 +165,16 @@ def _replan_asset_usage_depreciation(asset_name: str, trigger_doc=None, context:
 		suspended_message = None
 
 		if not timeline:
-			# Usage cancelled: keep ERPNext standard amounts, still normalize to whole numbers
-			for row in rows:
-				if not row.get("journal_entry"):
-					row["depreciation_amount"] = to_depr_amount(row["depreciation_amount"])
-			_enforce_salvage(rows, remaining, allow_incomplete=False)
+			# Usage cancelled: ERPNext standard amounts → Iran whole-number + life-final balance
+			normalize_unposted_tail(
+				rows,
+				remaining_depreciable=remaining,
+				opening_accumulated=flt(asset.opening_accumulated_depreciation),
+				allow_incomplete=False,
+			)
 		elif policy == HANDLING_ADJUST_FINAL:
 			# Fixed-end: factor every unposted row except the final balancing row.
 			# Do NOT pre-multiply via _apply_usage_factors (avoids double-counting).
-			# Do NOT call _enforce_salvage afterward — final amount is derived once.
 			def _resolve(idx, row, _rows=rows, _timeline=timeline, _fb=fb, _asset=asset, _temp=temp):
 				standard = flt(row.get("_standard_amount", row["depreciation_amount"]))
 				factor = _usage_factor_for_row(_rows, idx, _timeline, _fb, _asset, _temp)
@@ -180,6 +184,13 @@ def _replan_asset_usage_depreciation(asset_name: str, trigger_doc=None, context:
 				rows,
 				remaining,
 				resolve_amount_and_factor=_resolve,
+			)
+			# Mode B already balances final; re-assert whole IRR via shared gate
+			normalize_unposted_tail(
+				rows,
+				remaining_depreciable=remaining,
+				opening_accumulated=flt(asset.opening_accumulated_depreciation),
+				allow_incomplete=False,
 			)
 		else:
 			_apply_usage_factors(rows, timeline, fb, asset, temp)
@@ -194,8 +205,14 @@ def _replan_asset_usage_depreciation(asset_name: str, trigger_doc=None, context:
 				daily_prorata_based=cint(fb.daily_prorata_based),
 			)
 			suspended_message = meta.get("message")
-			_enforce_salvage(rows, remaining, allow_incomplete=bool(suspended_message))
+			normalize_unposted_tail(
+				rows,
+				remaining_depreciable=remaining,
+				opening_accumulated=flt(asset.opening_accumulated_depreciation),
+				allow_incomplete=bool(suspended_message),
+			)
 
+		# Accum already set inside normalize_unposted_tail; keep explicit recompute for posted prefix
 		recompute_accumulated(rows, flt(asset.opening_accumulated_depreciation))
 		_assert_whole_unposted_amounts(rows)
 		_assert_posted_unchanged(posted_snapshot, rows)

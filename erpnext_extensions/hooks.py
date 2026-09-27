@@ -288,6 +288,10 @@ doc_events = {
 	"Asset": {
 		"on_submit": "erpnext_extensions.asset_usage_depreciation.integration_hooks.on_asset_submit",
 	},
+	"Asset Depreciation Schedule": {
+		"before_validate": "erpnext_extensions.asset_usage_depreciation.ads_hooks.before_validate",
+		"before_submit": "erpnext_extensions.asset_usage_depreciation.ads_hooks.before_submit",
+	},
 	"Asset Movement": {
 		"on_cancel": "erpnext_extensions.asset_usage_depreciation.integration_hooks.on_asset_movement_cancel",
 	},
