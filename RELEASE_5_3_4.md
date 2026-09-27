@@ -161,9 +161,11 @@ A Completed leftover-MA repair also requires:
 - **wait for that RIV to finish** before marking the repair Completed
 - `valuation_rate` on the zero inbound SLE is leftover value / qty even if
   vanilla RIV leaves that field at 0 while `stock_value` stays leftover
-- after a later official RIV, the same leftover MA is restored (hook
-  `on_repost_item_valuation_update`) and only **downstream** SLEs are replayed
-  so the zero inbound is not given an invented incoming rate
+- after a later official RIV, the same leftover MA is restored and only
+  **downstream** SLEs are replayed so the zero inbound is not given an
+  invented incoming rate. Worker completion uses `Document.db_set` →
+  `on_change` (`on_repost_item_valuation_update`). `on_update` alone misses
+  that path.
 
 Mismatch is `FAILED_POSTCONDITION: REPORT_LEDGER_MISMATCH`. A failed official
 RIV is `FAILED_RIV`. Matching Completed Stock Ledger Prepared Reports are

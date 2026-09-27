@@ -470,14 +470,14 @@ def optimize_group(
 			"total_seconds_shifted": score[1],
 		}
 
-		if edges and not saw_dep_ok:
-			return {
-				"status": "DEPENDENCY_CONFLICT",
-				"minimum_seconds_required": None,
-				"moves": [],
-				"current": current,
-				"opening": D(opening),
-			}
+	if edges and not saw_dep_ok:
+		return {
+			"status": "DEPENDENCY_CONFLICT",
+			"minimum_seconds_required": None,
+			"moves": [],
+			"current": current,
+			"opening": D(opening),
+		}
 	if saw_cross:
 		return {
 			"status": "CROSS_ITEM_CONFLICT",

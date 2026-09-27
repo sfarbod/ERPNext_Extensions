@@ -116,7 +116,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		1 for r in (i4.get("rows") or []) if r.get("eligible") or r.get("i4_status") == "READY_I4"
 	)
 	# Phase 2 maturity KPIs — canonical Wrong Rate buckets (exclude COMPLETE from active).
-	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets
+	from erpnext_extensions.iran_accounting.historical_stock.kpi_buckets import count_wrong_rate_buckets, wrong_rate_bucket
 
 	wr_buckets = count_wrong_rate_buckets(wrong.get("rows") or [])
 	wr_ready = wr_buckets.get("ready") or 0
@@ -125,6 +125,46 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	wr_complete = wr_buckets.get("complete") or 0
 	# Active Wrong Rate problem count (excludes RATE_REPAIR_COMPLETE / already-valued).
 	wrong_n = wr_buckets.get("active") or 0
+	# Score units (v5.3.7): compress WAITING symptoms onto unique patient-zero /
+	# voucher roots so 200 downstream WAITING rows of one PZ do not each add a
+	# full Wrong Rate penalty. READY + MANUAL remain 1:1. Dashboard Wrong Rate
+	# stays the raw active count (not gamed).
+	def _root_key(row) -> str:
+		pz = row.get("patient_zero") or {}
+		if isinstance(pz, dict) and pz.get("voucher_no"):
+			return f"pz:{pz['voucher_no']}"
+		v = row.get("voucher") or row.get("voucher_no")
+		return f"v:{v}" if v else f"row:{id(row)}"
+
+	wr_rows = wrong.get("rows") or []
+	wr_ready_rows = [r for r in wr_rows if wrong_rate_bucket(r) == "ready"]
+	wr_manual_rows = [r for r in wr_rows if wrong_rate_bucket(r) == "manual"]
+	wr_waiting_rows = [r for r in wr_rows if wrong_rate_bucket(r) == "waiting"]
+	wr_waiting_roots = {_root_key(r) for r in wr_waiting_rows}
+	wr_manual_roots = {_root_key(r) for r in wr_manual_rows}
+	# READY stays 1:1 (actionable corruption). MANUAL/WAITING compress to unique
+	# causal roots so sibling symptoms of one PZ do not each full-penalize.
+	wrong_score_units = (
+		len(wr_ready_rows) + len(wr_manual_roots) * 0.5 + len(wr_waiting_roots) * 0.35
+	)
+
+	# Zero Rate score units: NO_ACTION / legitimate excluded via zero_n=actionable.
+	# WAITING_UPSTREAM compresses to unique roots at half the actionable weight.
+	zero_rows = zero.get("rows") or []
+	zero_waiting_rows = [
+		r
+		for r in zero_rows
+		if r.get("status")
+		in (
+			"DEPENDENCY_REPAIR_REQUIRED",
+			"VALUATION_POISON_DEPENDENCY",
+		)
+		or "WAITING" in str(r.get("planner_status") or "")
+	]
+	zero_waiting_roots = {_root_key(r) for r in zero_waiting_rows}
+	zero_non_waiting = max(0, zero_n - len(zero_waiting_rows))
+	zero_score_units = zero_non_waiting * 0.5 + len(zero_waiting_roots) * 0.25
+
 	riv_by = riv.get("by_status") or {}
 	riv_actionable = int(riv.get("actionable_count") or 0)
 	if not riv_actionable and riv.get("rows"):
@@ -193,30 +233,69 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		+ int(lma.get("repairable") or 0)
 	)
 	# Waiting downstream bin is not scored as harshly as a true Broken Bin regression.
-	# v5.3.0: include I1 and manufacture-linked negative-rate pressure in the score.
+	# v5.3.7 score audit (see Integrity Score Version):
+	# OLD (5.3.5): penalty = raw Zero*0.5 + raw Wrong*1 + SABB*1 + GL*1.5 + ...
+	#              score = 100 - 18*log10(1+penalty)
+	#   Effect: one Patient Zero with 200 WAITING symptoms scored like 200 roots;
+	#   100 same-account empty-GL false G2 alone capped Integrity near 60 forever.
+	# NEW (5.3.7): READY / Broken Bin / I1 keep full weight. MANUAL+WAITING compress
+	#   to unique patient-zero roots at soft weight. Coefficient 10 so a green-gate
+	#   site with only acknowledged MANUAL residuals can reach the 90s without
+	#   hiding raw Wrong Rate / Zero Rate / Patient Zero dashboard counts.
 	i1_n = int(i1.get("count") or 0)
+	zero_recon_n = int(zero_reconstructable or 0)
+	gl_residual = max(0, int(gl_n or 0) - int(gl_ready or 0))
+	ready_pressure = (
+		len(wr_ready_rows)
+		+ zero_recon_n
+		+ int(bin_n or 0)
+		+ i1_n
+		+ int(gl_ready or 0)
+		+ int(ready_i4 or 0)
+		+ int(lma.get("ready_count") or 0)
+	)
+	# Soft residual weights when the tool has no deterministic READY left and
+	# critical gates (I1 / Bin) are green — MANUAL/WAITING remain in raw KPIs.
+	soft = ready_pressure == 0 and i1_n == 0 and int(bin_n or 0) == 0
+	rw = 0.04 if soft else 0.12
+	zw = 0.03 if soft else 0.08
+	znw = 0.05 if soft else 0.25
+	riv_w = 0.12 if soft else 0.4
+	i4_w = 0.35 if soft else 0.75
 	penalty = (
 		posting_n * 0.25
-		+ zero_n * 0.5
-		+ wrong_n
-		+ sabb_n
+		+ len(wr_ready_rows) * 1.0
+		+ zero_recon_n * 0.5
+		+ zero_non_waiting * znw
+		+ len(wr_manual_roots) * rw
+		+ len(wr_waiting_roots) * rw
+		+ len(zero_waiting_roots) * zw
+		+ sabb_n * 0.05
 		+ bin_n * 1.0
 		+ bin_waiting * 0.15
-		+ gl_n * 1.5
-		# Score only actionable Failed RIV (not historical/superseded raw count).
-		+ riv_actionable * 1.5
-		+ i4_n * 0.75
+		+ gl_ready * 1.5
+		+ gl_residual * 0.2
+		+ riv_actionable * riv_w
+		+ i4_n * i4_w
 		+ i1_n * 1.25
 	)
 	from math import log10
 
-	integrity_score = max(0, min(100, round(100 - 18 * log10(1 + penalty))))
+	# Soft-landing coefficient when only acknowledged residuals remain.
+	coeff = 8 if soft else 10
+	integrity_score = max(0, min(100, round(100 - coeff * log10(1 + penalty))))
 	i4_by = i4.get("by_status") or {}
 	i1_by = i1.get("by_status") or {}
 	ready_i1 = sum(1 for r in (i1.get("rows") or []) if r.get("eligible"))
 	dashboard = {
 		"Integrity Score": integrity_score,
-		"Integrity Score Version": "5.3.0",
+		"Integrity Score Version": "5.3.7",
+		"Integrity Penalty": round(penalty, 2),
+		"Wrong Rate Score Units": round(wrong_score_units, 2),
+		"Zero Rate Score Units": round(zero_score_units, 2),
+		"Wrong Rate Waiting Roots": len(wr_waiting_roots),
+		"Wrong Rate Manual Roots": len(wr_manual_roots),
+		"Zero Rate Waiting Roots": len(zero_waiting_roots),
 		"Posting Order": posting_n,
 		"Wrong Rate": wrong_n,
 		"Wrong Rate Complete": wr_complete,
@@ -262,7 +341,8 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Leftover MA": int(lma.get("count") or 0),
 		"READY_LEFTOVER_MA": int(lma.get("ready_count") or 0),
 		"MANUAL_LEFTOVER_MA": int(lma.get("manual_count") or 0),
-		"Proven Legitimate Zero": int((lma.get("by_status") or {}).get("NO_ACTION") or 0),
+		"Proven Legitimate Zero": int((lma.get("by_status") or {}).get("NO_ACTION") or 0)
+		+ int(zero_no_action or 0),
 		"Wrong Rate READY": wr_ready,
 		"Wrong Rate WAITING": wr_waiting,
 		"Wrong Rate MANUAL": wr_manual,
@@ -278,6 +358,13 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Replay Pending": replay["pending"],
 		"Replay Complete": replay["complete"],
 		"Average Replay Time": replay["average_s"],
+		"Ready to Repair": repairable,
+		"Needs Review": (wrong.get("manual") or 0) + likely + int(lma.get("manual_count") or 0),
+		"Legitimate / No Action": int((lma.get("by_status") or {}).get("NO_ACTION") or 0)
+		+ int(zero_no_action or 0)
+		+ int(zero_scrap_legit or 0),
+		"Blocked": wr_waiting + int(i4_by.get("WAITING_I4") or i4_by.get("I4_WAITING") or 0) + int(i1_by.get("WAITING_I1") or 0),
+		"Failed": riv_actionable,
 	}
 	return {
 		"start_local": start.isoformat(timespec="seconds"),
@@ -410,6 +497,13 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 
 
 def _broken_sabb() -> int:
+	"""Count Serial and Batch Bundle rows that disagree with SLE economics.
+
+	v5.3.7: compare ``sabb.total_amount`` to SLE ``stock_value_difference``
+	(currency precision), not ``avg_rate`` vs ``|SVD|/qty`` — fractional qty
+	makes unit-rate noise look like thousands of false Broken SABB rows.
+	Caps at 500 for dashboard parity.
+	"""
 	import frappe
 
 	try:
@@ -421,10 +515,9 @@ def _broken_sabb() -> int:
 					FROM `tabSerial and Batch Bundle` sabb
 					JOIN `tabStock Ledger Entry` sle
 						ON sle.serial_and_batch_bundle=sabb.name AND sle.is_cancelled=0
-					WHERE ABS(IFNULL(sabb.avg_rate,0)) > 0.0001
-					  AND ABS(
-					        IFNULL(sabb.avg_rate,0)
-					        - IFNULL(IF(sle.actual_qty<0, sle.outgoing_rate, sle.incoming_rate),0)
+					WHERE ABS(
+					        IFNULL(sabb.total_amount,0)
+					        - IFNULL(sle.stock_value_difference,0)
 					      ) > 1
 					LIMIT 500
 				) t

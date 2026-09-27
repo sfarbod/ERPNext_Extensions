@@ -135,6 +135,80 @@ class TestTransferValuationV530(unittest.TestCase):
 		self.assertEqual(c["root_chains"], 2)
 		self.assertEqual(c["findings"], 3)
 
+	def test_material_issue_zero_refuses_sibling_outgoing_svd(self):
+		"""33496 regression: empty SLE.batch_no must not steal sibling 223282 as EXACT."""
+		row = {
+			"purpose": "Material Issue",
+			"parent": "MAT-STE-2026-33496",
+			"voucher": "MAT-STE-2026-33496",
+			"voucher_detail": "tr8caomlb9",
+			"item_code": "13100023",
+			"s_warehouse": "WH-Q",
+			"t_warehouse": None,
+			"qty": 100,
+			"basic_rate": 0,
+			"batch_no": "5922-13100023-260319",
+			"posting_date": "2026-07-27",
+			"posting_time": "18:00:25",
+		}
+		# THIS detail's SLE is zero-valued (the defect).
+		own_zero = type(
+			"S",
+			(),
+			{
+				"name": "SLE-ZERO",
+				"warehouse": "WH-Q",
+				"actual_qty": -100,
+				"outgoing_rate": 0,
+				"stock_value_difference": 0,
+				"qty_after_transaction": 122700,
+				"stock_value": 133505838800,
+				"voucher_detail_no": "tr8caomlb9",
+			},
+		)()
+		with (
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.transfer_valuation._outgoing_sle",
+				return_value=own_zero,
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.transfer_valuation._incoming_sle",
+				return_value=None,
+			),
+			patch(
+				"erpnext_extensions.iran_accounting.historical_stock.transfer_valuation._source_upstream_health",
+				return_value={"status": "healthy", "dependencies": [], "root_voucher": None},
+			),
+		):
+			ev = reconstruct_transfer_valuation(row)
+		self.assertEqual(ev["classification"], WAITING_UPSTREAM)
+		self.assertEqual(ev["expected_rate"], 0.0)
+		self.assertIsNone(ev["authoritative_source"])
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.transfer_valuation.reconstruct_transfer_valuation",
+			return_value=ev,
+		):
+			upgraded = apply_transfer_reconstruction_to_row(dict(row), cache={})
+		self.assertFalse(upgraded.get("eligible"))
+		self.assertNotEqual(upgraded.get("confidence"), "EXACT")
+
+	def test_outgoing_sle_prefers_voucher_detail(self):
+		from erpnext_extensions.iran_accounting.historical_stock import transfer_valuation as tv
+
+		calls = {}
+
+		def fake_sql(query, args=None, as_dict=False):
+			calls["query"] = query
+			calls["args"] = list(args or [])
+			return []
+
+		with patch.object(tv.frappe.db, "sql", side_effect=fake_sql):
+			tv._outgoing_sle("V", "I", "W", batch="B1", voucher_detail="DET-ZERO")
+		self.assertIn("voucher_detail_no=%s", calls["query"])
+		self.assertEqual(calls["args"][-1], "DET-ZERO")
+		# Must not use empty-batch OR wildcard.
+		self.assertNotIn("IFNULL(batch_no", calls["query"])
+
 
 if __name__ == "__main__":
 	unittest.main()

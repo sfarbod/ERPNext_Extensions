@@ -11,6 +11,7 @@ from frappe.utils import flt
 from erpnext_extensions.iran_accounting.manufacture_rounding import (
 	align_manufacture_finished_good_residual,
 	align_manufacture_finished_good_to_outgoing,
+	correct_exploded_same_item_scrap_for_riv,
 )
 from erpnext_extensions.iran_accounting.stock_entry import validate_stock_entry
 
@@ -426,6 +427,214 @@ class TestManufactureRounding(unittest.TestCase):
 			align_manufacture_finished_good_residual(doc)
 		self.assertEqual(doc.value_difference, 5)
 		self.assertEqual(doc.items[-1].amount, 1239)
+
+	def test_riv_corrects_exploded_same_item_scrap_and_fg(self):
+		"""Warehouse-MA scrap 85,000× consume + negative FG → consume-rate scrap + residual FG."""
+		consume_rate = 10.0
+		src_qty = 100.0
+		scrap_qty = 10.0
+		fg_qty = 90.0
+		items = [
+			_SteRow(
+				item_code="RM",
+				qty=src_qty,
+				transfer_qty=src_qty,
+				basic_rate=consume_rate,
+				valuation_rate=consume_rate,
+				basic_amount=1000.0,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				amount=1000.0,
+				s_warehouse="Paykar",
+				t_warehouse=None,
+				is_finished_item=0,
+			),
+			_SteRow(
+				item_code="RM",
+				qty=scrap_qty,
+				transfer_qty=scrap_qty,
+				basic_rate=850000.0,
+				valuation_rate=850000.0,
+				basic_amount=8500000.0,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				amount=8500000.0,
+				s_warehouse=None,
+				t_warehouse="Scrap WH",
+				is_finished_item=0,
+				is_scrap_item=1,
+				secondary_item_type="Scrap",
+				valuation_type="Valuation Rate",
+			),
+			_SteRow(
+				item_code="FG",
+				qty=fg_qty,
+				transfer_qty=fg_qty,
+				basic_rate=-83322.222,
+				valuation_rate=-83322.222,
+				basic_amount=-7499000.0,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				amount=-7499000.0,
+				s_warehouse=None,
+				t_warehouse="FG WH",
+				is_finished_item=1,
+			),
+		]
+		doc = _SteDoc(
+			doctype="Stock Entry",
+			purpose="Manufacture",
+			company="Test IRR Co",
+			items=items,
+		)
+		with _irr_patches():
+			changed = correct_exploded_same_item_scrap_for_riv(doc)
+		self.assertTrue(changed)
+		self.assertEqual(items[1].basic_rate, consume_rate)
+		self.assertEqual(items[1].basic_amount, consume_rate * scrap_qty)
+		expected_fg = (1000.0 - consume_rate * scrap_qty) / fg_qty
+		self.assertAlmostEqual(items[2].basic_rate, expected_fg, places=6)
+		self.assertGreater(items[2].basic_amount, 0)
+		self.assertAlmostEqual(
+			items[0].basic_amount - items[1].basic_amount - items[2].basic_amount,
+			0.0,
+			places=6,
+		)
+
+	def test_riv_preserves_healthy_high_warehouse_scrap(self):
+		"""37090-class: scrap >> consume rate but FG residual already positive — no rewrite."""
+		consume_rate = 148500.0
+		scrap_rate = 24550761.0
+		src_qty = 1200.0
+		scrap_qty = 50.0
+		src_amt = consume_rate * src_qty
+		other_amt = 6_000_000_000.0
+		scrap_amt = scrap_rate * scrap_qty
+		fg_qty = 1151.0
+		fg_amt = src_amt + other_amt - scrap_amt
+		items = [
+			_SteRow(
+				item_code="PK",
+				qty=src_qty,
+				transfer_qty=src_qty,
+				basic_rate=consume_rate,
+				basic_amount=src_amt,
+				amount=src_amt,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse="Paykar",
+				t_warehouse=None,
+				is_finished_item=0,
+			),
+			_SteRow(
+				item_code="RM2",
+				qty=100,
+				transfer_qty=100,
+				basic_rate=60_000_000.0,
+				basic_amount=other_amt,
+				amount=other_amt,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse="Paykar",
+				t_warehouse=None,
+				is_finished_item=0,
+			),
+			_SteRow(
+				item_code="PK",
+				qty=scrap_qty,
+				transfer_qty=scrap_qty,
+				basic_rate=scrap_rate,
+				basic_amount=scrap_amt,
+				amount=scrap_amt,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse=None,
+				t_warehouse="Other WH",
+				is_finished_item=0,
+				is_scrap_item=1,
+				secondary_item_type="Scrap",
+				valuation_type="Valuation Rate",
+			),
+			_SteRow(
+				item_code="FG",
+				qty=fg_qty,
+				transfer_qty=fg_qty,
+				basic_rate=fg_amt / fg_qty,
+				basic_amount=fg_amt,
+				amount=fg_amt,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse=None,
+				t_warehouse="FG WH",
+				is_finished_item=1,
+			),
+		]
+		doc = _SteDoc(
+			doctype="Stock Entry",
+			purpose="Manufacture",
+			company="Test IRR Co",
+			items=items,
+		)
+		with _irr_patches():
+			changed = correct_exploded_same_item_scrap_for_riv(doc)
+		self.assertFalse(changed)
+		self.assertEqual(items[2].basic_rate, scrap_rate)
+		self.assertEqual(items[3].basic_amount, fg_amt)
+
+	def test_riv_exploded_scrap_without_consume_peer_is_untouched(self):
+		items = [
+			_SteRow(
+				item_code="RM",
+				qty=10,
+				transfer_qty=10,
+				basic_rate=100,
+				basic_amount=1000,
+				amount=1000,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse="Paykar",
+				t_warehouse=None,
+				is_finished_item=0,
+			),
+			_SteRow(
+				item_code="OTHER-SCRAP",
+				qty=1,
+				transfer_qty=1,
+				basic_rate=90000,
+				basic_amount=90000,
+				amount=90000,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse=None,
+				t_warehouse="Scrap WH",
+				is_finished_item=0,
+				is_scrap_item=1,
+				secondary_item_type="Scrap",
+			),
+			_SteRow(
+				item_code="FG",
+				qty=9,
+				transfer_qty=9,
+				basic_rate=-9888.88,
+				basic_amount=-89000,
+				amount=-89000,
+				additional_cost=0,
+				landed_cost_voucher_amount=0,
+				s_warehouse=None,
+				t_warehouse="FG WH",
+				is_finished_item=1,
+			),
+		]
+		doc = _SteDoc(
+			doctype="Stock Entry",
+			purpose="Manufacture",
+			company="Test IRR Co",
+			items=items,
+		)
+		with _irr_patches():
+			changed = correct_exploded_same_item_scrap_for_riv(doc)
+		self.assertFalse(changed)
+		self.assertEqual(items[1].basic_rate, 90000)
 
 
 if __name__ == "__main__":

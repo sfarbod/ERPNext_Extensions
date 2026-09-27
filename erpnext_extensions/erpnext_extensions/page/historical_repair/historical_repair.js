@@ -60,6 +60,11 @@ const KPI_TOPIC = {
 	"RIV UNSAFE": "riv",
 	"User Action Required": "blockers",
 	"Tool Limit": "blockers",
+	"Ready to Repair": "wrong",
+	"Needs Review": "blockers",
+	"Legitimate / No Action": "zero",
+	"Blocked": "wrong",
+	"Failed": "riv",
 };
 
 const KPI_ORDER = [
@@ -111,17 +116,13 @@ const KPI_ORDER = [
 /** Default operational chips — detail statuses stay in Advanced Mode. */
 const KPI_PRIORITY = [
 	"Integrity Score",
-	"User Action Required",
-	"Tool Limit",
-	"I1 Negative Rate",
-	"I4 Leftover",
-	"Posting Order",
-	"Wrong Rate",
-	"Zero Rate",
-	"Broken GL",
-	"Failed RIV",
-	"Broken Bin",
-	"Patient Zero",
+	"Ready to Repair",
+	"Needs Review",
+	"Legitimate / No Action",
+	"Blocked",
+	"Failed",
+	"Workers",
+	"Last Scan",
 ];
 
 class HistoricalRepairPage {
@@ -367,8 +368,8 @@ class HistoricalRepairPage {
 			parent: this.$toolbar,
 			df: {
 				fieldtype: "Select",
-				label: __("Planner Status"),
-				options: ["", "READY", "READY_I4", "WAITING_I4", "READY_I1", "WAITING_I1", "MANUAL_I1", "WAITING_PATIENT_ZERO", "BLOCKED", "NO_REPAIR_PATH", "MANUAL"],
+				label: __("Status"),
+				options: ["", "READY", "WAITING", "MANUAL", "LEGITIMATE", "REPAIRED", "FAILED"],
 			},
 			render_input: true,
 		});
@@ -379,7 +380,7 @@ class HistoricalRepairPage {
 		});
 		const $actions = $('<div class="hr-actions">').appendTo(this.$toolbar);
 		const g1 = $('<div class="hr-action-group" data-group="scan">').appendTo($actions);
-		this.btn_scan = this._btn(g1, "scan", __("Scan"), () => this.scan(), "btn-default", __("Scan this topic (S)"));
+		this.btn_scan = this._btn(g1, "scan", __("Scan Selected"), () => this.scan(), "btn-default", __("Scan this topic / current filters (S)"));
 		this.btn_scan_all = this._btn(g1, "scan-all", __("Scan All"), () => this.scan_all(), "btn-default", __("Scan every topic into the dashboard (Shift+A)"));
 		this.btn_dry = this._btn(g1, "dry-run", __("Dry Run"), () => this.dry_run(), "btn-primary", __("Preview writes. Never executes (D)"));
 		this.btn_clear_filters = this._btn(g1, "clear-filters", __("Clear Filters"), () => this.clear_filters(), "btn-default", __("Clear scope filters"));
@@ -387,6 +388,7 @@ class HistoricalRepairPage {
 		this.btn_load_preset = this._btn(g1, "load-preset", __("Load Preset"), () => this.load_filter_preset(), "btn-default", __("Load saved filters"));
 		if (this.access.can_repair) {
 			const g2 = $('<div class="hr-action-group" data-group="repair">').appendTo($actions);
+			this.btn_repair_safe = this._btn(g2, "repair-safe", __("Repair Safe"), () => this.repair_bulk("selected"), "btn-danger", __("Repair READY roots only. The tool chooses the safe algorithm."));
 			this.btn_repair = this._btn(g2, "repair", __("Repair Selected"), () => this.repair_bulk("selected"), "btn-danger", __("Repair checked EXACT rows"));
 			this.btn_repair_chain = this._btn(g2, "repair-chain", __("Repair Dependency Chain"), () => this.repair_dependency_chain(), "btn-danger", __("Repair only the READY root. Never warehouse/item/company-wide"));
 			this.btn_repost = this._btn(g2, "repost", __("Repost Selected"), () => this.repost_selected(), "btn-warning", __("One Item+Warehouse RIV. Never global"));
@@ -402,7 +404,7 @@ class HistoricalRepairPage {
 			this._lock_writes(true);
 		}
 		const g3 = $('<div class="hr-action-group" data-group="inspect">').appendTo($actions);
-		this.btn_integrity = this._btn(g3, "integrity", __("Integrity Check"), () => this.integrity(), "btn-default", __("Read-only chain check (I)"));
+		this.btn_integrity = this._btn(g3, "verify", __("Verify"), () => this.integrity(), "btn-default", __("Read-only chain / postcondition check (I)"));
 		this.btn_graph = this._btn(g3, "graph", __("Graph"), () => this.show_graph(), "btn-default", __("Dependency graph (G)"));
 		this.btn_root_explorer = this._btn(g3, "root-explorer", __("Root Cause Explorer"), () => this.show_root_cause_explorer(), "btn-primary", __("Healthy → Patient Zero → Replay chain → Current voucher"));
 		this.btn_health = this._btn(g3, "identity-health", __("Identity Health"), () => this.show_identity_health(), "btn-default", __("Posting / Wrong Rate / I4 / Bin / GL health panel"));
@@ -470,10 +472,15 @@ class HistoricalRepairPage {
 			this.$advanced = $('<input type="checkbox" data-role="advanced">').appendTo($adv);
 			$adv.append(document.createTextNode(" " + __("Advanced Mode")));
 			$adv.attr("title", __("Show bulk repair variants and experimental tools"));
+			this.$inspect_advanced = g3.find(".btn").not("[data-action='verify']");
+			this.$inspect_advanced.toggle(false);
+			this.btn_repair && this.btn_repair.toggle(false);
 			this.$advanced.on("change", () => {
 				this.advanced = this.$advanced.prop("checked");
 				this.$admin_group && this.$admin_group.toggle(this.advanced);
 				this.$repair_advanced && this.$repair_advanced.toggle(this.advanced);
+				this.$inspect_advanced && this.$inspect_advanced.toggle(this.advanced);
+				this.btn_repair && this.btn_repair.toggle(this.advanced);
 				this.render_dashboard(this.last_dashboard || {});
 			});
 		}

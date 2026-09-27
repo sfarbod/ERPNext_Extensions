@@ -151,6 +151,13 @@ def _ps(row: dict) -> str:
 
 def wrong_rate_bucket(row: dict) -> str | None:
 	"""Return ready|waiting|manual|complete|replay|other for a Wrong Rate row."""
+	# Manufacture-native healthy/legitimate zeros are not unresolved Wrong Rate.
+	nat = (row or {}).get("manufacture_native") if isinstance(row, dict) else None
+	nat_cls = (nat or {}).get("classification") if isinstance(nat, dict) else None
+	if (row or {}).get("no_action_required") or nat_cls in ("HEALTHY", "LEGITIMATE"):
+		return "complete"
+	if (row or {}).get("manual_lane") == "WAITING_UPSTREAM" or nat_cls == "WAITING_UPSTREAM":
+		return "waiting"
 	ps = _ps(row)
 	# Phase 5: foreign patient-zero is WAITING even if planner left RATE_AMBIGUOUS.
 	pz = row.get("patient_zero") if isinstance(row, dict) else None

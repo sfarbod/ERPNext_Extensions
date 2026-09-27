@@ -55,6 +55,22 @@ def is_i4_leftover_row(row) -> bool:
 	return after <= QTY_EPS and value > 1
 
 
+def is_precision_dust_inbound(sle) -> bool:
+	"""True when a near-zero inbound qty×rate explains the leftover IRR value.
+
+	These are documented dust layers (not consume leftovers). Do not SQL-zero them.
+	"""
+	get = sle.get if hasattr(sle, "get") else lambda k, d=None: getattr(sle, k, d)
+	qty_after = abs(flt(get("qty_after_transaction")))
+	residual = abs(flt(get("stock_value")))
+	inbound_qty = flt(get("actual_qty"))
+	inbound_rate = flt(get("incoming_rate")) or flt(get("valuation_rate"))
+	if qty_after > QTY_EPS or residual <= 1 or inbound_qty <= 0 or inbound_qty > QTY_EPS:
+		return False
+	implied = abs(inbound_qty * inbound_rate)
+	return abs(residual - implied) <= 1
+
+
 def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 	"""Build a planner-ready I4 row for one identity (optional voucher focus)."""
 	# Generic poison PZ (may be non-I4). I4 readiness uses the earliest remaining
@@ -159,12 +175,20 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 	is_leftover = abs(flt(sle.qty_after_transaction)) <= QTY_EPS and abs(flt(sle.stock_value)) > 1
 	residual = flt(sle.stock_value)
 	qty_after = flt(sle.qty_after_transaction)
+	inbound_qty = flt(sle.actual_qty)
+	inbound_rate = flt(sle.incoming_rate) or flt(sle.valuation_rate)
+	implied = abs(inbound_qty * inbound_rate)
+	precision_dust = is_precision_dust_inbound(sle)
 	expected_value = 0.0 if abs(qty_after) <= QTY_EPS else residual
 	sim = preview_i4_replay(item, warehouse, from_dt=sle.posting_datetime)
 	pz_clears = _simulation_clears_patient_zero(item, warehouse, sle)
 	status = I4_WAITING
 	if abs(qty_after) <= QTY_EPS and abs(residual) <= 1:
 		status = I4_REPAIRED
+	elif precision_dust:
+		# Documented inbound dust: qty×rate explains the IRR residual. Not a consume leftover.
+		status = "MANUAL"
+		pz_clears = False
 	elif this_is_i4_pz and is_leftover and prev_ok and pz_clears:
 		status = I4_READY
 	elif this_is_i4_pz and is_leftover and (not prev_ok or not pz_clears):
@@ -177,11 +201,18 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 		status = "NOT_I4"
 	msg = "Identity leftover detected." if status in (I4_READY, I4_WAITING, I4_REPLAY_REQUIRED) else ""
 	if status == "MANUAL":
-		msg = prev_blocker or (
-			"Replay from previous SLE does not clear Patient Zero residual — opening is poisoned; not auto-READY_I4."
-			if not pz_clears
-			else "Previous SLE is not a healthy opening for I4 repair."
-		)
+		if precision_dust:
+			msg = (
+				"PRECISION_DUST_INBOUND: qty×rate explains the residual "
+				f"({inbound_qty} × {inbound_rate} = {implied:.4f}); "
+				"do not zero a documented inbound layer."
+			)
+		else:
+			msg = prev_blocker or (
+				"Replay from previous SLE does not clear Patient Zero residual — opening is poisoned; not auto-READY_I4."
+				if not pz_clears
+				else "Previous SLE is not a healthy opening for I4 repair."
+			)
 	effective_patient = None
 	if i4_pz:
 		effective_patient = {

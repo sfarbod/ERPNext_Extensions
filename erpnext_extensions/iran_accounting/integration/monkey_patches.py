@@ -479,10 +479,112 @@ def _patch_stock_entry():
 	StockEntry._iran_patched = True
 
 
+def _install_iran_process_debit_credit_difference(gl):
+	"""Bind Iran process_debit_credit_difference onto general_ledger.
+
+	Stock-valuation voucher residuals (Stock Entry / RIV, etc.) absorb into
+	Company.stock_adjustment_account. Ordinary accounting rounding still uses
+	ERPNext ``make_round_off_gle`` / Company.round_off_account.
+	"""
+
+	def process_debit_credit_difference(gl_map):
+		company = gl_map[0].company
+		company_currency = erpnext.get_company_currency(company)
+		from erpnext_extensions.iran_accounting.domain.currency import get_currency_precision, is_irr_company
+		from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
+			absorb_stock_valuation_precision_residual,
+			currency_precision_quantum,
+			is_stock_valuation_voucher_type,
+		)
+
+		if is_irr_company(company):
+			precision = get_currency_precision(company_currency)
+		else:
+			precision = get_field_precision(
+				frappe.get_meta("GL Entry").get_field("debit"), currency=company_currency
+			)
+
+		voucher_type = gl_map[0].voucher_type
+		voucher_no = gl_map[0].voucher_no
+		allowance = gl.get_debit_credit_allowance(voucher_type, precision)
+		quantum = currency_precision_quantum(precision)
+		# Stock valuation vouchers (Stock Entry / RIV, etc.): ERPNext hardcodes
+		# Stock Entry allowance at 0.5, so a legitimate one-quantum IRR residual
+		# (|diff|==1 at precision 0) never reaches absorption. Raise allowance to
+		# one currency quantum ONLY for stock-valuation voucher types, then absorb
+		# into Company.stock_adjustment_account — never Company.round_off_account.
+		# Larger imbalances still throw. Ordinary JE/PE keep ERPNext Round Off.
+		stock_valuation = is_stock_valuation_voucher_type(voucher_type)
+		if is_irr_company(company) and stock_valuation:
+			allowance = max(flt(allowance), quantum)
+
+		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
+
+		if abs(debit_credit_diff) > allowance:
+			if not (
+				voucher_type == "Journal Entry"
+				and frappe.get_cached_value("Journal Entry", voucher_no, "voucher_type")
+				== "Exchange Gain Or Loss"
+			):
+				gl.raise_debit_credit_not_equal_error(debit_credit_diff, voucher_type, voucher_no)
+
+		elif debit_credit_diff and precision == 0 and abs(debit_credit_diff) < 1:
+			zvt.absorb_gl_map_rounding_residual(
+				gl_map, precision, debit_credit_diff, trx_cur_debit_credit_diff
+			)
+		elif abs(debit_credit_diff) >= quantum:
+			skip_zvt = False
+			try:
+				skip_zvt = (
+					voucher_type == "Stock Entry"
+					and frappe.flags.get("skip_round_off_for_zero_value_stock_entry") == voucher_no
+				)
+			except Exception:
+				skip_zvt = False
+			if skip_zvt:
+				zvt.absorb_gl_map_rounding_residual(
+					gl_map, precision, debit_credit_diff, trx_cur_debit_credit_diff
+				)
+			elif stock_valuation and is_irr_company(company):
+				# Stock valuation precision residual → Stock Adjustment account.
+				if not absorb_stock_valuation_precision_residual(
+					gl_map,
+					debit_credit_diff,
+					trx_cur_debit_credit_diff,
+					precision,
+					company=company,
+				):
+					gl.raise_debit_credit_not_equal_error(
+						debit_credit_diff, voucher_type, voucher_no
+					)
+			else:
+				# Ordinary accounting rounding → ERPNext Round Off account.
+				gl.make_round_off_gle(gl_map, debit_credit_diff, trx_cur_debit_credit_diff, precision)
+				gl_map[:] = [
+					e
+					for e in gl_map
+					if flt(e.get("debit"), precision) != 0 or flt(e.get("credit"), precision) != 0
+				]
+
+		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
+		if abs(debit_credit_diff) > allowance:
+			if not (
+				voucher_type == "Journal Entry"
+				and frappe.get_cached_value("Journal Entry", voucher_no, "voucher_type")
+				== "Exchange Gain Or Loss"
+			):
+				gl.raise_debit_credit_not_equal_error(debit_credit_diff, voucher_type, voucher_no)
+
+	gl.process_debit_credit_difference = process_debit_credit_difference
+
+
 def _patch_general_ledger():
 	import erpnext.accounts.general_ledger as gl
 
 	if getattr(gl, "_iran_patched", None):
+		# Upgrade path: rebind debit/credit handler so Stock Adjustment contract
+		# replaces any previously installed Round-Off destination for stock vouchers.
+		_install_iran_process_debit_credit_difference(gl)
 		return
 
 	gl._iran_original_merge_similar_entries = gl.merge_similar_entries
@@ -505,6 +607,7 @@ def _patch_general_ledger():
 		)
 
 	gl.distribute_gl_based_on_cost_center_allocation = distribute_gl_based_on_cost_center_allocation
+
 
 	def _is_non_zero_gl_entry(x, precision):
 		if (
@@ -586,60 +689,7 @@ def _patch_general_ledger():
 
 	gl.save_entries = save_entries
 
-	def process_debit_credit_difference(gl_map):
-		company = gl_map[0].company
-		company_currency = erpnext.get_company_currency(company)
-		from erpnext_extensions.iran_accounting.domain.currency import get_currency_precision, is_irr_company
-
-		if is_irr_company(company):
-			precision = get_currency_precision(company_currency)
-		else:
-			precision = get_field_precision(
-				frappe.get_meta("GL Entry").get_field("debit"), currency=company_currency
-			)
-
-		voucher_type = gl_map[0].voucher_type
-		voucher_no = gl_map[0].voucher_no
-		allowance = gl.get_debit_credit_allowance(voucher_type, precision)
-
-		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
-
-		if abs(debit_credit_diff) > allowance:
-			if not (
-				voucher_type == "Journal Entry"
-				and frappe.get_cached_value("Journal Entry", voucher_no, "voucher_type")
-				== "Exchange Gain Or Loss"
-			):
-				gl.raise_debit_credit_not_equal_error(debit_credit_diff, voucher_type, voucher_no)
-
-		elif debit_credit_diff and precision == 0 and abs(debit_credit_diff) < 1:
-			zvt.absorb_gl_map_rounding_residual(
-				gl_map, precision, debit_credit_diff, trx_cur_debit_credit_diff
-			)
-		elif abs(debit_credit_diff) >= (1.0 / (10**precision)):
-			if (
-				voucher_type == "Stock Entry"
-				and frappe.flags.get("skip_round_off_for_zero_value_stock_entry") == voucher_no
-			):
-				zvt.absorb_gl_map_rounding_residual(
-					gl_map, precision, debit_credit_diff, trx_cur_debit_credit_diff
-				)
-			else:
-				gl.make_round_off_gle(gl_map, debit_credit_diff, trx_cur_debit_credit_diff, precision)
-				gl_map[:] = [
-					e
-					for e in gl_map
-					if flt(e.get("debit"), precision) != 0 or flt(e.get("credit"), precision) != 0
-				]
-
-		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
-		if abs(debit_credit_diff) > allowance:
-			if not (
-				voucher_type == "Journal Entry"
-				and frappe.get_cached_value("Journal Entry", voucher_no, "voucher_type")
-				== "Exchange Gain Or Loss"
-			):
-				gl.raise_debit_credit_not_equal_error(debit_credit_diff, voucher_type, voucher_no)
+	_install_iran_process_debit_credit_difference(gl)
 
 	def make_entry(args, adv_adj, update_outstanding, from_repost=False):
 		round_gl_entry_amounts(args)
@@ -669,7 +719,6 @@ def _patch_general_ledger():
 			round_gl_entry_amounts(entry)
 		return gl._iran_original_get_debit_credit_difference(gl_map, precision)
 
-	gl.process_debit_credit_difference = process_debit_credit_difference
 	gl.make_entry = make_entry
 	gl.get_debit_credit_difference = get_debit_credit_difference
 	gl._iran_patched = True
@@ -832,6 +881,8 @@ def _patch_stock_ledger_engine():
 	)
 	from erpnext_extensions.iran_accounting.domain.sle_persistence import (
 		persist_processed_sle_if_possible,
+		restore_out_of_scope_sle_ledger_state,
+		snapshot_sle_ledger_state,
 	)
 	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 		sync_irr_sle_from_stock_entry_row,
@@ -860,8 +911,15 @@ def _patch_stock_ledger_engine():
 			)
 			frappe.local.iran_riv_update_entries_after = self
 			try:
+				pre = None
 				if company and is_irr_company(company):
-					assert_sle_valuation_integrity_before_vanilla(self, sle)
+					# Out-of-scope soft-skip: do not rewrite unrelated historical SLE.
+					# Still advance wh_data from the existing SLE so chronology continues.
+					if assert_sle_valuation_integrity_before_vanilla(self, sle) is False:
+						pre = snapshot_sle_ledger_state(sle)
+						restore_out_of_scope_sle_ledger_state(self, sle, pre)
+						return
+					pre = snapshot_sle_ledger_state(sle)
 				_orig_process_sle(self, sle)
 				if company and is_irr_company(company):
 					# I4 leftover-value is only valid after vanilla copied running qty.
@@ -880,7 +938,12 @@ def _patch_stock_ledger_engine():
 					restore_vanilla_zero_qty_terminal_stock_value(
 						sle, vanilla_stock_value, vanilla_qty_after
 					)
-					assert_sle_valuation_integrity_after_sync(sle, engine=self)
+					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
+						# Vanilla already wrote; restore pre-RIV economics so target
+						# RIV does not create new I1 on unrelated FG cascades.
+						restore_out_of_scope_sle_ledger_state(self, sle, pre)
+						persist_processed_sle_if_possible(sle)
+						return
 					persist_processed_sle_if_possible(sle)
 			finally:
 				frappe.local.iran_riv_update_entries_after = None

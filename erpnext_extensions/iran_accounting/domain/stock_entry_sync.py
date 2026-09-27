@@ -13,6 +13,9 @@ from erpnext_extensions.iran_accounting.domain.currency import (
 	round_monetary_rate,
 	round_row_amount_financial,
 )
+from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+	is_valued_source_zero_outgoing,
+)
 from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 	assert_non_negative_magnitude,
 )
@@ -68,7 +71,12 @@ def _sle_rate_from_row(row, ccy: str) -> float:
 
 
 def sync_irr_sle_from_stock_entry_row(sle) -> None:
-	"""SLE movement mirrors signed row.amount; rates mirror integer SE rates. Idempotent."""
+	"""SLE movement mirrors signed row.amount; rates mirror integer SE rates. Idempotent.
+
+	During Item-scoped RIV, out-of-scope legacy poison (different item_code than the
+	declared RIV target) must not abort the target repost — log and skip the Iran
+	mirror so vanilla SLE economics for that unrelated row are left alone.
+	"""
 	if not sle.company or not is_irr_company(sle.company):
 		return
 	if sle.voucher_type != "Stock Entry" or not sle.voucher_detail_no:
@@ -88,35 +96,75 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			"landed_cost_voucher_amount",
 			"valuation_rate",
 			"amount",
+			"allow_zero_valuation_rate",
+			"parent",
 		],
 		as_dict=True,
 	)
 	if not row:
 		return
 
-	ccy = get_company_currency(sle.company)
-	magnitude = stock_entry_row_amount(row, sle.company)
-	movement = round_currency(
-		signed_movement_from_row_amount(
-			magnitude,
-			flt(sle.actual_qty),
-			sle=sle,
-			row=row,
-		),
-		ccy,
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ValuationIntegrityError,
+		throw_valuation_integrity,
 	)
-	rate = _sle_rate_from_row(row, ccy)
-	if flt(sle.actual_qty) > 0 and rate < 0:
-		from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
-			throw_valuation_integrity,
+
+	ccy = get_company_currency(sle.company)
+	try:
+		magnitude = stock_entry_row_amount(row, sle.company)
+		purpose = frappe.db.get_value("Stock Entry", row.parent or sle.voucher_no, "purpose")
+		# VALUED_SOURCE_ZERO_OUTGOING: document basic_rate/amount is 0 but
+		# vanilla moving-average already priced a Manufacture consume from a
+		# valued warehouse layer. Stamping the document zero would wipe
+		# provenance. Leftover-MA Material Transfer/Receipt stays excluded.
+		if is_valued_source_zero_outgoing(
+			actual_qty=sle.actual_qty,
+			basic_rate=row.basic_rate,
+			allow_zero_valuation_rate=row.get("allow_zero_valuation_rate"),
+			outgoing_rate=(
+				sle.outgoing_rate
+				if abs(flt(sle.outgoing_rate)) > 1e-6
+				else (
+					abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+					if abs(flt(sle.actual_qty)) > 1e-9 and abs(flt(sle.stock_value_difference)) > 1e-6
+					else 0
+				)
+			),
+			purpose=purpose,
+		):
+			if abs(flt(sle.outgoing_rate)) <= 1e-6 and abs(flt(sle.actual_qty)) > 1e-9:
+				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+			return
+		movement = round_currency(
+			signed_movement_from_row_amount(
+				magnitude,
+				flt(sle.actual_qty),
+				sle=sle,
+				row=row,
+			),
+			ccy,
+		)
+		rate = _sle_rate_from_row(row, ccy)
+		if flt(sle.actual_qty) > 0 and rate < 0:
+			throw_valuation_integrity(
+				"I1",
+				detail="incoming Stock Entry valuation_rate is negative",
+				sle=sle,
+				row=row,
+			)
+	except ValuationIntegrityError as exc:
+		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
+		if engine is None:
+			raise
+		from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
+			is_sle_in_riv_blocking_scope,
+			log_out_of_scope_integrity_anomaly,
 		)
 
-		throw_valuation_integrity(
-			"I1",
-			detail="incoming Stock Entry valuation_rate is negative",
-			sle=sle,
-			row=row,
-		)
+		if is_sle_in_riv_blocking_scope(engine, sle):
+			raise
+		log_out_of_scope_integrity_anomaly(engine, sle=sle, exc=exc)
+		return
 
 	# Movement is the source of truth for SVD. stock_value is reconstructed as
 	# previous + movement. On insert, qty_after_transaction is still the default 0

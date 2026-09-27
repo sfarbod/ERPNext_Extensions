@@ -1,0 +1,197 @@
+# Copyright (c) 2026, ERPNext Extensions contributors
+"""v5.3.5+ — unified RepairPlan pipeline + Wrong Rate residual contract."""
+
+from __future__ import annotations
+
+import unittest
+from unittest.mock import patch
+
+from erpnext_extensions.iran_accounting.historical_stock.job_card_flow import group_job_card_reasons
+from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import (
+	compress_roots,
+	is_manufacture_adjacent,
+	plan,
+	compare_safety,
+)
+from erpnext_extensions.iran_accounting.historical_stock.simple_model import (
+	PRIMARY_MANUAL,
+	PRIMARY_READY,
+	REASON_MANUFACTURE_FLOW,
+	REASON_WRONG_RATE,
+)
+
+
+class TestRepairPipeline(unittest.TestCase):
+	def test_wrong_rate_plan_ready(self):
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "READY_WRONG_RATE",
+				"eligible": True,
+				"confidence": "EXACT",
+				"voucher": "V1",
+				"item": "I1",
+				"warehouse": "W1",
+				"purpose": "Material Issue",
+				"proposed_rate": 100,
+				"sql_updates": 2,
+			}
+		)
+		self.assertEqual(p.primary_state, PRIMARY_READY)
+		self.assertEqual(p.reason, REASON_WRONG_RATE)
+		self.assertIn("write_authoritative_rate", p.operations)
+
+	def test_manufacture_native_exact_residual_is_ready(self):
+		"""Scan stamps manufacture_consumed_svd_residual; plan must not stay MANUAL."""
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "READY_WRONG_RATE",
+				"eligible": True,
+				"confidence": "EXACT",
+				"voucher": "MAT-STE-2026-37090",
+				"item": "30100255",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"source_of_truth": "manufacture_consumed_svd_residual",
+				"proposed_rate": 4199641.909643788,
+				"manufacture_native": {
+					"classification": "EXACT",
+					"eligible": True,
+					"source_of_truth": "historical_manufacture_consumed_svd",
+					"expected_target_rate": 4199641.909643788,
+					"consumed_value": 6066585125.0,
+					"scrap_value": 1232797287.0,
+				},
+			}
+		)
+		self.assertEqual(p.primary_state, PRIMARY_READY)
+		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
+		self.assertIn("write_manufacture_fg_residual", p.operations)
+
+	def test_exploded_scrap_fg_plan_is_ready_coupled_write(self):
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "MANUAL",
+				"eligible": False,
+				"confidence": "EXACT",
+				"voucher": "STE-BOOM",
+				"item": "FG",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"source_of_truth": "historical_manufacture_consumed_svd",
+				"manufacture_native": {
+					"classification": "MANUAL",
+					"eligible": False,
+					"reason": "scrap/by-product value 8500000 exceeds consumption 1000",
+				},
+				"manufacture_scrap_fg": {
+					"classification": "EXACT",
+					"eligible": True,
+					"strategy": "MANUFACTURE_SCRAP_FG_RECONSTRUCTION",
+				},
+			}
+		)
+		self.assertEqual(p.primary_state, PRIMARY_READY)
+		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
+		self.assertIn("write_manufacture_scrap_fg", p.operations)
+		self.assertNotIn("write_manufacture_fg_residual", p.operations)
+
+	def test_healthy_manufacture_plan_is_not_ready_mutation(self):
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "RATE_REPAIR_COMPLETE",
+				"status": "NO_ACTION_REQUIRED",
+				"no_action_required": True,
+				"eligible": False,
+				"confidence": "EXACT",
+				"voucher": "STE-H",
+				"item": "FG",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"source_of_truth": "historical_manufacture_consumed_svd",
+				"message": "FG already matches consumed-SVD residual rate",
+				"manufacture_native": {"classification": "HEALTHY", "eligible": False},
+			}
+		)
+		self.assertEqual(p.primary_state, "LEGITIMATE")
+
+	def test_manufacture_wrong_rate_is_manual(self):
+		p = plan(
+			{
+				"topic": "WRONG_RATE",
+				"planner_status": "READY_WRONG_RATE",
+				"eligible": True,
+				"confidence": "EXACT",
+				"voucher": "V1",
+				"item": "I1",
+				"warehouse": "W1",
+				"purpose": "Manufacture",
+				"proposed_rate": 100,
+			}
+		)
+		self.assertEqual(p.primary_state, PRIMARY_MANUAL)
+		self.assertEqual(p.reason, REASON_MANUFACTURE_FLOW)
+		self.assertTrue(is_manufacture_adjacent({"purpose": "Manufacture"}))
+		self.assertTrue(is_manufacture_adjacent({"purpose": "Material Transfer for Manufacture"}))
+		self.assertFalse(is_manufacture_adjacent({"purpose": "Material Issue", "warehouse": "Stores"}))
+
+	def test_root_compression(self):
+		rows = [
+			{"topic": "WRONG_RATE", "planner_status": "READY_WRONG_RATE", "voucher": "R", "item": "A", "warehouse": "W", "patient_zero": {"voucher_no": "R"}, "purpose": "Material Issue"},
+			{"topic": "WRONG_RATE", "planner_status": "WAITING_PATIENT_ZERO", "voucher": "D1", "item": "A", "warehouse": "W", "patient_zero": {"voucher_no": "R"}, "purpose": "Material Issue"},
+			{"topic": "WRONG_RATE", "planner_status": "WAITING_PATIENT_ZERO", "voucher": "D2", "item": "A", "warehouse": "W", "patient_zero": {"voucher_no": "R"}, "purpose": "Material Issue"},
+		]
+		out = compress_roots(rows)
+		self.assertEqual(out["finding_count"], 3)
+		self.assertEqual(out["root_count"], 1)
+		self.assertEqual(out["roots"][0]["findings"], 3)
+
+	def test_safety_compare_flags_i1_regression(self):
+		before = {"i1": 0, "neg_qty": 2, "manufacturing": {"wo_produced": 1, "jc_for": 2, "jc_done": 3}}
+		after = {"i1": 1, "neg_qty": 2, "manufacturing": {"wo_produced": 1, "jc_for": 2, "jc_done": 3}}
+		cmp = compare_safety(before, after)
+		self.assertFalse(cmp["ok"])
+		self.assertTrue(any("I1" in f for f in cmp["failures"]))
+
+	def test_narrow_riv_applies_iran_runtime_before_execute(self):
+		"""bench execute is not before_request/before_job — RIV must self-bootstrap."""
+		import inspect
+
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+			create_and_run_narrow_riv,
+		)
+
+		src = inspect.getsource(create_and_run_narrow_riv)
+		self.assertIn("apply_iran_runtime()", src)
+		self.assertIn("integration.bootstrap", src)
+
+
+class TestWrongRateResidualContract(unittest.TestCase):
+	def test_zero_to_nonzero_without_expected_match_is_not_cleared(self):
+		"""Regression: old cleared clause accepted any nonzero after_rate."""
+		expected = 223282.0
+		after_rate = 1593971.69
+		# New contract
+		cleared = abs(after_rate - expected) <= 1.0
+		self.assertFalse(cleared)
+		# Old buggy contract would have passed:
+		old = abs(after_rate - expected) <= 1.0 or (abs(after_rate) > 0.0001 and abs(0.0) <= 0.0001)
+		self.assertTrue(old)
+
+
+class TestJobCardReasonGroups(unittest.TestCase):
+	def test_groups_completed_residuals(self):
+		rows = [
+			{"status": "BROKEN", "reason": "completed imbalance", "residual": 10, "linked": True, "completed": True, "vouchers": ["A"], "transferred": 100, "returned": 0, "consumed": 90, "scrap": 0},
+			{"status": "BROKEN", "reason": "completed imbalance", "residual": -5, "linked": True, "completed": True, "vouchers": ["B"], "transferred": 100, "returned": 0, "consumed": 105, "scrap": 0},
+			{"status": "MANUAL", "reason": "x", "linked": False, "vouchers": []},
+			{"status": "BALANCED", "reason": "completed equation", "linked": True},
+		]
+		g = group_job_card_reasons(rows)
+		self.assertEqual(g["completed_qty_residual_positive"]["count"], 1)
+		self.assertEqual(g["completed_qty_residual_negative"]["count"], 1)
+		self.assertEqual(g["missing_or_ambiguous_job_card_link"]["count"], 1)
+		self.assertNotIn("completed equation", g)

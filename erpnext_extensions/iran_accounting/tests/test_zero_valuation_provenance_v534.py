@@ -578,6 +578,34 @@ class TestLeftoverMaRivHook(unittest.TestCase):
 		# Must not query / stamp when RIV is still queued.
 		on_repost_item_valuation_update(doc)
 
+	def test_completed_riv_invokes_restore(self):
+		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+			on_repost_item_valuation_update,
+		)
+
+		doc = SimpleNamespace(status="Completed", item_code="16100066", warehouse="WH")
+		with patch(
+			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma.restore_leftover_ma_after_riv"
+		) as restore:
+			on_repost_item_valuation_update(doc)
+			restore.assert_called_once_with("16100066", "WH")
+
+	def test_hooks_bind_on_change_for_worker_db_set(self):
+		"""Worker RIV completes via db_set → on_change, not on_update."""
+		import inspect
+
+		from erpnext_extensions.hooks import doc_events
+		from frappe.model.document import Document
+
+		riv = doc_events["Repost Item Valuation"]
+		self.assertEqual(
+			riv["on_change"],
+			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+		)
+		src = inspect.getsource(Document.db_set)
+		self.assertIn('self.run_method("on_change")', src)
+		self.assertNotIn('self.run_method("on_update")', src)
+
 	def test_stamp_refuses_valued_inbound(self):
 		from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
 			stamp_patient_zero_valuation_rate,

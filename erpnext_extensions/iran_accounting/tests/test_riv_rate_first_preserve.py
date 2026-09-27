@@ -22,6 +22,7 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 	_FN_FINGERPRINTS,
 	assert_erpnext_riv_rate_patch_supported,
 	collect_fingerprint_report,
+	is_valued_source_zero_outgoing,
 	make_update_rate_on_stock_entry_wrapper,
 	normalize_callable_signature,
 	normalize_function_source,
@@ -139,6 +140,35 @@ class TestRivRateGuardUnit(unittest.TestCase):
 				assert_erpnext_riv_rate_patch_supported()
 			self.assertIn("16.36.0", str(ctx.exception))
 
+	def test_valued_source_helper_manufacture_only(self):
+		self.assertTrue(
+			is_valued_source_zero_outgoing(
+				actual_qty=-2126,
+				basic_rate=0,
+				allow_zero_valuation_rate=0,
+				outgoing_rate=354657,
+				purpose="Manufacture",
+			)
+		)
+		self.assertFalse(
+			is_valued_source_zero_outgoing(
+				actual_qty=-10,
+				basic_rate=0,
+				allow_zero_valuation_rate=0,
+				outgoing_rate=5005345,
+				purpose="Material Transfer",
+			)
+		)
+		self.assertFalse(
+			is_valued_source_zero_outgoing(
+				actual_qty=-10,
+				basic_rate=0,
+				allow_zero_valuation_rate=1,
+				outgoing_rate=100,
+				purpose="Manufacture",
+			)
+		)
+
 	def test_wrapper_skips_set_value_for_irr(self):
 		calls = []
 
@@ -154,6 +184,8 @@ class TestRivRateGuardUnit(unittest.TestCase):
 		sle.voucher_no = "STE-1"
 		sle.dependant_sle_voucher_detail_no = "dep"
 		sle.company = "IRR-CO"
+		sle.actual_qty = -10
+		sle.outgoing_rate = 0
 
 		with (
 			mock.patch(
@@ -168,6 +200,98 @@ class TestRivRateGuardUnit(unittest.TestCase):
 			set_value.assert_not_called()
 			engine.recalculate_amounts_in_stock_entry.assert_not_called()
 			self.assertEqual(calls, [])
+
+	def test_wrapper_valued_source_zero_outgoing_uses_vanilla_svd_rate(self):
+		calls = []
+
+		def original(self, sle, outgoing_rate):
+			calls.append(outgoing_rate)
+
+		engine = mock.Mock()
+		engine.company = "IRR-CO"
+		engine.is_manufacture_entry_with_sabb = mock.Mock(return_value=False)
+		engine.recalculate_amounts_in_stock_entry = mock.Mock()
+		sle = mock.Mock()
+		sle.voucher_detail_no = "row-1"
+		sle.voucher_no = "STE-1"
+		sle.dependant_sle_voucher_detail_no = "dep"
+		sle.company = "IRR-CO"
+		sle.actual_qty = -2126
+		sle.outgoing_rate = 0
+		sle.stock_value_difference = -754000782
+
+		def _gv(doctype, name, fields=None, as_dict=False):
+			if doctype == "Stock Entry Detail":
+				return frappe._dict(
+					name="row-1",
+					basic_rate=0,
+					allow_zero_valuation_rate=0,
+					parent="STE-1",
+				)
+			if doctype == "Stock Entry":
+				return "Manufacture"
+			return None
+
+		with (
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+				return_value=True,
+			),
+			mock.patch("frappe.db.get_value", side_effect=_gv),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.persist_irr_contract_after_recalculate"
+			) as persist,
+		):
+			wrapped = make_update_rate_on_stock_entry_wrapper(original)
+			wrapped(engine, sle, 354657.0)
+			self.assertEqual(calls, [354657.0])
+			engine.recalculate_amounts_in_stock_entry.assert_called_once()
+			persist.assert_called_once()
+			self.assertEqual(sle.outgoing_rate, 354657.0)
+
+	def test_wrapper_valued_source_skips_leftover_ma_material_transfer(self):
+		calls = []
+
+		def original(self, sle, outgoing_rate):
+			calls.append(outgoing_rate)
+
+		engine = mock.Mock()
+		engine.company = "IRR-CO"
+		engine.is_manufacture_entry_with_sabb = mock.Mock(return_value=False)
+		engine.recalculate_amounts_in_stock_entry = mock.Mock()
+		sle = mock.Mock()
+		sle.voucher_detail_no = "row-1"
+		sle.voucher_no = "STE-1"
+		sle.dependant_sle_voucher_detail_no = "dep"
+		sle.company = "IRR-CO"
+		sle.actual_qty = -10
+		sle.outgoing_rate = 0
+
+		def _gv(doctype, name, fields=None, as_dict=False):
+			if doctype == "Stock Entry Detail":
+				return frappe._dict(
+					name="row-1",
+					basic_rate=0,
+					allow_zero_valuation_rate=0,
+					parent="STE-1",
+				)
+			if doctype == "Stock Entry":
+				return "Material Transfer"
+			return None
+
+		with (
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+				return_value=True,
+			),
+			mock.patch("frappe.db.get_value", side_effect=_gv),
+			mock.patch("frappe.db.set_value") as set_value,
+		):
+			wrapped = make_update_rate_on_stock_entry_wrapper(original)
+			wrapped(engine, sle, 5005345.0)
+			set_value.assert_not_called()
+			self.assertEqual(calls, [])
+			engine.recalculate_amounts_in_stock_entry.assert_not_called()
 
 	def test_wrapper_non_irr_calls_original(self):
 		calls = []

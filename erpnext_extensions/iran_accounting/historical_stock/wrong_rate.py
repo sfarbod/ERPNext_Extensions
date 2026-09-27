@@ -160,6 +160,12 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 			row = apply_transfer_reconstruction_to_row(row, cache=cache)
 		# Phase 5B — Manufacture dependency: native contract + input health.
 		if purpose == "Manufacture" or row.get("purpose") == "Manufacture":
+			from erpnext_extensions.iran_accounting.historical_stock.manufacture_native import (
+				apply_manufacture_valuation_to_row,
+			)
+
+			row = apply_manufacture_valuation_to_row(row, cache=cache)
+			# Legacy Iran contract preview kept as evidence only; native residual wins.
 			from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
 				preview_manufacture_voucher,
 			)
@@ -169,39 +175,55 @@ def scan_wrong_rates(company=None, voucher=None, item_code=None, warehouse=None,
 				try:
 					mfg = preview_manufacture_voucher(voucher)
 					row["manufacture_preview"] = mfg
-					row["input_health"] = mfg.get("input_health")
-					row["matched_but_corrupt"] = bool(mfg.get("matched_but_corrupt")) or bool(
-						row.get("matched_but_corrupt")
-					)
-					if mfg.get("status") == "DEPENDENCY_REPAIR_REQUIRED":
-						row["status"] = "DEPENDENCY_REPAIR_REQUIRED"
-						row["confidence"] = CONFIDENCE_AMBIGUOUS
-						row["eligible"] = False
-						row["patient_zero"] = mfg.get("patient_zero")
-						row["wrong_reason"] = "MANUAL_MANUFACTURE_DEPENDENCY"
-						row["manual_lane"] = "WAITING_UPSTREAM"
-						row["message"] = mfg.get("planner_note") or "WAITING_UPSTREAM manufacture inputs"
-					elif mfg.get("eligible") and mfg.get("expected_target_rate"):
-						# Only apply FG expected rate to finished-item rows.
-						if g(raw, "is_finished_item") or row.get("is_finished_item"):
-							exp = flt(mfg.get("expected_target_rate"))
-							if abs(exp) > RATE_EPS:
-								row["proposed_rate"] = exp
-								row["expected"] = exp
-								row["expected_rate"] = exp
-								row["confidence"] = mfg.get("confidence") or CONFIDENCE_EXACT
-								row["status"] = "RECONSTRUCTABLE"
-								row["eligible"] = True
-								row["source_of_truth"] = "5.3.0_manufacture_output_contract"
-								row["difference"] = exp - flt(row.get("current_rate") or 0)
-								row["message"] = mfg.get("planner_note") or "manufacture EXACT reconstruction"
-								if mfg.get("matched_but_corrupt"):
-									flags_pre = list(row.get("flags") or [])
-									if "MATCHED_BUT_CORRUPT" not in flags_pre:
-										flags_pre.insert(0, "MATCHED_BUT_CORRUPT")
-									row["flags"] = flags_pre
 				except Exception as exc:
 					row["manufacture_preview_error"] = str(exc)[:200]
+			# If native path already stamped eligible/waiting/legitimate, skip generic EXACT.
+			if row.get("eligible") or row.get("no_action_required") or row.get("manual_lane") == "WAITING_UPSTREAM":
+				flags = classify_rate_flags(
+					qty=row.get("qty"),
+					basic_rate=g(raw, "basic_rate"),
+					valuation_rate=g(raw, "valuation_rate"),
+					amount=g(raw, "amount"),
+					expected=row.get("proposed_rate"),
+					allow_zero=g(raw, "allow_zero_valuation_rate"),
+				)
+				row["flags"] = flags
+				row["mismatch_class"] = flags[0] if flags else row.get("zero_class")
+				row["current"] = row.get("current_rate")
+				row["expected"] = row.get("proposed_rate")
+				row["difference"] = flt(row.get("proposed_rate")) - flt(row.get("current_rate"))
+				row["source"] = row.get("source_of_truth")
+				from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+				row = attach_rate_analysis(row, raw)
+				key = ("SE", row.get("voucher_detail") or row.get("voucher"))
+				if key not in seen:
+					seen.add(key)
+					classified.append(row)
+				continue
+			# Fall through: refuse generic previous_healthy EXACT on Manufacture.
+			mfg = row.get("manufacture_preview") or {}
+			auth_ok = bool(
+				mfg.get("eligible")
+				and abs(flt(mfg.get("expected_target_rate") or 0)) > RATE_EPS
+				and str(row.get("source_of_truth") or "")
+				in (
+					"5.3.0_manufacture_output_contract",
+					"manufacture_pool",
+					"manufacture_output_contract",
+					"historical_manufacture_consumed_svd",
+				)
+			)
+			if not auth_ok and row.get("confidence") == CONFIDENCE_EXACT:
+				row["confidence"] = CONFIDENCE_AMBIGUOUS
+				row["eligible"] = False
+				row["status"] = "MANUAL_REVIEW"
+				row["wrong_reason"] = "MANUAL_MANUFACTURE_GENERIC_RATE"
+				row["message"] = (
+					"Manufacture Wrong Rate — refuse generic previous_healthy/sibling EXACT; "
+					"require manufacture-native consumed-SVD residual"
+				)
+				row["kpi_bucket"] = "manual"
 		flags = classify_rate_flags(
 			qty=row.get("qty"),
 			basic_rate=g(raw, "basic_rate"),
@@ -451,7 +473,45 @@ def _classify_sle_mismatch(sle, cache=None) -> dict:
 		valuation_rate=sle.valuation_rate,
 		svd=svd,
 	)
-	current = flt(sle.outgoing_rate if qty < 0 else sle.incoming_rate)
+	column_rate = flt(sle.outgoing_rate if qty < 0 else sle.incoming_rate)
+	vr = flt(sle.valuation_rate)
+	# After leftover-MA / native rebuild, valuation_rate + SVD are correct while the
+	# optional outgoing_rate column may remain 0. That is not Wrong Rate READY.
+	if abs(implied) > RATE_EPS and abs(vr - implied) <= 1:
+		from erpnext_extensions.iran_accounting.historical_stock.expected import attach_rate_analysis
+
+		return attach_rate_analysis(
+			{
+				"topic": "WRONG_RATE",
+				"surface": "SLE",
+				"voucher": sle.voucher_no,
+				"voucher_detail": sle.voucher_detail_no,
+				"sle": sle.name,
+				"purpose": sle.purpose,
+				"item": sle.item_code,
+				"warehouse": sle.warehouse,
+				"qty": qty,
+				"current": vr,
+				"expected": implied,
+				"difference": 0.0,
+				"source": "valuation_matches_svd",
+				"source_of_truth": "valuation_matches_svd",
+				"confidence": CONFIDENCE_EXACT,
+				"flags": [],
+				"status": "NO_ACTION_REQUIRED",
+				"eligible": False,
+				"no_action_required": True,
+				"kpi_bucket": "complete",
+				"planner_status": "RATE_REPAIR_COMPLETE",
+				"current_rate": vr,
+				"proposed_rate": implied,
+				"current_valuation_rate": vr,
+				"current_outgoing_rate": flt(sle.outgoing_rate),
+				"message": "SLE valuation_rate already matches SVD; stale outgoing_rate column ignored",
+			},
+			sle,
+		)
+	current = column_rate
 	use_implied = bool(flags) and abs(implied) > RATE_EPS and abs(current) <= RATE_EPS
 	expected = implied if use_implied else current
 	confidence = CONFIDENCE_EXACT if use_implied else (CONFIDENCE_LIKELY if flags else CONFIDENCE_AMBIGUOUS)

@@ -92,7 +92,29 @@ class TestRIVValuationScopeHelpers(unittest.TestCase):
 		sle = _sle(item_code="20100064", warehouse="WH-FG")
 		self.assertFalse(is_sle_in_riv_blocking_scope(engine, sle))
 
-	def test_dependant_args_item_code_does_not_expand_targets(self):
+	
+	def test_through_riv_without_repost_doc_uses_active_item(self):
+		"""Nested update_entries_after during RIV often has no repost_doc."""
+		engine = SimpleNamespace(repost_doc=None, args=frappe._dict({"item_code": "20100064"}), company="C")
+		with patch.object(frappe.flags, "get", side_effect=lambda k, d=None: True if k == "through_repost_item_valuation" else d):
+			# force flags path used by get_riv_target_item_codes
+			pass
+		frappe.flags.through_repost_item_valuation = True
+		frappe.flags.iran_riv_declared_target_items = {"RIV-X": {"13100023"}}
+		try:
+			self.assertEqual(get_riv_target_item_codes(engine), {"13100023"})
+			# without cache, fall back to DB In Progress
+			frappe.flags.iran_riv_declared_target_items = {}
+			with patch(
+				"erpnext_extensions.iran_accounting.domain.riv_valuation_scope.frappe.db.get_value",
+				return_value="13100023",
+			):
+				self.assertEqual(get_riv_target_item_codes(engine), {"13100023"})
+		finally:
+			frappe.flags.through_repost_item_valuation = False
+			frappe.flags.iran_riv_declared_target_items = {}
+
+def test_dependant_args_item_code_does_not_expand_targets(self):
 		"""ERPNext mutates args.item_code while walking dependants — must not widen scope."""
 		engine = _engine(item_code="13100134", warehouse="WH-Q")
 		engine.args.item_code = "20100064"
@@ -157,7 +179,8 @@ class TestRIVScopeAwareIntegrityAsserts(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.riv_valuation_scope.frappe.log_error",
 			create=True,
 		):
-			assert_sle_valuation_integrity_before_vanilla(engine, sle)
+			ok = assert_sle_valuation_integrity_before_vanilla(engine, sle)
+		self.assertIs(ok, False)
 		anomalies = get_out_of_scope_anomalies()
 		self.assertTrue(anomalies)
 		self.assertEqual(anomalies[-1]["offending_item_code"], "20100064")
@@ -174,7 +197,7 @@ class TestRIVScopeAwareIntegrityAsserts(unittest.TestCase):
 			create=True,
 		):
 			bad_other = _sle(item_code="20100064", incoming_rate=-1, actual_qty=1)
-			assert_sle_valuation_integrity_after_sync(bad_other, engine=engine)
+			self.assertIs(assert_sle_valuation_integrity_after_sync(bad_other, engine=engine), False)
 
 	def test_non_riv_context_remains_fail_closed(self):
 		sle = _sle(item_code="20100064", incoming_rate=-1, actual_qty=1)
@@ -214,6 +237,47 @@ class TestRIVScopeAwareIntegrityAsserts(unittest.TestCase):
 				),
 			)
 		)
+
+	def test_se_level_assert_scopes_to_offending_item_not_voucher_membership(self):
+		"""Manufacture that consumes the RIV target but poisons an unrelated FG.
+
+		SE-level I2 must not abort the target RIV merely because the voucher also
+		lists the target item — only the offending row's item_code is blocking.
+		"""
+		from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+			ValuationIntegrityError,
+		)
+
+		engine = _engine(item_code="13100023")
+		doc = SimpleNamespace(
+			name="MAT-STE-2026-25740",
+			items=[
+				SimpleNamespace(item_code="13100023"),
+				SimpleNamespace(item_code="30100053"),
+			],
+		)
+
+		def poison_unrelated_fg():
+			raise ValuationIntegrityError(
+				"Stock valuation integrity (I2).\nitem_code=30100053\namount=-1"
+			)
+
+		with patch(
+			"erpnext_extensions.iran_accounting.domain.riv_valuation_scope.frappe.log_error",
+			create=True,
+		):
+			run_integrity_assert_in_riv_scope(engine, None, poison_unrelated_fg, doc=doc)
+		anomalies = get_out_of_scope_anomalies()
+		self.assertTrue(anomalies)
+		self.assertIn("30100053", anomalies[-1].get("exception") or "")
+
+		def poison_target_row():
+			raise ValuationIntegrityError(
+				"Stock valuation integrity (I2).\nitem_code=13100023\namount=-1"
+			)
+
+		with self.assertRaises(ValuationIntegrityError):
+			run_integrity_assert_in_riv_scope(engine, None, poison_target_row, doc=doc)
 
 	def test_batch_identity_is_logged_but_scope_is_item(self):
 		engine = _engine(item_code="13100134", warehouse="WH-Q")

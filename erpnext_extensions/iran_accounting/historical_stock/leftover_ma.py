@@ -1,9 +1,16 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Leftover Moving Average after an authorized zero-value inbound (v5.3.4).
+"""Leftover Moving Average after an authorized zero-value inbound (v5.3.5).
 
 The zero inbound itself is never given an invented rate. Quantity is added with
 incoming value 0. Warehouse MA becomes leftover_value / new_qty. Downstream
 outgoing consumes that reconstructed MA.
+
+This is a VALUATION reason, not a user workflow. It applies only to
+receipt-like inbounds (Material Receipt, Material Transfer, Purchase Receipt).
+
+Never apply leftover-MA to Manufacture, Material Transfer for Manufacture,
+scrap, Reject, Paykar, or finished-good / scrap rows. Those belong to
+MANUFACTURE_FLOW.
 
 Opening-state / incomplete chains stay MANUAL.
 """
@@ -45,8 +52,108 @@ from erpnext_extensions.iran_accounting.historical_stock.zero_provenance import 
 	classify_zero_provenance,
 	fetch_identity_chain,
 )
+from erpnext_extensions.iran_accounting.historical_stock.scrap_warehouse import (
+	warehouse_matches_scrap_reject_waste,
+)
 from erpnext_extensions.iran_accounting.stock_posting_order.replay import _update_bin
 from erpnext_extensions.iran_accounting.stock_posting_order.simulation import D
+
+# Receipt-like purposes only. Manufacture / MTFM / scrap / Reject are
+# MANUFACTURE_FLOW — leftover-MA receipt logic must not run there.
+LEFTOVER_MA_RECEIPT_PURPOSES = frozenset({"Material Receipt", "Material Transfer"})
+MANUFACTURE_FLOW_PURPOSES = frozenset(
+	{
+		"Manufacture",
+		"Material Transfer for Manufacture",
+		"Material Consumption for Manufacture",
+		"Repack",
+	}
+)
+PAYKAR_WAREHOUSE_TOKENS = ("پایکار", "paykar")
+
+
+def leftover_ma_receipt_eligible(
+	*,
+	voucher_type=None,
+	purpose=None,
+	warehouse=None,
+	is_scrap_item=0,
+	is_finished_item=0,
+) -> tuple[bool, str]:
+	"""True only for receipt-like inbounds on a non-manufacture warehouse.
+
+	Unit-testable: no database. Callers pass Stock Entry purpose / flags.
+	"""
+	if cint(is_scrap_item) or cint(is_finished_item):
+		return False, "MANUFACTURE_FLOW"
+	if warehouse_matches_scrap_reject_waste(warehouse):
+		return False, "MANUFACTURE_FLOW"
+	wn = (warehouse or "").strip().lower()
+	if wn and any(tok in wn for tok in PAYKAR_WAREHOUSE_TOKENS):
+		return False, "MANUFACTURE_FLOW"
+	vt = str(voucher_type or "")
+	if vt == "Purchase Receipt":
+		return True, ""
+	if purpose in MANUFACTURE_FLOW_PURPOSES:
+		return False, "MANUFACTURE_FLOW"
+	if purpose in LEFTOVER_MA_RECEIPT_PURPOSES:
+		return True, ""
+	if vt == "Stock Entry" and purpose:
+		return False, "MANUFACTURE_FLOW"
+	if vt and vt not in ("Stock Entry", "Purchase Receipt", ""):
+		return False, "MANUFACTURE_FLOW"
+	# Unknown purpose (unit tests without a voucher) — allow classify to continue.
+	if not purpose and not vt:
+		return True, ""
+	return False, "MANUFACTURE_FLOW"
+
+
+def _voucher_flow_context(voucher, item) -> dict:
+	if not voucher:
+		return {"voucher_type": "", "purpose": None, "is_scrap_item": 0, "is_finished_item": 0}
+	se = frappe.db.get_value("Stock Entry", voucher, ["purpose", "is_return"], as_dict=True)
+	if se:
+		det = (
+			frappe.db.get_value(
+				"Stock Entry Detail",
+				{"parent": voucher, "item_code": item},
+				["is_scrap_item", "is_finished_item"],
+				as_dict=True,
+			)
+			or {}
+		)
+		return {
+			"voucher_type": "Stock Entry",
+			"purpose": se.purpose,
+			"is_scrap_item": cint(det.get("is_scrap_item")),
+			"is_finished_item": cint(det.get("is_finished_item")),
+		}
+	if frappe.db.exists("Purchase Receipt", voucher):
+		return {
+			"voucher_type": "Purchase Receipt",
+			"purpose": None,
+			"is_scrap_item": 0,
+			"is_finished_item": 0,
+		}
+	vt = frappe.db.get_value("Stock Ledger Entry", {"voucher_no": voucher}, "voucher_type")
+	return {
+		"voucher_type": vt or "",
+		"purpose": None,
+		"is_scrap_item": 0,
+		"is_finished_item": 0,
+	}
+
+
+def leftover_ma_blocked_by_manufacture_flow(voucher, item, warehouse) -> str | None:
+	ctx = _voucher_flow_context(voucher, item)
+	ok, reason = leftover_ma_receipt_eligible(
+		voucher_type=ctx.get("voucher_type"),
+		purpose=ctx.get("purpose"),
+		warehouse=warehouse,
+		is_scrap_item=ctx.get("is_scrap_item"),
+		is_finished_item=ctx.get("is_finished_item"),
+	)
+	return None if ok else reason
 
 
 def replay_leftover_ma_series(rows: list, opening_qty=0, opening_value=0, *, honor_zero_vouchers=None) -> list[dict]:
@@ -156,8 +263,17 @@ def already_matches(current_rows: list, series: list[dict]) -> bool:
 		value_tol = max(1.0, qty)
 		if abs(flt(_gv(row, "stock_value")) - flt(step["stock_value"])) > value_tol:
 			return False
+		# Outgoing SLE.outgoing_rate is often left 0 while SVD carries the value.
+		# Prefer SVD/qty (report out rate) over the optional outgoing_rate column.
 		if flt(_gv(row, "actual_qty")) < -QTY_EPS:
-			if abs(flt(_gv(row, "outgoing_rate")) - flt(step["outgoing_rate"])) > 1:
+			aq = abs(flt(_gv(row, "actual_qty")))
+			cur_out = abs(flt(_gv(row, "outgoing_rate")))
+			if cur_out <= RATE_EPS and aq > QTY_EPS:
+				cur_out = abs(flt(_gv(row, "stock_value_difference"))) / aq
+			exp_out = abs(flt(step.get("outgoing_rate") or 0))
+			if exp_out <= RATE_EPS and aq > QTY_EPS:
+				exp_out = abs(flt(step.get("stock_value_difference") or 0)) / aq
+			if abs(cur_out - exp_out) > 1:
 				return False
 	return True
 
@@ -388,16 +504,26 @@ def replay_downstream_after_patient_zero(item, warehouse, root_voucher) -> dict:
 		posting_time = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
 	from erpnext.stock.stock_ledger import update_entries_after
 
-	update_entries_after(
-		{
-			"item_code": item,
-			"warehouse": warehouse,
-			"posting_date": str(row.posting_date),
-			"posting_time": str(posting_time),
-		},
-		allow_zero_rate=True,
-		allow_negative_stock=False,
-	)
+	# Scope Iran integrity to this item without a real Repost Item Valuation doc
+	# (ERPNext update_data_in_repost expects a full Document with items_to_be_repost).
+	frappe.local.iran_leftover_ma_target_item = item
+	try:
+		# Historical leftover-MA replay walks dependant vouchers that may hit
+		# pre-existing negative qty on unrelated items. allow_negative_stock must
+		# match official RIV (True); False aborted Completed 28696-class TGT RIV
+		# in the on_change leftover-MA hook with Insufficient Stock on FG hops.
+		update_entries_after(
+			{
+				"item_code": item,
+				"warehouse": warehouse,
+				"posting_date": str(row.posting_date),
+				"posting_time": str(posting_time),
+			},
+			allow_zero_rate=True,
+			allow_negative_stock=True,
+		)
+	finally:
+		frappe.local.iran_leftover_ma_target_item = None
 	return {"ok": True, "replayed": True, "from_voucher": row.voucher_no, "from_sle": row.name}
 
 
@@ -417,7 +543,12 @@ def restore_leftover_ma_after_riv(item=None, warehouse=None) -> dict:
 
 
 def on_repost_item_valuation_update(doc, method=None):
-	"""Hook: after official RIV completes, leftover-MA must survive."""
+	"""After official RIV completes, leftover-MA must survive.
+
+	ERPNext worker completion is ``repost()`` → ``set_status("Completed")`` →
+	``Document.db_set``. ``db_set`` runs ``on_change``, not ``on_update``.
+	Bind this function to ``on_change`` (and keep on_update for full saves).
+	"""
 	if str(getattr(doc, "status", "") or "") != "Completed":
 		return
 	if frappe.flags.get("leftover_ma_riv_hook"):
@@ -578,11 +709,52 @@ def _riv_status_blocks_completion(status) -> str | None:
 	return None
 
 
-def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, allow_zero_rate=True) -> dict:
+def _execute_repost_without_mid_commits(name) -> None:
+	"""Run native ``execute_reposting_entry`` without ERPNext's resume commits.
+
+	``repost_future_sle`` / ``update_data_in_repost`` commit after each
+	item-warehouse chunk so a timeout can resume. A MariaDB deadlock then
+	rolls back only the current chunk and leaves earlier SLE/Bin/GL writes
+	committed (the 13100134 / 30200016 partial-negative failure). Isolated
+	Historical Repair holds one transaction so deadlock/record-changed
+	returns the economic scope to the pre-RIV state.
+	"""
+	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+		execute_reposting_entry,
+	)
+
+	real_commit = frappe.db.commit
+
+	def _hold(*_a, **_k):
+		return None
+
+	frappe.db.commit = _hold
+	try:
+		execute_reposting_entry(name)
+	finally:
+		frappe.db.commit = real_commit
+
+
+def create_and_run_narrow_riv(
+	item,
+	warehouse,
+	*,
+	posting_date,
+	posting_time,
+	allow_zero_rate=True,
+	allow_negative_stock=True,
+	atomic=False,
+) -> dict:
 	"""Official ERPNext RIV (Item + Warehouse) executed through ``repost()``.
 
 	Submit alone leaves the document Queued — that is not a completed repair.
+	``bench execute`` is neither a request nor a job, so Iran GL patches must
+	be applied here — otherwise vanilla Stock Entry allowance (0.5) rejects a
+	legitimate one-quantum IRR residual and RIV poisons I1.
 	"""
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+
+	apply_iran_runtime()
 	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
 		execute_reposting_entry,
 	)
@@ -597,7 +769,7 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 			"company": company,
 			"posting_date": str(posting_date),
 			"posting_time": str(posting_time),
-			"allow_negative_stock": 0,
+			"allow_negative_stock": 1 if allow_negative_stock else 0,
 			"allow_zero_rate": 1 if allow_zero_rate else 0,
 			"recalculate_valuation_rate": 0,
 			"recreate_stock_ledgers": 0,
@@ -606,12 +778,51 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 	doc.flags.ignore_permissions = True
 	doc.insert()
 	doc.submit()
+	# Persist the RIV header only. Economic writes stay in the execute txn
+	# when atomic=True so a deadlock cannot leave a half-replayed chain.
+	if atomic:
+		frappe.db.commit()
+	neg0 = frappe.db.sql(
+		"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
+		WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
+	)[0][0]
 	# Normal lifecycle enqueues via scheduler. Execute the same worker target
 	# so Historical Repair never marks Completed on a queued RIV.
 	try:
-		execute_reposting_entry(doc.name)
+		if atomic:
+			_execute_repost_without_mid_commits(doc.name)
+		else:
+			execute_reposting_entry(doc.name)
+		if atomic:
+			neg1 = frappe.db.sql(
+				"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
+				WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
+			)[0][0]
+			if int(neg1) > int(neg0):
+				frappe.db.rollback()
+				frappe.db.set_value(
+					"Repost Item Valuation",
+					doc.name,
+					{
+						"status": "Failed",
+						"error_log": f"atomic RIV created new negative stock ({neg0}→{neg1})",
+					},
+				)
+				frappe.db.commit()
+				return {
+					"ok": False,
+					"status": LEFTOVER_MA_FAILED_RIV,
+					"riv_name": doc.name,
+					"riv_status": "Failed",
+					"reason": f"new negative stock {neg0}->{neg1}",
+				}
+			frappe.db.commit()
 	except Exception as exc:
+		if atomic:
+			frappe.db.rollback()
 		frappe.db.set_value("Repost Item Valuation", doc.name, {"status": "Failed", "error_log": str(exc)[:1000]})
+		if atomic:
+			frappe.db.commit()
 		return {
 			"ok": False,
 			"status": LEFTOVER_MA_FAILED_RIV,
@@ -622,6 +833,14 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 	st = frappe.db.get_value("Repost Item Valuation", doc.name, ["status", "error_log"], as_dict=True)
 	block = _riv_status_blocks_completion(st.status)
 	if block:
+		# Deadlock / mid-flight abort leaves In Progress. Never keep that as a live job.
+		if st.status in ("Queued", "In Progress"):
+			frappe.db.set_value(
+				"Repost Item Valuation",
+				doc.name,
+				{"status": "Failed", "error_log": (st.error_log or block)[:1000]},
+			)
+			st.status = "Failed"
 		return {
 			"ok": False,
 			"status": LEFTOVER_MA_FAILED_RIV if st.status == "Failed" else LEFTOVER_MA_FAILED_POSTCONDITION,
@@ -630,6 +849,94 @@ def create_and_run_narrow_riv(item, warehouse, *, posting_date, posting_time, al
 			"reason": block if st.status != "Failed" else (st.error_log or "FAILED_RIV"),
 		}
 	return {"ok": True, "riv_name": doc.name, "riv_status": st.status}
+
+
+def first_non_opening_repost_boundary(item, warehouse) -> dict | None:
+	"""First SLE that is safe to open a historical Item+Warehouse RIV from.
+
+	A fiscal-year opening Stock Reconciliation is a company-wide seed. Native
+	dependant-item walk from that row rebuilds later Manufacture/Adjustment
+	chains that are not part of this identity. L3 (mid-year Purchase Receipt)
+	does not hit that; L4 did. Skip opening reco; start at the next movement.
+	"""
+	rows = frappe.db.sql(
+		"""SELECT item_code, voucher_type, voucher_no, warehouse, posting_date, posting_time,
+		          posting_datetime
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		ORDER BY posting_datetime, creation""",
+		(item, warehouse),
+		as_dict=True,
+	)
+	if not rows:
+		return None
+	for r in rows:
+		vt = str(r.voucher_type or "")
+		if vt == "Stock Reconciliation":
+			continue
+		return r
+	return rows[0]
+
+
+def create_and_run_isolated_riv(
+	item,
+	warehouse,
+	*,
+	posting_date,
+	posting_time,
+	allow_zero_rate=True,
+	allow_negative_stock=False,
+	max_attempts=2,
+) -> dict:
+	"""Single-flight RIV: no scheduler retry-as-In-Progress, no overlapping second RIV.
+
+	ERPNext ``repost()`` commits at start, then may commit inside SLE replay.
+	A MariaDB deadlock therefore rolls back only the *current* transaction and
+	marks the document In Progress for the scheduler. Historical Repair must
+	not leave that live, and must not start another identity while this one
+	is open.
+	"""
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+
+	apply_iran_runtime()
+	# Prevent on_submit immediate execution in tests AND scheduler-oriented flags.
+	prev_block = frappe.flags.get("dont_execute_stock_reposts")
+	frappe.flags.dont_execute_stock_reposts = True
+	# Atomic RIV holds one transaction for the full dependent walk.
+	try:
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 8
+	except Exception:
+		pass
+	attempts = []
+	try:
+		for attempt in range(1, int(max_attempts) + 1):
+			out = create_and_run_narrow_riv(
+				item,
+				warehouse,
+				posting_date=posting_date,
+				posting_time=posting_time,
+				allow_zero_rate=allow_zero_rate,
+				allow_negative_stock=allow_negative_stock,
+				atomic=True,
+			)
+			attempts.append({"attempt": attempt, **{k: out.get(k) for k in ("ok", "riv_name", "riv_status", "reason")}})
+			if out.get("ok"):
+				out["attempts"] = attempts
+				out["isolated"] = True
+				return out
+			reason = str(out.get("reason") or "")
+			recoverable = (
+				"deadlock" in reason.lower()
+				or "record has changed" in reason.lower()
+				or "RIV still" in reason
+			)
+			if not recoverable or attempt >= int(max_attempts):
+				out["attempts"] = attempts
+				out["isolated"] = True
+				return out
+		return {"ok": False, "isolated": True, "attempts": attempts, "reason": "exhausted"}
+	finally:
+		frappe.flags.dont_execute_stock_reposts = prev_block
 
 
 def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
@@ -648,16 +955,20 @@ def persist_via_update_entries_after(item, warehouse, root_voucher) -> dict:
 		posting_time = f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
 	from erpnext.stock.stock_ledger import update_entries_after
 
-	update_entries_after(
-		{
-			"item_code": item,
-			"warehouse": warehouse,
-			"posting_date": str(sle.posting_date),
-			"posting_time": str(posting_time),
-		},
-		allow_zero_rate=True,
-		allow_negative_stock=False,
-	)
+	frappe.local.iran_leftover_ma_target_item = item
+	try:
+		update_entries_after(
+			{
+				"item_code": item,
+				"warehouse": warehouse,
+				"posting_date": str(sle.posting_date),
+				"posting_time": str(posting_time),
+			},
+			allow_zero_rate=True,
+			allow_negative_stock=True,
+		)
+	finally:
+		frappe.local.iran_leftover_ma_target_item = None
 	stamp = stamp_patient_zero_valuation_rate(item, warehouse, root_voucher)
 	return {
 		"ok": True,
@@ -691,6 +1002,8 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 			**base,
 			"leftover_ma_status": "NO_ACTION",
 			"status": "NO_ACTION",
+			"primary_state": "LEGITIMATE",
+			"root_family": "VALUATION",
 			"reason": "current lot is economically zero — no leftover-MA repair",
 			"sql_updates": 0,
 		}
@@ -708,6 +1021,20 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 		}
 
 	root = zov["voucher"]
+	flow_block = leftover_ma_blocked_by_manufacture_flow(root, item, warehouse)
+	if flow_block:
+		return {
+			**base,
+			**zov,
+			"voucher": root,
+			"leftover_ma_status": LEFTOVER_MA_MANUAL,
+			"status": LEFTOVER_MA_MANUAL,
+			"primary_state": "MANUAL",
+			"root_family": "MANUFACTURE_FLOW",
+			"reason": flow_block,
+			"eligible": False,
+			"sql_updates": 0,
+		}
 	if not _zero_inbound_authorized(root, item):
 		return {
 			**base,
@@ -762,6 +1089,9 @@ def classify_leftover_ma_identity(item, warehouse) -> dict:
 		"patient_zero": {"voucher_no": root},
 		"leftover_ma_status": LEFTOVER_MA_READY,
 		"status": LEFTOVER_MA_READY,
+		"primary_state": "READY",
+		"root_family": "VALUATION",
+		"reason": "LEFTOVER_MA",
 		"eligible": True,
 		"confidence": CONFIDENCE_EXACT,
 		"reason": "READY_LEFTOVER_MA — authorized zero inbound on valued stock",
@@ -860,6 +1190,17 @@ def scan_leftover_ma(company=None, item_code=None, warehouse=None, limit=2000) -
 	if warehouse:
 		conds.append("sle.warehouse=%s")
 		args.append(warehouse)
+	# Receipt-like inbounds only. Manufacture / MTFM never enter leftover-MA.
+	conds.append(
+		"""(
+			sle.voucher_type='Purchase Receipt'
+			OR EXISTS (
+				SELECT 1 FROM `tabStock Entry` se
+				WHERE se.name=sle.voucher_no
+				  AND se.purpose IN ('Material Receipt','Material Transfer')
+			)
+		)"""
+	)
 	if company:
 		conds.append(
 			"(sle.voucher_type<>'Stock Entry' OR EXISTS (SELECT 1 FROM `tabStock Entry` se WHERE se.name=sle.voucher_no AND se.company=%s))"
@@ -896,6 +1237,7 @@ def scan_leftover_ma(company=None, item_code=None, warehouse=None, limit=2000) -
 	stamped["ready_count"] = sum(1 for r in stamped["rows"] if r.get("leftover_ma_status") == LEFTOVER_MA_READY)
 	stamped["manual_count"] = sum(1 for r in stamped["rows"] if r.get("leftover_ma_status") == LEFTOVER_MA_MANUAL)
 	stamped["no_action_count"] = sum(1 for r in stamped["rows"] if r.get("leftover_ma_status") == "NO_ACTION")
+	stamped["repairable"] = stamped["ready_count"]
 	return stamped
 
 
@@ -977,6 +1319,9 @@ def repair_leftover_ma_selected(rows: list[dict], *, dry_run=True) -> dict:
 
 
 def apply_leftover_ma_identity(item, warehouse, *, root_voucher) -> dict:
+	flow_block = leftover_ma_blocked_by_manufacture_flow(root_voucher, item, warehouse)
+	if flow_block:
+		raise frappe.ValidationError(f"leftover-MA does not apply to {flow_block}")
 	sim = simulate_leftover_ma(item, warehouse, root_voucher=root_voucher)
 	if not sim.get("ok"):
 		raise frappe.ValidationError(sim.get("reason") or "leftover-MA simulation failed")

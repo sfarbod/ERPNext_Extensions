@@ -103,6 +103,14 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 	``None`` means the caller must not soften integrity errors (non-RIV paths,
 	or RIV without a resolvable item target list).
 	"""
+	# Leftover-MA post-RIV / persist replay: scope to the declared identity item.
+	try:
+		leftover_target = getattr(frappe.local, "iran_leftover_ma_target_item", None)
+	except Exception:
+		leftover_target = None
+	if leftover_target:
+		return {cstr(leftover_target)}
+
 	if engine is None:
 		return None
 
@@ -116,6 +124,13 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 			# Do NOT merge items_to_be_repost — ERPNext expands that list with
 			# dependant_sle_voucher_detail_no hops (other items).
 			targets.add(cstr(item))
+			riv_name = cstr(_entry_get(repost_doc, "name") or "")
+			if riv_name:
+				try:
+					cache = frappe.flags.setdefault("iran_riv_declared_target_items", {})
+					cache.setdefault(riv_name, set(targets))
+				except Exception:
+					pass
 		else:
 			# Transaction-based RIV (no single item_code): use the JSON list.
 			# Prefer a frozen declaration cached on flags for this RIV name.
@@ -165,13 +180,38 @@ def get_riv_target_item_codes(engine) -> set[str] | None:
 	if targets:
 		return targets
 
-	# In-progress RIV without item list → fail-closed.
+	# Nested ``update_entries_after`` during an Item-scoped RIV often has no
+	# ``repost_doc`` (dependant FG warehouse walks). Without a declared target,
+	# out-of-scope soft-skip cannot run and unrelated FG I3 aborts the RIV.
+	# Resolve the active RIV's declared item_code when the through-RIV flag is set.
 	through_riv = False
 	try:
 		through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
 	except Exception:
 		through_riv = False
-	if repost_doc is not None or through_riv:
+	if through_riv:
+		try:
+			cache = frappe.flags.get("iran_riv_declared_target_items") or {}
+			for cached_set in cache.values():
+				if cached_set:
+					return set(cached_set)
+		except Exception:
+			pass
+		try:
+			active_item = frappe.db.get_value(
+				"Repost Item Valuation",
+				{"status": "In Progress"},
+				"item_code",
+				order_by="modified desc",
+			)
+		except Exception:
+			active_item = None
+		if active_item:
+			return {cstr(active_item)}
+		# Transaction-based active RIV with no item_code → fail-closed.
+		return None
+
+	if repost_doc is not None:
 		return None
 
 	return None
@@ -370,8 +410,9 @@ def log_out_of_scope_integrity_anomaly(
 			pass
 		try:
 			frappe.log_error(title=title, message=message)
-			# Persist audit independently of a later repost() rollback.
-			if not frappe.in_test:
+			# Persist audit independently of a later repost() rollback — but NEVER
+			# commit inside an active RIV transaction (breaks atomicity / workers).
+			if not frappe.in_test and not frappe.flags.get("through_repost_item_valuation"):
 				frappe.db.commit()
 		except Exception:
 			pass
@@ -379,20 +420,55 @@ def log_out_of_scope_integrity_anomaly(
 	return payload
 
 
-def run_integrity_assert_in_riv_scope(engine, sle, assert_fn, *, doc=None) -> None:
-	"""Run ``assert_fn``; re-raise only when the SLE/doc is in blocking scope."""
+def _offending_item_code_from_exc(exc: Exception | None) -> str | None:
+	"""Parse item_code=… from ValuationIntegrityError message body."""
+	if exc is None:
+		return None
+	msg = cstr(exc)
+	for line in msg.splitlines():
+		line = line.strip()
+		if line.startswith("item_code="):
+			return cstr(line.split("=", 1)[1].strip()) or None
+	return None
+
+
+def run_integrity_assert_in_riv_scope(engine, sle, assert_fn, *, doc=None) -> bool:
+	"""Run ``assert_fn``; re-raise only when the SLE/doc is in blocking scope.
+
+	Returns:
+	  True  — assert passed; caller may write/persist the SLE.
+	  False — out-of-scope soft anomaly; caller must NOT invent new poison
+	          (skip ``process_sle`` or restore pre-vanilla ledger state).
+
+	SE-level asserts (doc set, sle None) used to block whenever *any* target item
+	appeared on the voucher. That aborted target-item RIV on Manufacture vouchers
+	that also consume the target but whose poison is an unrelated FG row.
+	Prefer the exception's ``item_code=`` payload: only that offending item is
+	blocking; other rows on the same voucher are out-of-scope legacy anomalies.
+
+	Soft-skip must preserve historical SLE economics: logging alone previously
+	allowed vanilla to rewrite unrelated FG rows to new negative rates (I1 rise
+	during 28696 target RIV).
+	"""
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 		ValuationIntegrityError,
 	)
 
 	try:
 		assert_fn()
+		return True
 	except ValuationIntegrityError as exc:
-		blocking = (
-			is_stock_entry_in_riv_blocking_scope(engine, doc)
-			if doc is not None and sle is None
-			else is_sle_in_riv_blocking_scope(engine, sle)
-		)
+		targets = get_riv_target_item_codes(engine)
+		if targets is None:
+			raise
+		offending = _offending_item_code_from_exc(exc)
+		if offending:
+			blocking = offending in targets
+		elif doc is not None and sle is None:
+			blocking = is_stock_entry_in_riv_blocking_scope(engine, doc)
+		else:
+			blocking = is_sle_in_riv_blocking_scope(engine, sle)
 		if blocking:
 			raise
 		log_out_of_scope_integrity_anomaly(engine, sle=sle, doc=doc, exc=exc)
+		return False

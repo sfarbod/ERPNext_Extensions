@@ -22,8 +22,16 @@ FRESHNESS_FAILED = "FAILED"
 FRESHNESS_NOT_SCANNED = "NOT_SCANNED"
 
 # Dashboard chips shown by default (operational view).
+# Simple six-state surface first; topic KPIs remain for Advanced Mode.
 PRIORITY_KPI_LABELS = [
 	"Integrity Score",
+	"Ready to Repair",
+	"Needs Review",
+	"Legitimate / No Action",
+	"Blocked",
+	"Failed",
+	"Workers",
+	"Last Scan",
 	"User Action Required",
 	"Tool Limit",
 	"I1 Negative Rate",
@@ -243,6 +251,12 @@ def save_metrics_snapshot(
 	# DocType.company is required — use sentinel for site-wide / null-company scans.
 	company_key = (company or "").strip() or "_ALL_"
 	dashboard = dict(dashboard or {})
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.simple_model import project_simple_kpis
+
+		dashboard = project_simple_kpis(dashboard)
+	except Exception:
+		pass
 	# Enrich with blocker lane counts (cheap SQL) when DocType exists.
 	try:
 		if frappe.db.exists("DocType", "Historical Repair Blocker"):
@@ -393,6 +407,13 @@ def get_dashboard_summary(company: str | None = None) -> dict:
 		source = snapshot.get("source")
 	if pending and pending.get("status") in ("QUEUED", "RUNNING"):
 		freshness = FRESHNESS_SCANNING
+
+	try:
+		from erpnext_extensions.iran_accounting.historical_stock.simple_model import project_simple_kpis
+
+		dashboard = project_simple_kpis(dashboard, workers=workers, scanned_at=scanned_at)
+	except Exception:
+		pass
 
 	# Always refresh blocker lane chips (cheap).
 	try:

@@ -1246,6 +1246,120 @@ def sync_blockers_api(company=None, include_tool_limits=1, limit=500):
 	)
 
 
+@frappe.whitelist()
+def scan_job_card_flow_api(company=None, job_card=None, limit=500):
+	"""Read-only Job Card material-flow recon (one row per Job Card)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.job_card_flow import scan_job_card_flow
+
+	return scan_job_card_flow(company=company or None, job_card=job_card or None, limit=cint(limit) or 500)
+
+
+@frappe.whitelist()
+def verify_repair_api(item_code=None, warehouse=None, voucher=None):
+	"""Post-repair check: chain integrity + leftover-MA postcondition when applicable."""
+	_guard()
+	out = {"primary_state": "MANUAL", "ok": False}
+	if voucher:
+		out["voucher"] = voucher_integrity(voucher)
+	if item_code and warehouse:
+		out["chain"] = chain_integrity(item_code, warehouse)
+		try:
+			from erpnext_extensions.iran_accounting.historical_stock.leftover_ma import (
+				classify_leftover_ma_identity,
+			)
+
+			out["leftover_ma"] = classify_leftover_ma_identity(item_code, warehouse)
+		except Exception as exc:
+			out["leftover_ma_error"] = str(exc)
+	out["ok"] = True
+	return out
+
+
+@frappe.whitelist()
+def repair_safe_api(rows=None, dry_run=True):
+	"""ONE mutation path: plan → repair → (caller) repost → verify."""
+	is_dry = _dry(dry_run, True)
+	require_write_if_applying(is_dry)
+	parsed = _parse(rows)
+	if not parsed:
+		frappe.throw("Exact READY root rows are required")
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import repair_safe_roots
+
+	return repair_safe_roots(parsed, dry_run=is_dry)
+
+
+@frappe.whitelist()
+def plan_roots_api(rows=None):
+	"""Build RepairPlan objects for selected findings (read-only)."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import compress_roots, plan
+
+	parsed = _parse(rows)
+	plans = [plan(r).to_dict() for r in parsed]
+	return {"count": len(plans), "plans": plans, "compression": compress_roots(parsed)}
+
+
+@frappe.whitelist()
+def compress_wrong_rate_roots_api(company=None, limit=4000):
+	"""Group Wrong Rate findings into causal roots."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.repair_pipeline import compress_roots
+	from erpnext_extensions.iran_accounting.historical_stock.wrong_rate import scan_wrong_rates
+
+	scan = scan_wrong_rates(company=company or None, limit=cint(limit) or 4000)
+	rows = scan.get("rows") or []
+	ready = [
+		r
+		for r in rows
+		if str(r.get("planner_status") or r.get("rate_status") or "").startswith("READY")
+		or r.get("eligible")
+	]
+	return {
+		"scan_count": len(rows),
+		"ready_findings": len(ready),
+		"all": compress_roots(rows),
+		"ready": compress_roots(ready),
+	}
+
+
+@frappe.whitelist()
+def production_preflight_api(manifest_id=None):
+	"""Read-only Production allowlist preflight."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.production_execution import (
+		DEFAULT_MANIFEST_ID,
+		preflight,
+	)
+
+	return preflight(manifest_id or DEFAULT_MANIFEST_ID)
+
+
+@frappe.whitelist()
+def production_dry_run_api(manifest_id=None):
+	"""Read-only Production allowlist dry run. Never mutates."""
+	_guard()
+	from erpnext_extensions.iran_accounting.historical_stock.production_execution import (
+		DEFAULT_MANIFEST_ID,
+		dry_run_manifest,
+	)
+
+	return dry_run_manifest(manifest_id or DEFAULT_MANIFEST_ID)
+
+
+@frappe.whitelist()
+def production_apply_api(manifest_id=None, confirm=None):
+	"""Mutate only MATCHED allowlisted roots. confirm must equal manifest_id."""
+	require_write_if_applying(False)
+	from erpnext_extensions.iran_accounting.historical_stock.production_execution import (
+		DEFAULT_MANIFEST_ID,
+		apply_manifest,
+	)
+
+	mid = manifest_id or DEFAULT_MANIFEST_ID
+	return apply_manifest(manifest_id=mid, confirm=confirm)
+
+
 # Re-export posting-order APIs so the page can use one namespace.
 scan_posting_order = scan_posting_order_anomalies
 dry_run_posting_order = dry_run_posting_order_repair
