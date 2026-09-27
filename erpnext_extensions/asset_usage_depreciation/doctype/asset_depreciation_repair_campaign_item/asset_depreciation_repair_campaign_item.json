@@ -1,0 +1,383 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-09-27 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "campaign",
+  "asset",
+  "company",
+  "column_break_main",
+  "status",
+  "classification",
+  "reason_code",
+  "attempt_count",
+  "section_timing",
+  "queued_at",
+  "started_at",
+  "completed_at",
+  "column_break_timing",
+  "chunk_id",
+  "claim_token",
+  "section_snapshot",
+  "asset_status",
+  "depreciation_method",
+  "daily_prorata",
+  "column_break_snap",
+  "submitted_jes_before",
+  "jes_cancelled",
+  "fractional_rows_before",
+  "fractional_rows_after",
+  "section_ads",
+  "old_ads",
+  "new_ads",
+  "ads_rows",
+  "due_rows",
+  "column_break_ads",
+  "old_vad",
+  "new_vad",
+  "schedule_total",
+  "final_installment",
+  "final_nbv",
+  "salvage_value",
+  "section_gates",
+  "g0_g12_pass",
+  "failed_gate",
+  "error_type",
+  "recommended_review",
+  "section_detail",
+  "reason_detail",
+  "error_message",
+  "manual_review_summary"
+ ],
+ "fields": [
+  {
+   "fieldname": "campaign",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Campaign",
+   "options": "Asset Depreciation Repair Campaign",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "asset",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Asset",
+   "options": "Asset",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fetch_from": "asset.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nQueued\nProcessing\nSuccess\nAlready Repaired\nManual Review\nBlocked\nFailed\nRetryable Failed",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "classification",
+   "fieldtype": "Data",
+   "label": "Classification",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reason_code",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Reason Code",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "attempt_count",
+   "fieldtype": "Int",
+   "label": "Attempt Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_timing",
+   "fieldtype": "Section Break",
+   "label": "Timing / Claim"
+  },
+  {
+   "fieldname": "queued_at",
+   "fieldtype": "Datetime",
+   "label": "Queued At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_timing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "chunk_id",
+   "fieldtype": "Data",
+   "label": "Chunk Id",
+   "read_only": 1
+  },
+  {
+   "fieldname": "claim_token",
+   "fieldtype": "Data",
+   "label": "Claim Token",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "section_snapshot",
+   "fieldtype": "Section Break",
+   "label": "Asset Snapshot"
+  },
+  {
+   "fieldname": "asset_status",
+   "fieldtype": "Data",
+   "label": "Asset Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "depreciation_method",
+   "fieldtype": "Data",
+   "label": "Depreciation Method",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "daily_prorata",
+   "fieldtype": "Check",
+   "label": "Daily Prorata",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_snap",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "submitted_jes_before",
+   "fieldtype": "Int",
+   "label": "Submitted JEs Before",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "jes_cancelled",
+   "fieldtype": "Int",
+   "label": "JEs Cancelled",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "fractional_rows_before",
+   "fieldtype": "Int",
+   "label": "Fractional Rows Before",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "fractional_rows_after",
+   "fieldtype": "Int",
+   "label": "Fractional Rows After",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_ads",
+   "fieldtype": "Section Break",
+   "label": "ADS / VAD"
+  },
+  {
+   "fieldname": "old_ads",
+   "fieldtype": "Data",
+   "label": "Old ADS",
+   "read_only": 1
+  },
+  {
+   "fieldname": "new_ads",
+   "fieldtype": "Data",
+   "label": "New ADS",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "ads_rows",
+   "fieldtype": "Int",
+   "label": "ADS Rows",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "due_rows",
+   "fieldtype": "Int",
+   "label": "Due Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ads",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "old_vad",
+   "fieldtype": "Currency",
+   "label": "Old VAD",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "new_vad",
+   "fieldtype": "Currency",
+   "label": "New VAD",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "schedule_total",
+   "fieldtype": "Currency",
+   "label": "Schedule Total",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "final_installment",
+   "fieldtype": "Currency",
+   "label": "Final Installment",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "final_nbv",
+   "fieldtype": "Currency",
+   "label": "Final NBV",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "salvage_value",
+   "fieldtype": "Currency",
+   "label": "Salvage Value",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_gates",
+   "fieldtype": "Section Break",
+   "label": "Gates / Errors"
+  },
+  {
+   "default": "0",
+   "fieldname": "g0_g12_pass",
+   "fieldtype": "Check",
+   "label": "G0-G12 Pass",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_gate",
+   "fieldtype": "Data",
+   "label": "Failed Gate",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_type",
+   "fieldtype": "Data",
+   "label": "Error Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "recommended_review",
+   "fieldtype": "Small Text",
+   "label": "Recommended Review",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_detail",
+   "fieldtype": "Section Break",
+   "label": "Detail"
+  },
+  {
+   "fieldname": "reason_detail",
+   "fieldtype": "Small Text",
+   "label": "Reason Detail",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manual_review_summary",
+   "fieldtype": "Text",
+   "label": "Manual Review Summary",
+   "read_only": 1
+  }
+ ],
+ "modified": "2026-09-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Usage Depreciation",
+ "name": "Asset Depreciation Repair Campaign Item",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
