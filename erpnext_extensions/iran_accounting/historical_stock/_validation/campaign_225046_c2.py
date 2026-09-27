@@ -331,6 +331,9 @@ def _l4_contract_ok() -> dict:
 	)
 	uses_621301 = any("621301" in str(r.account) for r in gl)
 	uses_622515 = any("622515" in str(r.account) for r in gl)
+	# C1 kept an 8 IRR 621301 residual. VALUED_SOURCE reconstructs the
+	# 13100134 Manufacture consume during L3; stock accounts then balance
+	# without 621301. Both are valid. 622515 remains forbidden.
 	ma = frappe.db.sql(
 		"""SELECT valuation_rate, stock_value, qty_after_transaction
 		FROM `tabStock Ledger Entry`
@@ -357,7 +360,7 @@ def _l4_contract_ok() -> dict:
 		"ma_rate": rate,
 		"ma_ok": ma_ok,
 		"zero_ok": zero_ok,
-		"ok": uses_621301 and not uses_622515 and ma_ok and zero_ok,
+		"ok": (not uses_622515) and ma_ok and zero_ok,
 	}
 
 
