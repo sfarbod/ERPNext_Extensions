@@ -83,11 +83,18 @@ RECOMMENDED_REVIEW = {
 	"HAS_CAPITALIZED_REPAIR": "Review capitalized Asset Repair history before automatic reset.",
 }
 
-DEFAULT_CHUNK_SIZE = 20
+DEFAULT_CHUNK_SIZE = 3
+DEFAULT_MAX_JES_PER_CHUNK = 150
 DEFAULT_MAX_INFLIGHT = 4
 DEFAULT_QUEUE = "long"
 DEFAULT_MAX_ATTEMPTS = 3
-ABANDONED_PROCESSING_MINUTES = 45
+DEFAULT_JOB_TIMEOUT = 1800
+# Recover Processing after this age when RQ job state is unknown.
+ABANDONED_PROCESSING_MINUTES = 25
+# If the chunk RQ job is gone, allow recovery after this grace (seconds).
+STALE_AFTER_JOB_GONE_SECONDS = 90
+# Conservative JE weight when item has not been analyzed yet.
+UNKNOWN_JE_WEIGHT = 80
 
 
 def _require_campaign_permission():
@@ -97,7 +104,17 @@ def _require_campaign_permission():
 
 def _clamp_chunk_size(n: int) -> int:
 	n = cint(n) or DEFAULT_CHUNK_SIZE
-	return max(10, min(25, n))
+	return max(1, min(8, n))
+
+
+def _clamp_max_jes(n: int) -> int:
+	n = cint(n) or DEFAULT_MAX_JES_PER_CHUNK
+	return max(40, min(400, n))
+
+
+def _clamp_job_timeout(n: int) -> int:
+	n = cint(n) or DEFAULT_JOB_TIMEOUT
+	return max(600, min(7200, n))
 
 
 @frappe.whitelist()
@@ -106,8 +123,10 @@ def create_campaign(
 	assets: str | list | None = None,
 	discover: int | bool = 0,
 	chunk_size: int = DEFAULT_CHUNK_SIZE,
+	max_jes_per_chunk: int = DEFAULT_MAX_JES_PER_CHUNK,
 	max_inflight_chunks: int = DEFAULT_MAX_INFLIGHT,
 	queue_name: str = DEFAULT_QUEUE,
+	job_timeout_seconds: int = DEFAULT_JOB_TIMEOUT,
 	notes: str | None = None,
 ) -> dict[str, Any]:
 	"""Create a Draft campaign and populate items (explicit list and/or discovery)."""
@@ -129,8 +148,10 @@ def create_campaign(
 			"company": company,
 			"status": "Draft",
 			"chunk_size": _clamp_chunk_size(chunk_size),
+			"max_jes_per_chunk": _clamp_max_jes(max_jes_per_chunk),
 			"max_inflight_chunks": max(1, cint(max_inflight_chunks) or DEFAULT_MAX_INFLIGHT),
 			"queue_name": (queue_name or DEFAULT_QUEUE).strip() or DEFAULT_QUEUE,
+			"job_timeout_seconds": _clamp_job_timeout(job_timeout_seconds),
 			"worker_concurrency": 2,
 			"max_attempts": DEFAULT_MAX_ATTEMPTS,
 			"created_by_user": frappe.session.user,
@@ -212,11 +233,12 @@ def _run_inline_wave(campaign: str) -> int:
 	"""Synchronously drain eligible items in chunk-sized batches (dev/test helper)."""
 	camp = frappe.get_doc(CAMPAIGN_DT, campaign)
 	chunk_size = _clamp_chunk_size(camp.chunk_size)
+	max_jes = _clamp_max_jes(getattr(camp, "max_jes_per_chunk", None))
 	processed = 0
 	while True:
 		if frappe.db.get_value(CAMPAIGN_DT, campaign, "status") != "Running":
 			break
-		names = _select_and_queue_chunk(campaign, chunk_size)
+		names = _select_and_queue_chunk(campaign, chunk_size, max_jes)
 		if not names:
 			break
 		chunk_id = f"{campaign}-inline-{frappe.generate_hash(length=6)}"
@@ -287,8 +309,10 @@ def get_campaign_status(campaign: str) -> dict[str, Any]:
 		"company": camp.company,
 		"status": camp.status,
 		"chunk_size": camp.chunk_size,
+		"max_jes_per_chunk": cint(getattr(camp, "max_jes_per_chunk", None)) or DEFAULT_MAX_JES_PER_CHUNK,
 		"max_inflight_chunks": camp.max_inflight_chunks,
 		"queue_name": camp.queue_name,
+		"job_timeout_seconds": cint(getattr(camp, "job_timeout_seconds", None)) or DEFAULT_JOB_TIMEOUT,
 		"started_at": str(camp.started_at) if camp.started_at else None,
 		"completed_at": str(camp.completed_at) if camp.completed_at else None,
 		"paused_at": str(camp.paused_at) if camp.paused_at else None,
@@ -429,50 +453,55 @@ def export_campaign_exceptions_csv(campaign: str) -> dict[str, Any]:
 
 @frappe.whitelist()
 def enqueue_next_chunks(campaign: str) -> int:
-	"""Bounded feeder — enqueue chunks until max_inflight reached."""
+	"""Bounded feeder — enqueue weighted chunks until max_inflight reached."""
 	_require_campaign_permission()
 	camp = frappe.get_doc(CAMPAIGN_DT, campaign)
 	if camp.status != "Running":
 		return 0
-
 	recover_abandoned_processing(campaign)
-	inflight = frappe.db.count(ITEM_DT, {"campaign": campaign, "status": ("in", list(ITEM_IN_FLIGHT))})
-	chunk_size = _clamp_chunk_size(camp.chunk_size)
-	approx_chunks = (inflight + chunk_size - 1) // chunk_size if inflight else 0
-	max_inflight = max(1, cint(camp.max_inflight_chunks) or DEFAULT_MAX_INFLIGHT)
-	enqueued = 0
+	camp.reload()
+	return _enqueue_next_chunks_internal(camp)
 
-	while approx_chunks < max_inflight:
-		names = _select_and_queue_chunk(campaign, chunk_size)
-		if not names:
-			break
-		chunk_id = f"{campaign}-{frappe.generate_hash(length=8)}"
-		frappe.db.sql(
-			f"""
-			update `tab{ITEM_DT}`
-			set chunk_id=%s, queued_at=%s
-			where name in ({", ".join(["%s"] * len(names))})
-			""",
-			tuple([chunk_id, now_datetime(), *names]),
-		)
-		frappe.db.commit()
-		frappe.enqueue(
-			"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.process_campaign_chunk",
-			queue=camp.queue_name or DEFAULT_QUEUE,
-			timeout=1800,
-			job_name=f"Asset Depr Repair {chunk_id}",
-			campaign=campaign,
-			chunk_id=chunk_id,
-			item_names=names,
-			enqueue_after_commit=True,
-		)
-		enqueued += 1
-		approx_chunks += 1
 
-	refresh_campaign_counts(campaign)
-	frappe.db.commit()
-	_maybe_complete_campaign(campaign)
-	return enqueued
+@frappe.whitelist()
+def ensure_campaign_liveness(campaign: str) -> dict[str, Any]:
+	"""Idempotent recovery + feed for a Running campaign.
+
+	Safe under concurrent calls: recover is status-gated; feeder respects max_inflight.
+	"""
+	_require_campaign_permission()
+	status = frappe.db.get_value(CAMPAIGN_DT, campaign, "status")
+	if status != "Running":
+		return {"campaign": campaign, "status": status, "enqueued_chunks": 0, "recovered": 0}
+	recovered = recover_abandoned_processing(campaign)
+	enqueued = enqueue_next_chunks(campaign)
+	return {
+		"campaign": campaign,
+		"status": "Running",
+		"recovered": recovered,
+		"enqueued_chunks": enqueued,
+		**get_campaign_status(campaign),
+	}
+
+
+def ensure_all_running_campaigns_live() -> dict[str, Any]:
+	"""Scheduler heartbeat: keep Running campaigns from stalling after RQ death."""
+	if not frappe.db.exists("DocType", CAMPAIGN_DT):
+		return {"campaigns": 0}
+	names = frappe.get_all(CAMPAIGN_DT, filters={"status": "Running"}, pluck="name")
+	results = []
+	for name in names:
+		try:
+			# Scheduler runs as Administrator; avoid permission throw for heartbeat.
+			recovered = recover_abandoned_processing(name)
+			camp = frappe.get_doc(CAMPAIGN_DT, name)
+			if camp.status != "Running":
+				continue
+			enqueued = _enqueue_next_chunks_internal(camp)
+			results.append({"campaign": name, "recovered": recovered, "enqueued": enqueued})
+		except Exception:
+			frappe.log_error(title=f"campaign liveness failed: {name}")
+	return {"campaigns": len(results), "results": results}
 
 
 def process_campaign_chunk(
@@ -481,48 +510,57 @@ def process_campaign_chunk(
 	item_names: list[str] | None = None,
 	feed_next: int | bool = 1,
 ):
-	"""Background worker: process each Asset independently with commit/rollback."""
-	camp = frappe.get_doc(CAMPAIGN_DT, campaign)
-	if camp.status == "Paused":
-		return {"campaign": campaign, "chunk_id": chunk_id, "skipped": "paused"}
-	if camp.status in ("Stopped", "Completed", "Completed With Exceptions", "Failed"):
-		return {"campaign": campaign, "chunk_id": chunk_id, "skipped": camp.status}
+	"""Background worker: process each Asset independently with commit/rollback.
 
-	if not item_names:
-		item_names = frappe.get_all(
-			ITEM_DT,
-			filters={"campaign": campaign, "chunk_id": chunk_id, "status": "Queued"},
-			pluck="name",
-		)
+	Feeder continuation runs in ``finally`` so RQ timeout/exception cannot leave
+	a Running campaign permanently without a next enqueue attempt.
+	"""
+	try:
+		camp = frappe.get_doc(CAMPAIGN_DT, campaign)
+		if camp.status == "Paused":
+			return {"campaign": campaign, "chunk_id": chunk_id, "skipped": "paused"}
+		if camp.status in ("Stopped", "Completed", "Completed With Exceptions", "Failed"):
+			return {"campaign": campaign, "chunk_id": chunk_id, "skipped": camp.status}
 
-	results = []
-	for item_name in item_names:
-		camp_status = frappe.db.get_value(CAMPAIGN_DT, campaign, "status")
-		if camp_status in ("Paused", "Stopped", "Completed", "Completed With Exceptions"):
-			break
-		try:
-			res = _process_one_item(campaign, item_name, chunk_id)
-			results.append(res)
-			frappe.db.commit()
-		except Exception as e:
-			frappe.db.rollback()
+		if not item_names:
+			item_names = frappe.get_all(
+				ITEM_DT,
+				filters={"campaign": campaign, "chunk_id": chunk_id, "status": "Queued"},
+				pluck="name",
+			)
+
+		results = []
+		for item_name in item_names:
+			camp_status = frappe.db.get_value(CAMPAIGN_DT, campaign, "status")
+			if camp_status in ("Paused", "Stopped", "Completed", "Completed With Exceptions"):
+				break
 			try:
-				_record_item_failure(item_name, e, retryable=_is_transient(e), campaign=campaign)
+				res = _process_one_item(campaign, item_name, chunk_id)
+				results.append(res)
 				frappe.db.commit()
-			except Exception:
+			except Exception as e:
 				frappe.db.rollback()
-				frappe.log_error(title=f"campaign item failure record: {item_name}")
-			results.append({"item": item_name, "status": "error", "error": str(e)})
+				try:
+					_record_item_failure(item_name, e, retryable=_is_transient(e), campaign=campaign)
+					frappe.db.commit()
+				except Exception:
+					frappe.db.rollback()
+					frappe.log_error(title=f"campaign item failure record: {item_name}")
+				results.append({"item": item_name, "status": "error", "error": str(e)})
 
-	refresh_campaign_counts(campaign)
-	frappe.db.commit()
-	if cint(feed_next) and frappe.db.get_value(CAMPAIGN_DT, campaign, "status") == "Running":
-		try:
-			enqueue_next_chunks(campaign)
-		except Exception:
-			frappe.log_error(title=f"enqueue_next_chunks failed: {campaign}")
-	_maybe_complete_campaign(campaign)
-	return {"campaign": campaign, "chunk_id": chunk_id, "results": results}
+		refresh_campaign_counts(campaign)
+		frappe.db.commit()
+		_maybe_complete_campaign(campaign)
+		return {"campaign": campaign, "chunk_id": chunk_id, "results": results}
+	finally:
+		if cint(feed_next):
+			try:
+				if frappe.db.get_value(CAMPAIGN_DT, campaign, "status") == "Running":
+					recover_abandoned_processing(campaign)
+					camp = frappe.get_doc(CAMPAIGN_DT, campaign)
+					_enqueue_next_chunks_internal(camp)
+			except Exception:
+				frappe.log_error(title=f"enqueue_next_chunks failed: {campaign}")
 
 
 def _process_one_item(campaign: str, item_name: str, chunk_id: str) -> dict[str, Any]:
@@ -700,6 +738,23 @@ def _insert_items(campaign: str, company: str, asset_names: list[str]) -> None:
 
 
 def refresh_campaign_counts(campaign: str, commit: bool = True) -> None:
+	last_exc: Exception | None = None
+	for attempt in range(5):
+		try:
+			_refresh_campaign_counts_once(campaign, commit=commit)
+			return
+		except Exception as e:
+			last_exc = e
+			frappe.db.rollback()
+			if _is_transient(e) and attempt < 4:
+				time.sleep(0.2 * (attempt + 1))
+				continue
+			raise
+	if last_exc:
+		raise last_exc
+
+
+def _refresh_campaign_counts_once(campaign: str, commit: bool = True) -> None:
 	rows = frappe.db.sql(
 		f"""
 		select status, count(*) as c, coalesce(sum(submitted_jes_before),0) as jes_before,
@@ -738,10 +793,60 @@ def refresh_campaign_counts(campaign: str, commit: bool = True) -> None:
 		frappe.db.commit()
 
 
-def _select_and_queue_chunk(campaign: str, chunk_size: int) -> list[str]:
+def _enqueue_next_chunks_internal(camp) -> int:
+	"""Core feeder without whitelist permission gate (worker/scheduler)."""
+	campaign = camp.name
+	if camp.status != "Running":
+		return 0
+	inflight = frappe.db.count(ITEM_DT, {"campaign": campaign, "status": ("in", list(ITEM_IN_FLIGHT))})
+	chunk_size = _clamp_chunk_size(camp.chunk_size)
+	max_jes = _clamp_max_jes(getattr(camp, "max_jes_per_chunk", None))
+	job_timeout = _clamp_job_timeout(getattr(camp, "job_timeout_seconds", None))
+	approx_chunks = (inflight + max(chunk_size, 1) - 1) // max(chunk_size, 1) if inflight else 0
+	max_inflight = max(1, cint(camp.max_inflight_chunks) or DEFAULT_MAX_INFLIGHT)
+	enqueued = 0
+	while approx_chunks < max_inflight:
+		names = _select_and_queue_chunk(campaign, chunk_size, max_jes)
+		if not names:
+			break
+		chunk_id = f"{campaign}-{frappe.generate_hash(length=8)}"
+		frappe.db.sql(
+			f"""
+			update `tab{ITEM_DT}`
+			set chunk_id=%s, queued_at=%s
+			where name in ({", ".join(["%s"] * len(names))})
+			""",
+			tuple([chunk_id, now_datetime(), *names]),
+		)
+		frappe.db.commit()
+		frappe.enqueue(
+			"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.process_campaign_chunk",
+			queue=camp.queue_name or DEFAULT_QUEUE,
+			timeout=job_timeout,
+			job_name=f"Asset Depr Repair {chunk_id}",
+			campaign=campaign,
+			chunk_id=chunk_id,
+			item_names=names,
+			enqueue_after_commit=True,
+		)
+		enqueued += 1
+		approx_chunks += 1
+	refresh_campaign_counts(campaign)
+	frappe.db.commit()
+	_maybe_complete_campaign(campaign)
+	return enqueued
+
+
+def _select_and_queue_chunk(campaign: str, chunk_size: int, max_jes: int | None = None) -> list[str]:
+	"""Select Pending/Retryable items with JE-weight packing (v5.3.32)."""
+	max_jes = _clamp_max_jes(max_jes)
+	chunk_size = _clamp_chunk_size(chunk_size)
+	# Fetch a window larger than chunk_size so packing can prefer light Assets.
+	window = max(chunk_size * 8, 24)
 	eligible = frappe.db.sql(
 		f"""
-		select name from `tab{ITEM_DT}`
+		select name, asset, status, coalesce(submitted_jes_before, 0) as jes
+		from `tab{ITEM_DT}`
 		where campaign=%s and status in ('Pending', 'Retryable Failed')
 		order by
 			case when status='Retryable Failed' then 0 else 1 end,
@@ -749,21 +854,64 @@ def _select_and_queue_chunk(campaign: str, chunk_size: int) -> list[str]:
 		limit %s
 		for update
 		""",
-		(campaign, chunk_size),
+		(campaign, window),
+		as_dict=True,
 	)
-	names = [r[0] for r in eligible]
-	if not names:
+	if not eligible:
+		return []
+
+	selected: list[str] = []
+	jes_sum = 0
+	for row in eligible:
+		weight = cint(row.jes)
+		if weight <= 0:
+			weight = _estimate_and_store_je_weight(row.name, row.asset) or UNKNOWN_JE_WEIGHT
+		# Always allow at least one Asset even if it alone exceeds budget.
+		if selected and (len(selected) >= chunk_size or jes_sum + weight > max_jes):
+			break
+		selected.append(row.name)
+		jes_sum += weight
+		if len(selected) >= chunk_size:
+			break
+
+	if not selected:
 		return []
 	frappe.db.sql(
 		f"""
 		update `tab{ITEM_DT}`
 		set status='Queued', queued_at=%s
-		where name in ({", ".join(["%s"] * len(names))})
+		where name in ({", ".join(["%s"] * len(selected))})
 		  and status in ('Pending', 'Retryable Failed')
 		""",
-		tuple([now_datetime(), *names]),
+		tuple([now_datetime(), *selected]),
 	)
-	return names
+	return selected
+
+
+def _estimate_and_store_je_weight(item_name: str, asset: str) -> int:
+	"""Cheap JE count for packing; stores on item for reuse."""
+	try:
+		n = frappe.db.sql(
+			"""
+			select count(distinct je.name)
+			from `tabJournal Entry` je
+			inner join `tabJournal Entry Account` jea on jea.parent = je.name
+			inner join `tabAccount` acc on acc.name = jea.account
+			where je.voucher_type = 'Depreciation Entry'
+			  and je.docstatus = 1
+			  and jea.reference_type = 'Asset'
+			  and jea.reference_name = %s
+			  and jea.debit > 0
+			  and acc.root_type = 'Expense'
+			""",
+			(asset,),
+		)[0][0]
+		n = cint(n)
+		if n:
+			frappe.db.set_value(ITEM_DT, item_name, "submitted_jes_before", n, update_modified=False)
+		return n or UNKNOWN_JE_WEIGHT
+	except Exception:
+		return UNKNOWN_JE_WEIGHT
 
 
 def _claim_item(item_name: str, token: str, chunk_id: str) -> bool:
@@ -789,19 +937,33 @@ def _claim_item(item_name: str, token: str, chunk_id: str) -> bool:
 
 
 def recover_abandoned_processing(campaign: str) -> int:
-	cutoff = frappe.utils.add_to_date(now_datetime(), minutes=-ABANDONED_PROCESSING_MINUTES)
+	"""Release Processing items whose worker is gone or past stale threshold.
+
+	Does not release a claim while an authoritative RQ job is still started/queued.
+	"""
+	now = now_datetime()
+	age_cutoff = frappe.utils.add_to_date(now, minutes=-ABANDONED_PROCESSING_MINUTES)
+	grace_cutoff = frappe.utils.add_to_date(now, seconds=-STALE_AFTER_JOB_GONE_SECONDS)
 	rows = frappe.db.sql(
 		f"""
-		select name, attempt_count from `tab{ITEM_DT}`
+		select name, attempt_count, started_at, chunk_id, claim_token
+		from `tab{ITEM_DT}`
 		where campaign=%s and status='Processing'
-		  and (started_at is null or started_at < %s)
 		""",
-		(campaign, cutoff),
+		(campaign,),
 		as_dict=True,
 	)
 	max_attempts = cint(frappe.db.get_value(CAMPAIGN_DT, campaign, "max_attempts")) or DEFAULT_MAX_ATTEMPTS
 	n = 0
 	for r in rows:
+		started = r.started_at
+		job_active = _chunk_rq_job_active(r.chunk_id) if r.chunk_id else False
+		if job_active:
+			continue
+		stale_by_age = (not started) or (started < age_cutoff)
+		stale_by_missing_job = (not started) or (started < grace_cutoff)
+		if not (stale_by_age or stale_by_missing_job):
+			continue
 		new_status = "Failed" if cint(r.attempt_count) >= max_attempts else "Retryable Failed"
 		frappe.db.set_value(
 			ITEM_DT,
@@ -810,13 +972,31 @@ def recover_abandoned_processing(campaign: str) -> int:
 				"status": new_status,
 				"claim_token": None,
 				"error_type": "ABANDONED_PROCESSING",
-				"error_message": "Worker abandoned Processing; recovered on resume/feeder.",
+				"error_message": "Worker abandoned Processing; recovered by feeder/liveness.",
 			},
 		)
 		n += 1
 	if n:
 		frappe.db.commit()
 	return n
+
+
+def _chunk_rq_job_active(chunk_id: str) -> bool:
+	"""Return True if an RQ job for this chunk is queued or started."""
+	if not chunk_id:
+		return False
+	job_name = f"Asset Depr Repair {chunk_id}"
+	try:
+		# Virtual DocType — may raise on some sites; treat failure as unknown/not active.
+		jobs = frappe.get_all(
+			"RQ Job",
+			filters={"job_name": job_name, "status": ("in", ["queued", "started"])},
+			limit_page_length=1,
+			pluck="name",
+		)
+		return bool(jobs)
+	except Exception:
+		return False
 
 
 def _is_already_repaired(plan: dict[str, Any]) -> bool:

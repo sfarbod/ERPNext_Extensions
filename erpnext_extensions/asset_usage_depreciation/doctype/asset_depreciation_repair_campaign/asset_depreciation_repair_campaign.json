@@ -12,8 +12,10 @@
   "status",
   "column_break_main",
   "chunk_size",
+  "max_jes_per_chunk",
   "max_inflight_chunks",
   "queue_name",
+  "job_timeout_seconds",
   "worker_concurrency",
   "max_attempts",
   "section_timing",
@@ -75,11 +77,19 @@
    "fieldtype": "Column Break"
   },
   {
-   "default": "20",
+   "default": "3",
+   "description": "Max Assets per RQ job (v5.3.32: clamped 1\u20138). Combined with Max JEs Per Chunk.",
    "fieldname": "chunk_size",
    "fieldtype": "Int",
    "label": "Chunk Size",
    "reqd": 1
+  },
+  {
+   "default": "150",
+   "description": "Weighted packing: stop adding Assets to a chunk when estimated depreciation JE count would exceed this.",
+   "fieldname": "max_jes_per_chunk",
+   "fieldtype": "Int",
+   "label": "Max JEs Per Chunk"
   },
   {
    "default": "4",
@@ -93,6 +103,13 @@
    "fieldname": "queue_name",
    "fieldtype": "Data",
    "label": "Queue Name"
+  },
+  {
+   "default": "1800",
+   "description": "RQ job timeout seconds for process_campaign_chunk. Workload must fit below this with margin.",
+   "fieldname": "job_timeout_seconds",
+   "fieldtype": "Int",
+   "label": "Job Timeout Seconds"
   },
   {
    "default": "2",
