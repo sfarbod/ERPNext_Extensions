@@ -30,6 +30,7 @@ from erpnext_extensions.iran_accounting.scrap_costing import (
 	CLASS_MAIN_FG,
 	CLASS_MAIN_PRODUCT_REJECT,
 	CLASS_OTHER_OUTPUT,
+	LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION,
 	MANUFACTURE_COSTING_CONTRACT_VERSION,
 	STAGE_SECONDARY_TYPES,
 	_capitalized,
@@ -52,9 +53,13 @@ PARENT_CO_PRODUCT_FIELD = "custom_parent_co_product"
 
 
 def uses_v533_contract(doc) -> bool:
-	"""Drafts adopt v5.3.3; submitted historical docs need an explicit stamp."""
+	"""Drafts adopt current manufacture contract; submitted historical need a stamp.
+
+	Accepts both legacy ``5.3.3`` and current ``5.3.34`` stamps so RIV of older
+	stamped vouchers still runs the manufacture output contract.
+	"""
 	version = str(doc.get(CONTRACT_VERSION_FIELD) or "").strip()
-	if version == MANUFACTURE_COSTING_CONTRACT_VERSION:
+	if version in (LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION, MANUFACTURE_COSTING_CONTRACT_VERSION):
 		return True
 	if cint(doc.get("docstatus")) >= 1 and not version:
 		return False
@@ -62,6 +67,19 @@ def uses_v533_contract(doc) -> bool:
 
 
 def stamp_contract_version(doc) -> None:
+	"""Stamp the current manufacture costing contract on drafts only.
+
+	Submitted documents keep their existing stamp so historical RIV remains
+	era-deterministic (5.3.3 leftover-in-ac vs 5.3.34 TYPE C → SA).
+
+	Uses persisted DB docstatus because submit sets in-memory docstatus=1 early.
+	"""
+	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+		_persisted_docstatus,
+	)
+
+	if _persisted_docstatus(doc) == 1:
+		return
 	_set_field(doc, CONTRACT_VERSION_FIELD, MANUFACTURE_COSTING_CONTRACT_VERSION)
 
 

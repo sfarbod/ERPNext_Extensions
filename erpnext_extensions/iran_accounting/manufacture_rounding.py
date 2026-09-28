@@ -169,6 +169,10 @@ def align_manufacture_finished_good_residual(doc) -> None:
 	cost exceeds residual tolerance. Multi-FG is skipped. Repack is skipped
 	(purpose must be Manufacture).
 
+	Under TYPE C (v5.3.34+ Product Reject whole-IRR allocation residual), do
+	NOT close the pool into FG amount — that residual is intentional and posts
+	via native Stock Adjustment.
+
 	IRR residual rule for valuation_rate:
 	  amount remains authoritative; valuation_rate = ROUND_HALF_UP(amount/qty);
 	  residual = amount − valuation_rate × qty may be non-zero (±1 typical).
@@ -177,6 +181,19 @@ def align_manufacture_finished_good_residual(doc) -> None:
 		return
 	if not is_irr_company(doc.company):
 		return
+
+	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+		CLASS_TYPE_C,
+		classify_manufacture_irr_residual,
+		uses_type_c_sa_residual_policy,
+	)
+
+	# TYPE C: keep qty×integer-rate amounts; do not absorb leftover into FG.
+	if uses_type_c_sa_residual_policy(doc):
+		result = classify_manufacture_irr_residual(doc)
+		if result.classification == CLASS_TYPE_C:
+			_refresh_header_totals(doc)
+			return
 
 	fg_rows = [
 		row
@@ -239,7 +256,7 @@ def align_manufacture_finished_good_residual(doc) -> None:
 		_refresh_header_totals(doc)
 		return
 
-	# Align FG so incoming equals outgoing (true ±1 IRR case).
+	# Align FG so incoming equals outgoing (true ±1 IRR case) — TYPE B only.
 	target_fg = round_currency(outgoing_total - other_incoming, currency)
 	_apply_fg_amount(fg, target_fg, qty, currency)
 	# Keep basic_* consistent with material-only target when no capitalized cost.
