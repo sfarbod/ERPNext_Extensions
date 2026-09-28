@@ -330,7 +330,6 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 		discarded the operating cost and tripped the ledger contract.
 		"""
 		fg = _output("30100033", 95, is_fg=1)
-		fg.additional_cost = 91370722
 		doc = _Doc(
 			items=[
 				_consumed("13100023", 100, 346357),
@@ -338,25 +337,27 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 				_consumed("18000007", 2.8, 13800000),
 				fg,
 				_output("30100033", 3, row_type="Scrap"),
-			]
+			],
+			additional_costs=[
+				_Row(description="WO op", amount=91370722, base_amount=91370722)
+			],
 		)
 		with _irr():
 			self.assertTrue(allocate_scrap_absorbed_cost(doc))
 
 		materials = sum(flt(r.basic_amount) for r in doc.items if r.get("s_warehouse"))
 		scrap = doc.items[4]
-		# material pool is split between the two output rows
-		self.assertEqual(flt(fg.basic_amount) + flt(scrap.basic_amount), materials)
-		# capitalisation survives in total and rides on amount, not basic_amount
+		# material pool is split between the two output rows (may leave TYPE C residual)
+		leftover = materials - flt(fg.basic_amount) - flt(scrap.basic_amount)
+		self.assertEqual(flt(fg.basic_amount) + flt(scrap.basic_amount) + leftover, materials)
+		# capitalisation survives — real header cost only (no leftover plug)
 		capitalised = flt(fg.additional_cost) + flt(scrap.additional_cost)
 		self.assertEqual(capitalised, 91370722)
-		# it is shared per unit, because the reject ran through the operation too
 		self.assertAlmostEqual(
 			flt(scrap.additional_cost), 91370722 * 3 / 98, delta=1
 		)
-		# the identity the ledger contract enforces
 		incoming = sum(flt(r.amount) for r in doc.items if r.get("t_warehouse"))
-		self.assertEqual(incoming, materials + 91370722)
+		self.assertEqual(incoming, materials + 91370722 - leftover)
 
 	def test_product_reject_carries_its_share_of_operating_cost(self):
 		"""A reject occupied the operation exactly as a good unit did.
@@ -368,13 +369,15 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 		the finished good by about 15%.
 		"""
 		fg = _output("30100033", 95, is_fg=1)
-		fg.additional_cost = 1000000
 		doc = _Doc(
 			items=[
 				_consumed("13100023", 100, 346357),
 				fg,
 				_output("30100033", 3, row_type="Scrap"),
-			]
+			],
+			additional_costs=[
+				_Row(description="WO op", amount=1000000, base_amount=1000000)
+			],
 		)
 		with _irr():
 			allocate_scrap_absorbed_cost(doc)
@@ -392,43 +395,39 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 		Reproduces MAT-STE-2026-03989 exactly: 690 good and 3 rejected units of
 		30200023 against a 1,466,815,501 pool. 693 does not divide it — the pool
 		is 1 mod 3 while 690a + 3b is always 0 mod 3 — so no integer pair
-		consumes it exactly and the leftover must land in the residual rather
-		than in either row's amount.
+		consumes it exactly and the leftover is TYPE C (Stock Adjustment), not
+		an additional_cost plug.
 		"""
 		fg = _output("30200023", 690, is_fg=1)
-		fg.additional_cost = 91370722
 		scrap = _output("30200023", 3, row_type="Scrap")
-		doc = _Doc(items=[_consumed("17000005", 1, 1466815501), fg, scrap])
+		doc = _Doc(
+			items=[_consumed("17000005", 1, 1466815501), fg, scrap],
+			additional_costs=[
+				_Row(description="WO op", amount=91370722, base_amount=91370722)
+			],
+		)
 
 		with _irr():
 			self.assertTrue(allocate_scrap_absorbed_cost(doc))
 
 		leftover = 1466815501 - flt(fg.basic_amount) - flt(scrap.basic_amount)
 
-		# A reject cost the same as a good unit. The two rates are not bit
-		# identical because both must stay whole-rial and exact: the scrap rate
-		# absorbs the sub-unit remainder, here 27 rial on 2.1m, or 0.0013%.
 		self.assertLess(
 			abs(flt(fg.basic_rate) - flt(scrap.basic_rate)) / flt(fg.basic_rate),
 			1e-4,
 		)
-		# the identity the ledger contract checks, on BOTH rows
 		self.assertEqual(flt(fg.basic_rate) * 690, flt(fg.basic_amount))
 		self.assertEqual(flt(scrap.basic_rate) * 3, flt(scrap.basic_amount))
-		# Capitalised operating cost is shared per unit and additionally absorbs
-		# the integer-rate leftover, so that incoming - outgoing == capitalised
-		# exactly and nothing reaches Stock Adjustment.
 		capitalised = flt(fg.additional_cost) + flt(scrap.additional_cost)
 		incoming = sum(flt(r.amount) for r in doc.items if r.get("t_warehouse"))
-		self.assertEqual(incoming - 1466815501, 91370722)
-		self.assertEqual(capitalised, 91370722 + leftover)
+		self.assertEqual(capitalised, 91370722)
+		self.assertEqual(incoming - 1466815501, 91370722 - leftover)
 		self.assertEqual(
 			flt(fg.amount), flt(fg.basic_amount) + flt(fg.additional_cost)
 		)
 		self.assertEqual(
 			flt(scrap.amount), flt(scrap.basic_amount) + flt(scrap.additional_cost)
 		)
-		# and the unconsumed remainder stays negligible
 		self.assertLessEqual(abs(leftover), 3)
 
 	def test_rejected_component_keeps_its_issued_rate(self):
@@ -471,20 +470,15 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 		)
 		self.assertLessEqual(abs(pool - consumed), 100)
 
-	def test_rounding_leftover_never_reaches_stock_adjustment(self):
-		"""MAT-STE-2026-04027: the residual must not create inventory value.
+	def test_rounding_leftover_type_c_does_not_inflate_additional_cost(self):
+		"""MAT-STE-2026-04027 class under v5.3.34 TYPE C → Stock Adjustment.
 
-		650 good + 100 rejected units of 30100023 plus 5 rejected stoppers, against
-		269,213,326 of material and 25,401 of operating cost.
-
-		Whole-rial rates cannot consume the product pool exactly: every reachable
-		650a + 100b is a multiple of gcd = 50 while the pool (268,875,381) is
-		31 mod 50, so 19 rial is the closest any pair can come. That 19 used to
-		surface as a Stock Adjustment posting to 621301 — inventory value created
-		out of nothing.
+		650 good + 100 rejected + 5 component stoppers. Whole-IRR rates leave a
+		19 IRR allocation residual (gcd=50, bound=25). That residual must NOT be
+		stuffed into additional_cost; real header operating cost stays 25,401 and
+		the 19 is a native Difference Account / Stock Adjustment residual.
 		"""
 		fg = _output("30100023", 650, is_fg=1)
-		fg.additional_cost = 25401
 		prod_reject = _output("30100023", 100, row_type="Scrap")
 		comp_reject = _output("13100057", 5, row_type="Scrap")
 		doc = _Doc(
@@ -494,7 +488,16 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 				fg,
 				prod_reject,
 				comp_reject,
-			]
+			],
+			additional_costs=[
+				_Row(
+					description="operating",
+					amount=25401,
+					base_amount=25401,
+					expense_account="Expenses Included In Valuation - E",
+				)
+			],
+			docstatus=0,
 		)
 		outgoing = 750 * 67589 + 218521576
 		self.assertEqual(outgoing, 269213326, "fixture must mirror the real document")
@@ -506,14 +509,13 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 		capitalised = sum(
 			flt(r.get("additional_cost")) for r in doc.items if r.get("t_warehouse")
 		)
-		# The GL balances against the operating cost ACTUALLY booked (the
-		# Landed Cost table, 25,401), so nothing is left for Stock Adjustment:
-		#     debit FG warehouse  = incoming
-		#     credit WIP          = outgoing
-		#     credit overhead     = 25,401
-		self.assertEqual(incoming - outgoing, 25401)
+		# Real operating cost only — leftover is NOT in additional_cost.
+		self.assertEqual(capitalised, 25401)
+		# Pool residual is -19 (composed exceeds material pool by 19).
+		# incoming − outgoing = real_ac − residual = 25401 − (−19) = 25420.
+		leftover = -19.0
+		self.assertEqual(incoming - outgoing, 25401 - leftover)
 
-		# every row still composes exactly, on whole-rial rates
 		for row in doc.items:
 			qty = flt(row.transfer_qty) or flt(row.qty)
 			self.assertEqual(flt(row.basic_rate), int(flt(row.basic_rate)))
@@ -524,12 +526,65 @@ class TestScrapAbsorbedCosting(unittest.TestCase):
 					flt(row.basic_amount) + flt(row.get("additional_cost")),
 				)
 
-		# and no unit cost was bent to achieve it
 		self.assertEqual(flt(comp_reject.basic_rate), 67589)
 		self.assertEqual(flt(fg.basic_rate), 358500)
 		self.assertEqual(flt(prod_reject.basic_rate), 358504)
-		# the 19 simply stayed expensed instead of being capitalised
-		self.assertEqual(capitalised, 25401 - 19)
+
+		from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+			CLASS_TYPE_C,
+			classify_manufacture_irr_residual,
+		)
+
+		with _irr():
+			# Patch classifier's is_irr too
+			with mock.patch(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.is_irr_company",
+				return_value=True,
+			), mock.patch(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.get_company_currency",
+				return_value="IRR",
+			), mock.patch(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.get_currency_precision",
+				return_value=0,
+			):
+				result = classify_manufacture_irr_residual(doc)
+		self.assertEqual(result.classification, CLASS_TYPE_C)
+		self.assertEqual(result.residual, -19.0)
+		self.assertEqual(result.mathematical_bound, 25.0)
+
+	def test_legacy_stamp_still_absorbs_leftover_into_additional_cost(self):
+		"""Submitted 5.3.3 stamps keep leftover-in-ac for RIV determinism."""
+		fg = _output("30100023", 650, is_fg=1)
+		fg.additional_cost = 25401
+		prod_reject = _output("30100023", 100, row_type="Scrap")
+		comp_reject = _output("13100057", 5, row_type="Scrap")
+		doc = _Doc(
+			items=[
+				_consumed("13100057", 750, 67589),
+				_consumed("13100058", 1, 218521576),
+				fg,
+				prod_reject,
+				comp_reject,
+			],
+			docstatus=1,
+			name="SE-LEGACY-04027",
+			custom_manufacturing_costing_contract_version="5.3.3",
+		)
+		outgoing = 269213326
+		with _irr():
+			with mock.patch(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.frappe.db.get_value",
+				return_value=1,
+			):
+				self.assertTrue(allocate_scrap_absorbed_cost(doc))
+		incoming = sum(flt(r.amount) for r in doc.items if r.get("t_warehouse"))
+		capitalised = sum(
+			flt(r.get("additional_cost")) for r in doc.items if r.get("t_warehouse")
+		)
+		# Legacy: leftover folded into ac (leftover = -19 → ac = 25401 - 19).
+		leftover = -19.0
+		self.assertEqual(capitalised, 25401 + leftover)
+		self.assertEqual(incoming - outgoing, 25401)
 
 	def test_quantities_and_identity_are_never_modified(self):
 		doc = self._staging_doc()

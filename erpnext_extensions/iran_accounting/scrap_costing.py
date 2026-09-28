@@ -86,7 +86,10 @@ OUTPUT_CLASSES = (
 	CLASS_OTHER_OUTPUT,
 )
 ISSUED_RATE_TOLERANCE = 1.0
-MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
+# Legacy stamp: leftover absorbed into additional_cost (pre-TYPE-C SA policy).
+LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
+# Current stamp: proven TYPE C residuals use native Stock Adjustment (v5.3.34).
+MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.34"
 
 
 def _is_incoming(row) -> bool:
@@ -470,7 +473,14 @@ def _restore_finished_good_as_residual(doc, fg_row) -> bool:
 	return True
 
 
-def _spread_operating_cost(product_rows, currency, leftover: float = 0.0) -> None:
+def _spread_operating_cost(
+	product_rows,
+	currency,
+	leftover: float = 0.0,
+	*,
+	absorb_leftover: bool = True,
+	operating_total: float | None = None,
+) -> None:
 	"""Share capitalised operating cost over every unit that was processed.
 
 	ERPNext's ``distribute_additional_costs`` puts operating cost only on rows
@@ -479,12 +489,20 @@ def _spread_operating_cost(product_rows, currency, leftover: float = 0.0) -> Non
 	operation for the same time as a good one — that is the whole basis of
 	absorbed costing — so it carries the same operating cost per unit.
 
-	The total is unchanged, only its distribution, which keeps the document's
-	identity ``incoming = outgoing + capitalised`` intact. Only rejects OF THE
-	PRODUCT share it; a rejected component never entered the operation as a
-	unit of output and keeps whatever it already had.
+	``operating_total`` is the REAL header-derived capitalization to spread.
+	When omitted, the sum of current row ``additional_cost`` values is used
+	(legacy path).
+
+	``absorb_leftover`` (legacy ≤5.3.3 stamps only): fold the whole-IRR
+	multi-output allocation leftover into FG ``additional_cost``. Under the
+	v5.3.34 TYPE C policy this must stay False — leftover is a Stock Adjustment
+	residual, not operating cost.
 	"""
-	total = sum(flt(row.get("additional_cost")) for row in product_rows)
+	total = (
+		flt(operating_total)
+		if operating_total is not None
+		else sum(flt(row.get("additional_cost")) for row in product_rows)
+	)
 	units = sum(_row_qty(row) for row in product_rows)
 	if units <= 0:
 		return
@@ -498,20 +516,13 @@ def _spread_operating_cost(product_rows, currency, leftover: float = 0.0) -> Non
 			row.additional_cost = share
 			assigned += share
 		product_rows[0].additional_cost = round_currency(total - assigned, currency)
+	else:
+		for row in product_rows:
+			row.additional_cost = 0
 
-	# Absorb the integer-rate leftover here rather than letting it reach the
-	# ledger. Whole-rial rates cannot consume the pool exactly — with 650 good
-	# and 100 rejected units every reachable total is a multiple of gcd = 50
-	# while the pool is 31 mod 50, so 19 rial is the closest any rate pair can
-	# come. Moving a rate to close that gap would misstate a unit cost.
-	#
-	# `additional_cost` is the one field the ledger contract leaves free
-	# (`amount = basic_amount + additional_cost + LCV`, and `basic_amount`
-	# stays exactly `qty x integer rate`). Nudging it by the leftover makes
-	# incoming equal outgoing + capitalised to the rial, so nothing lands in
-	# Stock Adjustment; the effect is simply that those few rial of operating
-	# cost stay expensed instead of being capitalised into inventory.
-	if leftover:
+	# Legacy only: absorb integer-rate leftover into additional_cost.
+	# TYPE C (v5.3.34+) leaves leftover for native Difference Account / SA.
+	if absorb_leftover and leftover:
 		absorbed = flt(product_rows[0].get("additional_cost")) + leftover
 		if absorbed >= 0:
 			product_rows[0].additional_cost = round_currency(absorbed, currency)
@@ -520,6 +531,10 @@ def _spread_operating_cost(product_rows, currency, leftover: float = 0.0) -> Non
 		row.amount = round_currency(
 			flt(row.get("basic_amount")) + _capitalized(row), currency
 		)
+		qty = _row_qty(row)
+		if qty:
+			row.valuation_rate = integer_valuation_rate_from_amount(row.amount, qty, currency)
+
 
 def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 	"""Split the manufacturing cost pool between finished good and scrap.
@@ -610,13 +625,39 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 		return False
 
 	good_rate, scrap_rate, leftover = pair
-	# Both rows keep rate x qty == amount exactly, which is what the ledger
-	# contract checks. Any leftover stays in the document's rounding residual
-	# and is absorbed by align_manufacture_finished_good_residual.
+	# Both rows keep rate × qty == basic_amount exactly. Under TYPE C (v5.3.34+)
+	# the allocation leftover is NOT injected into additional_cost — Core posts
+	# it via the Difference Account / Stock Adjustment. Legacy 5.3.3 stamps
+	# still absorb leftover into additional_cost for RIV determinism.
+	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+		uses_type_c_sa_residual_policy,
+	)
+
+	type_c = uses_type_c_sa_residual_policy(doc)
+	product_rows = [good_rows[0]] + scrap_rows
+	# Real operating cost under TYPE C comes only from the header Additional Costs
+	# table (ERPNext's semantic source). Row.additional_cost leftover plugs are cleared.
+	header_operating = sum(
+		flt(t.get("base_amount") if t.get("base_amount") not in (None, "") else t.get("amount"))
+		for t in (doc.get("additional_costs") or [])
+	)
+	if type_c:
+		for row in product_rows:
+			row.additional_cost = 0
+		operating_total = header_operating
+	else:
+		operating_total = None  # legacy: use current row ac sum inside spread
+
 	_apply(good_rows[0], good_rate, currency)
 	for row in scrap_rows:
 		_apply(row, scrap_rate, currency)
-	_spread_operating_cost([good_rows[0]] + scrap_rows, currency, leftover)
+	_spread_operating_cost(
+		product_rows,
+		currency,
+		leftover,
+		absorb_leftover=not type_c,
+		operating_total=operating_total if type_c else None,
+	)
 	return True
 
 

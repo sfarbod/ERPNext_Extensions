@@ -13,6 +13,7 @@ from erpnext_extensions.iran_accounting.domain.currency import (
 	integer_valuation_rate_from_amount,
 	is_irr_company,
 	rate_is_fractional,
+	round_currency,
 	round_row_amount_financial,
 )
 from erpnext_extensions.iran_accounting.domain.qty_rate_amount import compose_stock_entry_row_amount
@@ -33,6 +34,48 @@ from erpnext_extensions.iran_accounting.zero_value_transfer import (
 	ZERO_VALUE_TRANSFER_STOCK_ENTRY_PURPOSES,
 	expected_balanced_transfer_gl_magnitude,
 )
+
+
+def _assert_type_c_manufacture_residual(doc, sle_sum: float, signed_net: float, company: str) -> list[str]:
+	"""Prove TYPE C voucher-level residual matches classifier exactly — no tolerance.
+
+	For TYPE C: expected_net = Σ(incoming capitalization) − residual.
+	With no real capitalization this is simply −residual (e.g. MAT-STE-2026-37762).
+	"""
+	if doc.purpose != "Manufacture":
+		return []
+	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+		CLASS_TYPE_C,
+		classify_manufacture_irr_residual,
+		uses_type_c_sa_residual_policy,
+	)
+
+	if not uses_type_c_sa_residual_policy(doc):
+		return []
+
+	result = classify_manufacture_irr_residual(doc)
+	if result.classification != CLASS_TYPE_C:
+		return []
+
+	ccy = get_company_currency(company)
+	incoming_cap = sum(
+		flt(row.get("additional_cost")) + flt(row.get("landed_cost_voucher_amount"))
+		for row in (doc.get("items") or [])
+		if row.get("t_warehouse")
+	)
+	expected_net = round_currency(incoming_cap - result.residual, ccy)
+	failures = []
+	if flt(signed_net) != flt(expected_net):
+		failures.append(
+			f"{doc.doctype} {doc.name}: TYPE C signed Σ row.amount {signed_net} "
+			f"!= expected {expected_net} (cap {incoming_cap} − residual {result.residual})"
+		)
+	if flt(sle_sum) != flt(expected_net):
+		failures.append(
+			f"{doc.doctype} {doc.name}: TYPE C Σ SLE {sle_sum} "
+			f"!= expected {expected_net} (cap {incoming_cap} − residual {result.residual})"
+		)
+	return failures
 
 
 def _tol(company: str) -> float:
@@ -323,6 +366,8 @@ def collect_ledger_contract_failures(voucher_no: str, company: str) -> list[str]
 			failures.append(
 				f"{doc.doctype} {doc.name}: |Σ SLE| {abs(sle_sum)} != Σ row.amount {row_gross}"
 			)
+		failures.extend(_assert_type_c_manufacture_residual(doc, sle_sum, signed_net, company))
+
 
 	exp_inc, exp_out = expected_header_totals(doc)
 	if flt(doc.total_incoming_value) != exp_inc:
