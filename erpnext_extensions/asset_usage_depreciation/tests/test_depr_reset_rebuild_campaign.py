@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
 
 from erpnext_extensions.asset_usage_depreciation.services import depr_reset_rebuild_campaign as camp
 
@@ -86,11 +86,25 @@ class TestCampaignDocTypes(FrappeTestCase):
 		item = frappe.get_all(
 			camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name", limit_page_length=1
 		)[0]
-		frappe.db.set_value(camp.ITEM_DT, item, "status", "Queued")
+		frappe.db.set_value(camp.ITEM_DT, item, {"status": "Queued", "chunk_id": "chunk-1"})
 		ok1 = camp._claim_item(item, "tok-a", "chunk-1")
 		ok2 = camp._claim_item(item, "tok-b", "chunk-2")
 		self.assertTrue(ok1)
 		self.assertFalse(ok2)
+
+	def test_claim_rejects_mismatched_chunk(self):
+		company = frappe.db.get_value("Company", {}, "name")
+		assets = frappe.get_all("Asset", filters={"docstatus": 1}, pluck="name", limit_page_length=1)
+		if not assets:
+			self.skipTest("No assets")
+		st = camp.create_campaign(company=company, assets=assets, chunk_size=3)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		frappe.db.set_value(camp.ITEM_DT, item, {"status": "Queued", "chunk_id": "chunk-new"})
+		self.assertFalse(camp._claim_item(item, "tok-old", "chunk-old"))
+		row = frappe.db.get_value(camp.ITEM_DT, item, ["status", "chunk_id", "claim_token"], as_dict=True)
+		self.assertEqual(row.status, "Queued")
+		self.assertEqual(row.chunk_id, "chunk-new")
+		self.assertFalse(row.claim_token)
 
 	def test_pause_blocks_feeder(self):
 		company = frappe.db.get_value("Company", {}, "name")
@@ -314,7 +328,7 @@ class TestCampaignV532FeederAndRecovery(FrappeTestCase):
 				"attempt_count": 1,
 			},
 		)
-		with patch.object(camp, "_chunk_rq_job_active", return_value=False):
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
 			n = camp.recover_abandoned_processing(st["campaign"])
 		self.assertEqual(n, 1)
 		row = frappe.db.get_value(
@@ -343,7 +357,7 @@ class TestCampaignV532FeederAndRecovery(FrappeTestCase):
 				"attempt_count": 1,
 			},
 		)
-		with patch.object(camp, "_chunk_rq_job_active", return_value=True):
+		with patch.object(camp, "_chunk_rq_job_state", return_value="active"):
 			n = camp.recover_abandoned_processing(st["campaign"])
 		self.assertEqual(n, 0)
 		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "status"), "Processing")
@@ -403,11 +417,299 @@ class TestCampaignV532FeederAndRecovery(FrappeTestCase):
 		frappe.db.set_value(camp.ITEM_DT, item, {"status": "Queued", "chunk_id": "c-dup"})
 		frappe.db.set_value(camp.CAMPAIGN_DT, st["campaign"], "status", "Running")
 		camp.process_campaign_chunk(st["campaign"], "c-dup", [item], feed_next=0)
-		# Second invocation: item already Success → claim_failed; campaign still Running via sibling Pending.
+		# Second invocation: item already Success → filtered out / claim_failed; campaign still Running.
 		self.assertEqual(frappe.db.get_value(camp.CAMPAIGN_DT, st["campaign"], "status"), "Running")
 		out = camp.process_campaign_chunk(st["campaign"], "c-dup", [item], feed_next=0)
-		self.assertEqual(out["results"][0]["status"], "claim_failed")
+		# Owned-by-chunk filter drops non-Queued items; claim also fails if reached.
+		if out.get("results"):
+			self.assertEqual(out["results"][0]["status"], "claim_failed")
+		else:
+			self.assertEqual(out.get("results"), [])
 		self.assertEqual(reset_mock.call_count, 1)
+
+
+class TestCampaignV533OrphanedQueued(FrappeTestCase):
+	"""Orphaned Queued recovery + old-job safety (v5.3.33)."""
+
+	def setUp(self):
+		if not frappe.db.exists("DocType", camp.CAMPAIGN_DT):
+			self.skipTest("Campaign DocTypes not migrated")
+
+	def _mk(self, n_assets=5, **kwargs):
+		company = frappe.db.get_value("Company", {}, "name")
+		assets = frappe.get_all(
+			"Asset", filters={"docstatus": 1}, pluck="name", limit_page_length=n_assets
+		)
+		if len(assets) < n_assets:
+			self.skipTest(f"Need ≥{n_assets} assets")
+		kw = {"chunk_size": 3, "max_jes_per_chunk": 150, "max_inflight_chunks": 1}
+		kw.update(kwargs)
+		st = camp.create_campaign(company=company, assets=assets, **kw)
+		frappe.db.set_value(camp.CAMPAIGN_DT, st["campaign"], "status", "Running")
+		return st, assets
+
+	def _queue_item(self, item, chunk_id, attempt_count=0, queued_minutes_ago=5):
+		frappe.db.set_value(
+			camp.ITEM_DT,
+			item,
+			{
+				"status": "Queued",
+				"chunk_id": chunk_id,
+				"queued_at": frappe.utils.add_to_date(now_datetime(), minutes=-queued_minutes_ago),
+				"attempt_count": attempt_count,
+				"claim_token": None,
+			},
+		)
+
+	def test_queued_live_parent_not_recovered(self):
+		st, assets = self._mk(2)
+		items = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")
+		cid = f"{st['campaign']}-liveq"
+		self._queue_item(items[0], cid)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="active"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 0)
+		self.assertEqual(diag["live_groups_skipped"], 1)
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, items[0], "status"), "Queued")
+
+	def test_queued_started_parent_not_recovered(self):
+		# Same active contract covers started.
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		self._queue_item(item, f"{st['campaign']}-started")
+		with patch.object(camp, "_chunk_rq_job_state", return_value="active"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 0)
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "status"), "Queued")
+
+	def test_queued_missing_parent_recovered_to_pending(self):
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		cid = f"{st['campaign']}-dead"
+		self._queue_item(item, cid, attempt_count=0)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 1)
+		row = frappe.db.get_value(
+			camp.ITEM_DT, item, ["status", "chunk_id", "queued_at", "attempt_count", "error_type"], as_dict=True
+		)
+		self.assertEqual(row.status, "Pending")
+		self.assertFalse(row.chunk_id)
+		self.assertFalse(row.queued_at)
+		self.assertEqual(cint(row.attempt_count), 0)
+		self.assertEqual(row.error_type, "ORPHANED_QUEUED")
+
+	def test_queued_terminal_parent_recovered(self):
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		self._queue_item(item, f"{st['campaign']}-term", attempt_count=2)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="terminal"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 1)
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "status"), "Retryable Failed")
+		self.assertEqual(cint(frappe.db.get_value(camp.ITEM_DT, item, "attempt_count")), 2)
+
+	def test_queued_unknown_rq_not_recovered(self):
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		self._queue_item(item, f"{st['campaign']}-unk")
+		with patch.object(camp, "_chunk_rq_job_state", return_value="unknown"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 0)
+		self.assertEqual(diag["ambiguous_groups_skipped"], 1)
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "status"), "Queued")
+
+	def test_multiple_queued_same_dead_chunk(self):
+		st, assets = self._mk(3)
+		items = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")
+		cid = f"{st['campaign']}-grp"
+		for it in items:
+			self._queue_item(it, cid)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["groups_recovered"], 1)
+		self.assertEqual(diag["items_recovered"], 3)
+		self.assertEqual(frappe.db.count(camp.ITEM_DT, {"campaign": st["campaign"], "status": "Pending"}), 3)
+
+	def test_mixture_only_orphans_recover(self):
+		st, assets = self._mk(4)
+		items = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")
+		dead, live, proc, pending = items[0], items[1], items[2], items[3]
+		self._queue_item(dead, f"{st['campaign']}-dead")
+		self._queue_item(live, f"{st['campaign']}-live")
+		frappe.db.set_value(
+			camp.ITEM_DT,
+			proc,
+			{
+				"status": "Processing",
+				"chunk_id": f"{st['campaign']}-proc",
+				"started_at": frappe.utils.add_to_date(now_datetime(), minutes=-30),
+				"attempt_count": 1,
+				"claim_token": "t",
+			},
+		)
+		# pending stays Pending
+
+		def state(cid):
+			if cid and cid.endswith("-live"):
+				return "active"
+			if cid and cid.endswith("-proc"):
+				return "active"
+			return "missing"
+
+		with patch.object(camp, "_chunk_rq_job_state", side_effect=state):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+			n_proc = camp.recover_abandoned_processing(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 1)
+		self.assertEqual(n_proc, 0)
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, dead, "status"), "Pending")
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, live, "status"), "Queued")
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, proc, "status"), "Processing")
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, pending, "status"), "Pending")
+
+	def test_double_recover_noop(self):
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		self._queue_item(item, f"{st['campaign']}-dead")
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			d1 = camp._recover_orphaned_queued_internal(st["campaign"])
+			d2 = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(d1["items_recovered"], 1)
+		self.assertEqual(d2["items_recovered"], 0)
+
+	@patch(
+		"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.frappe.enqueue"
+	)
+	def test_recover_then_enqueue_once(self, enqueue_mock):
+		st, assets = self._mk(3, max_inflight_chunks=1)
+		items = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")
+		# 37-like: fill Queued orphans on one dead chunk, leave others Pending
+		cid = f"{st['campaign']}-orphan"
+		for it in items[:2]:
+			self._queue_item(it, cid)
+		for it in items:
+			frappe.db.set_value(camp.ITEM_DT, it, "submitted_jes_before", 40)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			out = camp.ensure_campaign_liveness(st["campaign"])
+		self.assertEqual(out["recovered_queued"], 2)
+		self.assertEqual(out["enqueued_chunks"], 1)
+		self.assertEqual(enqueue_mock.call_count, 1)
+
+	def test_old_chunk_cannot_claim_after_requeue(self):
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		old_chunk = f"{st['campaign']}-old"
+		new_chunk = f"{st['campaign']}-new"
+		self._queue_item(item, old_chunk)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			camp._recover_orphaned_queued_internal(st["campaign"])
+		# Re-enqueued under new chunk
+		frappe.db.set_value(camp.ITEM_DT, item, {"status": "Queued", "chunk_id": new_chunk})
+		# Late old chunk executes
+		owned = camp._filter_items_owned_by_chunk(st["campaign"], old_chunk, [item])
+		self.assertEqual(owned, [])
+		self.assertFalse(camp._claim_item(item, "late-tok", old_chunk))
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "chunk_id"), new_chunk)
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "status"), "Queued")
+
+	@patch(
+		"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.frappe.enqueue"
+	)
+	def test_production_shape_37_queued_9_chunks(self, enqueue_mock):
+		"""Simulate Prod: many Pending + 37 Queued across 9 dead chunks + max_inflight=1."""
+		company = frappe.db.get_value("Company", {}, "name")
+		assets = frappe.get_all("Asset", filters={"docstatus": 1}, pluck="name", limit_page_length=50)
+		if len(assets) < 45:
+			self.skipTest("Need ≥45 assets for production-shape simulation")
+		st = camp.create_campaign(
+			company=company,
+			assets=assets,
+			chunk_size=3,
+			max_jes_per_chunk=150,
+			max_inflight_chunks=1,
+		)
+		frappe.db.set_value(camp.CAMPAIGN_DT, st["campaign"], "status", "Running")
+		items = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")
+		# 9 dead chunks, 37 queued (sizes similar to Prod)
+		sizes = [2, 1, 1, 2, 1, 4, 6, 9, 11]
+		assert sum(sizes) == 37
+		idx = 0
+		dead_ids = []
+		for i, sz in enumerate(sizes):
+			cid = f"{st['campaign']}-dead{i}"
+			dead_ids.append(cid)
+			for _ in range(sz):
+				self._queue_item(items[idx], cid, queued_minutes_ago=10)
+				idx += 1
+		# remaining stay Pending with weights
+		for it in items:
+			frappe.db.set_value(camp.ITEM_DT, it, "submitted_jes_before", 40, update_modified=False)
+
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			out = camp.ensure_campaign_liveness(st["campaign"])
+		self.assertEqual(out["recovered_queued"], 37)
+		# Orphans cleared; feeder may have created ≤chunk_size new Queued under max_inflight=1
+		self.assertEqual(out["enqueued_chunks"], 1)
+		self.assertEqual(enqueue_mock.call_count, 1)
+		queued_after = frappe.db.count(camp.ITEM_DT, {"campaign": st["campaign"], "status": "Queued"})
+		self.assertGreaterEqual(queued_after, 1)
+		self.assertLessEqual(queued_after, 3)
+		# Second liveness: treat current Queued parent as live → no reclaim, no extra enqueue
+		with patch.object(camp, "_chunk_rq_job_state", return_value="active"):
+			out2 = camp.ensure_campaign_liveness(st["campaign"])
+		self.assertEqual(out2["recovered_queued"], 0)
+		self.assertEqual(out2["enqueued_chunks"], 0)
+		queued_now = frappe.db.count(camp.ITEM_DT, {"campaign": st["campaign"], "status": "Queued"})
+		self.assertLessEqual(queued_now, 3)
+
+	@patch(
+		"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.frappe.enqueue"
+	)
+	def test_paused_no_enqueue(self, enqueue_mock):
+		st, assets = self._mk(2)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		self._queue_item(item, f"{st['campaign']}-dead")
+		frappe.db.set_value(camp.CAMPAIGN_DT, st["campaign"], "status", "Paused")
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			out = camp.ensure_campaign_liveness(st["campaign"])
+		self.assertEqual(out["enqueued_chunks"], 0)
+		self.assertEqual(out.get("status"), "Paused")
+		# Recovery of Queued should not run for non-Running via ensure; item stays Queued
+		self.assertEqual(frappe.db.get_value(camp.ITEM_DT, item, "status"), "Queued")
+
+	@patch(
+		"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.frappe.enqueue"
+	)
+	def test_stopped_no_enqueue(self, enqueue_mock):
+		st, assets = self._mk(1)
+		frappe.db.set_value(camp.CAMPAIGN_DT, st["campaign"], "status", "Stopped")
+		out = camp.ensure_campaign_liveness(st["campaign"])
+		self.assertEqual(out["enqueued_chunks"], 0)
+		self.assertFalse(enqueue_mock.called)
+
+	@patch(
+		"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.frappe.enqueue"
+	)
+	def test_completed_no_resurrection(self, enqueue_mock):
+		st, assets = self._mk(1)
+		frappe.db.set_value(camp.CAMPAIGN_DT, st["campaign"], "status", "Completed")
+		out = camp.ensure_campaign_liveness(st["campaign"])
+		self.assertEqual(out["enqueued_chunks"], 0)
+		self.assertFalse(enqueue_mock.called)
+
+	def test_grace_period_skips_fresh_queued(self):
+		st, assets = self._mk(1)
+		item = frappe.get_all(camp.ITEM_DT, filters={"campaign": st["campaign"]}, pluck="name")[0]
+		# queued_at = now → within 90s grace
+		frappe.db.set_value(
+			camp.ITEM_DT,
+			item,
+			{"status": "Queued", "chunk_id": f"{st['campaign']}-fresh", "queued_at": now_datetime()},
+		)
+		with patch.object(camp, "_chunk_rq_job_state", return_value="missing"):
+			diag = camp._recover_orphaned_queued_internal(st["campaign"])
+		self.assertEqual(diag["items_recovered"], 0)
+		self.assertEqual(diag["grace_skipped"], 1)
 
 
 if __name__ == "__main__":

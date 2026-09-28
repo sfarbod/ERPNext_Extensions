@@ -459,6 +459,8 @@ def enqueue_next_chunks(campaign: str) -> int:
 	if camp.status != "Running":
 		return 0
 	recover_abandoned_processing(campaign)
+	_recover_orphaned_queued_internal(campaign)
+	refresh_campaign_counts(campaign)
 	camp.reload()
 	return _enqueue_next_chunks_internal(camp)
 
@@ -467,18 +469,32 @@ def enqueue_next_chunks(campaign: str) -> int:
 def ensure_campaign_liveness(campaign: str) -> dict[str, Any]:
 	"""Idempotent recovery + feed for a Running campaign.
 
+	Order: abandoned Processing → orphaned Queued → refresh counts → bounded enqueue.
 	Safe under concurrent calls: recover is status-gated; feeder respects max_inflight.
 	"""
 	_require_campaign_permission()
 	status = frappe.db.get_value(CAMPAIGN_DT, campaign, "status")
 	if status != "Running":
-		return {"campaign": campaign, "status": status, "enqueued_chunks": 0, "recovered": 0}
-	recovered = recover_abandoned_processing(campaign)
-	enqueued = enqueue_next_chunks(campaign)
+		return {
+			"campaign": campaign,
+			"status": status,
+			"enqueued_chunks": 0,
+			"recovered_processing": 0,
+			"recovered_queued": 0,
+			"recovered": 0,
+		}
+	recovered_processing = recover_abandoned_processing(campaign)
+	queued_diag = _recover_orphaned_queued_internal(campaign)
+	refresh_campaign_counts(campaign)
+	enqueued = _enqueue_next_chunks_internal(frappe.get_doc(CAMPAIGN_DT, campaign))
+	recovered_queued = cint((queued_diag or {}).get("items_recovered"))
 	return {
 		"campaign": campaign,
 		"status": "Running",
-		"recovered": recovered,
+		"recovered_processing": recovered_processing,
+		"recovered_queued": recovered_queued,
+		"recovered": recovered_processing + recovered_queued,
+		"queued_recovery": queued_diag,
 		"enqueued_chunks": enqueued,
 		**get_campaign_status(campaign),
 	}
@@ -493,12 +509,21 @@ def ensure_all_running_campaigns_live() -> dict[str, Any]:
 	for name in names:
 		try:
 			# Scheduler runs as Administrator; avoid permission throw for heartbeat.
-			recovered = recover_abandoned_processing(name)
+			recovered_processing = recover_abandoned_processing(name)
+			queued_diag = _recover_orphaned_queued_internal(name)
+			refresh_campaign_counts(name)
 			camp = frappe.get_doc(CAMPAIGN_DT, name)
 			if camp.status != "Running":
 				continue
 			enqueued = _enqueue_next_chunks_internal(camp)
-			results.append({"campaign": name, "recovered": recovered, "enqueued": enqueued})
+			results.append(
+				{
+					"campaign": name,
+					"recovered_processing": recovered_processing,
+					"recovered_queued": cint((queued_diag or {}).get("items_recovered")),
+					"enqueued": enqueued,
+				}
+			)
 		except Exception:
 			frappe.log_error(title=f"campaign liveness failed: {name}")
 	return {"campaigns": len(results), "results": results}
@@ -528,6 +553,9 @@ def process_campaign_chunk(
 				filters={"campaign": campaign, "chunk_id": chunk_id, "status": "Queued"},
 				pluck="name",
 			)
+		else:
+			# Re-validate authority: never process an item that no longer belongs to this chunk.
+			item_names = _filter_items_owned_by_chunk(campaign, chunk_id, item_names)
 
 		results = []
 		for item_name in item_names:
@@ -557,10 +585,26 @@ def process_campaign_chunk(
 			try:
 				if frappe.db.get_value(CAMPAIGN_DT, campaign, "status") == "Running":
 					recover_abandoned_processing(campaign)
+					_recover_orphaned_queued_internal(campaign)
 					camp = frappe.get_doc(CAMPAIGN_DT, campaign)
 					_enqueue_next_chunks_internal(camp)
 			except Exception:
 				frappe.log_error(title=f"enqueue_next_chunks failed: {campaign}")
+
+
+def _filter_items_owned_by_chunk(campaign: str, chunk_id: str, item_names: list[str]) -> list[str]:
+	"""Keep only items still Queued for this campaign+chunk (old-job safety)."""
+	if not item_names:
+		return []
+	owned = frappe.db.sql(
+		f"""
+		select name from `tab{ITEM_DT}`
+		where campaign=%s and chunk_id=%s and status='Queued'
+		  and name in ({", ".join(["%s"] * len(item_names))})
+		""",
+		tuple([campaign, chunk_id, *item_names]),
+	)
+	return [r[0] for r in owned]
 
 
 def _process_one_item(campaign: str, item_name: str, chunk_id: str) -> dict[str, Any]:
@@ -915,18 +959,25 @@ def _estimate_and_store_je_weight(item_name: str, asset: str) -> int:
 
 
 def _claim_item(item_name: str, token: str, chunk_id: str) -> bool:
+	"""Atomically claim a Queued item for this exact chunk.
+
+	Requires status=Queued AND chunk_id match so a late/old RQ job cannot
+	claim an item that was reclaimed and re-enqueued under a different chunk.
+	"""
 	for attempt in range(5):
 		try:
 			frappe.db.sql(
 				f"""
 				update `tab{ITEM_DT}`
-				set status='Processing', claim_token=%s, chunk_id=%s, started_at=%s
-				where name=%s and status in ('Queued', 'Retryable Failed', 'Pending')
+				set status='Processing', claim_token=%s, started_at=%s
+				where name=%s and status='Queued' and chunk_id=%s
 				""",
-				(token, chunk_id, now_datetime(), item_name),
+				(token, now_datetime(), item_name, chunk_id),
 			)
-			row = frappe.db.get_value(ITEM_DT, item_name, ["status", "claim_token"], as_dict=True) or {}
-			return row.get("claim_token") == token
+			row = frappe.db.get_value(
+				ITEM_DT, item_name, ["status", "claim_token", "chunk_id"], as_dict=True
+			) or {}
+			return row.get("claim_token") == token and row.get("chunk_id") == chunk_id
 		except Exception as e:
 			frappe.db.rollback()
 			if _is_transient(e) and attempt < 4:
@@ -934,6 +985,50 @@ def _claim_item(item_name: str, token: str, chunk_id: str) -> bool:
 				continue
 			raise
 	return False
+
+
+def _chunk_job_name(chunk_id: str) -> str:
+	return f"Asset Depr Repair {chunk_id}"
+
+
+def _chunk_rq_job_state(chunk_id: str) -> str:
+	"""Return authoritative RQ parent state for a chunk.
+
+	active   — queued/started/(deferred|scheduled if present); must NOT recover
+	terminal — only finished/failed/cancelled/stopped jobs found; recoverable
+	missing  — no RQ job with this job_name; recoverable after grace
+	unknown  — RQ inspection failed; must NOT recover
+	"""
+	if not chunk_id:
+		return "unknown"
+	job_name = _chunk_job_name(chunk_id)
+	active_statuses = ("queued", "started", "deferred", "scheduled")
+	terminal_statuses = ("finished", "failed", "cancelled", "stopped")
+	try:
+		active = frappe.get_all(
+			"RQ Job",
+			filters={"job_name": job_name, "status": ("in", list(active_statuses))},
+			limit_page_length=1,
+			pluck="name",
+		)
+		if active:
+			return "active"
+		terminal = frappe.get_all(
+			"RQ Job",
+			filters={"job_name": job_name, "status": ("in", list(terminal_statuses))},
+			limit_page_length=1,
+			pluck="name",
+		)
+		if terminal:
+			return "terminal"
+		return "missing"
+	except Exception:
+		return "unknown"
+
+
+def _chunk_rq_job_active(chunk_id: str) -> bool:
+	"""Return True if an RQ job for this chunk is queued or started."""
+	return _chunk_rq_job_state(chunk_id) == "active"
 
 
 def recover_abandoned_processing(campaign: str) -> int:
@@ -957,13 +1052,19 @@ def recover_abandoned_processing(campaign: str) -> int:
 	n = 0
 	for r in rows:
 		started = r.started_at
-		job_active = _chunk_rq_job_active(r.chunk_id) if r.chunk_id else False
-		if job_active:
+		state = _chunk_rq_job_state(r.chunk_id) if r.chunk_id else "unknown"
+		if state == "active":
 			continue
-		stale_by_age = (not started) or (started < age_cutoff)
-		stale_by_missing_job = (not started) or (started < grace_cutoff)
-		if not (stale_by_age or stale_by_missing_job):
-			continue
+		if state == "unknown":
+			# Fall back to age-only when RQ inspection is unavailable.
+			if not ((not started) or (started < age_cutoff)):
+				continue
+		else:
+			# missing or terminal
+			stale_by_age = (not started) or (started < age_cutoff)
+			stale_by_missing_job = (not started) or (started < grace_cutoff)
+			if not (stale_by_age or stale_by_missing_job):
+				continue
 		new_status = "Failed" if cint(r.attempt_count) >= max_attempts else "Retryable Failed"
 		frappe.db.set_value(
 			ITEM_DT,
@@ -981,22 +1082,146 @@ def recover_abandoned_processing(campaign: str) -> int:
 	return n
 
 
-def _chunk_rq_job_active(chunk_id: str) -> bool:
-	"""Return True if an RQ job for this chunk is queued or started."""
-	if not chunk_id:
-		return False
-	job_name = f"Asset Depr Repair {chunk_id}"
-	try:
-		# Virtual DocType — may raise on some sites; treat failure as unknown/not active.
-		jobs = frappe.get_all(
-			"RQ Job",
-			filters={"job_name": job_name, "status": ("in", ["queued", "started"])},
-			limit_page_length=1,
-			pluck="name",
-		)
-		return bool(jobs)
-	except Exception:
-		return False
+@frappe.whitelist()
+def recover_orphaned_queued(campaign: str) -> dict[str, Any]:
+	"""Reclaim Queued items whose parent RQ chunk job is definitively gone.
+
+	Does not touch accounting. Does not increment attempt_count (repair never started
+	for this queue cycle). Destination:
+	- attempt_count == 0 → Pending
+	- attempt_count > 0  → Retryable Failed (prior repair attempt existed)
+
+	When RQ state is active or unknown: skip (safety over liveness).
+	"""
+	_require_campaign_permission()
+	return _recover_orphaned_queued_internal(campaign)
+
+
+def _recover_orphaned_queued_internal(campaign: str) -> dict[str, Any]:
+	"""Internal recover without whitelist gate (feeder/scheduler/worker)."""
+	diag: dict[str, Any] = {
+		"campaign": campaign,
+		"groups_inspected": 0,
+		"groups_recovered": 0,
+		"items_recovered": 0,
+		"live_groups_skipped": 0,
+		"ambiguous_groups_skipped": 0,
+		"no_chunk_skipped": 0,
+		"grace_skipped": 0,
+		"recovered_chunk_ids": [],
+		"skipped_chunk_ids": [],
+	}
+	if not campaign or not frappe.db.exists(CAMPAIGN_DT, campaign):
+		return diag
+
+	now = now_datetime()
+	grace_cutoff = frappe.utils.add_to_date(now, seconds=-STALE_AFTER_JOB_GONE_SECONDS)
+
+	# Lock all Queued rows for this campaign to serialize concurrent liveness calls.
+	rows = frappe.db.sql(
+		f"""
+		select name, asset, chunk_id, queued_at, attempt_count, claim_token
+		from `tab{ITEM_DT}`
+		where campaign=%s and status='Queued'
+		order by chunk_id, name
+		for update
+		""",
+		(campaign,),
+		as_dict=True,
+	)
+	if not rows:
+		frappe.db.commit()
+		return diag
+
+	by_chunk: dict[str | None, list] = {}
+	for r in rows:
+		by_chunk.setdefault(r.chunk_id or None, []).append(r)
+
+	for chunk_id, items in by_chunk.items():
+		diag["groups_inspected"] += 1
+		if not chunk_id:
+			diag["no_chunk_skipped"] += 1
+			diag["skipped_chunk_ids"].append(None)
+			continue
+
+		# Re-check RQ state after lock (RACE: job may have been enqueued concurrently).
+		state = _chunk_rq_job_state(chunk_id)
+		if state == "active":
+			diag["live_groups_skipped"] += 1
+			diag["skipped_chunk_ids"].append(chunk_id)
+			continue
+		if state == "unknown":
+			diag["ambiguous_groups_skipped"] += 1
+			diag["skipped_chunk_ids"].append(chunk_id)
+			continue
+
+		# missing or terminal — require grace based on queued_at
+		newest_queued = None
+		for it in items:
+			qa = it.queued_at
+			if qa and (newest_queued is None or qa > newest_queued):
+				newest_queued = qa
+		if newest_queued and newest_queued > grace_cutoff:
+			diag["grace_skipped"] += 1
+			diag["skipped_chunk_ids"].append(chunk_id)
+			continue
+
+		# Final RQ re-check immediately before conditional UPDATE.
+		state2 = _chunk_rq_job_state(chunk_id)
+		if state2 not in ("missing", "terminal"):
+			if state2 == "active":
+				diag["live_groups_skipped"] += 1
+			else:
+				diag["ambiguous_groups_skipped"] += 1
+			diag["skipped_chunk_ids"].append(chunk_id)
+			continue
+
+		recovered_here = 0
+		for it in items:
+			dest = "Retryable Failed" if cint(it.attempt_count) > 0 else "Pending"
+			# Conditional update: only if still Queued for THIS chunk (idempotent / race-safe).
+			frappe.db.sql(
+				f"""
+				update `tab{ITEM_DT}`
+				set status=%s,
+				    chunk_id=NULL,
+				    claim_token=NULL,
+				    queued_at=NULL,
+				    error_type=%s,
+				    error_message=%s
+				where name=%s and campaign=%s and status='Queued' and chunk_id=%s
+				""",
+				(
+					dest,
+					"ORPHANED_QUEUED",
+					f"Parent RQ job for chunk {chunk_id} is {state2}; reclaimed by liveness.",
+					it.name,
+					campaign,
+					chunk_id,
+				),
+			)
+			if frappe.db.get_value(ITEM_DT, it.name, "status") == dest:
+				recovered_here += 1
+
+		if recovered_here:
+			diag["groups_recovered"] += 1
+			diag["items_recovered"] += recovered_here
+			diag["recovered_chunk_ids"].append(chunk_id)
+
+	frappe.db.commit()
+	frappe.logger("erpnext_extensions").info(
+		"orphaned Queued recovery campaign=%s inspected=%s recovered_items=%s live_skip=%s ambiguous_skip=%s",
+		campaign,
+		diag["groups_inspected"],
+		diag["items_recovered"],
+		diag["live_groups_skipped"],
+		diag["ambiguous_groups_skipped"],
+	)
+	return diag
+
+
+# Back-compat alias used by older call sites / docs.
+recover_orphaned_queued_items = recover_orphaned_queued
 
 
 def _is_already_repaired(plan: dict[str, Any]) -> bool:
