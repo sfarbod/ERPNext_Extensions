@@ -615,6 +615,16 @@ before_job = [
 #
 # The fixtures will be saved in: erpnext_extensions/fixtures/
 
+# Campaign feeder liveness — recovers abandoned Processing and refeeds when
+# Running campaigns have Pending work but no live RQ jobs (v5.3.32).
+scheduler_events = {
+	"cron": {
+		"*/5 * * * *": [
+			"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.ensure_all_running_campaigns_live",
+		],
+	},
+}
+
 fixtures = [
 	{"dt": "Custom Field"},
 	{"dt": "Client Script"},
