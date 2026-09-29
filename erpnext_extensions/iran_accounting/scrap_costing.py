@@ -88,8 +88,9 @@ OUTPUT_CLASSES = (
 ISSUED_RATE_TOLERANCE = 1.0
 # Legacy stamp: leftover absorbed into additional_cost (pre-TYPE-C SA policy).
 LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
-# Current stamp: proven TYPE C residuals use native Stock Adjustment (v5.3.34).
-MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.34"
+# Current stamp: stage-equivalent By-Product pre-Core bridge (v5.3.35).
+# TYPE C → Stock Adjustment remains active for all stamps ≥ 5.3.34.
+MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.35"
 
 
 def _is_incoming(row) -> bool:
@@ -717,6 +718,8 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 
 	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
 		allocate_stage_output_cost,
+		assert_bridged_stage_outputs_priced,
+		clear_core_auto_valuation_for_stage_bridge,
 		snapshot_equivalent_factors_from_sources,
 		stamp_contract_version,
 		uses_v533_contract,
@@ -727,11 +730,14 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 		return False
 
 	stamp_contract_version(doc)
+	clear_core_auto_valuation_for_stage_bridge(doc)
 	validate_job_card_secondary_match(doc)
 	snapshot_equivalent_factors_from_sources(doc)
 	component_applied = apply_component_scrap_issued_rates(doc)
 	if allocate_stage_output_cost(doc):
+		assert_bridged_stage_outputs_priced(doc)
 		return True
+	assert_bridged_stage_outputs_priced(doc)
 	if _has_product_reject(doc):
 		return allocate_scrap_absorbed_cost(doc, method) or component_applied
 	if component_applied:

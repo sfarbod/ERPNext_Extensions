@@ -50,17 +50,25 @@ EQUIV_FACTOR_FIELD = "custom_output_equivalent_factor"
 EQUIV_QTY_FIELD = "custom_equivalent_qty"
 COMMON_UOM_FIELD = "custom_common_uom"
 PARENT_CO_PRODUCT_FIELD = "custom_parent_co_product"
+# In-memory only: marks a row that before_validate bridged past Core Valuation Rate.
+STAGE_EQUIV_BRIDGE_FLAG = "_iran_stage_equivalent_bridge"
 
 
 def uses_v533_contract(doc) -> bool:
 	"""Drafts adopt current manufacture contract; submitted historical need a stamp.
 
-	Accepts both legacy ``5.3.3`` and current ``5.3.34`` stamps so RIV of older
-	stamped vouchers still runs the manufacture output contract.
+	Accepts legacy ``5.3.3`` and every later manufacture stamp (``5.3.34``,
+	``5.3.35``, …) so RIV of older stamped vouchers still runs the contract.
 	"""
+	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+		_version_at_least,
+	)
+
 	version = str(doc.get(CONTRACT_VERSION_FIELD) or "").strip()
-	if version in (LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION, MANUFACTURE_COSTING_CONTRACT_VERSION):
-		return True
+	if version:
+		if version == LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION:
+			return True
+		return _version_at_least(version, LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION)
 	if cint(doc.get("docstatus")) >= 1 and not version:
 		return False
 	return True
@@ -70,7 +78,7 @@ def stamp_contract_version(doc) -> None:
 	"""Stamp the current manufacture costing contract on drafts only.
 
 	Submitted documents keep their existing stamp so historical RIV remains
-	era-deterministic (5.3.3 leftover-in-ac vs 5.3.34 TYPE C → SA).
+	era-deterministic (5.3.3 leftover-in-ac vs 5.3.34+ TYPE C → SA).
 
 	Uses persisted DB docstatus because submit sets in-memory docstatus=1 early.
 	"""
@@ -103,6 +111,152 @@ def _is_finance_excluded(row) -> bool:
 	if valuation_type == "% of Component Cost" and row.get("bom_secondary_item"):
 		return True
 	return False
+
+
+def _has_explicit_independent_valuation_policy(row) -> bool:
+	"""User/business chose an independent rate path — never bridge or stage-override.
+
+	Distinct from Core's empty→``Valuation Rate`` auto-default for bomless secondaries.
+	"""
+	valuation_type = (row.get("valuation_type") or "").strip()
+	if valuation_type == "Valuation Rate":
+		return True
+	if valuation_type == "Manual":
+		return True
+	if valuation_type == "% of Component Cost":
+		return True
+	if cint(row.get("set_basic_rate_manually")):
+		return True
+	return False
+
+
+def normalize_equivalent_factor(raw) -> float | None:
+	"""Map stored Float factor to domain semantics.
+
+	Frappe persists unset optional Float fields as ``0.0`` (Custom Field default
+	is None; DB/ORM still serialise blank as zero). Site data has zero positive
+	factors and thousands of literal ``0.0`` rows — treat ``0`` as UNSET, never
+	as an explicit economic multiplier. Non-zero values (including invalid
+	negatives) stay explicit so ``equivalent_qty_for_row`` can fail closed.
+	"""
+	if raw in (None, ""):
+		return None
+	value = flt(raw)
+	if value == 0:
+		return None
+	return value
+
+
+def _secondary_originates_from_manufacture(doc, row) -> bool:
+	"""Prove the secondary is a Job Card / BOM manufacturing output. Fail closed."""
+	item = row.get("item_code")
+	stype = secondary_item_type_of(row)
+	if not item or stype not in STAGE_SECONDARY_TYPES:
+		return False
+	job_card = doc.get("job_card")
+	if job_card:
+		if frappe.db.exists(
+			"Job Card Secondary Item",
+			{
+				"parent": job_card,
+				"item_code": item,
+				"secondary_item_type": stype,
+			},
+		):
+			return True
+		bom_ref = row.get("bom_secondary_item")
+		if bom_ref and frappe.db.exists("BOM Secondary Item", bom_ref):
+			bom_type = frappe.db.get_value("BOM Secondary Item", bom_ref, "secondary_item_type")
+			return bom_type == stype
+		return False
+	bom_ref = row.get("bom_secondary_item")
+	if not bom_ref:
+		return False
+	bom_type = frappe.db.get_value("BOM Secondary Item", bom_ref, "secondary_item_type")
+	return bom_type == stype
+
+
+def is_stage_equivalent_output_candidate(doc, row) -> bool:
+	"""Fail-closed predicate: row is intended for Iran equivalent-output stage costing.
+
+	Does **not** mean every By-Product is equivalent FG output. Requires Manufacture
+	purpose, IRR contract, stage secondary type, manufacturing origin, valid qty,
+	and no explicit independent valuation policy. Equivalence economics themselves
+	are still proven later by :func:`allocate_stage_output_cost`.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if not is_irr_company(doc.company):
+		return False
+	if not uses_v533_contract(doc):
+		return False
+	if not _is_incoming(row):
+		return False
+	if _row_qty(row) <= 0:
+		return False
+	if secondary_item_type_of(row) not in STAGE_SECONDARY_TYPES:
+		return False
+	if _has_explicit_independent_valuation_policy(row):
+		return False
+	if not _secondary_originates_from_manufacture(doc, row):
+		return False
+	return True
+
+
+def permit_stage_equivalent_zero_valuation(doc, method=None) -> None:
+	"""before_validate bridge: let qualifying stage outputs survive Core VR check.
+
+	Does **not** assign the economic rate. Marks the row so Core's bomless
+	``Valuation Rate`` default can be cleared before
+	:func:`allocate_stage_output_cost` runs.
+
+	``allow_zero_valuation_rate`` is set even when a prior Draft already carries a
+	stage rate: on re-save/submit Core ``set_bomless`` re-defaults empty→VR and
+	``is_costed_out_of_finished_item`` would otherwise call ``get_valuation_rate``
+	and throw. With allow_zero, Core may temporarily zero the row; Iran allocation
+	restores the real rate and :func:`assert_bridged_stage_outputs_priced` fails
+	closed if it cannot.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return
+	if not is_irr_company(doc.company):
+		return
+	for row in doc.get("items") or []:
+		if not is_stage_equivalent_output_candidate(doc, row):
+			continue
+		setattr(row, STAGE_EQUIV_BRIDGE_FLAG, True)
+		row.allow_zero_valuation_rate = 1
+
+
+def clear_core_auto_valuation_for_stage_bridge(doc) -> None:
+	"""Undo Core bomless ``Valuation Rate`` auto-default on bridged stage rows.
+
+	Must run after Core ``validate`` and before finance-exclusion / allocation so
+	Core's empty→VR fallback cannot steal a qualifying output from the stage pool.
+	"""
+	for row in doc.get("items") or []:
+		if not getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False):
+			continue
+		if (row.get("valuation_type") or "").strip() == "Valuation Rate":
+			_set_field(row, "valuation_type", None)
+			if cint(row.get("set_basic_rate_manually")):
+				_set_field(row, "set_basic_rate_manually", 0)
+
+
+def assert_bridged_stage_outputs_priced(doc) -> None:
+	"""Fail closed if the bridge allowed Core through but stage allocation did not price."""
+	for row in doc.get("items") or []:
+		if not getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False):
+			continue
+		if flt(row.get("basic_rate")) <= 0 or flt(row.get("basic_amount")) <= 0:
+			frappe.throw(
+				_(
+					"{0}: stage-equivalent output was not priced by Iran stage "
+					"allocator; temporary Core bridge value must not reach the ledger."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		row.allow_zero_valuation_rate = 0
 
 
 def _class_of(row, classified) -> str:
@@ -309,10 +463,7 @@ def physical_conversion_to_common(row, common_uom: str | None) -> float | None:
 
 
 def _explicit_factor(row) -> float | None:
-	raw = row.get(EQUIV_FACTOR_FIELD)
-	if raw in (None, ""):
-		return None
-	return flt(raw)
+	return normalize_equivalent_factor(row.get(EQUIV_FACTOR_FIELD))
 
 
 def _snapshotted_physical(row) -> float | None:
@@ -534,6 +685,9 @@ def apply_stage_output_contract(doc) -> bool:
 	if not uses_v533_contract(doc):
 		return False
 	stamp_contract_version(doc)
+	clear_core_auto_valuation_for_stage_bridge(doc)
 	validate_job_card_secondary_match(doc)
 	snapshot_equivalent_factors_from_sources(doc)
-	return allocate_stage_output_cost(doc)
+	applied = allocate_stage_output_cost(doc)
+	assert_bridged_stage_outputs_priced(doc)
+	return applied

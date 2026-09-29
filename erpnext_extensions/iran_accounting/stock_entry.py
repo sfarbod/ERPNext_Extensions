@@ -64,6 +64,13 @@ def before_validate_stock_entry(doc, method=None):
 	# Unpriced scrap is otherwise rejected inside ERPNext's own validate(),
 	# before the absorbed cost can be computed at all. See scrap_costing.
 	permit_scrap_zero_valuation(doc)
+	# Qualifying stage-equivalent Co/By-Product / Additional FG: same pattern —
+	# survive Core Valuation Rate Missing so allocate_stage_output_cost can run.
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		permit_stage_equivalent_zero_valuation,
+	)
+
+	permit_stage_equivalent_zero_valuation(doc)
 
 
 def apply_irr_manufacture_economic_finalize(doc) -> None:
