@@ -385,7 +385,8 @@ class TestEquivalentUnitCosting(unittest.TestCase):
 		self.assertEqual(flt(cp2.basic_amount), 2000)
 
 	def test_factor_not_positive_blocks(self):
-		fg = _output("FG", 1, is_fg=1, stock_uom="Nos", **{EQUIV_FACTOR_FIELD: 0})
+		# Explicit negative is invalid. Stored 0.0 is Frappe unset (see B07).
+		fg = _output("FG", 1, is_fg=1, stock_uom="Nos", **{EQUIV_FACTOR_FIELD: -1})
 		cp = _output(
 			"CP",
 			1,
@@ -399,6 +400,23 @@ class TestEquivalentUnitCosting(unittest.TestCase):
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				apply_iran_manufacture_output_contract(doc)
 		self.assertIn("greater than zero", str(ctx.exception))
+
+	def test_factor_zero_is_unset_frappe_float(self):
+		"""B07 — Frappe Float unset serialises as 0.0; treat as no explicit factor."""
+		fg = _output("FG", 3, is_fg=1, stock_uom="Nos", **{EQUIV_FACTOR_FIELD: 0.0})
+		cp = _output(
+			"CP",
+			1,
+			secondary_item_type="By-Product",
+			stock_uom="Nos",
+			t_warehouse="CO",
+			**{EQUIV_FACTOR_FIELD: 0.0},
+		)
+		doc = _Doc(items=[_consumed("RM", 4, 250), fg, cp])
+		with _env(stock_uoms={"FG": "Nos", "CP": "Nos"}, uom_factors={}, jc_secondaries={}):
+			self.assertTrue(apply_iran_manufacture_output_contract(doc))
+		self.assertEqual(flt(fg.basic_rate), 250)
+		self.assertEqual(flt(cp.basic_rate), 250)
 
 	def test_ambiguous_co_product_parent_blocks(self):
 		fg = _output("FG", 8, is_fg=1, stock_uom="Nos")
