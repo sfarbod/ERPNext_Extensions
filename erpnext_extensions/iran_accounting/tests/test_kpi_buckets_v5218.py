@@ -46,16 +46,32 @@ class TestWrongRateKpiBuckets(unittest.TestCase):
 	def test_ready_waiting_manual_ambiguous(self):
 		ready = _row(planner_status="READY_WRONG_RATE", sql_updates=2, repair_required=True)
 		waiting = _row(planner_status="WAITING_PATIENT_ZERO", sql_updates=0, repair_required=True)
-		manual = _row(planner_status="RATE_MANUAL", sql_updates=0, repair_required=True)
-		ambiguous = _row(planner_status="RATE_AMBIGUOUS", sql_updates=0, repair_required=True)
+		manual = _row(planner_status="RATE_MANUAL", sql_updates=0, repair_required=True, confidence="MANUAL")
+		ambiguous = _row(
+			planner_status="RATE_AMBIGUOUS",
+			sql_updates=0,
+			repair_required=True,
+			confidence="AMBIGUOUS",
+			eligible=False,
+		)
+		likely = _row(
+			planner_status="RATE_MANUAL",
+			sql_updates=0,
+			repair_required=True,
+			confidence="LIKELY",
+			manual_lane="TOOL_LIMIT",
+		)
 		self.assertEqual(wrong_rate_bucket(ready), "ready")
 		self.assertEqual(wrong_rate_bucket(waiting), "waiting")
 		self.assertEqual(wrong_rate_bucket(manual), "manual")
-		self.assertEqual(wrong_rate_bucket(ambiguous), "manual")
+		self.assertEqual(wrong_rate_bucket(ambiguous), "tool_gap")
+		self.assertEqual(wrong_rate_bucket(likely), "tool_gap")
 		self.assertTrue(row_matches_kpi_bucket(ready, "wrong_rate_ready"))
 		self.assertTrue(row_matches_kpi_bucket(waiting, "wrong_rate_waiting"))
 		self.assertTrue(row_matches_kpi_bucket(manual, "wrong_rate_manual"))
-		self.assertTrue(row_matches_kpi_bucket(ambiguous, "wrong_rate_manual"))
+		self.assertTrue(row_matches_kpi_bucket(ambiguous, "wrong_rate_tool_gap"))
+		self.assertTrue(row_matches_kpi_bucket(likely, "wrong_rate_tool_gap"))
+		self.assertFalse(row_matches_kpi_bucket(likely, "wrong_rate_manual"))
 
 	def test_filter_manual_excludes_complete(self):
 		rows = [
