@@ -362,14 +362,64 @@ def classify_tip_rate0() -> dict:
 
 
 def run_preflight() -> dict:
-	"""Build snapshot from live gates + I4 real terminals + pass0-ish KPIs."""
+	"""Build snapshot from live gates + causal I4 / poison roots (not stale labels)."""
+	from erpnext_extensions.iran_accounting.historical_stock.poisoned_opening import (
+		analyze_identity_opening,
+		analyze_poison_roots,
+	)
+
 	gates = _gates()
 	i4 = reclassify_i4()
-	real_n = int(i4.get("real_terminal_n") or 0)
-	manual_n = int(i4.get("true_manual_n") or 0)
-	waiting_n = int(i4.get("waiting_n") or 0)
-	tool_gap_n = int(i4.get("tool_gap_n") or 0)
-	# Dust/legitimate do not block. Waiting + tool_gap + real/manual do.
+	# Reload detail lists from dump produced by reclassify_i4
+	i4_full = {}
+	path = OUT / "i4_reclass_after_wr.json"
+	if path.exists():
+		i4_full = json.loads(path.read_text(encoding="utf-8"))
+	waiting_rows = i4_full.get("waiting") or []
+	tool_gap_rows = i4_full.get("tool_gap") or []
+	manual_rows = i4_full.get("true_manual") or []
+	real_rows = i4_full.get("real_terminal") or []
+	# Analyze ALL non-dust I4 rows that scanners call poison/manual/waiting.
+	poison = analyze_poison_roots(tool_gap_rows + manual_rows + waiting_rows)
+	# Manufacturing dependency = independent item+warehouse waiting roots whose
+	# current tip is still economically unsafe (can poison native replay).
+	mfg_roots = []
+	seen = set()
+	for r in waiting_rows:
+		item, wh = r.get("item"), r.get("warehouse")
+		key = (item, wh)
+		if not item or not wh or key in seen:
+			continue
+		seen.add(key)
+		opening = analyze_identity_opening(item, wh)
+		if opening.get("status") in ("LEGITIMATE", "PRECISION_DUST"):
+			# Historical waiting label; tip/opening do not poison Full Repost.
+			continue
+		mfg_roots.append(
+			{
+				**r,
+				"class": opening.get("status") or "WAITING_UPSTREAM",
+				"origin": opening.get("origin"),
+				"expected_replay_failure": opening.get("riv_reproduce_reason")
+				or "downstream I4/SLE value state depends on unrepaired PZ",
+			}
+		)
+	# Only truly blocking poison roots enter the preflight list.
+	blocking_poison = [
+		p
+		for p in (poison.get("roots") or [])
+		if p.get("status")
+		not in ("PRECISION_DUST", "LEGITIMATE", "LEGITIMATE_ORDER")
+	]
+	blocking_real = []
+	for r in real_rows + manual_rows:
+		item, wh = r.get("item"), r.get("warehouse")
+		if not item or not wh:
+			continue
+		opening = analyze_identity_opening(item, wh)
+		if opening.get("status") in ("LEGITIMATE", "PRECISION_DUST"):
+			continue
+		blocking_real.append({**r, **{k: opening.get(k) for k in ("origin", "status", "riv_reproduce_reason")}})
 	snap = {
 		"i1": gates.get("i1"),
 		"broken_gl": gates.get("broken_gl"),
@@ -378,24 +428,28 @@ def run_preflight() -> dict:
 		"negative_rate": 0,
 		"open_riv": gates.get("open_riv"),
 		"cross_time_exact": 0,
+		"cross_time_exact_roots": [],
 		"valued_source_zero_outgoing": 0,
-		"manufacturing_dependency": waiting_n,
-		"real_terminal_leftover": real_n + manual_n,
-		"known_riv_poison_root": tool_gap_n,
+		"manufacturing_dependency_roots": mfg_roots,
+		"known_riv_poison_roots": blocking_poison,
+		"real_terminal_roots": blocking_real,
 		"p0_manual": 0,
 		"p1_manual": 0,
 		"i4_by_lane": i4.get("by_lane"),
-		"i4_waiting_n": waiting_n,
+		"i4_waiting_n": len(mfg_roots),
+		"poison_by_status": poison.get("by_status"),
 		"canary_36934": _canary_36934(),
 	}
 	pre = full_repost_preflight(snap)
-	out = {"snapshot": snap, "preflight": pre, "i4": i4}
+	out = {"snapshot": snap, "preflight": pre, "i4": i4, "poison": poison}
 	_dump("full_repost_preflight_after_wr.json", out)
 	return {
 		"status": pre.get("status"),
 		"ready": pre.get("ready"),
 		"blockers": pre.get("blockers"),
+		"causal_detail": pre.get("causal_detail"),
 		"i4_by_lane": i4.get("by_lane"),
+		"poison_by_status": poison.get("by_status"),
 		"canary_36934": snap["canary_36934"],
 	}
 

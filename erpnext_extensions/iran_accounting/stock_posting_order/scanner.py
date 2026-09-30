@@ -120,6 +120,35 @@ def _identity_key(row) -> tuple:
 	return (row["item_code"], row["warehouse"], row.get("canonical_batch") or "")
 
 
+def _enrich_cross_time_work_orders(row: dict) -> None:
+	"""Attach per-leg Work Order / Job Card for CROSS_TIME classification.
+
+	``classify_cross_time`` reads top-level outbound_work_order / inbound_work_order.
+	Interval rows historically stash a single merged work_order, which hides
+	distinct-WO independent production flows.
+	"""
+	pairs = (
+		("outbound_work_order", "outbound_job_card", "outbound_document"),
+		("inbound_work_order", "inbound_job_card", "inbound_document"),
+	)
+	for wo_key, jc_key, vn_key in pairs:
+		if row.get(wo_key) or row.get(jc_key):
+			continue
+		vn = row.get(vn_key)
+		if not vn:
+			continue
+		meta = frappe.db.get_value(
+			"Stock Entry",
+			vn,
+			["work_order", "job_card"],
+			as_dict=True,
+		)
+		if not meta:
+			continue
+		row[wo_key] = meta.work_order
+		row[jc_key] = meta.job_card or row.get(jc_key)
+
+
 def _opening_before(series: list, t_dt, t_creation) -> float:
 	"""Authoritative qty immediately before boundary (qty_after, not sum of actual_qty).
 
@@ -405,6 +434,34 @@ def scan_same_time_groups(
 				keep_cross = False
 			if opt not in CROSS_KEEP and opt not in CROSS_DROP_UNLESS_FULL and not include_no_repair:
 				keep_cross = bool(row.get("eligible"))
+			# Distinct Work Orders are independent production flows — never count
+			# as actionable CROSS_TIME (do not timestamp-shift across jobs).
+			if keep_cross and (
+				row.get("detection") == "CROSS_TIME"
+				or opt in ("CROSS_TIME_REPAIRABLE", "ELIGIBLE", "SAME_TIME_REPAIRABLE")
+			):
+				from erpnext_extensions.iran_accounting.historical_stock.next_downtime.cross_time import (
+					INDEPENDENT_PRODUCTION_FLOWS,
+					classify_cross_time,
+				)
+
+				_enrich_cross_time_work_orders(row)
+				ct = classify_cross_time({**row, "detection": "CROSS_TIME", "status": opt})
+				row["cross_time_class"] = ct.get("class")
+				row["cross_time_reason"] = ct.get("reason")
+				# Only suppress distinct-WO independent production (business decision).
+				# Other LEGITIMATE_ORDER / TOOL_GAP classes stay visible for review.
+				if ct.get("class") == INDEPENDENT_PRODUCTION_FLOWS:
+					row["status"] = "NO_REPAIR_NEEDED"
+					row["optimizer_status"] = "NO_REPAIR_NEEDED"
+					row["eligible"] = False
+					row["planner_status"] = "NO_REPAIR_PATH"
+					summary["NO_REPAIR_NEEDED"] = int(summary.get("NO_REPAIR_NEEDED") or 0) + 1
+					summary["independent_production_flows"] = (
+						int(summary.get("independent_production_flows") or 0) + 1
+					)
+					if not include_no_repair:
+						keep_cross = False
 			if keep_cross:
 				cross_rows.append(row)
 	out_rows.extend(cross_rows)

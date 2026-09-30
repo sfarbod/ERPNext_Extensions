@@ -182,7 +182,13 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 	expected_value = 0.0 if abs(qty_after) <= QTY_EPS else residual
 	sim = preview_i4_replay(item, warehouse, from_dt=sle.posting_datetime)
 	pz_clears = _simulation_clears_patient_zero(item, warehouse, sle)
+	checkpoint = None
+	if this_is_i4_pz and is_leftover and not pz_clears and not precision_dust:
+		# Amended Manufacture (-1) / timeline inserts: prior SLE opening may look
+		# poisoned while a last healthy (0,0) checkpoint + native replay clears tip.
+		checkpoint = _checkpoint_replay_clears_tip(item, warehouse, sle)
 	status = I4_WAITING
+	repair_from_dt = str(sle.posting_datetime)
 	if abs(qty_after) <= QTY_EPS and abs(residual) <= 1:
 		status = I4_REPAIRED
 	elif precision_dust:
@@ -191,6 +197,13 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 		pz_clears = False
 	elif this_is_i4_pz and is_leftover and prev_ok and pz_clears:
 		status = I4_READY
+	elif this_is_i4_pz and is_leftover and checkpoint:
+		status = I4_READY
+		repair_from_dt = checkpoint["from_dt"]
+		sim = preview_i4_replay(item, warehouse, from_dt=repair_from_dt)
+		prev_ok = True
+		prev_blocker = None
+		pz_clears = True
 	elif this_is_i4_pz and is_leftover and (not prev_ok or not pz_clears):
 		status = "MANUAL"
 	elif is_leftover and i4_pz_voucher and i4_pz_voucher != sle.voucher_no:
@@ -200,6 +213,11 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 	else:
 		status = "NOT_I4"
 	msg = "Identity leftover detected." if status in (I4_READY, I4_WAITING, I4_REPLAY_REQUIRED) else ""
+	if status == I4_READY and checkpoint:
+		msg = (
+			"READY_I4 via last healthy zero checkpoint "
+			f"{checkpoint.get('checkpoint_voucher')} → replay from {checkpoint.get('from_voucher')}"
+		)
 	if status == "MANUAL":
 		if precision_dust:
 			msg = (
@@ -250,7 +268,9 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 		"previous_healthy": prev_ok,
 		"previous_blocker": prev_blocker,
 		"pz_residual_clears_in_sim": pz_clears,
-		"posting_datetime": str(sle.posting_datetime),
+		"posting_datetime": repair_from_dt,
+		"patient_zero_posting_datetime": str(sle.posting_datetime),
+		"checkpoint_repair": checkpoint,
 		"patient_zero": effective_patient
 		or {
 			"voucher_no": sle.voucher_no,
@@ -321,6 +341,81 @@ def _simulation_clears_patient_zero(item, warehouse, sle) -> bool:
 		return False
 	step = series[0]
 	return abs(flt(step["qty_after_transaction"])) <= QTY_EPS and abs(flt(step["stock_value"])) <= 1
+
+
+def _last_healthy_zero_checkpoint(item, warehouse, before_dt):
+	"""Latest SLE before ``before_dt`` with qty≈0 and |stock_value|≤1."""
+	before_dt = get_datetime(before_dt)
+	rows = frappe.db.sql(
+		"""
+		SELECT name, voucher_no, posting_datetime, qty_after_transaction, stock_value
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND posting_datetime < %s
+		  AND ABS(qty_after_transaction) < %s
+		  AND ABS(IFNULL(stock_value,0)) <= 1
+		ORDER BY posting_datetime DESC, creation DESC
+		LIMIT 1
+		""",
+		(item, warehouse, before_dt, QTY_EPS),
+		as_dict=True,
+	)
+	return rows[0] if rows else None
+
+
+def _successor_sle(item, warehouse, checkpoint_name: str):
+	"""Immediate next SLE after ``checkpoint_name`` in posting/creation order."""
+	meta = frappe.db.get_value(
+		"Stock Ledger Entry",
+		checkpoint_name,
+		["posting_datetime", "creation"],
+		as_dict=True,
+	)
+	if not meta:
+		return None
+	rows = frappe.db.sql(
+		"""
+		SELECT name, voucher_no, posting_datetime
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND (
+		        posting_datetime > %s
+		        OR (posting_datetime = %s AND creation > %s)
+		      )
+		ORDER BY posting_datetime ASC, creation ASC
+		LIMIT 1
+		""",
+		(item, warehouse, meta.posting_datetime, meta.posting_datetime, meta.creation),
+		as_dict=True,
+	)
+	return rows[0] if rows else None
+
+
+def _checkpoint_replay_clears_tip(item, warehouse, sle) -> dict | None:
+	"""If a prior healthy (0,0) checkpoint exists and replay from the next SLE
+	clears the tip, return repair metadata. Handles amended Manufacture (-1)
+	rows inserted into a timeline without rebuilding later running balances.
+	"""
+	checkpoint = _last_healthy_zero_checkpoint(item, warehouse, sle.posting_datetime)
+	if not checkpoint:
+		return None
+	nxt = _successor_sle(item, warehouse, checkpoint.name)
+	if not nxt:
+		return None
+	sim = preview_i4_replay(item, warehouse, from_dt=nxt.posting_datetime)
+	if not sim.get("ok"):
+		return None
+	if abs(flt(sim.get("final_qty"))) > QTY_EPS:
+		return None
+	if abs(flt(sim.get("final_value"))) > 1:
+		return None
+	return {
+		"from_dt": str(nxt.posting_datetime),
+		"from_voucher": nxt.voucher_no,
+		"checkpoint_voucher": checkpoint.voucher_no,
+		"sql_updates": sim.get("sql_updates"),
+		"reason": "replay_from_last_healthy_zero_checkpoint_clears_tip",
+	}
 
 
 def scan_i4_leftover(

@@ -23,6 +23,39 @@ from erpnext_extensions.iran_accounting.stock_posting_order.replay import replay
 def apply_wrong_rate_root(row: dict, *, dry_run=True) -> dict:
 	"""Apply one EXACT wrong-rate root; verify outgoing/incoming matches expected."""
 	t0 = perf_counter()
+	# Iran native historical: class-specific contract owns rates (no SVD proposed_rate).
+	strategy = str(row.get("repair_strategy") or "")
+	if strategy == "IRAN_NATIVE_HISTORICAL" or str(row.get("source_of_truth") or "") == "iran_native_historical":
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native_historical import (
+			apply_iran_native_historical,
+		)
+
+		native = apply_iran_native_historical(row.get("voucher") or row.get("voucher_no"), dry_run=dry_run)
+		ok = bool(native.get("applied") or native.get("skipped") == "already_healthy" or native.get("dry_run"))
+		if dry_run:
+			ok = bool(native.get("ok") and native.get("classification") in ("EXACT_REPAIRABLE", "ALREADY_HEALTHY"))
+		return {
+			"ok": ok,
+			"dry_run": dry_run,
+			"path": "iran_native_historical",
+			"voucher": row.get("voucher") or row.get("voucher_no"),
+			"item": row.get("item") or row.get("item_code"),
+			"native": {
+				k: native.get(k)
+				for k in (
+					"classification",
+					"applied",
+					"skipped",
+					"delta_n",
+					"families",
+					"reason",
+					"changed_items",
+					"persisted",
+				)
+			},
+			"elapsed_seconds": round(perf_counter() - t0, 3),
+		}
+
 	classified = classify_wrong_rate_row(row)
 	if classified.get("rate_status") != READY_WRONG_RATE and not (
 		classified.get("eligible") and classified.get("confidence") == "EXACT"

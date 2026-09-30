@@ -257,6 +257,32 @@ class TestFailedRivAndPreflight(unittest.TestCase):
 		ready = full_repost_preflight({})
 		self.assertEqual(ready["status"], FULL_REPOST_READY)
 
+	def test_preflight_precision_dust_does_not_block(self):
+		ready = full_repost_preflight(
+			{
+				"known_riv_poison_roots": [
+					{"item": "A", "warehouse": "W", "status": "PRECISION_DUST"},
+					{"item": "B", "warehouse": "W", "status": "LEGITIMATE"},
+				],
+				"manufacturing_dependency_roots": [],
+			}
+		)
+		self.assertEqual(ready["status"], FULL_REPOST_READY)
+		blocked = full_repost_preflight(
+			{
+				"known_riv_poison_roots": [
+					{
+						"item": "C",
+						"warehouse": "W",
+						"status": "TECHNICAL_TOOL_GAP",
+						"riv_reproduce_reason": "opening poison",
+					}
+				]
+			}
+		)
+		self.assertEqual(blocked["status"], FULL_REPOST_BLOCKED)
+		self.assertEqual(blocked["normalized_snapshot"]["known_riv_poison_root"], 1)
+
 
 class TestOrchestrator(unittest.TestCase):
 	def test_manual_gate_stops_p1(self):

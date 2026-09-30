@@ -736,6 +736,8 @@ def interval_to_scan_row(interval: dict, classified: dict) -> dict:
 		"inbound_modified": str(_g(inbound, "modified") or "") if inbound else "",
 		"outbound_modified": str(_g(outbound, "modified") or ""),
 		"work_order": _g(inbound, "work_order") or _g(outbound, "work_order"),
+		"inbound_work_order": _g(inbound, "work_order") if inbound else None,
+		"outbound_work_order": _g(outbound, "work_order"),
 		"inbound_job_card": _g(inbound, "job_card") if inbound else None,
 		"outbound_job_card": _g(outbound, "job_card"),
 		"company": _g(outbound, "company"),
