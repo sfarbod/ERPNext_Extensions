@@ -560,30 +560,57 @@ def repair_i4_selected(rows: list[dict], *, dry_run=True) -> dict:
 			preview = dry_run_i4_repair(prepared)
 			finish_run(log, applied=0, blocked=0)
 			return {**preview, "repair_run_id": getattr(log, "repair_run_id", None)}
-		savepoint = f"i4_{frappe.generate_hash(length=8)}"
-		frappe.db.savepoint(savepoint)
+		# Commit per identity: long multi-row SLE rewrites under one MariaDB
+		# transaction hit "Record has changed since last read" (1020) and leave
+		# a dead transaction where SAVEPOINT rollback also fails.
 		sql_executed = 0
+		max_attempts = 3
 		for merged in prepared:
-			result = apply_i4_identity(
-				merged["item"],
-				merged["warehouse"],
-				from_dt=merged.get("posting_datetime"),
-				patient_voucher=merged.get("voucher"),
-			)
-			sql_executed += int(result.get("sql_updates") or 0)
-			gl = _rebuild_gl_touched(result.get("touched_vouchers") or [])
-			sql_executed += int(gl.get("rebuilt") or 0)
-			row_out = {
-				**merged,
-				**result,
-				"gl": gl,
-				"written": True,
-				"status": STATUS_REPAIRED,
-				"i4_status": I4_REPAIRED,
-			}
-			applied.append(row_out)
-			append_entry(log, row_out, written=True)
-		frappe.db.commit()
+			last_exc = None
+			for attempt in range(1, max_attempts + 1):
+				try:
+					result = apply_i4_identity(
+						merged["item"],
+						merged["warehouse"],
+						from_dt=merged.get("posting_datetime"),
+						patient_voucher=merged.get("voucher"),
+					)
+					sql_executed += int(result.get("sql_updates") or 0)
+					gl = _rebuild_gl_touched(result.get("touched_vouchers") or [])
+					sql_executed += int(gl.get("rebuilt") or 0)
+					row_out = {
+						**merged,
+						**result,
+						"gl": gl,
+						"written": True,
+						"status": STATUS_REPAIRED,
+						"i4_status": I4_REPAIRED,
+						"attempt": attempt,
+					}
+					applied.append(row_out)
+					append_entry(log, row_out, written=True)
+					frappe.db.commit()
+					last_exc = None
+					break
+				except Exception as exc:
+					last_exc = exc
+					try:
+						frappe.db.rollback()
+					except Exception:
+						pass
+					msg = str(exc).lower()
+					retryable = (
+						"record has changed since last read" in msg
+						or "deadlock" in msg
+						or "try restarting transaction" in msg
+						or getattr(exc, "args", [None])[0] in (1020, 1213)
+					)
+					if not retryable or attempt >= max_attempts:
+						finish_run(log, applied=len(applied), blocked=1, error=str(exc))
+						raise
+			if last_exc:
+				finish_run(log, applied=len(applied), blocked=1, error=str(last_exc))
+				raise last_exc
 		finish_run(log, applied=len(applied), blocked=0)
 		return {
 			"dry_run": False,
@@ -591,7 +618,8 @@ def repair_i4_selected(rows: list[dict], *, dry_run=True) -> dict:
 			"applied": applied,
 			"blocked": blocked,
 			"sql_updates_executed": sql_executed,
-			"savepoint_created": True,
+			"savepoint_created": False,
+			"per_identity_commit": True,
 			"transaction_committed": True,
 			"elapsed_seconds": round(perf_counter() - t0, 3),
 			"database_backup_recommended": True,
@@ -600,9 +628,12 @@ def repair_i4_selected(rows: list[dict], *, dry_run=True) -> dict:
 			"global_replay": False,
 		}
 	except Exception as exc:
-		if savepoint:
-			frappe.db.rollback(save_point=savepoint)
-		finish_run(log, applied=0, blocked=1, error=str(exc))
+		try:
+			frappe.db.rollback()
+		except Exception:
+			pass
+		if not applied:
+			finish_run(log, applied=0, blocked=1, error=str(exc))
 		raise
 	finally:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = False
