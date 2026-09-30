@@ -17,6 +17,7 @@ from erpnext_extensions.iran_accounting.historical_stock.next_downtime.categorie
 )
 from erpnext_extensions.iran_accounting.historical_stock.next_downtime.cross_time import (
 	CROSS_TIME_EXACT,
+	INDEPENDENT_PRODUCTION_FLOWS,
 	LEGITIMATE_ORDER,
 	classify_cross_time,
 	minimum_timestamp_shift,
@@ -80,26 +81,37 @@ class TestCrossTimePlanner(unittest.TestCase):
 		self.assertTrue(got["repair"])
 		self.assertEqual(got["shift"]["seconds"], 137)
 
-	def test_different_work_orders_are_manual_not_hardcoded(self):
+	def test_different_work_orders_are_independent_production_flows(self):
 		row = {
 			"detection": "CROSS_TIME",
 			"planner_status": "READY_WAREHOUSE_REPLAY",
 			"status": "CROSS_TIME_REPAIRABLE",
+			"batch": "BATCH-X",
 			"outbound_work_order": "WO-A",
 			"inbound_work_order": "WO-B",
 			"inbound_qty": 10,
 			"outbound_qty": 10,
+			"outbound_datetime": "2026-04-19 18:00:00",
+			"inbound_datetime": "2026-04-19 18:02:16",
 		}
 		got = classify_cross_time(row)
-		self.assertEqual(got["class"], MANUAL_BUSINESS_EVIDENCE_REQUIRED)
+		self.assertEqual(got["class"], INDEPENDENT_PRODUCTION_FLOWS)
+		self.assertFalse(got["repair"])
 
 	def test_same_time_no_repair_is_legitimate(self):
 		got = classify_cross_time({"detection": "SAME_TIME", "status": "NO_REPAIR_NEEDED"})
 		self.assertEqual(got["class"], LEGITIMATE_ORDER)
 
-	def test_family_requires_shared_wo_or_batch(self):
+	def test_family_requires_shared_wo_or_job_card_not_batch_alone(self):
 		self.assertTrue(same_manufacturing_family({"work_order": "W"}, {"work_order": "W"}))
 		self.assertFalse(same_manufacturing_family({"work_order": "A"}, {"work_order": "B"}))
+		self.assertFalse(
+			same_manufacturing_family(
+				{"work_order": "A", "batch": "B1"},
+				{"work_order": "B", "batch": "B1"},
+			)
+		)
+		self.assertTrue(same_manufacturing_family({"job_card": "JC-1"}, {"job_card": "JC-1"}))
 
 
 class TestLanesAndSabb(unittest.TestCase):

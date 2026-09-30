@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from erpnext_extensions.iran_accounting.domain.currency import (
 	integer_valuation_rate_from_amount,
@@ -88,9 +88,11 @@ OUTPUT_CLASSES = (
 ISSUED_RATE_TOLERANCE = 1.0
 # Legacy stamp: leftover absorbed into additional_cost (pre-TYPE-C SA policy).
 LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
-# Current stamp: stage-equivalent By-Product pre-Core bridge (v5.3.35).
-# TYPE C → Stock Adjustment remains active for all stamps ≥ 5.3.34.
-MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.35"
+# Current stamp: late Product Reject pre-Core bridge (v5.3.37).
+# Stage-equivalent bridge remains (v5.3.35). TYPE C → SA for stamps ≥ 5.3.34.
+MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.37"
+# In-memory only: marks a Product Reject row bridged past Core Valuation Rate.
+PRODUCT_REJECT_BRIDGE_FLAG = "_iran_product_reject_bridge"
 
 
 def _is_incoming(row) -> bool:
@@ -237,6 +239,146 @@ def permit_scrap_zero_valuation(doc, method=None) -> None:
 		if flt(row.get("basic_rate")) or flt(row.get("valuation_rate")):
 			continue
 		row.allow_zero_valuation_rate = 1
+
+
+def _has_explicit_independent_reject_valuation(row) -> bool:
+	"""User/business chose an independent Scrap rate — never Product Reject bridge.
+
+	Distinct from Core's empty→``Valuation Rate`` auto-default for bomless Scrap
+	(which occurs *after* the pre-Core bridge runs).
+	"""
+	valuation_type = (row.get("valuation_type") or "").strip()
+	if valuation_type in ("Valuation Rate", "Manual", "% of Component Cost"):
+		return True
+	if cint(row.get("set_basic_rate_manually")):
+		return True
+	return False
+
+
+def _finished_item_for_bridge(doc) -> str | None:
+	fg_rows = [
+		row
+		for row in (doc.get("items") or [])
+		if row.get("is_finished_item") and _is_incoming(row)
+	]
+	return _resolved_finished_item(doc, fg_rows)
+
+
+def is_product_reject_bridge_candidate(doc, row) -> bool:
+	"""Fail-closed: row is MAIN_PRODUCT_REJECT awaiting absorbed-cost allocation.
+
+	Does **not** bridge ordinary Scrap, Component Scrap, Co-/By-Product, or
+	explicitly independently valued rows. Lifecycle only — economic rate comes
+	from :func:`allocate_scrap_absorbed_cost`.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if not is_irr_company(doc.company):
+		return False
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import uses_v533_contract
+
+	if not uses_v533_contract(doc):
+		return False
+	if not _is_incoming(row):
+		return False
+	if _row_qty(row) <= 0:
+		return False
+	if not is_scrap_row(row):
+		return False
+	if secondary_item_type_of(row) in STAGE_SECONDARY_TYPES:
+		return False
+	if _has_explicit_independent_reject_valuation(row):
+		return False
+	if not _consumed_item_codes(doc):
+		return False
+	finished_item = _finished_item_for_bridge(doc)
+	if not finished_item:
+		return False
+	if not is_product_reject(row, finished_item):
+		return False
+	# Component Scrap is same-item-as-consumed, never same-as-FG Product Reject.
+	consumed = _consumed_item_codes(doc)
+	if _component_family_consumed(doc, row, consumed) and row.get("item_code") != finished_item:
+		return False
+	return True
+
+
+def permit_product_reject_zero_valuation(doc, method=None) -> None:
+	"""Pre-Core bridge for MAIN_PRODUCT_REJECT (incl. late Server Script appends).
+
+	Must run after all ``before_validate`` Server Scripts and before Core
+	``set_bomless_secondary_valuation_types`` / ``get_valuation_rate``. Does
+	**not** assign the economic rate — :func:`allocate_scrap_absorbed_cost` does.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return
+	if not is_irr_company(doc.company):
+		return
+	for row in doc.get("items") or []:
+		if not is_product_reject_bridge_candidate(doc, row):
+			continue
+		setattr(row, PRODUCT_REJECT_BRIDGE_FLAG, True)
+		row.allow_zero_valuation_rate = 1
+
+
+def clear_core_auto_valuation_for_product_reject_bridge(doc) -> None:
+	"""Undo Core bomless ``Valuation Rate`` auto-default on bridged Product Reject.
+
+	Core empty→VR must not turn source-side absorbed costing into destination
+	warehouse valuation policy.
+	"""
+	for row in doc.get("items") or []:
+		if not getattr(row, PRODUCT_REJECT_BRIDGE_FLAG, False):
+			continue
+		if (row.get("valuation_type") or "").strip() != "Valuation Rate":
+			continue
+		if hasattr(row, "set"):
+			try:
+				row.set("valuation_type", None)
+			except Exception:
+				row.valuation_type = None
+		else:
+			row.valuation_type = None
+		if cint(row.get("set_basic_rate_manually")):
+			if hasattr(row, "set"):
+				try:
+					row.set("set_basic_rate_manually", 0)
+				except Exception:
+					row.set_basic_rate_manually = 0
+			else:
+				row.set_basic_rate_manually = 0
+
+
+def assert_bridged_product_reject_priced(doc) -> None:
+	"""Fail closed if the bridge allowed Core through but absorbed costing did not price."""
+	bridged = [
+		row
+		for row in (doc.get("items") or [])
+		if getattr(row, PRODUCT_REJECT_BRIDGE_FLAG, False)
+	]
+	if not bridged:
+		return
+	classified = classify_manufacture_outputs(doc)
+	rejects = classified[CLASS_MAIN_PRODUCT_REJECT]
+	for row in bridged:
+		if row not in rejects:
+			frappe.throw(
+				_(
+					"{0}: Product Reject bridge was activated but the row is not "
+					"classified as MAIN_PRODUCT_REJECT; temporary Core bridge value "
+					"must not reach the ledger."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		if flt(row.get("basic_rate")) <= 0 or flt(row.get("basic_amount")) <= 0:
+			frappe.throw(
+				_(
+					"{0}: MAIN_PRODUCT_REJECT was not priced by Iran absorbed-cost "
+					"allocator; temporary Core bridge value must not reach the ledger."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		row.allow_zero_valuation_rate = 0
 
 
 def _integer_rate_pair(pool: float, good_qty: float, scrap_qty: float) -> tuple[float, float, float] | None:
@@ -731,15 +873,19 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 
 	stamp_contract_version(doc)
 	clear_core_auto_valuation_for_stage_bridge(doc)
+	clear_core_auto_valuation_for_product_reject_bridge(doc)
 	validate_job_card_secondary_match(doc)
 	snapshot_equivalent_factors_from_sources(doc)
 	component_applied = apply_component_scrap_issued_rates(doc)
 	if allocate_stage_output_cost(doc):
 		assert_bridged_stage_outputs_priced(doc)
+		assert_bridged_product_reject_priced(doc)
 		return True
 	assert_bridged_stage_outputs_priced(doc)
 	if _has_product_reject(doc):
-		return allocate_scrap_absorbed_cost(doc, method) or component_applied
+		applied = allocate_scrap_absorbed_cost(doc, method) or component_applied
+		assert_bridged_product_reject_priced(doc)
+		return applied
 	if component_applied:
 		good_rows = [
 			row
@@ -748,7 +894,11 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 		]
 		if len(good_rows) == 1:
 			_restore_finished_good_as_residual(doc, good_rows[0])
+		assert_bridged_product_reject_priced(doc)
 		return True
 	if _erpnext_manufacture_state_is_valid(doc):
+		assert_bridged_product_reject_priced(doc)
 		return False
-	return allocate_scrap_absorbed_cost(doc, method)
+	applied = allocate_scrap_absorbed_cost(doc, method)
+	assert_bridged_product_reject_priced(doc)
+	return applied

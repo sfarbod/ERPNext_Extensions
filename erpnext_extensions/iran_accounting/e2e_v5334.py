@@ -445,7 +445,7 @@ def verify_canary_submit_rollback() -> dict:
 		assert result["sa_debit"] == CANARY_RESIDUAL, result
 		assert result["ledger_pass"], result
 		assert result["gl_balanced"], result
-		assert result["contract_version"] == "5.3.35", result
+		assert result["contract_version"] == "5.3.37", result
 		out = {"submit": "SUCCESS", "before_docstatus": before, **result}
 	except Exception as exc:
 		out = {"submit": "FAIL", "error": str(exc)}

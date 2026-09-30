@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from erpnext_extensions.iran_accounting.manufacture_rounding import (
 	align_manufacture_finished_good_residual,
@@ -22,6 +22,7 @@ from erpnext_extensions.iran_accounting.rounding import (
 )
 from erpnext_extensions.iran_accounting.scrap_costing import (
 	apply_iran_manufacture_output_contract,
+	permit_product_reject_zero_valuation,
 	permit_scrap_zero_valuation,
 )
 from erpnext_extensions.iran_accounting.zero_value_transfer import ZERO_VALUE_TRANSFER_STOCK_ENTRY_PURPOSES
@@ -71,6 +72,9 @@ def before_validate_stock_entry(doc, method=None):
 	)
 
 	permit_stage_equivalent_zero_valuation(doc)
+	# Narrow MAIN_PRODUCT_REJECT bridge (rows present at this hook). Late-added
+	# Scrap from Server Scripts is re-permitted at StockEntry.validate start.
+	permit_product_reject_zero_valuation(doc)
 
 
 def apply_irr_manufacture_economic_finalize(doc) -> None:
@@ -199,6 +203,11 @@ def persist_irr_stock_entry_header_and_rows(doc) -> None:
 			"additional_cost": row.get("additional_cost"),
 			"landed_cost_voucher_amount": row.get("landed_cost_voucher_amount"),
 		}
+		# Persist valuation policy tokens when Iran cleared a failed Core
+		# Valuation Rate auto-default so RIV cannot re-exclude the row.
+		row_update["valuation_type"] = row.get("valuation_type") or ""
+		row_update["allow_zero_valuation_rate"] = cint(row.get("allow_zero_valuation_rate") or 0)
+		row_update["set_basic_rate_manually"] = cint(row.get("set_basic_rate_manually") or 0)
 		for field in (
 			"custom_output_class",
 			"custom_output_equivalent_factor",

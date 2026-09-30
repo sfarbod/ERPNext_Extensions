@@ -148,11 +148,26 @@ def normalize_equivalent_factor(raw) -> float | None:
 
 
 def _secondary_originates_from_manufacture(doc, row) -> bool:
-	"""Prove the secondary is a Job Card / BOM manufacturing output. Fail closed."""
+	"""Prove the secondary is a Job Card / BOM manufacturing output. Fail closed.
+
+	Historical Repair may set ``doc._iran_historical_stage_repair`` when the SE
+	row already carries a stage secondary type and the business equal-rate /
+	stage-equivalent contract must run without requiring a live JC pair
+	(submitted historical vouchers often diverge from JC secondary tables).
+
+	Once a row already carries a stage ``custom_output_class`` under a stamped
+	v5.3.3+ contract, RIV may re-enter the stage pool without re-proving JC
+	origin (era-deterministic replay of the snapshotted classification).
+	"""
 	item = row.get("item_code")
 	stype = secondary_item_type_of(row)
 	if not item or stype not in STAGE_SECONDARY_TYPES:
 		return False
+	if getattr(doc, "_iran_historical_stage_repair", False):
+		return True
+	out_class = str(row.get(OUTPUT_CLASS_FIELD) or "").strip()
+	if out_class in (CLASS_CO_PRODUCT, CLASS_CO_PRODUCT_REJECT) and uses_v533_contract(doc):
+		return True
 	job_card = doc.get("job_card")
 	if job_card:
 		if frappe.db.exists(
@@ -174,6 +189,41 @@ def _secondary_originates_from_manufacture(doc, row) -> bool:
 		return False
 	bom_type = frappe.db.get_value("BOM Secondary Item", bom_ref, "secondary_item_type")
 	return bom_type == stype
+
+
+def clear_core_vr_auto_default_for_zero_byproduct(doc, row) -> bool:
+	"""Clear Core ``Valuation Rate`` auto-default on a zero-rate stage By-Product.
+
+	A zero ``basic_rate`` after Core VR lookup proves the independent path did
+	not resolve an economic rate. Clearing VR lets the stage pool price the row
+	at the same equivalent-unit rate as MAIN_FG (v5.3.35 contract).
+
+	Allowed when:
+	- historical-stage repair flag is set, or
+	- the row already carries a stage bridge mark, or
+	- the row already has a snapshotted stage ``custom_output_class`` under a
+	  stamped v5.3.3+ contract (RIV replay must not re-exclude the row).
+	"""
+	vt = (row.get("valuation_type") or "").strip()
+	if vt != "Valuation Rate" or flt(row.get("basic_rate")) > 0:
+		return False
+	out_class = str(row.get(OUTPUT_CLASS_FIELD) or "").strip()
+	allowed = (
+		getattr(doc, "_iran_historical_stage_repair", False)
+		or getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False)
+		or (
+			out_class in (CLASS_CO_PRODUCT, CLASS_CO_PRODUCT_REJECT)
+			and uses_v533_contract(doc)
+		)
+	)
+	if not allowed:
+		return False
+	_set_field(row, "valuation_type", None)
+	if cint(row.get("set_basic_rate_manually")):
+		_set_field(row, "set_basic_rate_manually", 0)
+	row.allow_zero_valuation_rate = 1
+	setattr(row, STAGE_EQUIV_BRIDGE_FLAG, True)
+	return True
 
 
 def is_stage_equivalent_output_candidate(doc, row) -> bool:
@@ -222,6 +272,9 @@ def permit_stage_equivalent_zero_valuation(doc, method=None) -> None:
 	if not is_irr_company(doc.company):
 		return
 	for row in doc.get("items") or []:
+		# Replay path: clear failed Core VR on already-classified stage outputs
+		# before the candidate predicate so RIV can re-enter the stage pool.
+		clear_core_vr_auto_default_for_zero_byproduct(doc, row)
 		if not is_stage_equivalent_output_candidate(doc, row):
 			continue
 		setattr(row, STAGE_EQUIV_BRIDGE_FLAG, True)
@@ -235,6 +288,7 @@ def clear_core_auto_valuation_for_stage_bridge(doc) -> None:
 	Core's empty→VR fallback cannot steal a qualifying output from the stage pool.
 	"""
 	for row in doc.get("items") or []:
+		clear_core_vr_auto_default_for_zero_byproduct(doc, row)
 		if not getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False):
 			continue
 		if (row.get("valuation_type") or "").strip() == "Valuation Rate":
