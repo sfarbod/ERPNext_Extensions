@@ -39,6 +39,8 @@ def apply_monkey_patches():
 	_patch_buying_regional_valuation_rate()
 	# Idempotent: Pattern A must not post ERPNext product-first precision-loss Round Off.
 	_patch_pattern_a_precision_loss()
+	# Idempotent: late Product Reject / stage bridge before Core rate lookup.
+	_patch_stock_entry_pre_core_bridge()
 
 
 def _patch_buying_regional_valuation_rate():
@@ -434,6 +436,38 @@ def _patch_stock_reconciliation():
 	StockReconciliation._iran_patched_set_total = True
 
 
+def _patch_stock_entry_pre_core_bridge():
+	"""Run Iran pre-Core bridges after Server Scripts, before Core rate lookup.
+
+	Frappe runs DocType Event Server Scripts *after* app ``before_validate``
+	hooks. Custom 14 may append MAIN_PRODUCT_REJECT Scrap there — too late for
+	``before_validate`` permit. Wrapping ``StockEntry.validate`` is the
+	narrowest Core-free point where late rows exist and ``get_valuation_rate``
+	has not yet run.
+	"""
+	from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
+
+	current = StockEntry.validate
+	if getattr(current, "_iran_pre_core_bridge", None):
+		return
+
+	def validate(self):
+		from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+			permit_stage_equivalent_zero_valuation,
+		)
+		from erpnext_extensions.iran_accounting.scrap_costing import (
+			permit_product_reject_zero_valuation,
+		)
+
+		# Late-added Iran-controlled outputs (Server Scripts) need the bridge now.
+		permit_product_reject_zero_valuation(self)
+		permit_stage_equivalent_zero_valuation(self)
+		return current(self)
+
+	validate._iran_pre_core_bridge = True
+	StockEntry.validate = validate
+
+
 def _patch_stock_entry():
 	from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 
@@ -441,6 +475,8 @@ def _patch_stock_entry():
 
 	if getattr(StockEntry, "_iran_patched", None):
 		# Idempotent: never re-save wrapper as original.
+		# Still ensure the pre-Core bridge wrap is present (upgrade path).
+		_patch_stock_entry_pre_core_bridge()
 		return
 
 	se_hooks._original_set_total_incoming_outgoing_value = StockEntry.set_total_incoming_outgoing_value
@@ -477,6 +513,7 @@ def _patch_stock_entry():
 	get_gl_entries._iran_stock_entry_gl_wrapper = True
 	StockEntry.get_gl_entries = get_gl_entries
 	StockEntry._iran_patched = True
+	_patch_stock_entry_pre_core_bridge()
 
 
 def _install_iran_process_debit_credit_difference(gl):

@@ -132,7 +132,7 @@ test.describe("Iran Accounting v5.3.34 Manufacture TYPE C residual", () => {
     expect(canary.fg_additional_cost).toBe(0);
     expect(canary.sle_sigma).toBe(-1);
     expect(canary.sa_debit).toBe(1);
-    expect(canary.contract_version).toBe("5.3.35");
+    expect(canary.contract_version).toBe("5.3.37");
     expect(canary.rolled_back).toBeTruthy();
     expect(canary.after_docstatus).toBe(0);
   });
@@ -200,7 +200,7 @@ test.describe("Iran Accounting v5.3.34 Manufacture TYPE C residual", () => {
       expect(submitted.ledger_pass).toBeTruthy();
       expect(submitted.gl_balanced).toBeTruthy();
       expect(submitted.fg_additional_cost).toBe(0);
-      expect(submitted.contract_version).toBe("5.3.35");
+      expect(submitted.contract_version).toBe("5.3.37");
       if (ctx.expected_residual) {
         expect(Math.abs(submitted.sle_sigma)).toBe(Math.abs(Number(ctx.expected_residual)));
         expect(submitted.sa_debit).toBe(Math.abs(Number(ctx.expected_residual)));

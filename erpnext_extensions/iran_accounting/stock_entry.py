@@ -22,6 +22,7 @@ from erpnext_extensions.iran_accounting.rounding import (
 )
 from erpnext_extensions.iran_accounting.scrap_costing import (
 	apply_iran_manufacture_output_contract,
+	permit_product_reject_zero_valuation,
 	permit_scrap_zero_valuation,
 )
 from erpnext_extensions.iran_accounting.zero_value_transfer import ZERO_VALUE_TRANSFER_STOCK_ENTRY_PURPOSES
@@ -71,6 +72,9 @@ def before_validate_stock_entry(doc, method=None):
 	)
 
 	permit_stage_equivalent_zero_valuation(doc)
+	# Narrow MAIN_PRODUCT_REJECT bridge (rows present at this hook). Late-added
+	# Scrap from Server Scripts is re-permitted at StockEntry.validate start.
+	permit_product_reject_zero_valuation(doc)
 
 
 def apply_irr_manufacture_economic_finalize(doc) -> None:
