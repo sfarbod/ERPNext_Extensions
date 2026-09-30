@@ -11,6 +11,9 @@ WAITING_UPSTREAM = "WAITING_UPSTREAM"
 MANUAL_BUSINESS_EVIDENCE_REQUIRED = "MANUAL_BUSINESS_EVIDENCE_REQUIRED"
 CROSS_ITEM_CONFLICT = "CROSS_ITEM_CONFLICT"
 TECHNICAL_TOOL_GAP = "TECHNICAL_TOOL_GAP"
+# Same item/warehouse/batch with different Work Orders — user-confirmed
+# independent production. Never timestamp-pair these.
+INDEPENDENT_PRODUCTION_FLOWS = "INDEPENDENT_PRODUCTION_FLOWS"
 
 _MIN_SHIFT = timedelta(seconds=1)
 
@@ -30,19 +33,20 @@ def _parse_dt(value) -> datetime | None:
 
 
 def same_manufacturing_family(outbound: dict, inbound: dict) -> bool:
-	"""True when both legs share a Work Order, Job Card, or canonical batch."""
+	"""True when both legs share a Work Order or Job Card.
+
+	Shared batch/item/warehouse alone is NOT a manufacturing family.
+	Independent Work Orders that happen to reuse a batch must never be
+	paired for CROSS_TIME timestamp repair.
+	"""
 	ow = str(outbound.get("work_order") or "").strip()
 	iw = str(inbound.get("work_order") or "").strip()
-	if ow and iw and ow == iw:
-		return True
+	if ow and iw:
+		return ow == iw
 	oj = str(outbound.get("job_card") or "").strip()
 	ij = str(inbound.get("job_card") or "").strip()
-	if oj and ij and oj == ij:
-		return True
-	ob = str(outbound.get("batch") or outbound.get("batch_no") or "").strip()
-	ib = str(inbound.get("batch") or inbound.get("batch_no") or "").strip()
-	if ob and ib and ob == ib:
-		return True
+	if oj and ij:
+		return oj == ij
 	return False
 
 
@@ -104,6 +108,18 @@ def classify_cross_time(row: dict) -> dict:
 		row.get("outbound_qty"),
 		row.get("remainder_qty") or 0,
 	)
+	owo, iwo = outbound.get("work_order"), inbound.get("work_order")
+	# Strong rule: distinct Work Orders are independent production flows.
+	# Item/warehouse/batch/qty similarity alone must NEVER authorize a
+	# CROSS_TIME timestamp repair between them.
+	if owo and iwo and owo != iwo:
+		return {
+			"class": INDEPENDENT_PRODUCTION_FLOWS,
+			"repair": False,
+			"reason": "distinct_work_orders_no_cross_job_timestamp_repair",
+			"outbound_work_order": owo,
+			"inbound_work_order": iwo,
+		}
 	if status == "CROSS_ITEM_CONFLICT" and not family:
 		return {
 			"class": TECHNICAL_TOOL_GAP,
@@ -111,13 +127,6 @@ def classify_cross_time(row: dict) -> dict:
 			"reason": "cross_item_or_unrelated_job_pairing",
 		}
 	if not family:
-		owo, iwo = outbound.get("work_order"), inbound.get("work_order")
-		if owo and iwo and owo != iwo:
-			return {
-				"class": MANUAL_BUSINESS_EVIDENCE_REQUIRED,
-				"repair": False,
-				"reason": "different_work_orders_unproven_same_lot",
-			}
 		return {"class": LEGITIMATE_ORDER, "repair": False, "reason": "no_shared_family"}
 	if planner.startswith("WAITING") or status == "WAITING_UPSTREAM":
 		return {"class": WAITING_UPSTREAM, "repair": False}
