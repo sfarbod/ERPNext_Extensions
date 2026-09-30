@@ -208,6 +208,22 @@ def clear_core_vr_auto_default_for_zero_byproduct(doc, row) -> bool:
 	if vt != "Valuation Rate" or flt(row.get("basic_rate")) > 0:
 		return False
 	out_class = str(row.get(OUTPUT_CLASS_FIELD) or "").strip()
+	# Product Reject / Component Scrap must never be stage-bridged. Historical
+	# repair sets ``_iran_historical_stage_repair`` for the whole voucher; that
+	# flag alone must not steal Scrap rows into STAGE_EQUIV_BRIDGE_FLAG.
+	from erpnext_extensions.iran_accounting.scrap_costing import (
+		CLASS_COMPONENT_SCRAP,
+		CLASS_MAIN_PRODUCT_REJECT,
+		is_product_reject_bridge_candidate,
+		secondary_item_type_of,
+	)
+
+	if out_class in (CLASS_MAIN_PRODUCT_REJECT, CLASS_COMPONENT_SCRAP):
+		return False
+	if secondary_item_type_of(row) == "Scrap":
+		return False
+	if is_product_reject_bridge_candidate(doc, row):
+		return False
 	allowed = (
 		getattr(doc, "_iran_historical_stage_repair", False)
 		or getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False)
@@ -217,6 +233,13 @@ def clear_core_vr_auto_default_for_zero_byproduct(doc, row) -> bool:
 		)
 	)
 	if not allowed:
+		return False
+	# Historical repair may clear Core VR on stage secondaries only.
+	if getattr(doc, "_iran_historical_stage_repair", False) and not (
+		getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False)
+		or out_class in (CLASS_CO_PRODUCT, CLASS_CO_PRODUCT_REJECT)
+		or secondary_item_type_of(row) in STAGE_SECONDARY_TYPES
+	):
 		return False
 	_set_field(row, "valuation_type", None)
 	if cint(row.get("set_basic_rate_manually")):

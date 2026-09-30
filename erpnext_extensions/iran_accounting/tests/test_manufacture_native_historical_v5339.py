@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from erpnext_extensions.iran_accounting.historical_stock.manufacture_native_historical import (
 	ALREADY_HEALTHY,
 	EXACT_REPAIRABLE,
 	STRATEGY,
-	analyze_iran_native_historical,
 	stamp_wrong_rate_row_from_iran_native,
 )
 
@@ -70,11 +68,38 @@ class TestManufactureNativeHistorical(unittest.TestCase):
 			secondary_item_type="By-Product",
 			allow_zero_valuation_rate=0,
 		)
-		# Non-zero explicit rate — clear helper must refuse.
 		cleared = clear_core_vr_auto_default_for_zero_byproduct(doc, row)
 		self.assertFalse(cleared)
 		self.assertEqual(row.valuation_type, "Valuation Rate")
 		self.assertEqual(row.basic_rate, 1000)
+
+
+class TestStageBridgeExclusion(unittest.TestCase):
+	def test_scrap_zero_vr_not_stage_bridged_under_historical_flag(self):
+		from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+			STAGE_EQUIV_BRIDGE_FLAG,
+			clear_core_vr_auto_default_for_zero_byproduct,
+		)
+
+		doc = SimpleNamespace(
+			company="X", purpose="Manufacture", _iran_historical_stage_repair=True, items=[]
+		)
+		row = _Row(
+			item_code="FG1",
+			qty=1,
+			basic_rate=0,
+			valuation_type="Valuation Rate",
+			secondary_item_type="Scrap",
+			custom_output_class=None,
+			allow_zero_valuation_rate=0,
+			t_warehouse="TW",
+			s_warehouse=None,
+			set_basic_rate_manually=0,
+		)
+		cleared = clear_core_vr_auto_default_for_zero_byproduct(doc, row)
+		self.assertFalse(cleared)
+		self.assertFalse(getattr(row, STAGE_EQUIV_BRIDGE_FLAG, False))
+		self.assertEqual(row.valuation_type, "Valuation Rate")
 
 
 def flt0(v):

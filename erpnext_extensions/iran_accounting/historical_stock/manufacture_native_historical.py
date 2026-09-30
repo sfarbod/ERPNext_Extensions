@@ -68,6 +68,30 @@ def _rate_snapshot(doc) -> dict[str, dict]:
 	return out
 
 
+def _adopt_product_reject_class(doc) -> list[str]:
+	"""Stamp MAIN_PRODUCT_REJECT when same-as-FG Scrap is deterministically proven."""
+	from erpnext_extensions.iran_accounting.scrap_costing import CLASS_MAIN_PRODUCT_REJECT
+
+	notes = []
+	fg_items = {
+		r.item_code
+		for r in (doc.get("items") or [])
+		if cint(r.is_finished_item) and r.get("t_warehouse")
+	}
+	for row in doc.get("items") or []:
+		if str(row.get("custom_output_class") or "") == CLASS_MAIN_PRODUCT_REJECT:
+			continue
+		if secondary_item_type_of(row) != "Scrap":
+			continue
+		if not row.get("t_warehouse") or row.get("s_warehouse"):
+			continue
+		if row.item_code not in fg_items:
+			continue
+		row.custom_output_class = CLASS_MAIN_PRODUCT_REJECT
+		notes.append(f"adopt_MAIN_PRODUCT_REJECT:{row.item_code}")
+	return notes
+
+
 def _prepare_historical_doc(doc) -> list[str]:
 	"""Stamp + bridge flags for historical adoption. Returns notes."""
 	notes = []
@@ -78,9 +102,11 @@ def _prepare_historical_doc(doc) -> list[str]:
 	elif str(doc.get("custom_manufacturing_costing_contract_version")) < "5.3.34":
 		# Keep legacy stamp semantics if already present below TYPE C; still allow repair flag.
 		notes.append(f"stamp_kept:{doc.get('custom_manufacturing_costing_contract_version')}")
+	notes.extend(_adopt_product_reject_class(doc))
+	# Product Reject bridge first; stage bridge must not claim Scrap/reject rows.
 	permit_product_reject_zero_valuation(doc)
-	permit_stage_equivalent_zero_valuation(doc)
 	clear_core_auto_valuation_for_product_reject_bridge(doc)
+	permit_stage_equivalent_zero_valuation(doc)
 	clear_core_auto_valuation_for_stage_bridge(doc)
 	notes.append("bridges_cleared")
 	return notes
