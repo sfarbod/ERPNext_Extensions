@@ -41,6 +41,7 @@ COMPANY = "اسپاد فارمد دارو"
 PLAN_ID = "SEPT30_DETERMINISTIC_REPAIR_PLAN_V1"
 
 # Proven Iran-native Manufacture reconstructs (unique, sorted for determinism).
+# Includes 36934 canary — must be applied on fresh restore (not skipped).
 IRAN_NATIVE_VOUCHERS = sorted(
 	{
 		"MAT-STE-2026-24753-1",
@@ -63,6 +64,7 @@ IRAN_NATIVE_VOUCHERS = sorted(
 		"MAT-STE-2026-36677",
 		"MAT-STE-2026-36816",
 		"MAT-STE-2026-36928",
+		"MAT-STE-2026-36934",  # stage Co-product canary
 		"MAT-STE-2026-36963",
 		"MAT-STE-2026-37021",
 		"MAT-STE-2026-37026",
@@ -205,7 +207,7 @@ def plan_manifest() -> dict:
 	)
 	return {
 		"plan_id": PLAN_ID,
-		"code_min_version": "5.3.41",
+		"code_min_version": "5.3.42",
 		"native_owned": NATIVE_OWNED,
 		"excluded": {
 			"MAT-STE-2026-37603": "MANUAL_BUSINESS_EVIDENCE_REQUIRED — Scrap 30100101 unclassifiable",
@@ -227,9 +229,6 @@ def plan_manifest() -> dict:
 def _apply_iran_ops() -> list[dict]:
 	out = []
 	for v in IRAN_NATIVE_VOUCHERS:
-		if v == "MAT-STE-2026-36934":
-			out.append({"operation_id": f"P3-{v}", "voucher": v, "status": "NO_ACTION", "reason": "canary_skip"})
-			continue
 		ev = analyze_iran_native_historical(v)
 		cls = ev.get("classification")
 		if cls == ALREADY_HEALTHY:
@@ -280,10 +279,59 @@ def _apply_i4_ops() -> list[dict]:
 
 def _apply_wr_exact(max_n: int = 80) -> dict:
 	from erpnext_extensions.iran_accounting.historical_stock._validation.phase2_wr_waves_0930 import (
+		compress_wr_exact,
 		wr_wave,
 	)
 
-	return wr_wave(n=max_n, dry_run=False, offset=0)
+	# Fresh restore has no prior causal-root dump — rebuild before wave.
+	comp = compress_wr_exact(limit=3000)
+	wave = wr_wave(n=max_n, dry_run=False, offset=0)
+	wave["compression"] = {
+		"raw_ready_findings": comp.get("raw_ready_findings"),
+		"causal_roots": comp.get("causal_roots"),
+		"safe_apply_queue_n": comp.get("safe_apply_queue_n"),
+	}
+	return wave
+
+
+def _rebuild_bins() -> dict:
+	from erpnext_extensions.iran_accounting.historical_stock._validation.prod_ready_0926 import (
+		rebuild_bins,
+	)
+
+	return rebuild_bins()
+
+
+def _apply_i4_checkpoint_scan(limit: int = 40) -> list[dict]:
+	"""Apply READY_I4 rows that clear via last healthy zero checkpoint."""
+	from erpnext_extensions.iran_accounting.historical_stock.i4_repair import (
+		apply_i4_identity,
+		scan_i4_leftover,
+	)
+
+	scan = scan_i4_leftover(
+		company=COMPANY, from_date="2026-03-21", to_date=str(frappe.utils.nowdate()), limit=5000
+	)
+	out = []
+	seen = set()
+	for r in scan.get("rows") or []:
+		if r.get("i4_status") != "READY_I4" and not r.get("eligible"):
+			continue
+		key = (r.get("item"), r.get("warehouse"))
+		if key in seen or not key[0] or not key[1]:
+			continue
+		seen.add(key)
+		from_dt = r.get("posting_datetime")
+		pz = r.get("patient_zero") or {}
+		pv = pz.get("voucher_no") if isinstance(pz, dict) else None
+		try:
+			res = apply_i4_identity(key[0], key[1], from_dt=from_dt, patient_voucher=pv)
+			out.append({"item": key[0], "warehouse": key[1], "status": "APPLIED" if res.get("ok") else "BLOCKED", "result": res})
+		except Exception as exc:  # noqa: BLE001
+			out.append({"item": key[0], "warehouse": key[1], "status": "BLOCKED", "reason": str(exc)})
+		if len(out) >= limit:
+			break
+	return out
 
 
 def execute_plan(*, stop_on_blocked: bool = True) -> dict:
@@ -291,10 +339,14 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 	manifest = plan_manifest()
 	_dump("SEPT30_DETERMINISTIC_REPAIR_PLAN_V1.json", manifest)
 	fp0 = fingerprint()
+	# Order: Iran manufacture roots first (source of many WR/I4), then WR EXACT,
+	# then I4 checkpoint identities, then Bin rebuild from tip SLE.
+	iran = _apply_iran_ops()
 	wr = _apply_wr_exact(80)
 	i4 = _apply_i4_ops()
-	iran = _apply_iran_ops()
-	blocked = [x for x in iran + i4 if x.get("status") == "BLOCKED"]
+	i4_scan = _apply_i4_checkpoint_scan(40)
+	bins = _rebuild_bins()
+	blocked = [x for x in iran + i4 + i4_scan if x.get("status") == "BLOCKED"]
 	if stop_on_blocked and blocked:
 		out = {
 			"plan_id": PLAN_ID,
@@ -302,7 +354,9 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 			"fingerprint_before": fp0,
 			"wr": wr,
 			"i4": i4,
+			"i4_scan": i4_scan,
 			"iran": iran,
+			"bins": bins,
 			"blocked": blocked,
 			"elapsed": round(perf_counter() - t0, 3),
 		}
@@ -329,8 +383,11 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 			"ok_count": wr.get("ok_count"),
 			"fail_count": wr.get("fail_count"),
 			"regressed": wr.get("regressed"),
+			"compression": wr.get("compression"),
 		},
 		"i4": i4,
+		"i4_scan": i4_scan,
+		"bins": bins,
 		"iran_summary": {
 			"n": len(iran),
 			"by_status": {
@@ -354,6 +411,8 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 		"blockers": pre.get("blockers"),
 		"iran_summary": out["iran_summary"],
 		"i4": [{"item": x.get("item"), "status": x.get("status")} for x in i4],
+		"i4_scan_n": len(i4_scan),
+		"bins": bins,
 		"wr": out["wr"],
 		"canaries": out["canaries"],
 		"hard_gates": out["hard_gates"],
