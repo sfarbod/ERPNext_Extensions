@@ -262,7 +262,7 @@ def _patch_repost_compatibility():
 
 
 def _preview_gl_columns(get_columns, columns, fields, filters):
-	"""Build GL preview columns for ERPNext 16.29–16.35.
+	"""Build GL preview columns for ERPNext 16.29–16.37.
 
 	16.35 made ``currency`` required on ``get_columns``; older minors still
 	accept ``(raw_columns, fields)`` only. Inspect the live signature so the
@@ -825,8 +825,8 @@ def _patch_accounts_controller():
 
 
 # Fingerprint of vanilla AccountsController.make_precision_loss_gl_entry on
-# ERPNext 16.35.0 (normalized AST hash via riv_rate_guard helpers). Fail-closed
-# if the upstream method changes — do not silently wrap an unknown body.
+# ERPNext 16.35.0–16.37.0 (normalized AST hash via riv_rate_guard helpers).
+# Fail-closed if the upstream method changes — do not silently wrap an unknown body.
 _PRECISION_LOSS_FINGERPRINT = {
 	"signature": "(self, gl_entries)",
 	"source_sha256": "4ed33c31cb63e100de245a6c2a7d44c72baf4c541cd0a877164b5c98d5aa345f",

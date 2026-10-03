@@ -264,11 +264,12 @@ def submit_canary_rollback(name: str) -> dict:
 		)
 		debit = sum(flt(r.debit) for r in gl)
 		credit = sum(flt(r.credit) for r in gl)
+		# Match Product Reject by FG item + expected qty — destination WH is
+		# Job Card / Custom-14 driven (often Quarantine), not necessarily scrap.
 		reject_sle = [
-			s
-			for s in sle
-			if s.item_code == FG and s.warehouse == SCRAP_WH and flt(s.actual_qty) > 0
+			s for s in sle if s.item_code == FG and flt(s.actual_qty) == EXPECTED_REJECT_QTY
 		]
+		fg_sle = [s for s in sle if s.item_code == FG and flt(s.actual_qty) == EXPECTED_FG_QTY]
 		rej_svd = sum(flt(s.stock_value_difference) for s in reject_sle)
 		sa = sum(
 			flt(r.debit) - flt(r.credit)
@@ -284,15 +285,20 @@ def submit_canary_rollback(name: str) -> dict:
 				"reject_sle_qty": sum(flt(s.actual_qty) for s in reject_sle),
 				"reject_sle_svd": rej_svd,
 				"reject_sle_rate": flt(reject_sle[0].valuation_rate) if reject_sle else 0,
+				"reject_sle_warehouse": reject_sle[0].warehouse if reject_sle else None,
 				"gl_balanced": abs(debit - credit) < 0.5,
 				"gl_debit": debit,
 				"gl_credit": credit,
 				"stock_adjustment_net": sa,
 				"economics_ok": (
-					abs(rej_svd - EXPECTED_REJECT_AMT) < 0.5
+					bool(reject_sle)
+					and bool(fg_sle)
+					and abs(rej_svd - EXPECTED_REJECT_AMT) < 0.5
 					and abs(flt(reject_sle[0].valuation_rate) - EXPECTED_RATE) < 0.5
-					if reject_sle
-					else False
+					and abs(flt(fg_sle[0].stock_value_difference) - EXPECTED_FG_AMT) < 0.5
+					and abs(flt(fg_sle[0].valuation_rate) - EXPECTED_RATE) < 0.5
+					and abs(sa) < 0.5
+					and abs(debit - credit) < 0.5
 				),
 			}
 		)

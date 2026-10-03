@@ -94,11 +94,11 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 		report = collect_fingerprint_report()
 		self.assertIn(
 			report["erpnext_major_minor"],
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35"},
+			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"},
 		)
 		self.assertIn(
 			report["frappe_major_minor"],
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"},
+			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36"},
 		)
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
@@ -107,7 +107,7 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 			self.assertIn(got["source_sha256"], accepted, name)
 		self.assertTrue(report["methods"]["update_valuation_rate"]["calls_regional_hook"])
 
-	def test_erpnext_16_35_x_allowed_16_36_blocked(self):
+	def test_erpnext_16_37_x_allowed_16_38_blocked(self):
 		import erpnext
 
 		from erpnext_extensions.iran_accounting.domain.uvr_regional_guard import (
@@ -116,27 +116,46 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 		)
 
 		self.assertTrue(
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"}.issubset(_SUPPORTED_ERPNEXT_MINOR)
+			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"}.issubset(
+				_SUPPORTED_ERPNEXT_MINOR
+			)
 		)
-		self.assertIn("16.35", _SUPPORTED_ERPNEXT_MINOR)
-		self.assertNotIn("16.36", _SUPPORTED_ERPNEXT_MINOR)
-		self.assertIn("16.34", _SUPPORTED_FRAPPE_MINOR)
-		self.assertNotIn("16.35", _SUPPORTED_FRAPPE_MINOR)
+		self.assertIn("16.37", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertNotIn("16.38", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.36", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.37", _SUPPORTED_FRAPPE_MINOR)
 
-		with mock.patch.object(erpnext, "__version__", "16.35.0"), mock.patch.object(
-			frappe, "__version__", "16.34.0"
+		with mock.patch.object(erpnext, "__version__", "16.37.0"), mock.patch.object(
+			frappe, "__version__", "16.36.1"
 		):
 			assert_erpnext_uvr_regional_patch_supported()
-		with mock.patch.object(erpnext, "__version__", "16.35.9"), mock.patch.object(
-			frappe, "__version__", "16.34.1"
+		with mock.patch.object(erpnext, "__version__", "16.37.9"), mock.patch.object(
+			frappe, "__version__", "16.36.0"
 		):
 			assert_erpnext_uvr_regional_patch_supported()
-		with mock.patch.object(erpnext, "__version__", "16.36.0"), mock.patch.object(
-			frappe, "__version__", "16.34.0"
+		with mock.patch.object(erpnext, "__version__", "16.38.0"), mock.patch.object(
+			frappe, "__version__", "16.36.1"
 		):
 			with self.assertRaises(RuntimeError) as ctx:
 				assert_erpnext_uvr_regional_patch_supported()
-			self.assertIn("16.36.0", str(ctx.exception))
+			self.assertIn("16.38.0", str(ctx.exception))
+		with mock.patch.object(erpnext, "__version__", "16.37.0"), mock.patch.object(
+			frappe, "__version__", "16.37.0"
+		):
+			with self.assertRaises(RuntimeError) as ctx:
+				assert_erpnext_uvr_regional_patch_supported()
+			self.assertIn("16.37.0", str(ctx.exception))
+		with mock.patch.object(erpnext, "__version__", "16.28.0"), mock.patch.object(
+			frappe, "__version__", "16.36.1"
+		):
+			with self.assertRaises(RuntimeError) as ctx:
+				assert_erpnext_uvr_regional_patch_supported()
+			self.assertIn("16.28.0", str(ctx.exception))
+		with mock.patch.object(erpnext, "__version__", "not-a-version"), mock.patch.object(
+			frappe, "__version__", "16.36.1"
+		):
+			with self.assertRaises(RuntimeError):
+				assert_erpnext_uvr_regional_patch_supported()
 
 	def test_unsupported_version_blocks(self):
 		with mock.patch(
@@ -446,6 +465,20 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 		)
 		if not cls.company:
 			raise unittest.SkipTest("No IRR company")
+		# Dev site may enforce Buying Settings.po_required / pr_required = Yes;
+		# UVR integerization fixtures create PR/PI without PO/PR links. Core
+		# guards are unchanged on 16.35–16.37 — temporarily relax for this suite.
+		cls._prev_buying = {
+			"po_required": frappe.db.get_single_value("Buying Settings", "po_required"),
+			"pr_required": frappe.db.get_single_value("Buying Settings", "pr_required"),
+		}
+		changed = False
+		for field, want in (("po_required", "No"), ("pr_required", "No")):
+			if cls._prev_buying.get(field) == "Yes":
+				frappe.db.set_single_value("Buying Settings", field, want)
+				changed = True
+		if changed:
+			frappe.db.commit()
 		cls.wh = frappe.db.get_value(
 			"Warehouse", {"company": cls.company, "is_group": 0}, "name"
 		)
@@ -471,6 +504,19 @@ class TestUvrRegionalGuardIntegration(unittest.TestCase):
 				or frappe.db.get_value("Department", {}, "name")
 			)
 		)
+
+	@classmethod
+	def tearDownClass(cls):
+		prev = getattr(cls, "_prev_buying", None) or {}
+		changed = False
+		for field, want in prev.items():
+			if want is None:
+				continue
+			if frappe.db.get_single_value("Buying Settings", field) != want:
+				frappe.db.set_single_value("Buying Settings", field, want)
+				changed = True
+		if changed:
+			frappe.db.commit()
 
 	def _item(self, prefix: str) -> str:
 		code = f"{prefix}-{frappe.generate_hash(length=5)}"

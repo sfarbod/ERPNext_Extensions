@@ -28,6 +28,40 @@ from erpnext_extensions.iran_accounting.tests.test_fx_purchase_invoice_pattern_a
 )
 
 
+def _relax_buying_settings_for_fixtures():
+	"""Site may require PO/PR; Pattern A PI fixtures intentionally omit them."""
+	import frappe
+
+	prev = {
+		"po_required": frappe.db.get_single_value("Buying Settings", "po_required"),
+		"pr_required": frappe.db.get_single_value("Buying Settings", "pr_required"),
+	}
+	changed = False
+	for field in ("po_required", "pr_required"):
+		if prev.get(field) == "Yes":
+			frappe.db.set_single_value("Buying Settings", field, "No")
+			changed = True
+	if changed:
+		frappe.db.commit()
+	return prev
+
+
+def _restore_buying_settings(prev: dict | None):
+	import frappe
+
+	if not prev:
+		return
+	changed = False
+	for field, want in prev.items():
+		if want is None:
+			continue
+		if frappe.db.get_single_value("Buying Settings", field) != want:
+			frappe.db.set_single_value("Buying Settings", field, want)
+			changed = True
+	if changed:
+		frappe.db.commit()
+
+
 class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -40,6 +74,7 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.integration.bootstrap import apply
 
 		apply()
+		cls._prev_buying = _relax_buying_settings_for_fixtures()
 		try:
 			cls.company = (
 				"اسپاد فارمد دارو"
@@ -48,6 +83,10 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 			)
 		except Exception:
 			raise unittest.SkipTest("No IRR company")
+
+	@classmethod
+	def tearDownClass(cls):
+		_restore_buying_settings(getattr(cls, "_prev_buying", None))
 
 	def tearDown(self):
 		import frappe
@@ -378,7 +417,7 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 		self.assertIs(PurchaseInvoice.make_precision_loss_gl_entry, fn2)
 		assert_pattern_a_precision_loss_patch_supported(orig2)
 
-	def test_upgrade_guard_blocks_erpnext_16_36(self):
+	def test_upgrade_guard_blocks_erpnext_16_38(self):
 		from erpnext.controllers.accounts_controller import AccountsController
 
 		from erpnext_extensions.iran_accounting.integration.monkey_patches import (
@@ -386,12 +425,16 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 		)
 
 		orig = AccountsController._iran_original_precision_loss
-		with patch("erpnext.__version__", "16.36.0"):
+		with patch("erpnext.__version__", "16.38.0"):
 			with self.assertRaises(RuntimeError) as ctx:
 				assert_pattern_a_precision_loss_patch_supported(orig)
-		self.assertIn("16.36", str(ctx.exception))
-		with patch("erpnext.__version__", "16.35.0"):
+		self.assertIn("16.38", str(ctx.exception))
+		with patch("erpnext.__version__", "16.37.0"), patch("frappe.__version__", "16.36.1"):
 			assert_pattern_a_precision_loss_patch_supported(orig)
+		with patch("erpnext.__version__", "16.37.0"), patch("frappe.__version__", "16.37.0"):
+			with self.assertRaises(RuntimeError) as ctx:
+				assert_pattern_a_precision_loss_patch_supported(orig)
+			self.assertIn("16.37", str(ctx.exception))
 
 
 class TestPatternAPrecisionLossTaxAndCurrency(unittest.TestCase):
@@ -408,6 +451,7 @@ class TestPatternAPrecisionLossTaxAndCurrency(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.integration.bootstrap import apply
 
 		apply()
+		cls._prev_buying = _relax_buying_settings_for_fixtures()
 		try:
 			cls.company = (
 				"اسپاد فارمد دارو"
@@ -442,6 +486,10 @@ class TestPatternAPrecisionLossTaxAndCurrency(unittest.TestCase):
 		)
 		if not cls.supplier or not cls.expense:
 			raise unittest.SkipTest("No supplier/expense account")
+
+	@classmethod
+	def tearDownClass(cls):
+		_restore_buying_settings(getattr(cls, "_prev_buying", None))
 
 	def tearDown(self):
 		import frappe
