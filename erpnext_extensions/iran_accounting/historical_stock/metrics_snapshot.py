@@ -164,6 +164,9 @@ def worker_queue_status(queue: str = "long") -> dict:
 
 	Registration with empty queues, state ``?``, or a stale heartbeat is
 	WORKER_UNAVAILABLE. A heartbeat alone is not proof of consumption.
+
+	RQ 2 registers workers on queue-scoped sets (``rq:workers:<site>:<queue>``).
+	Prefer ``Worker.all(queue=frappe_queue)``; fall back to global ``Worker.all``.
 	"""
 	out = {
 		"queue": queue,
@@ -176,24 +179,65 @@ def worker_queue_status(queue: str = "long") -> dict:
 		"message": "",
 	}
 	try:
-		from frappe.utils.background_jobs import get_redis_conn
+		from frappe.utils.background_jobs import get_queue, get_redis_conn
 		from rq import Queue, Worker
 
 		conn = get_redis_conn()
-		workers = Worker.all(connection=conn)
+		frappe_q = None
+		try:
+			frappe_q = get_queue(queue)
+		except Exception:
+			frappe_q = None
+
+		queue_scoped = []
+		if frappe_q is not None:
+			try:
+				queue_scoped = list(Worker.all(queue=frappe_q, connection=conn) or [])
+			except Exception:
+				queue_scoped = []
+		try:
+			global_workers = list(Worker.all(connection=conn) or [])
+		except Exception:
+			global_workers = []
+
+		# Union by worker name
+		by_name = {}
+		for w in global_workers + queue_scoped:
+			by_name[getattr(w, "name", id(w))] = w
+		workers = list(by_name.values())
 		out["workers_total"] = len(workers)
+
 		matched_qnames = set()
+		if frappe_q is not None and getattr(frappe_q, "name", None):
+			matched_qnames.add(frappe_q.name)
+		queue_scoped_names = {getattr(w, "name", None) for w in queue_scoped}
+
 		for w in workers:
-			if not _worker_listens(w, queue):
+			state = ""
+			try:
+				state = str(w.get_state() or "")
+			except Exception:
+				state = ""
+			if state.lower() in _DEAD_STATES:
+				continue
+			if not _worker_heartbeat_fresh(w):
+				continue
+			# Accept if queue-scoped registry listed this worker, or classic listen check.
+			if getattr(w, "name", None) not in queue_scoped_names and not _worker_listens(w, queue):
 				continue
 			out["workers_for_queue"] += 1
 			out["worker_names"].append(w.name)
 			for qn in _worker_queue_names(w):
 				if _queue_name_matches(qn, queue):
 					matched_qnames.add(qn)
+
 		queued = 0
 		seen = set()
-		for qn in [queue, *sorted(matched_qnames)]:
+		candidate_qnames = []
+		if frappe_q is not None and getattr(frappe_q, "name", None):
+			candidate_qnames.append(frappe_q.name)
+		candidate_qnames.extend([queue, *sorted(matched_qnames)])
+		for qn in candidate_qnames:
 			if qn in seen:
 				continue
 			seen.add(qn)
@@ -203,8 +247,6 @@ def worker_queue_status(queue: str = "long") -> dict:
 				pass
 		out["queued_jobs"] = queued
 		out["last_dequeue_age_seconds"] = last_dequeue_age_seconds(queue)
-		# Subscription is required. A recent successful dequeue is independent
-		# proof the queue is consumable (RQ 2 may hide queue names).
 		out["available"] = out["workers_for_queue"] > 0 or _recent_dequeue(queue)
 		if not out["available"]:
 			out["message"] = (
@@ -214,7 +256,9 @@ def worker_queue_status(queue: str = "long") -> dict:
 		elif out["workers_for_queue"] > 0:
 			out["message"] = f"{out['workers_for_queue']} worker(s) listening on '{queue}'"
 		else:
-			out["message"] = f"long queue recently consumed (last dequeue {int(out['last_dequeue_age_seconds'] or 0)}s ago)"
+			out["message"] = (
+				f"long queue recently consumed (last dequeue {int(out['last_dequeue_age_seconds'] or 0)}s ago)"
+			)
 	except Exception as exc:
 		out["message"] = f"Worker probe failed: {exc}"
 		out["available"] = False

@@ -744,6 +744,8 @@ def create_and_run_narrow_riv(
 	allow_zero_rate=True,
 	allow_negative_stock=True,
 	atomic=False,
+	exclusive_company_gl: bool | None = None,
+	max_db_concurrency_attempts: int = 1,
 ) -> dict:
 	"""Official ERPNext RIV (Item + Warehouse) executed through ``repost()``.
 
@@ -751,104 +753,198 @@ def create_and_run_narrow_riv(
 	``bench execute`` is neither a request nor a job, so Iran GL patches must
 	be applied here — otherwise vanilla Stock Entry allowance (0.5) rejects a
 	legitimate one-quantum IRR residual and RIV poisons I1.
+
+	When ``atomic=True``:
+	  - mid-chunk commits are held so deadlock/1020 rolls back the whole identity
+	  - a Redis RIV exec lock prevents scheduler/worker dual-execution of the same RIV
+	  - optional company GL lock serializes overlapping GL reposts
+	  - ``max_db_concurrency_attempts`` > 1 enables bounded retry after full rollback
 	"""
 	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+	from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
+		classify_db_concurrency_error,
+		company_gl_lock_key,
+		exclusive_redis_lock,
+		riv_exec_lock_key,
+		run_with_db_concurrency_retry,
+	)
 
 	apply_iran_runtime()
 	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
 		execute_reposting_entry,
 	)
 
+	if exclusive_company_gl is None:
+		exclusive_company_gl = bool(atomic)
+
 	company = frappe.db.get_value("Warehouse", warehouse, "company")
-	doc = frappe.get_doc(
-		{
-			"doctype": "Repost Item Valuation",
-			"based_on": "Item and Warehouse",
-			"item_code": item,
-			"warehouse": warehouse,
-			"company": company,
-			"posting_date": str(posting_date),
-			"posting_time": str(posting_time),
-			"allow_negative_stock": 1 if allow_negative_stock else 0,
-			"allow_zero_rate": 1 if allow_zero_rate else 0,
-			"recalculate_valuation_rate": 0,
-			"recreate_stock_ledgers": 0,
-		}
-	)
-	doc.flags.ignore_permissions = True
-	doc.insert()
-	doc.submit()
-	# Persist the RIV header only. Economic writes stay in the execute txn
-	# when atomic=True so a deadlock cannot leave a half-replayed chain.
-	if atomic:
-		frappe.db.commit()
-	neg0 = frappe.db.sql(
-		"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
-		WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
-	)[0][0]
-	# Normal lifecycle enqueues via scheduler. Execute the same worker target
-	# so Historical Repair never marks Completed on a queued RIV.
+
+	# Raise write budget for large company historical walks (atomic holds one txn).
 	try:
-		if atomic:
-			_execute_repost_without_mid_commits(doc.name)
-		else:
-			execute_reposting_entry(doc.name)
-		if atomic:
-			neg1 = frappe.db.sql(
-				"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
-				WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
-			)[0][0]
-			if int(neg1) > int(neg0):
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 8
+	except Exception:
+		pass
+
+	def _once() -> dict:
+		from contextlib import nullcontext
+
+		doc = frappe.get_doc(
+			{
+				"doctype": "Repost Item Valuation",
+				"based_on": "Item and Warehouse",
+				"item_code": item,
+				"warehouse": warehouse,
+				"company": company,
+				"posting_date": str(posting_date),
+				"posting_time": str(posting_time),
+				"allow_negative_stock": 1 if allow_negative_stock else 0,
+				"allow_zero_rate": 1 if allow_zero_rate else 0,
+				"recalculate_valuation_rate": 0,
+				"recreate_stock_ledgers": 0,
+			}
+		)
+		doc.flags.ignore_permissions = True
+		doc.insert()
+		doc.submit()
+
+		# Claim exclusive exec BEFORE exposing Queued to other sessions.
+		with exclusive_redis_lock(riv_exec_lock_key(doc.name), ttl_s=7200, wait_s=0) as riv_ok:
+			if not riv_ok:
 				frappe.db.rollback()
-				frappe.db.set_value(
-					"Repost Item Valuation",
-					doc.name,
-					{
-						"status": "Failed",
-						"error_log": f"atomic RIV created new negative stock ({neg0}→{neg1})",
-					},
-				)
-				frappe.db.commit()
 				return {
 					"ok": False,
 					"status": LEFTOVER_MA_FAILED_RIV,
 					"riv_name": doc.name,
 					"riv_status": "Failed",
-					"reason": f"new negative stock {neg0}->{neg1}",
+					"reason": "RIV_EXEC_LOCK_BUSY",
 				}
-			frappe.db.commit()
-	except Exception as exc:
-		if atomic:
-			frappe.db.rollback()
-		frappe.db.set_value("Repost Item Valuation", doc.name, {"status": "Failed", "error_log": str(exc)[:1000]})
-		if atomic:
-			frappe.db.commit()
-		return {
-			"ok": False,
-			"status": LEFTOVER_MA_FAILED_RIV,
-			"riv_name": doc.name,
-			"riv_status": "Failed",
-			"reason": str(exc)[:500],
-		}
-	st = frappe.db.get_value("Repost Item Valuation", doc.name, ["status", "error_log"], as_dict=True)
-	block = _riv_status_blocks_completion(st.status)
-	if block:
-		# Deadlock / mid-flight abort leaves In Progress. Never keep that as a live job.
-		if st.status in ("Queued", "In Progress"):
-			frappe.db.set_value(
-				"Repost Item Valuation",
-				doc.name,
-				{"status": "Failed", "error_log": (st.error_log or block)[:1000]},
+			# Sync owner token so the execute_reposting_entry guard allows this session.
+			frappe.local.iran_hr_riv_exec_owner = doc.name
+			gl_cm = (
+				exclusive_redis_lock(company_gl_lock_key(company), ttl_s=7200, wait_s=120.0)
+				if exclusive_company_gl and company
+				else nullcontext(True)
 			)
-			st.status = "Failed"
-		return {
-			"ok": False,
-			"status": LEFTOVER_MA_FAILED_RIV if st.status == "Failed" else LEFTOVER_MA_FAILED_POSTCONDITION,
-			"riv_name": doc.name,
-			"riv_status": st.status,
-			"reason": block if st.status != "Failed" else (st.error_log or "FAILED_RIV"),
-		}
-	return {"ok": True, "riv_name": doc.name, "riv_status": st.status}
+			try:
+				with gl_cm as gl_ok:
+					if exclusive_company_gl and company and not gl_ok:
+						frappe.db.rollback()
+						return {
+							"ok": False,
+							"status": LEFTOVER_MA_FAILED_RIV,
+							"riv_name": doc.name,
+							"riv_status": "Failed",
+							"reason": "COMPANY_GL_LOCK_TIMEOUT",
+							"db_concurrency_retry": True,
+							"retry_reason": "DB_LOCK_TIMEOUT_RETRY",
+						}
+
+					# Persist the RIV header only. Economic writes stay in the execute txn
+					# when atomic=True so deadlock/record-changed returns the economic scope.
+					if atomic:
+						frappe.db.commit()
+					neg0 = frappe.db.sql(
+						"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
+						WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
+					)[0][0]
+					try:
+						if atomic:
+							_execute_repost_without_mid_commits(doc.name)
+						else:
+							execute_reposting_entry(doc.name)
+						if atomic:
+							neg1 = frappe.db.sql(
+								"""SELECT COUNT(*) FROM `tabStock Ledger Entry`
+								WHERE is_cancelled=0 AND qty_after_transaction < -0.0001"""
+							)[0][0]
+							if int(neg1) > int(neg0):
+								frappe.db.rollback()
+								frappe.db.set_value(
+									"Repost Item Valuation",
+									doc.name,
+									{
+										"status": "Failed",
+										"error_log": (
+											f"atomic RIV created new negative stock ({neg0}→{neg1})"
+										),
+									},
+								)
+								frappe.db.commit()
+								return {
+									"ok": False,
+									"status": LEFTOVER_MA_FAILED_RIV,
+									"riv_name": doc.name,
+									"riv_status": "Failed",
+									"reason": f"new negative stock {neg0}->{neg1}",
+								}
+							frappe.db.commit()
+					except Exception as exc:
+						if atomic:
+							frappe.db.rollback()
+						reason_code = classify_db_concurrency_error(exc)
+						frappe.db.set_value(
+							"Repost Item Valuation",
+							doc.name,
+							{"status": "Failed", "error_log": str(exc)[:1000]},
+						)
+						if atomic:
+							frappe.db.commit()
+						return {
+							"ok": False,
+							"status": LEFTOVER_MA_FAILED_RIV,
+							"riv_name": doc.name,
+							"riv_status": "Failed",
+							"reason": str(exc)[:500],
+							"db_concurrency_retry": bool(reason_code),
+							"retry_reason": reason_code,
+						}
+					st = frappe.db.get_value(
+						"Repost Item Valuation", doc.name, ["status", "error_log"], as_dict=True
+					)
+					block = _riv_status_blocks_completion(st.status)
+					if block:
+						if st.status in ("Queued", "In Progress"):
+							reason_code = classify_db_concurrency_error(
+								Exception(st.error_log or block)
+							)
+							frappe.db.set_value(
+								"Repost Item Valuation",
+								doc.name,
+								{"status": "Failed", "error_log": (st.error_log or block)[:1000]},
+							)
+							st.status = "Failed"
+							return {
+								"ok": False,
+								"status": LEFTOVER_MA_FAILED_RIV,
+								"riv_name": doc.name,
+								"riv_status": st.status,
+								"reason": st.error_log or "FAILED_RIV",
+								"db_concurrency_retry": bool(reason_code),
+								"retry_reason": reason_code,
+							}
+						return {
+							"ok": False,
+							"status": (
+								LEFTOVER_MA_FAILED_RIV
+								if st.status == "Failed"
+								else LEFTOVER_MA_FAILED_POSTCONDITION
+							),
+							"riv_name": doc.name,
+							"riv_status": st.status,
+							"reason": (
+								block if st.status != "Failed" else (st.error_log or "FAILED_RIV")
+							),
+						}
+					return {"ok": True, "riv_name": doc.name, "riv_status": st.status}
+			finally:
+				if getattr(frappe.local, "iran_hr_riv_exec_owner", None) == doc.name:
+					frappe.local.iran_hr_riv_exec_owner = None
+
+	if max_db_concurrency_attempts and int(max_db_concurrency_attempts) > 1:
+		return run_with_db_concurrency_retry(
+			_once, max_attempts=int(max_db_concurrency_attempts)
+		)
+	return _once()
 
 
 def first_non_opening_repost_boundary(item, warehouse) -> dict | None:
@@ -918,6 +1014,8 @@ def create_and_run_isolated_riv(
 				allow_zero_rate=allow_zero_rate,
 				allow_negative_stock=allow_negative_stock,
 				atomic=True,
+				exclusive_company_gl=True,
+				max_db_concurrency_attempts=1,  # outer loop owns retry bound
 			)
 			attempts.append({"attempt": attempt, **{k: out.get(k) for k in ("ok", "riv_name", "riv_status", "reason")}})
 			if out.get("ok"):
@@ -1115,7 +1213,27 @@ def _zero_inbound_authorized(voucher, item) -> bool:
 		{"parent": voucher, "item_code": item},
 		"allow_zero_valuation_rate",
 	)
-	return bool(cint(flag))
+	if bool(cint(flag)):
+		return True
+	# PENDING_PURCHASE_INVOICE_VALUATION — PR document rate 0 + PI not yet posted.
+	if frappe.db.exists("Purchase Receipt", voucher):
+		from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+			classify_pending_purchase_invoice_valuation,
+		)
+
+		detail = frappe.db.get_value(
+			"Purchase Receipt Item",
+			{"parent": voucher, "item_code": item},
+			"name",
+		)
+		res = classify_pending_purchase_invoice_valuation(
+			voucher_type="Purchase Receipt",
+			voucher_no=voucher,
+			item_code=item,
+			voucher_detail_no=detail,
+		)
+		return bool(res.get("pending"))
+	return False
 
 
 def simulate_leftover_ma(item, warehouse, *, root_voucher) -> dict:

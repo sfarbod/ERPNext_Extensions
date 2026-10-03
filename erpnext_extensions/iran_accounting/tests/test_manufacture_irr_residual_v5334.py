@@ -574,6 +574,7 @@ class TestClassifierExtrasForCoverage(unittest.TestCase):
 			"CO_PRODUCT": [],
 			"CO_PRODUCT_REJECT": [],
 			"COMPONENT_SCRAP": [_Row(item_code="RM", basic_rate=1)],
+			"BULK_SCRAP": [],
 			"OTHER_OUTPUT": [],
 		}
 		patches = _irr_patches()
@@ -682,6 +683,7 @@ class TestClassifierExtrasForCoverage(unittest.TestCase):
 			"CO_PRODUCT": [],
 			"CO_PRODUCT_REJECT": [],
 			"COMPONENT_SCRAP": [scrap],
+			"BULK_SCRAP": [],
 			"OTHER_OUTPUT": [],
 		}
 		patches = _irr_patches()

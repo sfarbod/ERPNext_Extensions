@@ -28,10 +28,12 @@ from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
 	uses_v533_contract,
 )
 from erpnext_extensions.iran_accounting.scrap_costing import (
+	CLASS_BULK_SCRAP,
 	MANUFACTURE_COSTING_CONTRACT_VERSION,
 	STAGE_SECONDARY_TYPES,
 	apply_iran_manufacture_output_contract,
 	clear_core_auto_valuation_for_product_reject_bridge,
+	is_intentional_bulk_scrap_zero,
 	permit_product_reject_zero_valuation,
 	secondary_item_type_of,
 )
@@ -79,7 +81,10 @@ def _adopt_product_reject_class(doc) -> list[str]:
 		if cint(r.is_finished_item) and r.get("t_warehouse")
 	}
 	for row in doc.get("items") or []:
-		if str(row.get("custom_output_class") or "") == CLASS_MAIN_PRODUCT_REJECT:
+		if str(row.get("custom_output_class") or "") in (
+			CLASS_MAIN_PRODUCT_REJECT,
+			CLASS_BULK_SCRAP,
+		):
 			continue
 		if secondary_item_type_of(row) != "Scrap":
 			continue
@@ -89,6 +94,32 @@ def _adopt_product_reject_class(doc) -> list[str]:
 			continue
 		row.custom_output_class = CLASS_MAIN_PRODUCT_REJECT
 		notes.append(f"adopt_MAIN_PRODUCT_REJECT:{row.item_code}")
+	return notes
+
+
+def _adopt_bulk_scrap_class(doc) -> list[str]:
+	"""Stamp BULK_SCRAP when intentional-zero Manual scrap is proven (not PR/CS)."""
+	from erpnext_extensions.iran_accounting.scrap_costing import (
+		CLASS_COMPONENT_SCRAP,
+		CLASS_MAIN_PRODUCT_REJECT,
+		classify_manufacture_outputs,
+	)
+
+	notes = []
+	classified = classify_manufacture_outputs(doc)
+	for row in classified.get(CLASS_BULK_SCRAP, []):
+		if str(row.get("custom_output_class") or "") == CLASS_BULK_SCRAP:
+			continue
+		# Refuse if family inference already committed another scrap class.
+		oc = str(row.get("custom_output_class") or "")
+		if oc in (CLASS_MAIN_PRODUCT_REJECT, CLASS_COMPONENT_SCRAP):
+			continue
+		if not is_intentional_bulk_scrap_zero(row) and oc != CLASS_BULK_SCRAP:
+			# classify already put it in BULK_SCRAP via intentional-zero predicate
+			pass
+		row.custom_output_class = CLASS_BULK_SCRAP
+		row.allow_zero_valuation_rate = 1
+		notes.append(f"adopt_BULK_SCRAP:{row.item_code}")
 	return notes
 
 
@@ -102,6 +133,7 @@ def _prepare_historical_doc(doc) -> list[str]:
 	elif str(doc.get("custom_manufacturing_costing_contract_version")) < "5.3.34":
 		# Keep legacy stamp semantics if already present below TYPE C; still allow repair flag.
 		notes.append(f"stamp_kept:{doc.get('custom_manufacturing_costing_contract_version')}")
+	notes.extend(_adopt_bulk_scrap_class(doc))
 	notes.extend(_adopt_product_reject_class(doc))
 	# Product Reject bridge first; stage bridge must not claim Scrap/reject rows.
 	permit_product_reject_zero_valuation(doc)
@@ -123,7 +155,9 @@ def _families_present(doc) -> list[str]:
 		oc = str(row.get("custom_output_class") or "")
 		sec = secondary_item_type_of(row)
 		vt = str(row.get("valuation_type") or "")
-		if oc == "MAIN_PRODUCT_REJECT" or (
+		if oc == CLASS_BULK_SCRAP or (sec == "Scrap" and is_intentional_bulk_scrap_zero(row)):
+			fams.add("BULK_SCRAP")
+		elif oc == "MAIN_PRODUCT_REJECT" or (
 			sec == "Scrap" and vt == "Valuation Rate" and row.item_code in fg_items
 		):
 			fams.add("PRODUCT_REJECT")
@@ -135,7 +169,7 @@ def _families_present(doc) -> list[str]:
 			fams.add("STAGE_CO_PRODUCT")
 		elif sec == "Additional Finished Good":
 			fams.add("AFG")
-		elif oc == "COMPONENT_SCRAP" or (sec == "Scrap" and vt != "Valuation Rate"):
+		elif oc == "COMPONENT_SCRAP" or (sec == "Scrap" and vt not in ("Valuation Rate", "Manual")):
 			fams.add("COMPONENT_SCRAP")
 		if sec in STAGE_SECONDARY_TYPES:
 			fams.add("STAGE_EQUIVALENT")
@@ -410,6 +444,14 @@ def stamp_wrong_rate_row_from_iran_native(row: dict, evidence: dict | None = Non
 		row["planner_status"] = "RATE_REPAIR_COMPLETE"
 		row["message"] = "Iran native contract reproduces current SE economics — not a tool gap"
 		row["iran_native"] = ev
+		families = ev.get("families") or []
+		if "BULK_SCRAP" in families:
+			row["zero_class"] = "Z0_LEGITIMATE_ZERO"
+			row["zero_reason"] = "LEGITIMATE_ZERO"
+			row["wrong_reason"] = "LEGITIMATE_ZERO_BULK_SCRAP"
+			row["output_class"] = CLASS_BULK_SCRAP
+			row["classification"] = "LEGITIMATE_ZERO"
+			row["business_question"] = "RESOLVED"
 		return row
 	if cls == EXACT_REPAIRABLE:
 		row["status"] = "RECONSTRUCTABLE"

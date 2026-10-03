@@ -45,7 +45,16 @@ def _normalize_causal_counts(snap: dict) -> dict:
 			r
 			for r in roots
 			if str((r or {}).get("status") or "")
-			not in ("PRECISION_DUST", "LEGITIMATE", "LEGITIMATE_ORDER")
+			not in (
+				"PRECISION_DUST",
+				"LEGITIMATE",
+				"LEGITIMATE_ORDER",
+				# READY_I4 bridge — actionable via I4 replay, not a permanent poison gap.
+				"I4_REPAIRABLE",
+				# Pending Purchase Invoice — PR zero accepted until PI posts.
+				"PENDING_PURCHASE_INVOICE_VALUATION",
+				"LEGITIMATE_PENDING_UPSTREAM_ACCOUNTING",
+			)
 		]
 		out["known_riv_poison_root"] = len(blocking)
 	if "real_terminal_roots" in out:

@@ -208,6 +208,35 @@ def _patch_repost_compatibility():
 		riv_mod.repost = repost
 		riv_mod._iran_patched_repost = True
 
+	# Skip scheduler/worker dual-execution when Historical Repair holds sync/GL locks.
+	if riv_mod and not getattr(riv_mod, "_iran_patched_execute_reposting_entry_lock", None):
+		_orig_execute_reposting_entry = riv_mod.execute_reposting_entry
+
+		def execute_reposting_entry(name, continue_reposting=False):
+			try:
+				from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
+					company_gl_lock_held,
+					riv_exec_lock_held,
+				)
+
+				owner = getattr(frappe.local, "iran_hr_riv_exec_owner", None)
+				if riv_exec_lock_held(name) and owner != name:
+					# Sync campaign owns this RIV — do not start a second executor.
+					return
+				# Serialize company GL: while a sync identity holds the company GL
+				# lock, defer all other RIV executors (they stay Queued/In Progress).
+				if owner is None:
+					company = frappe.db.get_value("Repost Item Valuation", name, "company")
+					if company and company_gl_lock_held(company):
+						return
+			except Exception:
+				pass
+			return _orig_execute_reposting_entry(name, continue_reposting=continue_reposting)
+
+		riv_mod.execute_reposting_entry = execute_reposting_entry
+		riv_mod._iran_patched_execute_reposting_entry_lock = True
+		riv_mod._iran_original_execute_reposting_entry = _orig_execute_reposting_entry
+
 	try:
 		import erpnext.accounts.doctype.repost_accounting_ledger.repost_accounting_ledger as ral_mod
 	except ImportError:
@@ -931,6 +960,80 @@ def _patch_stock_ledger_engine():
 	# Fail-closed upgrade guard before (re)installing the rate wrapper.
 	assert_erpnext_riv_rate_patch_supported()
 
+	# PENDING_PURCHASE_INVOICE_VALUATION: honor document-zero PR until PI posts.
+	if not getattr(sl.update_entries_after, "_iran_pending_pi_allow_zero", None):
+		_orig_allow_zero = sl.update_entries_after.check_if_allow_zero_valuation_rate
+
+		def check_if_allow_zero_valuation_rate(self, voucher_type, voucher_detail_no):
+			flag = _orig_allow_zero(self, voucher_type, voucher_detail_no)
+			if flag:
+				return flag
+			try:
+				from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+					honor_zero_inbound_for_pending_pi,
+				)
+
+				if honor_zero_inbound_for_pending_pi(voucher_type, voucher_detail_no):
+					return 1
+			except Exception:
+				pass
+			return flag
+
+		sl.update_entries_after.check_if_allow_zero_valuation_rate = check_if_allow_zero_valuation_rate
+		sl.update_entries_after._iran_pending_pi_allow_zero = True
+		sl.update_entries_after._iran_original_check_if_allow_zero_valuation_rate = _orig_allow_zero
+
+	# After ERPNext dynamic rate (incl. set_landed_cost_based_on_purchase_invoice_rate),
+	# re-assert document-zero for PENDING_PURCHASE_INVOICE_VALUATION so MA keeps svd=0.
+	if not getattr(sl.update_entries_after, "_iran_pending_pi_dynamic_rate", None):
+		_orig_dynamic = sl.update_entries_after.get_dynamic_incoming_outgoing_rate
+
+		def get_dynamic_incoming_outgoing_rate(self, sle):
+			_orig_dynamic(self, sle)
+			try:
+				from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+					align_pending_pi_sle_incoming_to_document_zero,
+				)
+
+				align_pending_pi_sle_incoming_to_document_zero(sle)
+			except Exception:
+				pass
+
+		sl.update_entries_after.get_dynamic_incoming_outgoing_rate = get_dynamic_incoming_outgoing_rate
+		sl.update_entries_after._iran_pending_pi_dynamic_rate = True
+		sl.update_entries_after._iran_original_get_dynamic_incoming_outgoing_rate = _orig_dynamic
+
+	# Pending-PI MA v2: preserve warehouse stock_value (do not drop leftover via qty*rate).
+	# Reinstall even when v1 align-only MA wrap was previously installed in-process.
+	if not getattr(sl.update_entries_after, "_iran_pending_pi_ma_v2", None):
+		_orig_ma = getattr(
+			sl.update_entries_after,
+			"_iran_original_get_moving_average_values",
+			None,
+		) or sl.update_entries_after.get_moving_average_values
+		# Unwrap prior pending-PI MA wrap if present.
+		if getattr(sl.update_entries_after, "_iran_pending_pi_ma", None) and getattr(
+			sl.update_entries_after, "_iran_original_get_moving_average_values", None
+		):
+			_orig_ma = sl.update_entries_after._iran_original_get_moving_average_values
+
+		def get_moving_average_values(self, sle):
+			try:
+				from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+					apply_pending_pi_moving_average,
+				)
+
+				if apply_pending_pi_moving_average(self, sle):
+					return
+			except Exception:
+				pass
+			return _orig_ma(self, sle)
+
+		sl.update_entries_after.get_moving_average_values = get_moving_average_values
+		sl.update_entries_after._iran_pending_pi_ma = True
+		sl.update_entries_after._iran_pending_pi_ma_v2 = True
+		sl.update_entries_after._iran_original_get_moving_average_values = _orig_ma
+
 	if not getattr(sl, "_iran_patched_update_entries_after", None):
 		_orig_set_precision = sl.update_entries_after.set_precision
 		_orig_process_sle = sl.update_entries_after.process_sle
@@ -950,6 +1053,13 @@ def _patch_stock_ledger_engine():
 			try:
 				pre = None
 				if company and is_irr_company(company):
+					# Pending-PI: clear stale SLE incoming_rate to document PR rate 0
+					# before vanilla MA so RIV does not invent negative incoming SVD.
+					from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+						align_pending_pi_sle_incoming_to_document_zero,
+					)
+
+					align_pending_pi_sle_incoming_to_document_zero(sle)
 					# Out-of-scope soft-skip: do not rewrite unrelated historical SLE.
 					# Still advance wh_data from the existing SLE so chronology continues.
 					if assert_sle_valuation_integrity_before_vanilla(self, sle) is False:
@@ -972,6 +1082,13 @@ def _patch_stock_ledger_engine():
 					sync_irr_sle_from_stock_entry_row(sle)
 					round_sle_monetary_fields(sle, company)
 					sync_irr_sle_from_stock_entry_row(sle)
+					# Pending-PI: re-assert document-zero after IRR deterministic may invent
+					# incoming_rate from prev_value/prev_qty; recover svd=0 if MA dropped leftover.
+					from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+						apply_pending_pi_post_vanilla_economics,
+					)
+
+					apply_pending_pi_post_vanilla_economics(sle, engine=self)
 					restore_vanilla_zero_qty_terminal_stock_value(
 						sle, vanilla_stock_value, vanilla_qty_after
 					)
@@ -987,6 +1104,56 @@ def _patch_stock_ledger_engine():
 
 		sl.update_entries_after.process_sle = process_sle
 		sl._iran_patched_update_entries_after = True
+
+	# Ensure pending-PI incoming alignment + post-vanilla economics even when
+	# process_sle was patched earlier in this process without those calls.
+	if not getattr(sl.update_entries_after.process_sle, "_iran_pending_pi_align", None):
+		_live_process = sl.update_entries_after.process_sle
+
+		def process_sle_with_pending_pi_align(self, sle):
+			company = getattr(self, "company", None) or (
+				sle.get("company") if hasattr(sle, "get") else None
+			)
+			if company and is_irr_company(company):
+				from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+					align_pending_pi_sle_incoming_to_document_zero,
+					apply_pending_pi_post_vanilla_economics,
+				)
+
+				align_pending_pi_sle_incoming_to_document_zero(sle)
+				result = _live_process(self, sle)
+				apply_pending_pi_post_vanilla_economics(sle, engine=self)
+				return result
+			return _live_process(self, sle)
+
+		process_sle_with_pending_pi_align._iran_pending_pi_align = True
+		process_sle_with_pending_pi_align._iran_pending_pi_post_econ = True
+		process_sle_with_pending_pi_align._iran_original = _live_process
+		sl.update_entries_after.process_sle = process_sle_with_pending_pi_align
+	elif not getattr(sl.update_entries_after.process_sle, "_iran_pending_pi_post_econ", None):
+		# Hot-upgrade: align wrap exists but lacks post-vanilla economics.
+		_live_process = sl.update_entries_after.process_sle
+
+		def process_sle_with_pending_pi_post_econ(self, sle):
+			result = _live_process(self, sle)
+			try:
+				company = getattr(self, "company", None) or (
+					sle.get("company") if hasattr(sle, "get") else None
+				)
+				if company and is_irr_company(company):
+					from erpnext_extensions.iran_accounting.domain.pending_purchase_invoice_valuation import (
+						apply_pending_pi_post_vanilla_economics,
+					)
+
+					apply_pending_pi_post_vanilla_economics(sle, engine=self)
+			except Exception:
+				pass
+			return result
+
+		process_sle_with_pending_pi_post_econ._iran_pending_pi_align = True
+		process_sle_with_pending_pi_post_econ._iran_pending_pi_post_econ = True
+		process_sle_with_pending_pi_post_econ._iran_original = _live_process
+		sl.update_entries_after.process_sle = process_sle_with_pending_pi_post_econ
 
 	# Incoming healing: allow receipts that reduce an already-negative running qty.
 	# Installed independently so a process_sle-only older patch still gets this wrap.

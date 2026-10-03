@@ -24,6 +24,7 @@ from erpnext_extensions.iran_accounting.rounding import (
 	round_currency,
 )
 from erpnext_extensions.iran_accounting.scrap_costing import (
+	CLASS_BULK_SCRAP,
 	CLASS_CO_PRODUCT,
 	CLASS_CO_PRODUCT_REJECT,
 	CLASS_COMPONENT_SCRAP,
@@ -212,13 +213,14 @@ def clear_core_vr_auto_default_for_zero_byproduct(doc, row) -> bool:
 	# repair sets ``_iran_historical_stage_repair`` for the whole voucher; that
 	# flag alone must not steal Scrap rows into STAGE_EQUIV_BRIDGE_FLAG.
 	from erpnext_extensions.iran_accounting.scrap_costing import (
+		CLASS_BULK_SCRAP,
 		CLASS_COMPONENT_SCRAP,
 		CLASS_MAIN_PRODUCT_REJECT,
 		is_product_reject_bridge_candidate,
 		secondary_item_type_of,
 	)
 
-	if out_class in (CLASS_MAIN_PRODUCT_REJECT, CLASS_COMPONENT_SCRAP):
+	if out_class in (CLASS_MAIN_PRODUCT_REJECT, CLASS_COMPONENT_SCRAP, CLASS_BULK_SCRAP):
 		return False
 	if secondary_item_type_of(row) == "Scrap":
 		return False
@@ -343,6 +345,7 @@ def _class_of(row, classified) -> str:
 		CLASS_CO_PRODUCT,
 		CLASS_CO_PRODUCT_REJECT,
 		CLASS_COMPONENT_SCRAP,
+		CLASS_BULK_SCRAP,
 		CLASS_OTHER_OUTPUT,
 	):
 		if row in classified[name]:
@@ -704,8 +707,12 @@ def allocate_stage_output_cost(doc) -> bool:
 
 	currency = get_company_currency(doc.company)
 	component_value = sum(flt(row.get("basic_amount")) for row in classified[CLASS_COMPONENT_SCRAP])
+	# Bulk Scrap is intentional zero and must never share the stage pool.
+	bulk_value = sum(flt(row.get("basic_amount")) for row in classified.get(CLASS_BULK_SCRAP, []))
 	excluded_value = sum(flt(row.get("basic_amount")) for row in finance_excluded)
-	material_pool = round_currency(_consumed_material(doc) - component_value - excluded_value, currency)
+	material_pool = round_currency(
+		_consumed_material(doc) - component_value - bulk_value - excluded_value, currency
+	)
 	operating_pool = round_currency(_operating_pool(doc, stage, finance_excluded), currency)
 	if material_pool < 0:
 		if excluded_value > 0:
@@ -738,6 +745,14 @@ def allocate_stage_output_cost(doc) -> bool:
 	for row in classified[CLASS_COMPONENT_SCRAP]:
 		row.additional_cost = 0
 		row.amount = round_currency(flt(row.get("basic_amount")) + _capitalized(row), currency)
+	for row in classified.get(CLASS_BULK_SCRAP, []):
+		row.basic_rate = 0
+		row.basic_amount = 0
+		row.additional_cost = 0
+		row.amount = 0
+		row.valuation_rate = 0
+		row.allow_zero_valuation_rate = 1
+		_set_field(row, OUTPUT_CLASS_FIELD, CLASS_BULK_SCRAP)
 	return True
 
 

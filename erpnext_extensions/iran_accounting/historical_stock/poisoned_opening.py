@@ -123,13 +123,63 @@ def analyze_identity_opening(item: str, warehouse: str, *, batch: str | None = N
 			repairable = False
 	else:
 		origin = "wrong_source_valuation_or_migration"
-		status = TECHNICAL_TOOL_GAP
-		repairable = False
+		# Opening may be incoherent, but a healthy/clear current tip means Full
+		# Repost will not re-poison dependents from a terminal I4 leftover.
+		tip_q = flt(term.q) if term else 0
+		tip_sv = flt(term.sv) if term else 0
+		tip_vr = flt(term.vr) if term else 0
+		tip_healthy = abs(tip_q) > 1e-9 and abs(tip_sv) > 1 and abs(tip_vr) > 1e-9
+		tip_clear = abs(tip_q) < 1e-9 and abs(tip_sv) <= 1.0
+		if tip_healthy or tip_clear:
+			status = LEGITIMATE
+			repairable = False
+		else:
+			status = TECHNICAL_TOOL_GAP
+			repairable = False
+
+	# Generic bridge: when CURRENT I4 classifier proves READY_I4 and simulation
+	# clears the leftover, this identity is not a permanent tool-gap — it is an
+	# I4 checkpoint/replay repair. Distinct from inventing rates.
+	i4_bridge = None
+	if status == TECHNICAL_TOOL_GAP and origin in (
+		"mid_chain_terminal_i4",
+		"wrong_source_valuation_or_migration",
+	):
+		try:
+			from erpnext_extensions.iran_accounting.historical_stock.i4_repair import (
+				classify_i4_row,
+			)
+
+			i4 = classify_i4_row(item, warehouse)
+			if (i4.get("i4_status") or i4.get("status")) == "READY_I4" and i4.get(
+				"pz_residual_clears_in_sim"
+			):
+				status = "I4_REPAIRABLE"
+				repairable = True
+				i4_bridge = {
+					"i4_status": "READY_I4",
+					"patient_voucher": (i4.get("patient_zero") or {}).get("voucher_no")
+					or i4.get("voucher"),
+					"from_dt": i4.get("posting_datetime"),
+					"checkpoint": bool(i4.get("checkpoint_repair")),
+				}
+		except Exception:
+			i4_bridge = None
 
 	# Why RIV would reproduce poison
 	if status in (TECHNICAL_TOOL_GAP, MANUAL_BUSINESS_EVIDENCE_REQUIRED, WAITING_UPSTREAM):
 		riv_reproduce = (
 			"Native RIV may reapply an inconsistent opening/mid-chain value onto dependents"
+		)
+	elif status == "I4_REPAIRABLE":
+		riv_reproduce = (
+			"READY_I4 — apply identity I4 leftover replay before Full Repost; "
+			"not a permanent poisoned-opening tool gap"
+		)
+	elif origin == "wrong_source_valuation_or_migration" and status == LEGITIMATE:
+		riv_reproduce = (
+			"tip healthy/clear — opening incoherence is historical residue and "
+			"must not block Full Repost"
 		)
 	else:
 		riv_reproduce = (
@@ -154,6 +204,7 @@ def analyze_identity_opening(item: str, warehouse: str, *, batch: str | None = N
 		"authority": authority,
 		"repairable_auto": repairable,
 		"riv_reproduce_reason": riv_reproduce,
+		"i4_bridge": i4_bridge,
 	}
 
 

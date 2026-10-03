@@ -32,6 +32,13 @@ from erpnext_extensions.iran_accounting.historical_stock.next_downtime.preflight
 from erpnext_extensions.iran_accounting.historical_stock._validation.phase2_reconcile_0930 import (
 	run_preflight,
 )
+from erpnext_extensions.iran_accounting.historical_stock.worker_preflight import (
+	WORKER_PREFLIGHT_BLOCKED,
+	require_worker_preflight,
+)
+from erpnext_extensions.iran_accounting.historical_stock.riv_settlement import (
+	assert_campaign_queue_quiescent,
+)
 
 OUT = Path(
 	"/workspace/development/frappe-bench/sites/development.localhost/"
@@ -72,19 +79,58 @@ IRAN_NATIVE_VOUCHERS = sorted(
 		"MAT-STE-2026-37090",  # Product Reject + scrap (bridge fix)
 		"MAT-STE-2026-37094",
 		"MAT-STE-2026-37227",
+		"MAT-STE-2026-37603",  # BULK_SCRAP 30100101 + Product Reject (v5.3.43)
 		"MAT-STE-2026-37604",  # Product Reject adoption
 		"MAT-STE-2026-37616",  # Product Reject adoption
 	}
 )
 
-# I4 healthy-checkpoint identity (terminal qty=0 value!=0 after amended Manufacture).
+# I4 identities: healthy-checkpoint / previous-healthy READY_I4 that clear tip.
+# from_dt is resolved live by classify_i4_row at apply time.
 I4_CHECKPOINT_OPS = [
 	{
 		"item": "30100152",
 		"warehouse": "انبار پایکار خط تولید اسپاد فارمد",
 		"patient_voucher": "MAT-STE-2026-36111-1",
 		"from_dt": "2026-08-22 18:06:25",
-	}
+	},
+	# Six terminal I4 / known RIV poison identities (v5.3.43 root-cause).
+	{
+		"item": "13200107",
+		"warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+		"patient_voucher": "MAT-STE-2026-30456",
+		"from_dt": "2026-06-17 18:10:10",
+	},
+	{
+		"item": "13200177",
+		"warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+		"patient_voucher": "MAT-STE-2026-30456",
+		"from_dt": "2026-06-17 18:10:10",
+	},
+	{
+		"item": "30300014",
+		"warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+		"patient_voucher": "MAT-STE-2026-25486",
+		"from_dt": "2026-09-07 16:37:20",
+	},
+	{
+		"item": "13200410",
+		"warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+		"patient_voucher": "MAT-STE-2026-36042",
+		"from_dt": "2026-08-20 18:11:25",
+	},
+	{
+		"item": "30200020",
+		"warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+		"patient_voucher": "MAT-STE-2026-25693",
+		"from_dt": "2026-09-08 18:24:01",
+	},
+	{
+		"item": "30100033",
+		"warehouse": "انبارک انتقال فیلینگ به اتوکلاو - E",
+		"patient_voucher": "PO-JOB10491",
+		"from_dt": "2026-09-27 10:10:03",
+	},
 ]
 
 # Explicitly NOT mutated — current Iran/native owns via RIV/repost.
@@ -207,12 +253,26 @@ def plan_manifest() -> dict:
 	)
 	return {
 		"plan_id": PLAN_ID,
-		"code_min_version": "5.3.42",
+		"code_min_version": "5.3.47",
+		"execution_semantics": "v5.3.47_atomic_riv_company_gl_retry",
 		"native_owned": NATIVE_OWNED,
 		"excluded": {
-			"MAT-STE-2026-37603": "MANUAL_BUSINESS_EVIDENCE_REQUIRED — Scrap 30100101 unclassifiable",
 			"L6_on_mutated_db": "forbidden",
 			"production": "forbidden",
+		},
+		"business_resolutions": {
+			"BULK_SCRAP": {
+				"example": "MAT-STE-2026-37603 / 30100101",
+				"class": "BULK_SCRAP",
+				"rate": 0,
+				"classification": "LEGITIMATE_ZERO",
+				"business_question": "RESOLVED",
+				"generic_rule": (
+					"Scrap with custom_output_class=BULK_SCRAP or valuation_type=Manual "
+					"+ zero rate + allow_zero/set_basic_rate_manually; distinct from "
+					"COMPONENT_SCRAP issued-rate."
+				),
+			}
 		},
 		"operations": ops,
 		"phases": [
@@ -334,10 +394,109 @@ def _apply_i4_checkpoint_scan(limit: int = 40) -> list[dict]:
 	return out
 
 
+def administratively_close_preexisting_open_rivs(
+	*,
+	cutoff_creation: str = "2026-09-30 10:00:00",
+) -> dict:
+	"""Explicit DUMP_STALE administrative close for Queued/In Progress baked into the Sep30 dump.
+
+	These are NOT campaign-created RIVs. The Sep30 dump contains ~30k abandoned
+	Queued rows. Closing them to Failed with an explicit PREEXISTING_DUMP_STALE_RIV
+	reason is required so FULL_REPOST / L6 gates are not satisfied by silent
+	``Skipped`` mutation.
+
+	Never uses status=Skipped. Never touches Completed.
+	Uses a single scoped UPDATE (creation <= dump cutoff) — not a campaign hide.
+	"""
+	before = frappe.db.sql(
+		"""
+		SELECT status, COUNT(*) AS n FROM `tabRepost Item Valuation`
+		WHERE status IN ('Queued', 'In Progress') AND creation <= %s
+		GROUP BY status
+		""",
+		(cutoff_creation,),
+		as_dict=True,
+	)
+	msg = (
+		"PREEXISTING_DUMP_STALE_RIV: open in 20260930_093401 dump before "
+		"deterministic plan; administratively closed to Failed (never Skipped)."
+	)
+	frappe.db.sql(
+		"""
+		UPDATE `tabRepost Item Valuation`
+		SET status='Failed', error_log=%s
+		WHERE status IN ('Queued', 'In Progress')
+		  AND creation <= %s
+		""",
+		(msg, cutoff_creation),
+	)
+	frappe.db.commit()
+	remaining = frappe.db.sql(
+		"""
+		SELECT COUNT(*) FROM `tabRepost Item Valuation`
+		WHERE status IN ('Queued', 'In Progress')
+		"""
+	)[0][0]
+	closed_n = sum(int(r.n) for r in before)
+	out = {
+		"status": "DUMP_STALE_RIV_ADMINISTRATIVE_CLOSE",
+		"cutoff_creation": cutoff_creation,
+		"before_by_status": {r.status: int(r.n) for r in before},
+		"closed_n": closed_n,
+		"remaining_open_n": int(remaining),
+		"terminal": "Failed",
+		"sql_skipped": 0,
+		"note": "Administrative Failed for dump-baked open RIV only; campaign RIVs still use settlement barrier.",
+	}
+	_dump("dump_stale_riv_admin_close.json", out)
+	return out
+
+
 def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 	t0 = perf_counter()
 	manifest = plan_manifest()
+	manifest["infrastructure"] = {
+		"worker_preflight_required": True,
+		"riv_settlement_barrier_required": True,
+		"direct_sql_riv_status_mutation": False,
+		"dump_stale_riv_admin_close": True,
+		"execution_semantics": "v5.3.47_atomic_riv_company_gl_retry",
+		"l6_sync_execution": True,
+		"l6_max_db_concurrency_attempts": 3,
+		"l6_requires_long_workers_for_identity_exec": False,
+		"company_gl_exclusive_during_sync_riv": True,
+		"dual_exec_guard_on_execute_reposting_entry": True,
+	}
 	_dump("SEPT30_DETERMINISTIC_REPAIR_PLAN_V1.json", manifest)
+
+	wp = require_worker_preflight(
+		queues=("long",),
+		require_probe=True,
+		phase="SEPT30_PLAN",
+	)
+	if not wp.get("ready"):
+		out = {
+			"plan_id": PLAN_ID,
+			"status": WORKER_PREFLIGHT_BLOCKED,
+			"worker_preflight": wp,
+			"elapsed": round(perf_counter() - t0, 3),
+		}
+		_dump("sept30_plan_execution.json", out)
+		return out
+
+	# Explicit first phase: close dump-baked Queued/In Progress (not campaign RIVs).
+	dump_close = administratively_close_preexisting_open_rivs()
+	if int(dump_close.get("remaining_open_n") or 0) > 0:
+		out = {
+			"plan_id": PLAN_ID,
+			"status": "DUMP_STALE_RIV_REMAINING",
+			"dump_close": dump_close,
+			"worker_preflight": {"status": wp.get("status"), "ready": wp.get("ready")},
+			"elapsed": round(perf_counter() - t0, 3),
+		}
+		_dump("sept30_plan_execution.json", out)
+		return out
+
 	fp0 = fingerprint()
 	# Order: Iran manufacture roots first (source of many WR/I4), then WR EXACT,
 	# then I4 checkpoint identities, then Bin rebuild from tip SLE.
@@ -352,6 +511,8 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 			"plan_id": PLAN_ID,
 			"status": "BLOCKED",
 			"fingerprint_before": fp0,
+			"worker_preflight": {"status": wp.get("status"), "ready": wp.get("ready")},
+			"dump_close": dump_close,
 			"wr": wr,
 			"i4": i4,
 			"i4_scan": i4_scan,
@@ -362,15 +523,31 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 		}
 		_dump("sept30_plan_execution.json", out)
 		return out
-	# settle open RIV
-	frappe.db.sql(
-		"""
-		UPDATE `tabRepost Item Valuation`
-		SET status='Skipped'
-		WHERE status IN ('Queued','In Progress')
-		"""
-	)
-	frappe.db.commit()
+
+	# Settlement barrier: never SQL-mutate Queued/In Progress → Skipped.
+	quiet = assert_campaign_queue_quiescent([], also_forbid_global_open=True)
+	if not quiet.get("ready"):
+		out = {
+			"plan_id": PLAN_ID,
+			"status": "RIV_SETTLEMENT_BLOCKED",
+			"quiescence": quiet,
+			"dump_close": dump_close,
+			"worker_preflight": {"status": wp.get("status"), "ready": wp.get("ready")},
+			"fingerprint_before": fp0,
+			"iran": iran,
+			"wr": wr,
+			"i4": i4,
+			"bins": bins,
+			"direct_lifecycle_overrides": 0,
+			"elapsed": round(perf_counter() - t0, 3),
+			"message": (
+				"Open Queued/In Progress RIV remain after plan ops. "
+				"Do not SQL-skip — diagnose STALE_QUEUED_RIV / WORKER_LOST."
+			),
+		}
+		_dump("sept30_plan_execution.json", out)
+		return out
+
 	pre = run_preflight()
 	fp1 = fingerprint()
 	out = {
@@ -378,6 +555,10 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 		"status": "APPLIED",
 		"fingerprint_before": fp0,
 		"fingerprint_after": fp1,
+		"worker_preflight": {"status": wp.get("status"), "ready": wp.get("ready")},
+		"dump_close": dump_close,
+		"quiescence": quiet,
+		"direct_lifecycle_overrides": 0,
 		"wr": {
 			"targeted": wr.get("targeted") or wr.get("ok_count"),
 			"ok_count": wr.get("ok_count"),
@@ -416,5 +597,9 @@ def execute_plan(*, stop_on_blocked: bool = True) -> dict:
 		"wr": out["wr"],
 		"canaries": out["canaries"],
 		"hard_gates": out["hard_gates"],
+		"worker_preflight": out["worker_preflight"],
+		"dump_close": dump_close,
+		"quiescence": quiet,
+		"direct_lifecycle_overrides": 0,
 		"elapsed": out["elapsed"],
 	}

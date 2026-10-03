@@ -1204,7 +1204,12 @@ def run_clean_final_replay_c2(tag: str = "A") -> dict:
 
 
 def cleanup_test_fixture_pollution() -> dict:
-	"""Cancel rate-first integration fixtures accidentally posted on the campaign site."""
+	"""Cancel rate-first integration fixtures accidentally posted on the campaign site.
+
+	Does NOT SQL-mutate Queued/In Progress → Skipped. Fixture RIVs for test item
+	codes are marked Failed via supported db_set with an explicit FIXTURE_CLEANUP
+	reason so settlement barriers can diagnose them.
+	"""
 	ses = frappe.db.sql(
 		"""SELECT name FROM `tabStock Entry`
 		   WHERE name BETWEEN 'MAT-STE-2026-37771' AND 'MAT-STE-2026-37786'
@@ -1217,15 +1222,32 @@ def cleanup_test_fixture_pollution() -> dict:
 		if int(doc.docstatus) == 1:
 			doc.cancel()
 			cancelled.append(r.name)
-	frappe.db.sql(
-		"""UPDATE `tabRepost Item Valuation`
-		   SET status='Skipped'
+	open_rivs = frappe.db.sql(
+		"""SELECT name, status FROM `tabRepost Item Valuation`
 		   WHERE status IN ('Queued','In Progress')
-		     AND item_code BETWEEN '230111' AND '230119'"""
+		     AND item_code BETWEEN '230111' AND '230119'""",
+		as_dict=True,
 	)
+	failed = []
+	for r in open_rivs:
+		frappe.db.set_value(
+			"Repost Item Valuation",
+			r.name,
+			{
+				"status": "Failed",
+				"error_log": "FIXTURE_CLEANUP: abandoned test-item RIV closed via supported set_value (not SQL Skipped)",
+			},
+		)
+		failed.append(r.name)
 	frappe.db.commit()
 	open_n = frappe.db.sql(
 		"""SELECT COUNT(*) FROM `tabRepost Item Valuation`
 		   WHERE status IN ('Queued','In Progress')"""
 	)[0][0]
-	return {"ok": True, "cancelled": cancelled, "open_riv": open_n}
+	return {
+		"ok": True,
+		"cancelled": cancelled,
+		"fixture_riv_failed": failed,
+		"open_riv": open_n,
+		"direct_sql_skipped": 0,
+	}

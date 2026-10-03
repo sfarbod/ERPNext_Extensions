@@ -118,6 +118,7 @@ def build_report() -> dict:
 			"stage": "manufacture_stage_costing.allocate_stage_output_cost",
 			"product_reject": "allocate_scrap_absorbed_cost + permit_product_reject_zero_valuation",
 			"component_scrap": "apply_component_scrap_issued_rates",
+			"bulk_scrap": "apply_bulk_scrap_zero_valuation (intentional zero; not issued-rate)",
 			"leftover_ma_hook": "historical_stock.leftover_ma.on_repost_item_valuation_update",
 			"riv_guard": "domain.riv_valuation_guard",
 			"irr_sa": "domain.manufacture_irr_residual → Company.stock_adjustment_account (621301)",
@@ -134,11 +135,36 @@ def build_report() -> dict:
 		},
 		"true_business": [
 			{
-				"pattern": "UNCLASSIFIABLE_SCRAP_NOT_FG_NOT_CONSUMED",
+				"pattern": "BULK_SCRAP_INTENTIONAL_ZERO",
 				"example": "MAT-STE-2026-37603 row 30100101",
-				"status": "MANUAL_BUSINESS_EVIDENCE_REQUIRED",
+				"class": "BULK_SCRAP",
+				"rate": 0,
+				"valuation_contribution": 0,
+				"classification": "LEGITIMATE_ZERO",
+				"business_question": "RESOLVED",
+				"status": "RESOLVED",
+				"authority": (
+					"Business decision: 30100101 = Bulk Scrap / ضایعات بالک; "
+					"generic contract BULK_SCRAP → intentional zero valuation "
+					"(distinct from COMPONENT_SCRAP issued-rate)."
+				),
+				"generic_rule": (
+					"Scrap with custom_output_class=BULK_SCRAP, or valuation_type=Manual "
+					"+ zero rate + allow_zero/set_basic_rate_manually, and not "
+					"MAIN_PRODUCT_REJECT / COMPONENT_SCRAP / CO_PRODUCT_REJECT."
+				),
 			}
 		],
+		"bulk_scrap_contract": {
+			"class": "BULK_SCRAP",
+			"rate": 0,
+			"enters_stage_pool": False,
+			"uses_component_issued_rate": False,
+			"uses_fg_absorbed_rate": False,
+			"wrong_rate_actionable": False,
+			"zero_rate_actionable": False,
+			"vs_component_scrap": "COMPONENT_SCRAP keeps issued-rate; BULK_SCRAP stays 0",
+		},
 	}
 	OUT.mkdir(parents=True, exist_ok=True)
 	(OUT / "IRAN_ACCOUNTING_COMPATIBILITY_REPORT.json").write_text(

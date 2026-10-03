@@ -656,6 +656,8 @@ def _iran_output_auto_gate(details: list, fg_detail) -> dict | None:
 		sec = str(getattr(d, "secondary_item_type", None) or "")
 		vt = str(getattr(d, "valuation_type", None) or "")
 		item = str(getattr(d, "item_code", None) or "")
+		allow_zero = cint(getattr(d, "allow_zero", None) or getattr(d, "allow_zero_valuation_rate", None) or 0)
+		basic_rate = flt(getattr(d, "basic_rate", None) or 0)
 		if sec in ("By-Product", "Co-Product", "Additional Finished Good") or "CO_PRODUCT" in oclass:
 			return {
 				"code": "IRAN_STAGE_COPRODUCT",
@@ -663,6 +665,20 @@ def _iran_output_auto_gate(details: list, fg_detail) -> dict | None:
 				"reason": (
 					"co/by-product or AFG present — Iran stage-equivalent path required; "
 					"generic consumed-SVD residual is not auto-READY"
+				),
+			}
+		if oclass == "BULK_SCRAP" or (
+			(cint(getattr(d, "is_scrap", None)) or _is_scrap_like(d))
+			and vt == "Manual"
+			and basic_rate <= RATE_EPS
+			and allow_zero
+		):
+			return {
+				"code": "IRAN_BULK_SCRAP",
+				"capability": "BULK_SCRAP intentional-zero contract",
+				"reason": (
+					"Bulk Scrap (intentional zero) present — Iran BULK_SCRAP path required; "
+					"generic residual / issued-rate must not revalue it"
 				),
 			}
 		if "REJECT" in oclass or (
