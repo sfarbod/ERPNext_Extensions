@@ -76,6 +76,7 @@ CLASS_MAIN_PRODUCT_REJECT = "MAIN_PRODUCT_REJECT"
 CLASS_CO_PRODUCT = "CO_PRODUCT"
 CLASS_CO_PRODUCT_REJECT = "CO_PRODUCT_REJECT"
 CLASS_COMPONENT_SCRAP = "COMPONENT_SCRAP"
+CLASS_BULK_SCRAP = "BULK_SCRAP"
 CLASS_OTHER_OUTPUT = "OTHER_OUTPUT"
 OUTPUT_CLASSES = (
 	CLASS_MAIN_FG,
@@ -83,14 +84,16 @@ OUTPUT_CLASSES = (
 	CLASS_CO_PRODUCT,
 	CLASS_CO_PRODUCT_REJECT,
 	CLASS_COMPONENT_SCRAP,
+	CLASS_BULK_SCRAP,
 	CLASS_OTHER_OUTPUT,
 )
 ISSUED_RATE_TOLERANCE = 1.0
 # Legacy stamp: leftover absorbed into additional_cost (pre-TYPE-C SA policy).
 LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
-# Current stamp: late Product Reject pre-Core bridge (v5.3.37).
-# Stage-equivalent bridge remains (v5.3.35). TYPE C → SA for stamps ≥ 5.3.34.
-MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.37"
+# Current stamp: Bulk Scrap intentional-zero class (v5.3.43).
+# Prior eras: Product Reject bridge (5.3.37), stage-equivalent (5.3.35),
+# TYPE C → SA (≥5.3.34).
+MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.43"
 # In-memory only: marks a Product Reject row bridged past Core Valuation Rate.
 PRODUCT_REJECT_BRIDGE_FLAG = "_iran_product_reject_bridge"
 
@@ -176,6 +179,26 @@ def _resolved_finished_item(doc, fg_rows) -> str | None:
 	return fg_rows[0].get("item_code") if fg_rows else None
 
 
+def is_intentional_bulk_scrap_zero(row) -> bool:
+	"""True when a scrap row carries intentional-zero Bulk Scrap authority.
+
+	Business contract: ``BULK_SCRAP`` → rate 0 is legitimate. Distinct from
+	``COMPONENT_SCRAP`` (issued-rate) and ``MAIN_PRODUCT_REJECT`` (absorbed FG).
+
+	Authority (any one):
+	- ``custom_output_class`` already ``BULK_SCRAP``
+	- ``valuation_type == Manual`` with zero rate and document zero-authorization
+	  (``allow_zero_valuation_rate`` or ``set_basic_rate_manually``)
+	"""
+	if str(row.get("custom_output_class") or "").strip() == CLASS_BULK_SCRAP:
+		return True
+	if (row.get("valuation_type") or "").strip() != "Manual":
+		return False
+	if flt(row.get("basic_rate")) > 0 or flt(row.get("valuation_rate")) > 0:
+		return False
+	return bool(cint(row.get("allow_zero_valuation_rate")) or cint(row.get("set_basic_rate_manually")))
+
+
 def classify_manufacture_outputs(doc) -> dict[str, list]:
 	"""Deterministic incoming-row classes. Ambiguous scrap is OTHER_OUTPUT."""
 	classified = {name: [] for name in OUTPUT_CLASSES}
@@ -203,6 +226,10 @@ def classify_manufacture_outputs(doc) -> dict[str, list]:
 		if not is_scrap_row(row):
 			classified[CLASS_OTHER_OUTPUT].append(row)
 			continue
+		# Explicit Bulk Scrap stamp wins over family inference.
+		if str(row.get("custom_output_class") or "").strip() == CLASS_BULK_SCRAP:
+			classified[CLASS_BULK_SCRAP].append(row)
+			continue
 		item_code = row.get("item_code")
 		main = _item_main_code(item_code)
 		if is_product_reject(row, finished_item):
@@ -211,6 +238,8 @@ def classify_manufacture_outputs(doc) -> dict[str, list]:
 			classified[CLASS_CO_PRODUCT_REJECT].append(row)
 		elif _component_family_consumed(doc, row, consumed):
 			classified[CLASS_COMPONENT_SCRAP].append(row)
+		elif is_intentional_bulk_scrap_zero(row):
+			classified[CLASS_BULK_SCRAP].append(row)
 		else:
 			classified[CLASS_OTHER_OUTPUT].append(row)
 	return classified
@@ -532,11 +561,39 @@ def _issued_rate_for_component(doc, row) -> float:
 	return 0.0
 
 
+def apply_bulk_scrap_zero_valuation(doc) -> bool:
+	"""Enforce intentional-zero economics on every BULK_SCRAP row.
+
+	Does not invent positive rates, does not enter the FG/stage cost pool, and
+	does not use issued/component/warehouse valuation. Zero is the contract.
+	"""
+	classified = classify_manufacture_outputs(doc)
+	applied = False
+	for row in classified[CLASS_BULK_SCRAP]:
+		row.basic_rate = 0
+		row.basic_amount = 0
+		row.valuation_rate = 0
+		# Preserve any capitalized overhead already on the row; Bulk Scrap itself
+		# contributes zero stock value from basic economics.
+		row.amount = round_currency(_capitalized(row), get_company_currency(doc.company))
+		row.allow_zero_valuation_rate = 1
+		if hasattr(row, "set"):
+			try:
+				row.set("custom_output_class", CLASS_BULK_SCRAP)
+			except Exception:
+				row.custom_output_class = CLASS_BULK_SCRAP
+		else:
+			row.custom_output_class = CLASS_BULK_SCRAP
+		applied = True
+	return applied
+
+
 def apply_component_scrap_issued_rates(doc) -> bool:
 	"""Price every COMPONENT_SCRAP row at this voucher's issued rate.
 
 	Target-warehouse / stale batch valuation is ignored. Unmatched scrap
-	does not invent a rate — it fails closed.
+	does not invent a rate — it fails closed. ``BULK_SCRAP`` is intentional
+	zero and is handled by :func:`apply_bulk_scrap_zero_valuation`.
 	"""
 	classified = classify_manufacture_outputs(doc)
 	currency = get_company_currency(doc.company)
@@ -554,13 +611,17 @@ def apply_component_scrap_issued_rates(doc) -> bool:
 			)
 		_apply(row, round_monetary_rate(rate, currency), currency)
 		applied = True
+	# Bulk Scrap: preserve / enforce intentional zero (never issued-rate).
+	if apply_bulk_scrap_zero_valuation(doc):
+		applied = True
 	for row in classified[CLASS_OTHER_OUTPUT]:
 		if not is_scrap_row(row):
 			continue
 		frappe.throw(
 			_(
 				"Scrap {0} cannot be classified as Component Scrap, Main Product Reject, "
-				"or Co-Product Reject. Add a matching consumed row or correct the secondary type."
+				"Co-Product Reject, or Bulk Scrap. Add a matching consumed row, mark "
+				"intentional-zero Bulk Scrap (Manual + allow zero), or correct the secondary type."
 			).format(_row_label(row)),
 			frappe.ValidationError,
 		)
@@ -706,8 +767,16 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 		return False
 
 	finished_item = good_rows[0].get("item_code")
-	scrap_rows = [row for row in rejects if is_product_reject(row, finished_item)]
-	component_rows = [row for row in rejects if row not in scrap_rows]
+	classified = classify_manufacture_outputs(doc)
+	scrap_rows = list(classified[CLASS_MAIN_PRODUCT_REJECT])
+	# Bulk Scrap stays at intentional zero — never issued-rate, never absorbed.
+	apply_bulk_scrap_zero_valuation(doc)
+	bulk_rows = list(classified[CLASS_BULK_SCRAP])
+	component_rows = [
+		row
+		for row in classified[CLASS_COMPONENT_SCRAP]
+		if row not in scrap_rows and row not in bulk_rows
+	]
 
 	# A rejected component is material coming back out of WIP, so it keeps the
 	# value it was issued at rather than a share of the product's cost. Priced

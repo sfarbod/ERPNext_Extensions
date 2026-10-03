@@ -122,6 +122,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 	wr_ready = wr_buckets.get("ready") or 0
 	wr_waiting = wr_buckets.get("waiting") or 0
 	wr_manual = wr_buckets.get("manual") or 0
+	wr_tool_gap = wr_buckets.get("tool_gap") or 0
 	wr_complete = wr_buckets.get("complete") or 0
 	# Active Wrong Rate problem count (excludes RATE_REPAIR_COMPLETE / already-valued).
 	wrong_n = wr_buckets.get("active") or 0
@@ -346,6 +347,7 @@ def run_full_integrity_scan(company=None, include_manufacture=True) -> dict:
 		"Wrong Rate READY": wr_ready,
 		"Wrong Rate WAITING": wr_waiting,
 		"Wrong Rate MANUAL": wr_manual,
+		"Wrong Rate TOOL_GAP": wr_tool_gap,
 		"RIV SAFE": riv_safe,
 		"RIV WAITING": riv_waiting,
 		"RIV UNSAFE": riv_unsafe,

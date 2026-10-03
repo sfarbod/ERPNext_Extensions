@@ -124,6 +124,8 @@ KPI_BUCKETS = {
 	"Wrong Rate READY": "wrong_rate_ready",
 	"Wrong Rate WAITING": "wrong_rate_waiting",
 	"Wrong Rate MANUAL": "wrong_rate_manual",
+	"Wrong Rate TOOL_GAP": "wrong_rate_tool_gap",
+	"Technical Tool Gap": "wrong_rate_tool_gap",
 	"Wrong Rate Complete": "wrong_rate_complete",
 	"READY_I4": "i4_ready",
 	"WAITING_I4": "i4_waiting",
@@ -150,7 +152,7 @@ def _ps(row: dict) -> str:
 
 
 def wrong_rate_bucket(row: dict) -> str | None:
-	"""Return ready|waiting|manual|complete|replay|other for a Wrong Rate row."""
+	"""Return ready|waiting|manual|tool_gap|complete|replay|other for a Wrong Rate row."""
 	# Manufacture-native healthy/legitimate zeros are not unresolved Wrong Rate.
 	nat = (row or {}).get("manufacture_native") if isinstance(row, dict) else None
 	nat_cls = (nat or {}).get("classification") if isinstance(nat, dict) else None
@@ -158,6 +160,18 @@ def wrong_rate_bucket(row: dict) -> str | None:
 		return "complete"
 	if (row or {}).get("manual_lane") == "WAITING_UPSTREAM" or nat_cls == "WAITING_UPSTREAM":
 		return "waiting"
+	# TECHNICAL_TOOL_GAP is first-class — never present as business MANUAL.
+	lane = str((row or {}).get("manual_lane") or (row or {}).get("kpi_bucket") or "")
+	conf = str((row or {}).get("confidence") or "").upper()
+	if (
+		lane in ("TOOL_LIMIT", "TECHNICAL_TOOL_GAP")
+		or nat_cls == "TOOL_LIMIT"
+		or str((row or {}).get("zero_reason") or "") == "TECHNICAL_TOOL_GAP"
+		or conf == "LIKELY"
+	):
+		return "tool_gap"
+	if conf == "AMBIGUOUS" and not (row or {}).get("eligible"):
+		return "tool_gap"
 	ps = _ps(row)
 	# Phase 5: foreign patient-zero is WAITING even if planner left RATE_AMBIGUOUS.
 	pz = row.get("patient_zero") if isinstance(row, dict) else None
@@ -201,6 +215,8 @@ def row_matches_kpi_bucket(row: dict, bucket: str) -> bool:
 		return wrong_rate_bucket(row) == "waiting"
 	if bucket == "wrong_rate_manual":
 		return wrong_rate_bucket(row) == "manual"
+	if bucket == "wrong_rate_tool_gap":
+		return wrong_rate_bucket(row) == "tool_gap"
 	if bucket == "wrong_rate_complete":
 		return wrong_rate_bucket(row) == "complete"
 
@@ -287,6 +303,7 @@ def count_wrong_rate_buckets(rows: Iterable[dict]) -> dict:
 		"ready": 0,
 		"waiting": 0,
 		"manual": 0,
+		"tool_gap": 0,
 		"complete": 0,
 		"replay": 0,
 		"other": 0,
@@ -338,6 +355,7 @@ def statuses_for_bucket(bucket: str) -> list[str]:
 		"wrong_rate_ready": sorted(WRONG_RATE_READY_STATUSES),
 		"wrong_rate_waiting": sorted(WRONG_RATE_WAITING_STATUSES),
 		"wrong_rate_manual": sorted(WRONG_RATE_MANUAL_STATUSES),
+		"wrong_rate_tool_gap": ["RATE_MANUAL", "RATE_AMBIGUOUS", "TOOL_LIMIT", "TECHNICAL_TOOL_GAP"],
 		"wrong_rate_complete": sorted(WRONG_RATE_COMPLETE_STATUSES),
 		"wrong_rate_active": sorted(WRONG_RATE_ACTIVE_STATUSES),
 		"i4_ready": sorted(I4_READY_STATUSES),

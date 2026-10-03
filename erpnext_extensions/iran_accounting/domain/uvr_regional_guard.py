@@ -45,10 +45,17 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 # Frappe 16.34.0 (guarded UVR / regional bodies unchanged).
 # UVR body changed in 16.31 (round_floats_in gains do_not_round_fields for
 # conversion_factor); regional stub + hook call site remain compatible.
+# ERPNext 16.36.x–16.37.0: update_valuation_rate uses get_internal_transfer_qty
+# for internal PR sales_incoming_rate; still ends with regional hook. Regional
+# stub unchanged. Revalidated on ERPNext 16.37.0 / Frappe 16.36.1.
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35"})
-_SUPPORTED_FRAPPE_MINOR = frozenset({"16.29", "16.30", "16.31", "16.32", "16.33", "16.34"})
+_SUPPORTED_ERPNEXT_MINOR = frozenset(
+	{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"}
+)
+_SUPPORTED_FRAPPE_MINOR = frozenset(
+	{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36"}
+)
 
 _FN_FINGERPRINTS = {
 	"update_valuation_rate": {
@@ -60,6 +67,8 @@ _FN_FINGERPRINTS = {
 		"source_sha256_alternates": (
 			# ERPNext 16.29 / 16.30 (round_floats_in without do_not_round_fields)
 			"5e898d6e97ff7b39f56c0f710b83b9e69a7c0ae08a97dae10eaf32f0c12c7bac",
+			# ERPNext 16.36.x–16.37.0 (get_internal_transfer_qty for internal PR)
+			"8d254a90a2c0db491abada5742dfd5dfab2b6f847745d15cb052951e6dadca3e",
 		),
 		"must_contain": ("update_regional_item_valuation_rate",),
 	},

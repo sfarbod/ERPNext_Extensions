@@ -80,7 +80,7 @@ test.describe("Iran Accounting v5.3.35 stage-equivalent By-Product @release-bloc
       ) as DraftCtx;
       draftName = String(draft.name || "");
       expect(draftName).toBeTruthy();
-      expect(draft.contract_version).toBe("5.3.37");
+      expect(draft.contract_version).toBe("5.3.43");
       expect(Number(draft.by_product?.basic_rate || 0)).toBeGreaterThan(0);
       expect(Number(draft.fg?.basic_rate || 0)).toBeGreaterThan(0);
       // UOM equivalence: 1 BOX = 2 syringe → FG rate ≈ 2 × BY rate (IRR residual ≤ 1)
@@ -93,7 +93,7 @@ test.describe("Iran Accounting v5.3.35 stage-equivalent By-Product @release-bloc
       await captureStep(page, "v5335_p04_draft_open");
       const ui = await readEconomics(page);
       expect(ui.docstatus).toBe(0);
-      expect(ui.contract).toBe("5.3.37");
+      expect(ui.contract).toBe("5.3.43");
       const by = ui.items.find((r) => r.item_code === "30500006");
       const fg = ui.items.find((r) => r.is_finished_item === 1 && r.item_code === "20100064");
       expect(by?.basic_rate || 0).toBeGreaterThan(0);

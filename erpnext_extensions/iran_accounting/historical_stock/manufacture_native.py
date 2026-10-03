@@ -41,6 +41,7 @@ RECONSTRUCTABLE = "RECONSTRUCTABLE"
 LEGITIMATE = "LEGITIMATE"
 MANUAL = "MANUAL"
 HEALTHY = "HEALTHY"
+TOOL_LIMIT = "TOOL_LIMIT"
 RATE_TOL = 1.0
 
 
@@ -81,6 +82,7 @@ def reconstruct_manufacture_valuation(voucher: str) -> dict[str, Any]:
 		       IFNULL(is_scrap_item,0) AS is_scrap,
 		       IFNULL(allow_zero_valuation_rate,0) AS allow_zero,
 		       secondary_item_type, valuation_type,
+		       IFNULL(custom_output_class,'') AS custom_output_class,
 		       IFNULL(additional_cost,0) AS additional_cost
 		FROM `tabStock Entry Detail`
 		WHERE parent=%s
@@ -222,6 +224,79 @@ def reconstruct_manufacture_valuation(voucher: str) -> dict[str, Any]:
 		out["classification"] = MANUAL
 		out["confidence"] = CONFIDENCE_MANUAL
 		out["reason"] = f"multi-FG Manufacture ({len(fgs)}) — stage/co-product allocation not auto-READY"
+		return out
+
+	# Iran output matrix: do not auto-READY via generic scrap residual when
+	# Product Reject / finance-excluded VR scrap / co-product are present.
+	# Instead consult CURRENT Iran native historical analyze.
+	iran_gate = _iran_output_auto_gate(details, fgs[0]["detail"])
+	if iran_gate:
+		from erpnext_extensions.iran_accounting.historical_stock.manufacture_native_historical import (
+			ALREADY_HEALTHY,
+			EXACT_REPAIRABLE,
+			WAITING_UPSTREAM as IRAN_WAITING,
+			analyze_iran_native_historical,
+		)
+
+		native = analyze_iran_native_historical(voucher)
+		out["iran_native"] = {
+			k: native.get(k)
+			for k in (
+				"classification",
+				"families",
+				"delta_n",
+				"reason",
+				"authority",
+				"notes",
+			)
+		}
+		out["tool_gap_code"] = iran_gate["code"]
+		out["required_capability"] = iran_gate["capability"]
+		if native.get("classification") == ALREADY_HEALTHY:
+			out["classification"] = HEALTHY
+			out["confidence"] = CONFIDENCE_EXACT
+			out["eligible"] = False
+			out["reason"] = "Iran native contract already matches SE economics"
+			out["source_of_truth"] = "iran_native_already_healthy"
+			return out
+		if native.get("classification") == EXACT_REPAIRABLE:
+			out["classification"] = EXACT
+			out["confidence"] = CONFIDENCE_EXACT
+			out["eligible"] = True
+			out["repair_strategy"] = "IRAN_NATIVE_HISTORICAL"
+			out["reason"] = (
+				f"Iran native historical repairable — families={native.get('families')} "
+				f"deltas={native.get('delta_n')}"
+			)
+			out["source_of_truth"] = "iran_native_historical"
+			# Do not publish SVD residual expected_target_rate — native contract owns rates.
+			out["expected_target_rate"] = None
+			fg = fgs[0]
+			d = fg["detail"]
+			sle = fg["sle"]
+			out["fg_rows"] = [
+				{
+					"voucher_detail": d.name,
+					"sle": sle.name if sle else None,
+					"item": d.item_code,
+					"warehouse": d.t_warehouse,
+					"qty": flt(d.qty),
+					"current_basic_rate": flt(d.basic_rate),
+					"expected_rate": None,
+					"native_deltas": native.get("deltas"),
+				}
+			]
+			return out
+		if native.get("classification") == IRAN_WAITING:
+			out["classification"] = WAITING_UPSTREAM
+			out["confidence"] = CONFIDENCE_AMBIGUOUS
+			out["eligible"] = False
+			out["reason"] = native.get("reason") or iran_gate["reason"]
+			return out
+		out["classification"] = TOOL_LIMIT
+		out["confidence"] = CONFIDENCE_LIKELY
+		out["eligible"] = False
+		out["reason"] = native.get("reason") or iran_gate["reason"]
 		return out
 
 	fg = fgs[0]
@@ -405,6 +480,44 @@ def apply_manufacture_valuation_to_row(row: dict, *, cache: dict | None = None) 
 		row["zero_reason"] = "LEGITIMATE_ZERO"
 		row["wrong_reason"] = "MANUFACTURE_HEALTHY"
 		return row
+	if cls == TOOL_LIMIT:
+		row["status"] = "MANUAL_REVIEW"
+		row["confidence"] = CONFIDENCE_LIKELY
+		row["eligible"] = False
+		row["actionable"] = True
+		row["proposed_rate"] = 0.0
+		row["source_of_truth"] = "iran_output_matrix_tool_gap"
+		row["rate_source"] = "iran_output_matrix_tool_gap"
+		row["message"] = ev.get("reason")
+		row["wrong_reason"] = ev.get("tool_gap_code") or "IRAN_OUTPUT_TOOL_GAP"
+		row["zero_reason"] = "TECHNICAL_TOOL_GAP"
+		row["manual_lane"] = "TOOL_LIMIT"
+		row["kpi_bucket"] = "TECHNICAL_TOOL_GAP"
+		row["planner_status"] = "RATE_MANUAL"
+		row["tool_gap_code"] = ev.get("tool_gap_code")
+		row["required_capability"] = ev.get("required_capability")
+		row["deterministic_capability"] = True
+		return row
+	if cls == EXACT and ev.get("repair_strategy") == "IRAN_NATIVE_HISTORICAL" and ev.get("eligible"):
+		row["proposed_rate"] = 0.0
+		row["expected"] = 0.0
+		row["source_of_truth"] = "iran_native_historical"
+		row["rate_source"] = "iran_native_historical"
+		row["repair_strategy"] = "IRAN_NATIVE_HISTORICAL"
+		row["confidence"] = CONFIDENCE_EXACT
+		row["status"] = "RECONSTRUCTABLE"
+		row["eligible"] = True
+		row["actionable"] = True
+		row["message"] = ev.get("reason")
+		row["wrong_reason"] = "IRAN_NATIVE_HISTORICAL"
+		row["kpi_bucket"] = "ZERO_RATE_RECONSTRUCTABLE"
+		row["iran_native"] = ev.get("iran_native")
+		if ev.get("fg_rows"):
+			fr = ev["fg_rows"][0]
+			row.setdefault("voucher_detail", fr.get("voucher_detail"))
+			row.setdefault("sle", fr.get("sle"))
+			row["warehouse"] = fr.get("warehouse") or row.get("warehouse")
+		return row
 	if cls == EXACT and ev.get("eligible"):
 		# Only stamp FG detail rows
 		fg_items = {r["item"] for r in (ev.get("fg_rows") or [])}
@@ -533,6 +646,64 @@ def repair_manufacture_valuation(voucher: str, *, dry_run: bool = True) -> dict:
 		"path": "manufacture_native_fg_residual",
 		"riv": "NOT_INVOKED",
 	}
+
+
+def _iran_output_auto_gate(details: list, fg_detail) -> dict | None:
+	"""Refuse generic SVD residual READY when Iran class-specific paths are required."""
+	fg_item = str(getattr(fg_detail, "item_code", None) or "")
+	for d in details or []:
+		oclass = str(getattr(d, "custom_output_class", None) or "")
+		sec = str(getattr(d, "secondary_item_type", None) or "")
+		vt = str(getattr(d, "valuation_type", None) or "")
+		item = str(getattr(d, "item_code", None) or "")
+		allow_zero = cint(getattr(d, "allow_zero", None) or getattr(d, "allow_zero_valuation_rate", None) or 0)
+		basic_rate = flt(getattr(d, "basic_rate", None) or 0)
+		if sec in ("By-Product", "Co-Product", "Additional Finished Good") or "CO_PRODUCT" in oclass:
+			return {
+				"code": "IRAN_STAGE_COPRODUCT",
+				"capability": "allocate_stage_output_cost / stage-equivalent repair",
+				"reason": (
+					"co/by-product or AFG present — Iran stage-equivalent path required; "
+					"generic consumed-SVD residual is not auto-READY"
+				),
+			}
+		if oclass == "BULK_SCRAP" or (
+			(cint(getattr(d, "is_scrap", None)) or _is_scrap_like(d))
+			and vt == "Manual"
+			and basic_rate <= RATE_EPS
+			and allow_zero
+		):
+			return {
+				"code": "IRAN_BULK_SCRAP",
+				"capability": "BULK_SCRAP intentional-zero contract",
+				"reason": (
+					"Bulk Scrap (intentional zero) present — Iran BULK_SCRAP path required; "
+					"generic residual / issued-rate must not revalue it"
+				),
+			}
+		if "REJECT" in oclass or (
+			(cint(getattr(d, "is_scrap", None)) or _is_scrap_like(d))
+			and vt == "Valuation Rate"
+			and item == fg_item
+		):
+			return {
+				"code": "IRAN_PRODUCT_REJECT",
+				"capability": "allocate_scrap_absorbed_cost / product-reject absorbed FG rate",
+				"reason": (
+					"product reject (or same-item VR scrap) present — Iran absorbed FG rate "
+					"path required; generic scrap deduction is not auto-READY"
+				),
+			}
+		if (cint(getattr(d, "is_scrap", None)) or _is_scrap_like(d)) and vt == "Valuation Rate":
+			return {
+				"code": "IRAN_VR_SCRAP_REVIEW",
+				"capability": "Iran scrap valuation_type=Valuation Rate class-specific repair",
+				"reason": (
+					"Valuation Rate scrap present — finance-excluded / class-specific; "
+					"not auto via generic scrap residual"
+				),
+			}
+	return None
 
 
 def _is_scrap_like(d) -> bool:

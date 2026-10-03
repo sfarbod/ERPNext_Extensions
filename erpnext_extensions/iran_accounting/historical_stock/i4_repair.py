@@ -182,7 +182,13 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 	expected_value = 0.0 if abs(qty_after) <= QTY_EPS else residual
 	sim = preview_i4_replay(item, warehouse, from_dt=sle.posting_datetime)
 	pz_clears = _simulation_clears_patient_zero(item, warehouse, sle)
+	checkpoint = None
+	if this_is_i4_pz and is_leftover and not pz_clears and not precision_dust:
+		# Amended Manufacture (-1) / timeline inserts: prior SLE opening may look
+		# poisoned while a last healthy (0,0) checkpoint + native replay clears tip.
+		checkpoint = _checkpoint_replay_clears_tip(item, warehouse, sle)
 	status = I4_WAITING
+	repair_from_dt = str(sle.posting_datetime)
 	if abs(qty_after) <= QTY_EPS and abs(residual) <= 1:
 		status = I4_REPAIRED
 	elif precision_dust:
@@ -191,6 +197,13 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 		pz_clears = False
 	elif this_is_i4_pz and is_leftover and prev_ok and pz_clears:
 		status = I4_READY
+	elif this_is_i4_pz and is_leftover and checkpoint:
+		status = I4_READY
+		repair_from_dt = checkpoint["from_dt"]
+		sim = preview_i4_replay(item, warehouse, from_dt=repair_from_dt)
+		prev_ok = True
+		prev_blocker = None
+		pz_clears = True
 	elif this_is_i4_pz and is_leftover and (not prev_ok or not pz_clears):
 		status = "MANUAL"
 	elif is_leftover and i4_pz_voucher and i4_pz_voucher != sle.voucher_no:
@@ -200,6 +213,11 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 	else:
 		status = "NOT_I4"
 	msg = "Identity leftover detected." if status in (I4_READY, I4_WAITING, I4_REPLAY_REQUIRED) else ""
+	if status == I4_READY and checkpoint:
+		msg = (
+			"READY_I4 via last healthy zero checkpoint "
+			f"{checkpoint.get('checkpoint_voucher')} → replay from {checkpoint.get('from_voucher')}"
+		)
 	if status == "MANUAL":
 		if precision_dust:
 			msg = (
@@ -250,7 +268,9 @@ def classify_i4_row(item, warehouse, voucher=None, sle_name=None) -> dict:
 		"previous_healthy": prev_ok,
 		"previous_blocker": prev_blocker,
 		"pz_residual_clears_in_sim": pz_clears,
-		"posting_datetime": str(sle.posting_datetime),
+		"posting_datetime": repair_from_dt,
+		"patient_zero_posting_datetime": str(sle.posting_datetime),
+		"checkpoint_repair": checkpoint,
 		"patient_zero": effective_patient
 		or {
 			"voucher_no": sle.voucher_no,
@@ -321,6 +341,81 @@ def _simulation_clears_patient_zero(item, warehouse, sle) -> bool:
 		return False
 	step = series[0]
 	return abs(flt(step["qty_after_transaction"])) <= QTY_EPS and abs(flt(step["stock_value"])) <= 1
+
+
+def _last_healthy_zero_checkpoint(item, warehouse, before_dt):
+	"""Latest SLE before ``before_dt`` with qty≈0 and |stock_value|≤1."""
+	before_dt = get_datetime(before_dt)
+	rows = frappe.db.sql(
+		"""
+		SELECT name, voucher_no, posting_datetime, qty_after_transaction, stock_value
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND posting_datetime < %s
+		  AND ABS(qty_after_transaction) < %s
+		  AND ABS(IFNULL(stock_value,0)) <= 1
+		ORDER BY posting_datetime DESC, creation DESC
+		LIMIT 1
+		""",
+		(item, warehouse, before_dt, QTY_EPS),
+		as_dict=True,
+	)
+	return rows[0] if rows else None
+
+
+def _successor_sle(item, warehouse, checkpoint_name: str):
+	"""Immediate next SLE after ``checkpoint_name`` in posting/creation order."""
+	meta = frappe.db.get_value(
+		"Stock Ledger Entry",
+		checkpoint_name,
+		["posting_datetime", "creation"],
+		as_dict=True,
+	)
+	if not meta:
+		return None
+	rows = frappe.db.sql(
+		"""
+		SELECT name, voucher_no, posting_datetime
+		FROM `tabStock Ledger Entry`
+		WHERE item_code=%s AND warehouse=%s AND is_cancelled=0
+		  AND (
+		        posting_datetime > %s
+		        OR (posting_datetime = %s AND creation > %s)
+		      )
+		ORDER BY posting_datetime ASC, creation ASC
+		LIMIT 1
+		""",
+		(item, warehouse, meta.posting_datetime, meta.posting_datetime, meta.creation),
+		as_dict=True,
+	)
+	return rows[0] if rows else None
+
+
+def _checkpoint_replay_clears_tip(item, warehouse, sle) -> dict | None:
+	"""If a prior healthy (0,0) checkpoint exists and replay from the next SLE
+	clears the tip, return repair metadata. Handles amended Manufacture (-1)
+	rows inserted into a timeline without rebuilding later running balances.
+	"""
+	checkpoint = _last_healthy_zero_checkpoint(item, warehouse, sle.posting_datetime)
+	if not checkpoint:
+		return None
+	nxt = _successor_sle(item, warehouse, checkpoint.name)
+	if not nxt:
+		return None
+	sim = preview_i4_replay(item, warehouse, from_dt=nxt.posting_datetime)
+	if not sim.get("ok"):
+		return None
+	if abs(flt(sim.get("final_qty"))) > QTY_EPS:
+		return None
+	if abs(flt(sim.get("final_value"))) > 1:
+		return None
+	return {
+		"from_dt": str(nxt.posting_datetime),
+		"from_voucher": nxt.voucher_no,
+		"checkpoint_voucher": checkpoint.voucher_no,
+		"sql_updates": sim.get("sql_updates"),
+		"reason": "replay_from_last_healthy_zero_checkpoint_clears_tip",
+	}
 
 
 def scan_i4_leftover(
@@ -560,30 +655,57 @@ def repair_i4_selected(rows: list[dict], *, dry_run=True) -> dict:
 			preview = dry_run_i4_repair(prepared)
 			finish_run(log, applied=0, blocked=0)
 			return {**preview, "repair_run_id": getattr(log, "repair_run_id", None)}
-		savepoint = f"i4_{frappe.generate_hash(length=8)}"
-		frappe.db.savepoint(savepoint)
+		# Commit per identity: long multi-row SLE rewrites under one MariaDB
+		# transaction hit "Record has changed since last read" (1020) and leave
+		# a dead transaction where SAVEPOINT rollback also fails.
 		sql_executed = 0
+		max_attempts = 3
 		for merged in prepared:
-			result = apply_i4_identity(
-				merged["item"],
-				merged["warehouse"],
-				from_dt=merged.get("posting_datetime"),
-				patient_voucher=merged.get("voucher"),
-			)
-			sql_executed += int(result.get("sql_updates") or 0)
-			gl = _rebuild_gl_touched(result.get("touched_vouchers") or [])
-			sql_executed += int(gl.get("rebuilt") or 0)
-			row_out = {
-				**merged,
-				**result,
-				"gl": gl,
-				"written": True,
-				"status": STATUS_REPAIRED,
-				"i4_status": I4_REPAIRED,
-			}
-			applied.append(row_out)
-			append_entry(log, row_out, written=True)
-		frappe.db.commit()
+			last_exc = None
+			for attempt in range(1, max_attempts + 1):
+				try:
+					result = apply_i4_identity(
+						merged["item"],
+						merged["warehouse"],
+						from_dt=merged.get("posting_datetime"),
+						patient_voucher=merged.get("voucher"),
+					)
+					sql_executed += int(result.get("sql_updates") or 0)
+					gl = _rebuild_gl_touched(result.get("touched_vouchers") or [])
+					sql_executed += int(gl.get("rebuilt") or 0)
+					row_out = {
+						**merged,
+						**result,
+						"gl": gl,
+						"written": True,
+						"status": STATUS_REPAIRED,
+						"i4_status": I4_REPAIRED,
+						"attempt": attempt,
+					}
+					applied.append(row_out)
+					append_entry(log, row_out, written=True)
+					frappe.db.commit()
+					last_exc = None
+					break
+				except Exception as exc:
+					last_exc = exc
+					try:
+						frappe.db.rollback()
+					except Exception:
+						pass
+					msg = str(exc).lower()
+					retryable = (
+						"record has changed since last read" in msg
+						or "deadlock" in msg
+						or "try restarting transaction" in msg
+						or getattr(exc, "args", [None])[0] in (1020, 1213)
+					)
+					if not retryable or attempt >= max_attempts:
+						finish_run(log, applied=len(applied), blocked=1, error=str(exc))
+						raise
+			if last_exc:
+				finish_run(log, applied=len(applied), blocked=1, error=str(last_exc))
+				raise last_exc
 		finish_run(log, applied=len(applied), blocked=0)
 		return {
 			"dry_run": False,
@@ -591,7 +713,8 @@ def repair_i4_selected(rows: list[dict], *, dry_run=True) -> dict:
 			"applied": applied,
 			"blocked": blocked,
 			"sql_updates_executed": sql_executed,
-			"savepoint_created": True,
+			"savepoint_created": False,
+			"per_identity_commit": True,
 			"transaction_committed": True,
 			"elapsed_seconds": round(perf_counter() - t0, 3),
 			"database_backup_recommended": True,
@@ -600,9 +723,12 @@ def repair_i4_selected(rows: list[dict], *, dry_run=True) -> dict:
 			"global_replay": False,
 		}
 	except Exception as exc:
-		if savepoint:
-			frappe.db.rollback(save_point=savepoint)
-		finish_run(log, applied=0, blocked=1, error=str(exc))
+		try:
+			frappe.db.rollback()
+		except Exception:
+			pass
+		if not applied:
+			finish_run(log, applied=0, blocked=1, error=str(exc))
 		raise
 	finally:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = False
