@@ -168,6 +168,7 @@ after_migrate = [
 	"erpnext_extensions.asset_usage_depreciation.install.after_migrate",
 	"erpnext_extensions.decimal_precision_after_migrate.after_migrate",
 	"erpnext_extensions.patches.post_model_sync.ensure_reassign_job_cards_navigation.execute",
+	"erpnext_extensions.patches.post_model_sync.ensure_job_card_stock_rebuild_navigation.execute",
 ]
 
 # ERPNext injects Accounting Dimension custom fields onto these DocTypes (see Accounting Dimension on_update).
