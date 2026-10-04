@@ -106,6 +106,48 @@ class JobCardStockRebuildPage {
 		this.$typeRec = $('<div data-role="type-reconciliation">').appendTo(this.$body);
 		this.$evidence = $('<div data-role="evidence">').appendTo(this.$body);
 		this.$downstream = $('<div data-role="downstream">').appendTo(this.$body);
+
+		// v5.5.0 — Manufacture Reconciliation (Golden Rule)
+		$('<hr class="jcsr-divider">').appendTo(this.$body);
+		$('<h3 class="jcsr-section-title">')
+			.text(__("Manufacture Reconciliation"))
+			.appendTo(this.$body);
+		$('<p class="jcsr-help">')
+			.text(
+				__(
+					"Golden Rule for Job Card × Item × Batch. Decide unexplained WIP, preview one canonical Manufacture, Dry Run (rollback), then Apply atomically. Persistent Apply is System Manager only."
+				)
+			)
+			.appendTo(this.$body);
+		const $mfgActions = $('<div class="jcsr-actions jcsr-mfg-actions">').appendTo(this.$body);
+		this.btn_mfg_scan = $(
+			`<button type="button" class="btn btn-default" data-mfg="scan">${__(
+				"Scan Manufacture"
+			)}</button>`
+		)
+			.appendTo($mfgActions)
+			.on("click", () => this.run_mfg_scan());
+		this.btn_mfg_dry = $(
+			`<button type="button" class="btn btn-warning" data-mfg="dry" disabled>${__(
+				"Dry Run Manufacture Repair"
+			)}</button>`
+		)
+			.appendTo($mfgActions)
+			.on("click", () => this.run_mfg_dry());
+		this.btn_mfg_apply = $(
+			`<button type="button" class="btn btn-danger" data-mfg="apply" disabled>${__(
+				"Apply Manufacture Repair"
+			)}</button>`
+		)
+			.appendTo($mfgActions)
+			.on("click", () => this.run_mfg_apply());
+		this.$mfg = $('<div data-role="manufacture-reconciliation" class="jcsr-mfg">').appendTo(
+			this.$body
+		);
+		this.mfgScan = null;
+		this.mfgPlan = null;
+		this.mfgDry = null;
+		this.mfgFingerprint = null;
 	}
 
 	apply_route_options() {
@@ -131,6 +173,13 @@ class JobCardStockRebuildPage {
 		this.$typeRec.empty();
 		this.$evidence.empty();
 		this.$downstream.empty();
+		this.mfgScan = null;
+		this.mfgPlan = null;
+		this.mfgDry = null;
+		this.mfgFingerprint = null;
+		if (this.$mfg) this.$mfg.empty();
+		if (this.btn_mfg_dry) this.btn_mfg_dry.prop("disabled", true);
+		if (this.btn_mfg_apply) this.btn_mfg_apply.prop("disabled", true);
 	}
 
 	args() {
@@ -705,6 +754,218 @@ class JobCardStockRebuildPage {
 				);
 			});
 		}
+	}
+
+	collect_mfg_plan() {
+		const dispositions = [];
+		this.$mfg.find("tr[data-item]").each((_, tr) => {
+			const $tr = $(tr);
+			dispositions.push({
+				item_code: $tr.attr("data-item"),
+				batch_no: $tr.attr("data-batch") || "",
+				proposed_consumed: flt($tr.find('[data-f="consumed"]').val()),
+				proposed_scrap: flt($tr.find('[data-f="scrap"]').val()),
+				proposed_return: flt($tr.find('[data-f="return"]').val()),
+				proposed_still_in_wip: flt($tr.find('[data-f="still"]').val()),
+			});
+		});
+		const merge_documents = [];
+		this.$mfg.find('input[data-merge]:checked').each((_, el) => {
+			merge_documents.push($(el).attr("data-merge"));
+		});
+		return {
+			dispositions,
+			merge_documents,
+			stamp_mode: "HISTORICAL",
+			fingerprint: this.mfgFingerprint,
+		};
+	}
+
+	run_mfg_scan() {
+		const jc = this.jc.get_value();
+		if (!jc) {
+			frappe.msgprint(__("Select a Job Card"));
+			return;
+		}
+		frappe.call({
+			method: this.api + ".scan_manufacture_reconciliation",
+			args: { job_card: jc },
+			freeze: true,
+			freeze_message: __("Scanning Golden Rule…"),
+			callback: (r) => {
+				const data = r.message || {};
+				this.mfgScan = data.scan;
+				this.mfgPlan = data.plan;
+				this.mfgFingerprint = (data.plan || {}).fingerprint;
+				this.mfgDry = null;
+				this.render_mfg();
+				this.btn_mfg_dry.prop("disabled", false);
+				this.btn_mfg_apply.prop("disabled", true);
+			},
+		});
+	}
+
+	run_mfg_dry() {
+		const jc = this.jc.get_value();
+		const plan = this.collect_mfg_plan();
+		frappe.call({
+			method: this.api + ".dry_run_manufacture_repair",
+			args: { job_card: jc, plan: plan },
+			freeze: true,
+			freeze_message: __("Dry Run Manufacture Repair (will rollback)…"),
+			callback: (r) => {
+				this.mfgDry = r.message || {};
+				this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
+				this.render_mfg_dry();
+				const pass = this.mfgDry.ok && this.mfgDry.status === "DRY_RUN_PASS";
+				this.btn_mfg_apply.prop("disabled", !pass);
+			},
+		});
+	}
+
+	run_mfg_apply() {
+		frappe.confirm(
+			__(
+				"Apply will CANCEL/SUBMIT real Stock Entries atomically. Continue only with authorization."
+			),
+			() => {
+				const jc = this.jc.get_value();
+				const plan = this.collect_mfg_plan();
+				frappe.call({
+					method: this.api + ".apply_manufacture_repair",
+					args: { job_card: jc, plan: plan, confirm: 1 },
+					freeze: true,
+					callback: (r) => {
+						const msg = r.message || {};
+						frappe.msgprint({
+							title: msg.ok ? __("Apply PASS") : __("Apply FAIL"),
+							indicator: msg.ok ? "green" : "red",
+							message: `<pre>${frappe.utils.escape_html(
+								JSON.stringify(msg, null, 2).slice(0, 4000)
+							)}</pre>`,
+						});
+					},
+				});
+			}
+		);
+	}
+
+	render_mfg() {
+		this.$mfg.empty();
+		const scan = this.mfgScan || {};
+		const plan = this.mfgPlan || {};
+		const rows = scan.rows || [];
+		$("<h4 class='jcsr-section-title'>").text(__("Golden Rule")).appendTo(this.$mfg);
+		if (plan.blockers && plan.blockers.length) {
+			this.$mfg.append(
+				`<div class="jcsr-alert blocker">${frappe.utils.escape_html(
+					plan.blockers.join("; ")
+				)}</div>`
+			);
+		}
+		const $table = $(`
+			<table class="jcsr-table">
+				<thead><tr>
+					<th>${__("Item")}</th><th>${__("Batch")}</th>
+					<th>${__("Issued")}</th><th>${__("Returned")}</th>
+					<th>${__("Consumed")}</th><th>${__("Scrap")}</th>
+					<th>${__("Remaining")}</th><th>${__("Suggested")}</th>
+					<th>${__("Consumed*")}</th><th>${__("Scrap*")}</th>
+					<th>${__("Return*")}</th><th>${__("Still WIP*")}</th>
+					<th>${__("Status")}</th>
+				</tr></thead><tbody></tbody>
+			</table>
+		`);
+		const $tb = $table.find("tbody");
+		rows.forEach((r) => {
+			const sug = r.suggested_action
+				? `${r.suggested_action} ${flt(r.suggested_qty)} (${r.confidence || ""})`
+				: "";
+			$tb.append(`
+				<tr data-item="${frappe.utils.escape_html(r.item_code)}"
+				    data-batch="${frappe.utils.escape_html(r.batch_no || "")}">
+					<td>${frappe.utils.escape_html(r.item_code)}</td>
+					<td>${frappe.utils.escape_html(r.batch_no || "")}</td>
+					<td>${flt(r.issued)}</td><td>${flt(r.returned)}</td>
+					<td>${flt(r.consumed)}</td><td>${flt(r.scrap)}</td>
+					<td>${flt(r.remaining_wip)}</td>
+					<td title="${frappe.utils.escape_html(r.reason || "")}">${frappe.utils.escape_html(sug)}</td>
+					<td><input data-f="consumed" type="number" step="any" value="${flt(r.proposed_consumed)}" style="width:70px"></td>
+					<td><input data-f="scrap" type="number" step="any" value="${flt(r.proposed_scrap)}" style="width:70px"></td>
+					<td><input data-f="return" type="number" step="any" value="${flt(r.proposed_return)}" style="width:70px"></td>
+					<td><input data-f="still" type="number" step="any" value="${flt(r.proposed_still_in_wip)}" style="width:70px"></td>
+					<td>${frappe.utils.escape_html(r.status || "")}</td>
+				</tr>
+			`);
+		});
+		this.$mfg.append($table);
+
+		$("<h4 class='jcsr-section-title'>").text(__("Documents to Merge")).appendTo(this.$mfg);
+		const docs = plan.documents || [];
+		docs.forEach((d) => {
+			if (d.role === "TEMP CANCEL / RECREATE") {
+				this.$mfg.append(
+					`<div class="text-muted">Logistics: ${frappe.utils.escape_html(
+						d.name
+					)} (${frappe.utils.escape_html(d.purpose || "")})</div>`
+				);
+				return;
+			}
+			const checked = d.role === "MERGE" ? "checked" : "";
+			this.$mfg.append(
+				`<label style="display:block;margin:2px 0">
+					<input type="checkbox" data-merge="${frappe.utils.escape_html(d.name)}" ${checked}>
+					${frappe.utils.escape_html(d.name)} — ${frappe.utils.escape_html(d.role)}
+					FG ${flt(d.fg_completed_qty)} stamp ${frappe.utils.escape_html(d.stamp || "")}
+				</label>`
+			);
+		});
+
+		$("<h4 class='jcsr-section-title'>").text(__("Final Manufacture Preview")).appendTo(this.$mfg);
+		const canon = plan.canonical_manufacture || {};
+		this.$mfg.append(
+			`<div class="jcsr-meta">Stamp: <code>${frappe.utils.escape_html(
+				canon.historical_stamp || ""
+			)}</code> · FG qty ${flt(canon.fg_completed_qty)} · supersedes ${(
+				canon.supersedes || []
+			)
+				.map((x) => frappe.utils.escape_html(x))
+				.join(", ")}</div>`
+		);
+		const $ct = $(
+			`<table class="jcsr-table"><thead><tr>
+				<th>${__("Type")}</th><th>${__("Item")}</th><th>${__("Batch")}</th>
+				<th>${__("Qty")}</th><th>${__("S / T")}</th><th>${__("Rate source")}</th>
+			</tr></thead><tbody></tbody></table>`
+		);
+		(canon.rows || []).forEach((row) => {
+			$ct.find("tbody").append(`
+				<tr>
+					<td>${frappe.utils.escape_html(row.type || "")}</td>
+					<td>${frappe.utils.escape_html(row.item_code || "")}</td>
+					<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
+					<td>${flt(row.qty)}</td>
+					<td>${frappe.utils.escape_html(row.s_warehouse || "")} → ${frappe.utils.escape_html(
+						row.t_warehouse || ""
+					)}</td>
+					<td>${frappe.utils.escape_html(row.rate_source || "")}</td>
+				</tr>
+			`);
+		});
+		this.$mfg.append($ct);
+	}
+
+	render_mfg_dry() {
+		const d = this.mfgDry || {};
+		const cls = d.ok ? "ok" : "blocker";
+		this.$mfg.prepend(
+			`<div class="jcsr-alert ${cls}" data-role="mfg-dry">
+				<strong>${frappe.utils.escape_html(d.status || "")}</strong>
+				${d.error ? " — " + frappe.utils.escape_html(d.error) : ""}
+				<div class="jcsr-meta">mutated=${d.mutated} committed=${d.committed}
+				canonical=${frappe.utils.escape_html(d.canonical_name || "")}</div>
+			</div>`
+		);
 	}
 }
 

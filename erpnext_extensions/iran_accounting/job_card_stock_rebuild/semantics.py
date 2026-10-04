@@ -80,8 +80,13 @@ def derive_tracking_for_item(
 	returned = flt(evidence_item["returned"])
 	consumed = flt(evidence_item["consumed"])
 	scrap = flt(evidence_item["component_scrap"])
+	paired_scrap = flt(evidence_item.get("paired_component_scrap") or 0)
 	net = issued - returned
-	still = net - consumed - scrap
+	# Scrap output does not drain WIP again when paired with CONSUME source rows.
+	still = net - consumed
+	if scrap > paired_scrap + 1e-9:
+		# Unpaired scrap — leave remainder math on consume only; status flags mismatch.
+		pass
 
 	derived = {
 		"transferred_qty": net,
@@ -150,7 +155,10 @@ def _why(field: str) -> str:
 		"custom_issued_qty": "Gross Material Transfer for Manufacture to WIP.",
 		"custom_returned_qty": "Gross MTfM returns from WIP.",
 		"custom_returnable_qty": "Site pattern: equals net issued (issued−returned).",
-		"custom_still_in_wip": "Physical remainder: issued−returned−consumed−component_scrap.",
+		"custom_still_in_wip": (
+			"Physical remainder: issued−returned−consumed. "
+			"Paired Component Scrap output is not a second WIP drain."
+		),
 	}.get(field, "")
 
 
@@ -224,13 +232,15 @@ def reconcile_batches(evidence_items: list[dict]) -> tuple[list[dict], list[str]
 		returned = sum(flt(b["returned"]) for b in batches)
 		consumed = sum(flt(b["consumed"]) for b in batches)
 		scrap = sum(flt(b["component_scrap"]) for b in batches)
+		paired = sum(flt(b.get("paired_component_scrap") or 0) for b in batches)
 		other = sum(flt(b["other"]) for b in batches)
-		remainder = issued - returned - consumed - scrap - other
-		# Batch-level remainders must each be non-negative when issued>0, or sum match
+		# Paired scrap output is not a second WIP drain (consume already includes source).
+		remainder = issued - returned - consumed - other
 		batch_rems = [
-			flt(b["issued"]) - flt(b["returned"]) - flt(b["consumed"]) - flt(b["component_scrap"]) - flt(b["other"])
-			for b in batches
+			flt(b["issued"]) - flt(b["returned"]) - flt(b["consumed"]) - flt(b["other"]) for b in batches
 		]
+		if scrap > paired + 1e-9:
+			statuses.append(S.COMPONENT_SCRAP_MISMATCH)
 		if len(batches) > 1:
 			if abs(sum(batch_rems) - remainder) > 1e-6:
 				statuses.append(S.BATCH_MISMATCH)
@@ -251,6 +261,7 @@ def reconcile_batches(evidence_items: list[dict]) -> tuple[list[dict], list[str]
 				"returned": returned,
 				"consumed": consumed,
 				"component_scrap": scrap,
+				"paired_component_scrap": paired,
 				"product_reject": sum(flt(b["product_reject"]) for b in batches),
 				"ordinary_scrap": sum(flt(b["ordinary_scrap"]) for b in batches),
 				"other": other,

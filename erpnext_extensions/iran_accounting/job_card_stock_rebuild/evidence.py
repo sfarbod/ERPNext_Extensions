@@ -187,7 +187,11 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 				agg["product_reject"] += qty
 			elif bucket == "ORDINARY_SCRAP":
 				agg["ordinary_scrap"] += qty
+			elif bucket in ("FINISHED", "SECONDARY_OUTPUT", "MFG_OTHER"):
+				# FG / Co-/By-/AFG outputs are not component WIP drains.
+				pass
 			else:
+				# Proven component WIP outflow that is not CONSUME/RETURN/SCRAP.
 				agg["other"] += qty
 
 		if se.purpose == "Manufacture":
@@ -195,15 +199,26 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 		elif se.purpose == "Material Transfer for Manufacture":
 			transfer_postings.append(se)
 
-	# Finalize remainders
+	# Pair COMPONENT_SCRAP outputs to WIP CONSUME so scrap is not double-counted.
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.scrap_pairing import (
+		golden_remainder,
+		pair_scrap_for_job_card_evidence,
+	)
+
+	pairing = pair_scrap_for_job_card_evidence(movements)
+	paired_map = pairing.get("paired_scrap_qty") or {}
+
+	# Finalize remainders — PHYSICAL WIP drain = CONSUME only when scrap is paired.
 	items_out = []
 	for (item, batch), agg in sorted(by_item_batch.items()):
-		remainder = (
-			flt(agg["issued"])
-			- flt(agg["returned"])
-			- flt(agg["consumed"])
-			- flt(agg["component_scrap"])
-			- flt(agg["other"])
+		paired = flt(paired_map.get((item, batch)))
+		remainder = golden_remainder(
+			agg["issued"],
+			agg["returned"],
+			agg["consumed"],
+			agg["component_scrap"],
+			paired,
+			agg["other"],
 		)
 		items_out.append(
 			{
@@ -213,11 +228,13 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 				"returned": flt(agg["returned"]),
 				"consumed": flt(agg["consumed"]),
 				"component_scrap": flt(agg["component_scrap"]),
+				"paired_component_scrap": paired,
 				"product_reject": flt(agg["product_reject"]),
 				"ordinary_scrap": flt(agg["ordinary_scrap"]),
 				"other": flt(agg["other"]),
 				"wip_remainder": remainder,
 				"net_available_for_manufacture": flt(agg["issued"]) - flt(agg["returned"]) - flt(agg["consumed"]),
+				"scrap_pair_ok": flt(agg["component_scrap"]) <= paired + 1e-9,
 				"evidence": agg["evidence"],
 				"link_candidates": agg["link_candidates"],
 			}
