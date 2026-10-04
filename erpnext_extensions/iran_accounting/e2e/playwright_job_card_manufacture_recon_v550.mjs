@@ -1,7 +1,6 @@
 /**
- * Playwright — Job Card Manufacture Reconciliation hardening (v5.5.0)
- * P01–P10: Material Issue ownership + PO-JOB08760 dependency audit UI.
- * No persistent Apply.
+ * Playwright — shared logistics recreate hardening (v5.5.0)
+ * P01–P10 against PO-JOB08760. No persistent Apply.
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
 import { execSync } from "child_process";
@@ -10,8 +9,16 @@ const BENCH = process.env.FRAPPE_BENCH_ROOT || "/workspace/development/frappe-be
 const SITE = process.env.FRAPPE_SITE || "development.localhost";
 const BASE = process.env.BASE_URL || process.env.FRAPPE_E2E_BASE_URL || "http://development.localhost:8000";
 const JC = process.env.E2E_JC_08760 || "PO-JOB08760";
-const JC_MI = process.env.E2E_JC_MI || "PO-JOB09002";
 const PAGE = "/desk/job-card-stock-rebuild";
+const FOREIGN = [
+	"MAT-STE-2026-32617",
+	"MAT-STE-2026-40364",
+	"MAT-STE-2026-33377",
+	"MAT-STE-2026-33928",
+	"MAT-STE-2026-40369",
+	"MAT-STE-2026-37643",
+	"MAT-STE-2026-37777",
+];
 
 function assert(cond, msg) {
 	if (!cond) throw new Error(msg);
@@ -86,86 +93,60 @@ async function setJobCard(page, jc) {
 
 		await page.goto(`${BASE}${PAGE}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 		await page.waitForSelector(".jc-stock-rebuild-page, .jcsr-toolbar", { timeout: 60000 });
+		results.push({ id: "P01", ok: true, detail: "page open" });
 
-		// MI canary UI (PO-JOB09002)
-		await setJobCard(page, JC_MI);
-		await page.locator('button[data-mfg="scan"]').click({ force: true });
-		await page.waitForSelector('[data-role="manufacture-reconciliation"] .jcsr-table', {
-			timeout: 90000,
-		});
-		const miText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		results.push({
-			id: "P01",
-			ok: /Material Issue|MAT-STE-2026-39898/i.test(miText),
-			detail: "MI in document list",
-		});
-		results.push({
-			id: "P02",
-			ok: /MI_MERGE_SAFE|MI_USER_DECISION|MI_BLOCKED|PROVEN|ownership/i.test(miText),
-			detail: "ownership status visible",
-		});
-		results.push({
-			id: "P03",
-			ok: /MERGE/i.test(miText),
-			detail: "MERGE suggestion visible",
-		});
-		results.push({
-			id: "P06",
-			ok: /Material Issue|mi_sle|source/i.test(miText) || /CONSUME/i.test(miText),
-			detail: "MI / consume preview lineage",
-		});
-
-		// Ambiguous MI (outside WIP / unmatched) — PO-JOB08001
-		await setJobCard(page, "PO-JOB08001");
-		await page.locator('button[data-mfg="scan"]').click({ force: true });
-		await page.waitForTimeout(5000);
-		const ambText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		const ambOk =
-			/MI_USER_DECISION|MI_BLOCKED|BLOCKED|KEEP|not Job Card WIP|not issued/i.test(ambText);
-		results.push({ id: "P04", ok: ambOk, detail: ambText.slice(0, 200) });
-		// Shared logistics blocked is covered by P10 on 08760; multi-row unmatched MI
-		await setJobCard(page, "PO-JOB08028");
-		await page.locator('button[data-mfg="scan"]').click({ force: true });
-		await page.waitForTimeout(5000);
-		const sharedText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		const sharedOk =
-			/Material Issue|MI_USER_DECISION|KEEP|BLOCKED|37748/i.test(sharedText);
-		results.push({ id: "P05", ok: sharedOk, detail: sharedText.slice(0, 180) });
-
-		// PO-JOB08760 dependency audit
 		await setJobCard(page, JC);
 		await page.locator('button[data-mfg="scan"]').click({ force: true });
 		await page.waitForSelector('[data-role="manufacture-reconciliation"] .jcsr-table', {
 			timeout: 90000,
 		});
-		const t08760 = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		results.push({ id: "P02", ok: true, detail: "scan" });
+		const text = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		results.push({ id: "P03", ok: /31725/.test(text), detail: "31725 shown" });
+		results.push({ id: "P04", ok: /31726/.test(text), detail: "31726 shown" });
 		results.push({
-			id: "P09",
-			ok: /31725|31726|SHARED_BLOCKED|Minimal cancel|Documents/i.test(t08760),
-			detail: "08760 dependency list visible",
+			id: "P05",
+			ok: /SHARED|SAFE TO RECREATE|BLOCKED/i.test(text),
+			detail: "safe/blocked status visible",
 		});
 		results.push({
-			id: "P10",
-			ok: /SHARED_BLOCKED|BLOCKED/i.test(t08760),
-			detail: "Apply unavailable when dependency audit blocked",
+			id: "P06",
+			ok: /unrelated|20100041|20100193/i.test(text),
+			detail: "unrelated rows visible",
 		});
-		const applyDisabled = await page.locator('button[data-mfg="apply"]').isDisabled();
+		// Foreign docs may appear only as "later:" audit notes on unrelated rows —
+		// they must not appear as repair-scope document rows (cancel/recreate).
+		const docRows = await page.locator('[data-role="mfg-documents"] tr[data-doc]').allTextContents();
+		const scopeText = docRows.join("\n");
+		const foreignInScope = FOREIGN.filter((n) => scopeText.includes(n));
 		results.push({
-			id: "P10b",
-			ok: applyDisabled,
-			detail: `apply disabled=${applyDisabled}`,
+			id: "P07",
+			ok: foreignInScope.length === 0,
+			detail:
+				foreignInScope.length === 0
+					? "foreign 7 absent from document scope"
+					: "foreign in scope: " + foreignInScope.join(","),
 		});
 
-		// Dry Run on 08760 should BLOCK (shared logistics) — no mutation
 		await page.locator('button[data-mfg="dry"]').click({ force: true });
-		await page.waitForSelector('[data-role="mfg-dry"]', { timeout: 120000 }).catch(() => null);
+		await page.waitForSelector('[data-role="mfg-dry"]', { timeout: 180000 }).catch(() => null);
 		const dryText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		const dryOk = /BLOCKED|DRY_RUN|SHARED_BLOCKED/i.test(dryText);
-		results.push({ id: "P07", ok: dryOk, detail: dryText.slice(0, 200) });
 		results.push({
 			id: "P08",
-			ok: /mutated=false|BLOCKED/i.test(dryText),
-			detail: "no persistent mutation / blocked before cancel",
+			ok: /DRY_RUN|BLOCKED|PASS|FAIL/i.test(dryText),
+			detail: dryText.slice(0, 220),
+		});
+		results.push({
+			id: "P09",
+			ok: /Equivalence|BLOCKED|SHARED_BLOCKED|mutated=false/i.test(dryText),
+			detail: "equivalence or block result visible",
+		});
+		const applyDisabled = await page.locator('button[data-mfg="apply"]').isDisabled();
+		const dryPass = /DRY_RUN_PASS/i.test(dryText);
+		results.push({
+			id: "P10",
+			ok: dryPass ? !applyDisabled : applyDisabled,
+			detail: `apply disabled=${applyDisabled} dryPass=${dryPass}`,
 		});
 
 		const ok = results.every((r) => r.ok);

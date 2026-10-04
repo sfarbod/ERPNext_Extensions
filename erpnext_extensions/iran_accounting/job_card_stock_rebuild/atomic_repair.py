@@ -569,8 +569,29 @@ def run_repair(
 			raise RuntimeError("STALE PLAN after lock")
 
 		with suppress_auto_riv():
-			# Snapshot batches before cancel (cancel may clear SED.batch_no)
+			from erpnext_extensions.iran_accounting.job_card_stock_rebuild.shared_logistics import (
+				compare_recreated_equivalence,
+				snapshot_stock_entry,
+			)
+
+			# Full document snapshots + batch rates before cancel
 			logistics_batches = {name: _snapshot_se_batches(name) for name in logistics}
+			logistics_snaps = {name: snapshot_stock_entry(name) for name in logistics}
+			result["logistics_snapshots"] = {
+				n: {"header": s["header"], "n_rows": len(s["rows"])} for n, s in logistics_snaps.items()
+			}
+
+			fg_keys = set()
+			for fr in (fresh.get("scan") or {}).get("rows") or []:
+				pass
+			# FG keys from plan downstream discovery / canonical FG rows
+			for row in (fresh.get("canonical_manufacture") or {}).get("rows") or []:
+				if row.get("type") == "MAIN_FG" and row.get("item_code") and row.get("batch_no"):
+					fg_keys.add((row["item_code"], row["batch_no"]))
+			for d in fresh.get("downstream_logistics_audit") or fresh.get("downstream_logistics") or []:
+				for rr in (getattr(d, "related_rows", None) or (d.get("related_rows") if isinstance(d, dict) else None) or []):
+					if rr.get("item_code") and rr.get("batch_no"):
+						fg_keys.add((rr["item_code"], rr["batch_no"]))
 
 			# 1) Temp cancel logistics reverse chrono (already sorted desc)
 			for i, name in enumerate(logistics):
@@ -578,6 +599,9 @@ def run_repair(
 				result["cancelled"].append(name)
 				if i == 0:
 					_fail_point("after_first_cancel")
+					_fail_point("after_first_shared_cancel")
+				if i == 1:
+					_fail_point("after_both_shared_cancel")
 
 			# 2) Cancel proven Material Issues being merged into Manufacture
 			for name in merge_mis:
@@ -599,10 +623,27 @@ def run_repair(
 			result["canonical_name"] = canonical
 
 			# 5) Recreate logistics in original chrono (reverse of cancel list)
-			for name in reversed(logistics):
+			equivalence = []
+			for ri, name in enumerate(reversed(logistics)):
 				new_name = _recreate_logistics(name, batch_snapshot=logistics_batches.get(name))
 				result["recreated_logistics"].append({"from": name, "to": new_name})
+				if ri == 0:
+					_fail_point("after_first_shared_recreate")
+				eq = compare_recreated_equivalence(
+					logistics_snaps[name], new_name, fg_keys=fg_keys
+				)
+				equivalence.append(eq)
+				if not eq.get("ok"):
+					_fail_point("during_unrelated_equivalence")
+					raise RuntimeError(
+						"Shared logistics equivalence failed for "
+						f"{name}→{new_name}: " + "; ".join(eq.get("errors") or [])
+					)
+				if ri == 1:
+					_fail_point("after_second_shared_recreate")
 			_fail_point("after_logistics_recreate")
+			_fail_point("during_unrelated_equivalence")
+			result["logistics_equivalence"] = equivalence
 
 			# 6) Sync valuation
 			val_vouchers = [canonical] + [x["to"] for x in result["recreated_logistics"]]

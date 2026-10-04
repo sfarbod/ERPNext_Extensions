@@ -58,12 +58,14 @@ class TestMIOwnershipV550(FrappeTestCase):
 		minimal = set(down.get("minimal_cancel_set") or [])
 		self.assertNotIn("MAT-STE-2026-37777", minimal)
 		self.assertNotIn("MAT-STE-2026-37643", minimal)
-		# Seed audit marks 31725/31726 shared blocked
+		# 31725 must remain SHARED_BLOCKED (unrelated cancel shortfall).
+		# 31726 may be SHARED_RECREATE_SAFE alone but set still blocked by 31725.
 		audit = {a.name if hasattr(a, "name") else a["name"]: a for a in down.get("logistics_audit") or []}
-		for name in ("MAT-STE-2026-31725", "MAT-STE-2026-31726"):
-			if name in audit:
-				cls = getattr(audit[name], "shared_class", None) or audit[name].get("shared_class")
-				self.assertEqual(cls, "SHARED_BLOCKED")
+		if "MAT-STE-2026-31725" in audit:
+			cls = getattr(audit["MAT-STE-2026-31725"], "shared_class", None) or audit[
+				"MAT-STE-2026-31725"
+			].get("shared_class")
+			self.assertEqual(cls, "SHARED_BLOCKED")
 
 	def test_08760_plan_blocked_shared(self):
 		if not frappe.db.exists("Job Card", "PO-JOB08760"):

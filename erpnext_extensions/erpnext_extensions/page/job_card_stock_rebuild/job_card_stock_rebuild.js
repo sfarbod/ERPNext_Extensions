@@ -944,17 +944,37 @@ class JobCardStockRebuildPage {
 			} else if (d.role === "BLOCKED") {
 				actionCell = `<span class="text-danger">BLOCKED</span>`;
 			}
+			const unrel = (d.unrelated_rows || [])
+				.map(
+					(r) =>
+						`${r.item_code}×${flt(r.qty)}${r.downstream_note ? " [" + r.downstream_note + "]" : ""}`
+				)
+				.join("; ");
+			const rel = (d.related_rows || [])
+				.map((r) => `${r.item_code}×${flt(r.qty)}`)
+				.join("; ");
+			const detail =
+				(rel ? `affected: ${rel}` : "") +
+				(unrel ? (rel ? " | " : "") + `unrelated: ${unrel}` : "") +
+				(d.shared_reason ? ` | ${d.shared_reason}` : d.reason ? ` | ${d.reason}` : "");
 			$docTb.append(`
 				<tr data-doc="${frappe.utils.escape_html(d.name)}" title="${frappe.utils.escape_html(
-					d.reason || ""
+					detail || d.reason || ""
 				)}">
 					<td>${frappe.utils.escape_html(d.name)}</td>
 					<td>${frappe.utils.escape_html(purpose)}</td>
-					<td>${frappe.utils.escape_html(qty)}</td>
+					<td>${frappe.utils.escape_html(qty || rel || "")}</td>
 					<td>${frappe.utils.escape_html(String(ownership))}</td>
 					<td>${actionCell}</td>
 				</tr>
 			`);
+			if (detail && (d.shared_class || d.unrelated_rows)) {
+				$docTb.append(`
+					<tr class="text-muted" data-doc-detail="${frappe.utils.escape_html(d.name)}">
+						<td colspan="5" style="font-size:11px">${frappe.utils.escape_html(detail)}</td>
+					</tr>
+				`);
+			}
 		});
 		this.$mfg.append($docTable);
 		if (plan.minimal_cancel_set && plan.minimal_cancel_set.length) {
@@ -1004,12 +1024,21 @@ class JobCardStockRebuildPage {
 	render_mfg_dry() {
 		const d = this.mfgDry || {};
 		const cls = d.ok ? "ok" : "blocker";
+		let eqHtml = "";
+		(d.logistics_equivalence || []).forEach((eq) => {
+			eqHtml += `<div class="jcsr-meta">Equivalence ${frappe.utils.escape_html(
+				eq.original || ""
+			)} → ${frappe.utils.escape_html(eq.recreated || "")}: ${
+				eq.ok ? "PASS" : "FAIL"
+			}</div>`;
+		});
 		this.$mfg.prepend(
 			`<div class="jcsr-alert ${cls}" data-role="mfg-dry">
 				<strong>${frappe.utils.escape_html(d.status || "")}</strong>
 				${d.error ? " — " + frappe.utils.escape_html(d.error) : ""}
 				<div class="jcsr-meta">mutated=${d.mutated} committed=${d.committed}
 				canonical=${frappe.utils.escape_html(d.canonical_name || "")}</div>
+				${eqHtml}
 			</div>`
 		);
 	}

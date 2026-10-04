@@ -58,5 +58,7 @@ Dry Run / Apply with synchronous valuation (no async RIV during repair).
 - Proven Material Issue → MERGE into canonical Manufacture (SLE outgoing rate)
 - Shared multi-row MI → BLOCK (no row-split MVP)
 - Downstream dependency graph is Manufacture FG Item×Batch scoped
-- Shared logistics with later unrelated outbounds → SHARED_BLOCKED (no foreign cancel chain)
-- PO-JOB08760 pre-apply gate: BLOCKED until dedicated/safe logistics path exists
+- Shared Material Transfer recreate: `DEDICATED` / `SHARED_RECREATE_SAFE` / `SHARED_BLOCKED`
+  via savepoint cancel probe (no row-split; no foreign-chain expansion)
+- Physical equivalence check on recreated shared logistics
+- PO-JOB08760: `31726` SAFE alone; `31725` BLOCKED (unrelated stock shortfall) → pre-apply BLOCKED

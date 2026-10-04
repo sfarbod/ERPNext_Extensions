@@ -135,101 +135,17 @@ def _se_lines(name: str) -> list[dict]:
 	return rows
 
 
-def _has_later_outbounds(se_name: str, keys: set[tuple[str, str]]) -> bool:
-	"""True if any Item×Batch on ``keys`` has a later submitted outbound from this SE's target."""
-	cdt = _se_sort_key(se_name)
-	for ln in _se_lines(se_name):
-		key = (ln.item_code, ln.batch_no)
-		if key not in keys or not ln.t_warehouse or not ln.batch_no:
-			continue
-		later = frappe.db.sql(
-			"""
-			select se.name, se.posting_date, se.posting_time, se.creation
-			from `tabStock Entry Detail` sed
-			join `tabStock Entry` se on se.name=sed.parent
-			where se.docstatus=1 and sed.item_code=%s and ifnull(sed.batch_no,'')=%s
-			  and sed.s_warehouse=%s and se.name!=%s
-			limit 20
-			""",
-			(ln.item_code, ln.batch_no, ln.t_warehouse, se_name),
-			as_dict=1,
-		)
-		later2 = frappe.db.sql(
-			"""
-			select se.name, se.posting_date, se.posting_time, se.creation
-			from `tabSerial and Batch Entry` sbe
-			join `tabStock Entry Detail` sed on sed.serial_and_batch_bundle=sbe.parent
-			join `tabStock Entry` se on se.name=sed.parent
-			where se.docstatus=1 and sed.item_code=%s and sbe.batch_no=%s
-			  and sed.s_warehouse=%s and se.name!=%s
-			limit 20
-			""",
-			(ln.item_code, ln.batch_no, ln.t_warehouse, se_name),
-			as_dict=1,
-		)
-		for c in list(later) + list(later2):
-			if (str(c.posting_date), str(c.posting_time), str(c.creation), c.name) > cdt:
-				return True
-	return False
+def classify_logistics_document(
+	name: str,
+	fg_keys: set[tuple[str, str]],
+	cancel_set_desc: list[str] | None = None,
+) -> dict[str, Any]:
+	"""DEDICATED / SHARED_RECREATE_SAFE / SHARED_BLOCKED / UNRELATED."""
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.shared_logistics import (
+		classify_shared_logistics,
+	)
 
-
-def classify_logistics_document(name: str, fg_keys: set[tuple[str, str]]) -> dict[str, Any]:
-	"""DEDICATED / SHARED_SAFE / SHARED_BLOCKED / UNRELATED for one logistics SE."""
-	lines = _se_lines(name)
-	keys = {(ln.item_code, ln.batch_no) for ln in lines if ln.item_code and ln.batch_no}
-	fg_on = keys & fg_keys
-	other = keys - fg_keys
-	meta = frappe.db.get_value(
-		"Stock Entry",
-		name,
-		["name", "purpose", "docstatus", "posting_date", "posting_time", "job_card", "work_order"],
-		as_dict=1,
-	) or frappe._dict(name=name)
-	related_rows = [
-		{
-			"item_code": ln.item_code,
-			"batch_no": ln.batch_no,
-			"qty": flt(ln.qty),
-			"s_warehouse": ln.s_warehouse,
-			"t_warehouse": ln.t_warehouse,
-		}
-		for ln in lines
-		if (ln.item_code, ln.batch_no) in fg_on
-	]
-	unrelated_rows = [
-		{
-			"item_code": ln.item_code,
-			"batch_no": ln.batch_no,
-			"qty": flt(ln.qty),
-			"s_warehouse": ln.s_warehouse,
-			"t_warehouse": ln.t_warehouse,
-		}
-		for ln in lines
-		if (ln.item_code, ln.batch_no) in other
-	]
-	if not fg_on:
-		cls = "UNRELATED"
-	elif not other:
-		cls = "DEDICATED"
-	elif _has_later_outbounds(name, other):
-		# Shared multi-item doc whose unrelated rows have further outbounds —
-		# cancelling requires either row-split or cancelling foreign logistics.
-		cls = "SHARED_BLOCKED"
-	else:
-		cls = "SHARED_SAFE"
-	return {
-		"name": name,
-		"purpose": meta.get("purpose"),
-		"docstatus": meta.get("docstatus"),
-		"posting_date": meta.get("posting_date"),
-		"posting_time": meta.get("posting_time"),
-		"job_card": meta.get("job_card"),
-		"work_order": meta.get("work_order"),
-		"shared_class": cls,
-		"related_rows": related_rows,
-		"unrelated_rows": unrelated_rows,
-		"n_lines": len(lines),
-	}
+	return classify_shared_logistics(name, fg_keys, cancel_set_desc=cancel_set_desc)
 
 
 def _expand_future_outbound(
@@ -456,14 +372,18 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 			seen.add(mv.name)
 			seed.append(mv.name)
 
-	seed_audit = [classify_logistics_document(n, fg_keys) for n in seed]
+	# Proposed cancel set = FG seed only (reverse chrono). Co-moved unrelated items
+	# do NOT expand the graph. Classify with the full seed set for cancel-safety.
+	seed_desc = sorted(seed, key=_se_sort_key, reverse=True)
+	seed_audit = [
+		classify_logistics_document(n, fg_keys, cancel_set_desc=seed_desc) for n in seed
+	]
 	for aud in seed_audit:
 		if aud["shared_class"] == "SHARED_BLOCKED":
 			blocked.append(
 				{
 					"reason": (
-						f"SHARED_BLOCKED logistics {aud['name']}: unrelated rows have later "
-						f"outbounds (no row-split in MVP)"
+						f"SHARED_BLOCKED logistics {aud['name']}: {aud.get('reason') or 'unsafe'}"
 					),
 					"documents": [aud["name"]],
 					"batch_no": None,
@@ -473,22 +393,26 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 			)
 
 	# Expand ONLY Manufacture FG Item×Batch keys (minimal safe closure).
-	# SHARED_SAFE seeds may still be cancelled whole (unrelated rows have no later outbounds).
-	# SHARED_BLOCKED seeds are reported as blockers; still listed for audit visibility.
-	safe_seed = [
-		a["name"]
-		for a in seed_audit
-		if a["shared_class"] in ("DEDICATED", "SHARED_SAFE")
-	]
-	expanded_names, expand_blockers = _expand_future_outbound(safe_seed, tracked_keys=set(fg_keys))
+	# Entire seed must be DEDICATED or SHARED_RECREATE_SAFE — one SHARED_BLOCKED
+	# sibling blocks the cancel set (no foreign-chain expansion).
+	_SAFE = ("DEDICATED", "SHARED_RECREATE_SAFE")
+	seed_all_safe = bool(seed_audit) and all(a["shared_class"] in _SAFE for a in seed_audit)
+	if seed and not seed_all_safe:
+		# Do not partially cancel a FG chain when a sibling shared doc is blocked.
+		safe_seed = []
+	else:
+		safe_seed = [a["name"] for a in seed_audit if a["shared_class"] in _SAFE]
+	expanded_names, expand_blockers = _expand_future_outbound(
+		safe_seed, tracked_keys=set(fg_keys)
+	)
 	for msg in expand_blockers:
 		blocked.append({"reason": msg, "documents": [], "batch_no": None})
 
-	# Include SHARED_BLOCKED seeds in audit list but not in cancel set when blocked.
-	cancel_names = list(expanded_names)
+	# Re-classify expanded FG-only names (usually empty beyond seed) with full cancel set
+	cancel_probe = sorted(set(expanded_names) | set(safe_seed), key=_se_sort_key, reverse=True)
 	logistics = []
 	audit_by_name = {a["name"]: a for a in seed_audit}
-	for name in sorted(set(cancel_names) | set(seed), key=_se_sort_key, reverse=True):
+	for name in sorted(set(cancel_probe) | set(seed), key=_se_sort_key, reverse=True):
 		meta = frappe.db.get_value(
 			"Stock Entry",
 			name,
@@ -497,17 +421,16 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 		)
 		if not meta:
 			continue
-		aud = audit_by_name.get(name) or classify_logistics_document(name, fg_keys)
+		aud = audit_by_name.get(name) or classify_logistics_document(
+			name, fg_keys, cancel_set_desc=seed_desc
+		)
 		meta["shared_class"] = aud.get("shared_class")
+		meta["shared_reason"] = aud.get("reason")
 		meta["related_rows"] = aud.get("related_rows")
 		meta["unrelated_rows"] = aud.get("unrelated_rows")
-		meta["in_cancel_set"] = name in cancel_names and aud.get("shared_class") in (
-			"DEDICATED",
-			"SHARED_SAFE",
-		)
+		meta["in_cancel_set"] = name in cancel_probe and aud.get("shared_class") in _SAFE
 		logistics.append(meta)
 
-	# Cancel set = only docs that are safe to TEMP CANCEL/RECREATE
 	cancel_logistics = [x for x in logistics if x.get("in_cancel_set")]
 	cancel_logistics.sort(key=lambda x: _se_sort_key(x.name), reverse=True)
 	return {
@@ -743,17 +666,32 @@ def build_manufacture_plan(
 		in_cancel = getattr(lg, "in_cancel_set", None)
 		if in_cancel is None and isinstance(lg, dict):
 			in_cancel = lg.get("in_cancel_set")
-		role = (
-			"TEMP CANCEL / RECREATE"
-			if in_cancel
-			else ("BLOCKED" if shared_cls == "SHARED_BLOCKED" else "AUDIT")
-		)
+		if shared_cls == "SHARED_RECREATE_SAFE":
+			role = "TEMP CANCEL / RECREATE"
+			ownership_label = "SHARED — SAFE TO RECREATE"
+		elif shared_cls == "DEDICATED":
+			role = "TEMP CANCEL / RECREATE" if in_cancel else "AUDIT"
+			ownership_label = "DEDICATED"
+		elif shared_cls == "SHARED_BLOCKED":
+			role = "BLOCKED"
+			ownership_label = "SHARED — BLOCKED"
+		else:
+			role = "AUDIT"
+			ownership_label = shared_cls or "AUDIT"
 		documents.append(
 			{
 				"name": lg.name if hasattr(lg, "name") else lg.get("name"),
 				"role": role,
 				"purpose": lg.purpose if hasattr(lg, "purpose") else lg.get("purpose"),
-				"ownership": shared_cls,
+				"ownership": ownership_label,
+				"shared_class": shared_cls,
+				"shared_reason": (
+					lg.shared_reason
+					if hasattr(lg, "shared_reason")
+					else lg.get("shared_reason")
+					if isinstance(lg, dict)
+					else None
+				),
 				"posting_date": str(
 					lg.posting_date if hasattr(lg, "posting_date") else lg.get("posting_date")
 				),
