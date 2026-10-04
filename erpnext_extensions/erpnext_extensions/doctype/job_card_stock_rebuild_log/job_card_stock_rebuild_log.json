@@ -1,0 +1,177 @@
+{
+ "actions": [],
+ "allow_copy": 0,
+ "allow_import": 0,
+ "autoname": "hash",
+ "creation": "2026-10-03 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "run_id",
+  "job_card",
+  "work_order",
+  "column_break_meta",
+  "user",
+  "timestamp",
+  "mode",
+  "status",
+  "section_snapshots",
+  "before_snapshot",
+  "evidence_snapshot",
+  "proposed_snapshot",
+  "after_snapshot",
+  "verification_snapshot",
+  "section_meta",
+  "warnings",
+  "affected_links",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "run_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Run ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "job_card",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Job Card",
+   "options": "Job Card",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Work Order",
+   "options": "Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "timestamp",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Timestamp",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Mode",
+   "options": "SCAN\nPREVIEW\nDRY_RUN\nAPPLY",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_snapshots",
+   "fieldtype": "Section Break",
+   "label": "Snapshots"
+  },
+  {
+   "fieldname": "before_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Before Snapshot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "evidence_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Evidence Snapshot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "proposed_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Proposed Snapshot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "after_snapshot",
+   "fieldtype": "Long Text",
+   "label": "After Snapshot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "verification_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Verification Snapshot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_meta",
+   "fieldtype": "Section Break",
+   "label": "Warnings / Links / Error"
+  },
+  {
+   "fieldname": "warnings",
+   "fieldtype": "Long Text",
+   "label": "Warnings",
+   "read_only": 1
+  },
+  {
+   "fieldname": "affected_links",
+   "fieldtype": "Long Text",
+   "label": "Affected Links",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "links": [],
+ "modified": "2026-10-03 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Job Card Stock Rebuild Log",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "job_card",
+ "track_changes": 0
+}
