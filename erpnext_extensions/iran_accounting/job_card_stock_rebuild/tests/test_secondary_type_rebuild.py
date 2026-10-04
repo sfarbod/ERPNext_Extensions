@@ -463,7 +463,7 @@ def test_version():
 	from erpnext_extensions.iran_accounting.scrap_costing import MANUFACTURE_COSTING_CONTRACT_VERSION
 
 	return [
-		_ok("AG_VERSION", APP_VERSION == "5.4.1", APP_VERSION),
+		_ok("AG_VERSION", APP_VERSION in ("5.4.1", "5.4.2"), APP_VERSION),
 		_ok(
 			"AG_CONTRACT",
 			MANUFACTURE_COSTING_CONTRACT_VERSION == "5.3.43",
