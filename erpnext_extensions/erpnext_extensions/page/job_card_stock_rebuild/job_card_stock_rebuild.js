@@ -18,6 +18,7 @@ class JobCardStockRebuildPage {
 		this.preview = null;
 		this.dry = null;
 		this.fingerprint = null;
+		this.typeApprovals = {}; // secondary_row -> approval payload
 		this.$body = $(page.body);
 		this.render();
 		this.apply_route_options();
@@ -94,7 +95,7 @@ class JobCardStockRebuildPage {
 		$('<p class="jcsr-help">')
 			.text(
 				__(
-					"Reconstructs Job Card material and secondary tracking from submitted Stock Entries / SLE. Does not cancel, amend, or regenerate Manufacture. SLE and GL are never altered."
+					"Reconstructs Job Card material and secondary tracking from submitted Stock Entries / SLE. Secondary Item Type changes require explicit per-row approval. Does not cancel, amend, or regenerate Manufacture. SLE and GL are never altered."
 				)
 			)
 			.appendTo(this.$body);
@@ -102,6 +103,7 @@ class JobCardStockRebuildPage {
 		this.$status = $('<div class="jcsr-status" data-role="status">').appendTo(this.$body);
 		this.$materials = $('<div data-role="materials">').appendTo(this.$body);
 		this.$secondary = $('<div data-role="secondary">').appendTo(this.$body);
+		this.$typeRec = $('<div data-role="type-reconciliation">').appendTo(this.$body);
 		this.$evidence = $('<div data-role="evidence">').appendTo(this.$body);
 		this.$downstream = $('<div data-role="downstream">').appendTo(this.$body);
 	}
@@ -119,12 +121,14 @@ class JobCardStockRebuildPage {
 		this.preview = null;
 		this.dry = null;
 		this.fingerprint = null;
+		this.typeApprovals = {};
 		this.btn_preview.prop("disabled", true);
 		this.btn_dry.prop("disabled", true);
 		this.btn_apply.prop("disabled", true);
 		this.$status.empty();
 		this.$materials.empty();
 		this.$secondary.empty();
+		this.$typeRec.empty();
 		this.$evidence.empty();
 		this.$downstream.empty();
 	}
@@ -135,6 +139,10 @@ class JobCardStockRebuildPage {
 			item: this.item.get_value() || null,
 			batch: this.batch.get_value() || null,
 		};
+	}
+
+	collect_type_approvals() {
+		return Object.values(this.typeApprovals || {});
 	}
 
 	run_scan() {
@@ -167,10 +175,16 @@ class JobCardStockRebuildPage {
 			callback: (r) => {
 				this.preview = r.message || {};
 				this.fingerprint = this.preview.fingerprint;
+				// Clear approvals on new preview — never carry into changed evidence
+				this.typeApprovals = {};
 				this.render_result(this.preview, "PREVIEW");
 				const ready =
-					this.preview.apply_allowed && this.preview.overall_status !== "BALANCED";
-				this.btn_dry.prop("disabled", !ready);
+					this.preview.apply_allowed ||
+					(this.preview.secondary_type_suggestions &&
+						this.preview.secondary_type_suggestions.approvable_count > 0);
+				this.btn_dry.prop("disabled", !ready && this.preview.overall_status === "BALANCED");
+				// Allow dry-run whenever preview loaded for selected JC (readiness / type path)
+				this.btn_dry.prop("disabled", false);
 				this.btn_apply.prop("disabled", true);
 			},
 		});
@@ -179,6 +193,7 @@ class JobCardStockRebuildPage {
 	run_dry() {
 		const args = this.args();
 		args.fingerprint = this.fingerprint;
+		args.secondary_type_approvals = JSON.stringify(this.collect_type_approvals());
 		frappe.call({
 			method: `${this.api}.dry_run`,
 			args,
@@ -187,9 +202,17 @@ class JobCardStockRebuildPage {
 			callback: (r) => {
 				this.dry = r.message || {};
 				this.render_result(this.dry, "DRY_RUN");
-				this.render_downstream(this.dry.downstream);
-				const pass = this.dry.dry_run_status === "DRY_RUN_PASS" && this.dry.apply_allowed;
-				this.btn_apply.prop("disabled", !pass);
+				this.render_downstream(this.dry.manufacture_readiness || this.dry.downstream);
+				const pass = this.dry.dry_run_status === "DRY_RUN_PASS";
+				const hasApproved = this.collect_type_approvals().length > 0;
+				const hasWrites = ((this.dry.writes || []).length > 0);
+				const mfgOk =
+					(this.dry.manufacture_readiness && this.dry.manufacture_readiness.ok) ||
+					this.dry.manufacture_readiness_status === "MANUFACTURE_READINESS_PASS";
+				// Apply: tracking writes alone, or approved type changes that pass readiness
+				const canApply =
+					pass && !this.dry.blockers?.length && (hasWrites || (hasApproved && mfgOk));
+				this.btn_apply.prop("disabled", !canApply);
 			},
 		});
 	}
@@ -199,36 +222,94 @@ class JobCardStockRebuildPage {
 			frappe.msgprint(__("Successful Dry Run is required before Apply."));
 			return;
 		}
-		frappe.confirm(
-			__(
-				"Apply Job Card tracking rebuild? Manufacture Stock Entries will NOT be changed. This cannot invent stock."
-			),
-			() => {
-				const args = this.args();
-				args.fingerprint = this.fingerprint;
-				args.confirm = 1;
-				frappe.call({
-					method: `${this.api}.apply`,
-					args,
-					freeze: true,
-					freeze_message: __("Applying rebuild…"),
-					callback: (r) => {
-						const msg = r.message || {};
-						this.render_result(msg, "APPLY");
-						this.render_downstream(msg.downstream);
-						if (msg.overall_status === "REBUILT") {
-							frappe.show_alert({
-								message: __("Job Card rebuilt. Manufacture repair required: {0}", [
-									msg.manufacture_repair_required ? __("YES") : __("NO"),
-								]),
-								indicator: "green",
-							});
-						}
-						this.btn_apply.prop("disabled", true);
-						this.btn_dry.prop("disabled", true);
-					},
-				});
-			}
+		const approvals = this.collect_type_approvals();
+		const confirmHtml = this.build_final_confirmation_html(approvals);
+		frappe.confirm(confirmHtml, () => {
+			const args = this.args();
+			args.fingerprint = this.fingerprint;
+			args.confirm = 1;
+			args.secondary_type_approvals = JSON.stringify(approvals);
+			frappe.call({
+				method: `${this.api}.apply`,
+				args,
+				freeze: true,
+				freeze_message: __("Applying rebuild…"),
+				callback: (r) => {
+					const msg = r.message || {};
+					this.render_result(msg, "APPLY");
+					this.render_downstream(msg.manufacture_readiness || msg.downstream);
+					if (msg.overall_status === "REBUILT") {
+						frappe.show_alert({
+							message: __("Job Card rebuilt. Manufacture repair required: {0}", [
+								msg.manufacture_repair_required ? __("YES") : __("NO"),
+							]),
+							indicator: "green",
+						});
+					}
+					this.btn_apply.prop("disabled", true);
+					this.btn_dry.prop("disabled", true);
+					this.typeApprovals = {};
+				},
+			});
+		});
+	}
+
+	build_final_confirmation_html(approvals) {
+		const jc = frappe.utils.escape_html(this.jc.get_value() || "");
+		const writes = (this.dry && this.dry.writes) || [];
+		const sugRows =
+			(this.dry &&
+				this.dry.secondary_type_suggestions &&
+				this.dry.secondary_type_suggestions.rows) ||
+			[];
+		const approvedKeys = new Set(approvals.map((a) => a.secondary_row));
+		let approvedLines = approvals
+			.map((a) => {
+				const row = sugRows.find((r) => r.secondary_row === a.secondary_row) || {};
+				return `${frappe.utils.escape_html(a.item_code || row.item_code || "")} ${flt(
+					row.qty
+				)} ${frappe.utils.escape_html(row.uom || "")}<br>` +
+					`${frappe.utils.escape_html(a.current_type)} → ${frappe.utils.escape_html(
+						a.approved_type
+					)}<br>` +
+					`${frappe.utils.escape_html(row.current_iran_class || "")} → ${frappe.utils.escape_html(
+						row.suggested_iran_class || ""
+					)}`;
+			})
+			.join("<hr>");
+		if (!approvedLines) approvedLines = __("(none)");
+		const unapproved = sugRows
+			.filter((r) => r.approval_enabled && !approvedKeys.has(r.secondary_row))
+			.map(
+				(r) =>
+					`${frappe.utils.escape_html(r.item_code)}: ${frappe.utils.escape_html(
+						r.current_type
+					)} → ${frappe.utils.escape_html(r.suggested_type)}`
+			)
+			.join("<br>");
+		const readiness =
+			(this.dry && this.dry.manufacture_readiness_status) ||
+			(this.dry && this.dry.manufacture_readiness && this.dry.manufacture_readiness.status) ||
+			"—";
+		return (
+			`<div class="jcsr-confirm">` +
+			`<p><strong>${__("Selected Job Card")}:</strong> ${jc}</p>` +
+			`<p><strong>${__("Tracking Changes")}:</strong> ${writes.length}</p>` +
+			`<p><strong>${__("Link Changes")}:</strong> ${
+				writes.filter((w) => w.type === "sed_job_card_item").length
+			}</p>` +
+			`<p><strong>${__("Approved Secondary Type Changes")}:</strong><br>${approvedLines}</p>` +
+			`<p><strong>${__("Unapproved Suggestions")}:</strong><br>${
+				unapproved || __("(none)")
+			}</p>` +
+			`<p><strong>${__("Selected Job Card Manufacture Readiness")}:</strong> ${frappe.utils.escape_html(
+				readiness
+			)}</p>` +
+			`<p class="text-danger">${__(
+				"Changing Secondary Item Type changes how this item participates in manufacturing costing. The change is applied only if you explicitly approve this row."
+			)}</p>` +
+			`<p>${__("Apply Job Card tracking rebuild? Manufacture Stock Entries will NOT be changed.")}</p>` +
+			`</div>`
 		);
 	}
 
@@ -236,6 +317,10 @@ class JobCardStockRebuildPage {
 		const statuses = (data.statuses || []).join(", ");
 		const balanced = data.overall_status === "BALANCED";
 		const cls = balanced ? "ok" : data.apply_allowed ? "ready" : "warn";
+		const mfgStatus =
+			data.manufacture_readiness_status ||
+			(data.manufacture_readiness && data.manufacture_readiness.status) ||
+			"";
 		this.$status.html(`
 			<div class="jcsr-alert ${cls}">
 				<strong>${frappe.utils.escape_html(mode)}</strong>
@@ -244,15 +329,19 @@ class JobCardStockRebuildPage {
 				<div class="jcsr-meta">
 					${__("Statuses")}: ${frappe.utils.escape_html(statuses || "—")}
 					<br>${__("Fingerprint")}: <code>${frappe.utils.escape_html(data.fingerprint || "")}</code>
+					<br>${__("Fingerprint scope")}: ${frappe.utils.escape_html(
+						data.fingerprint_scope || "selected_job_card_dependency_closure"
+					)}
 					<br>${__("Manufacture repair required")}: ${
 						data.manufacture_repair_required ? __("YES") : __("NO")
 					}
+					<br>${__("Manufacture Readiness")}: <strong>${frappe.utils.escape_html(
+						mfgStatus || "—"
+					)}</strong>
 					${
-						data.manufacture_blocked_by_stage_output_configuration
+						data.manufacture_readiness && data.manufacture_readiness.error
 							? "<br><span class='text-danger'>" +
-							  __(
-									"JOB_CARD_REBUILD_VALID BUT MANUFACTURE_BLOCKED_BY_STAGE_OUTPUT_CONFIGURATION"
-							  ) +
+							  frappe.utils.escape_html(data.manufacture_readiness.error) +
 							  "</span>"
 							: ""
 					}
@@ -265,10 +354,15 @@ class JobCardStockRebuildPage {
 		`);
 		this.render_materials(data.material_rows || []);
 		this.render_secondary((data.secondary && data.secondary.rows) || []);
+		this.render_type_reconciliation(
+			(data.secondary_type_suggestions && data.secondary_type_suggestions.rows) || []
+		);
 		this.render_evidence(data.material_rows || []);
-		if (balanced) {
+		if (data.manufacture_readiness) {
+			this.render_downstream(data.manufacture_readiness);
+		}
+		if (balanced && !(data.secondary_type_suggestions || {}).approvable_count) {
 			this.btn_apply.prop("disabled", true);
-			this.btn_dry.prop("disabled", true);
 		}
 	}
 
@@ -360,6 +454,113 @@ class JobCardStockRebuildPage {
 		this.$secondary.append($table);
 	}
 
+	render_type_reconciliation(rows) {
+		this.$typeRec.empty();
+		$('<h5 class="jcsr-section-title">')
+			.text(__("SECONDARY ITEM TYPE RECONCILIATION"))
+			.appendTo(this.$typeRec);
+		$('<p class="jcsr-help">')
+			.text(
+				__(
+					"Suggested Secondary Type Change. Changing Secondary Item Type changes how this item participates in manufacturing costing. The change is applied only if you explicitly approve this row."
+				)
+			)
+			.appendTo(this.$typeRec);
+		if (!rows.length) {
+			this.$typeRec.append(`<p class="jcsr-empty">${__("No secondary type suggestions.")}</p>`);
+			return;
+		}
+		const $table = $(`
+			<table class="jcsr-table jcsr-type-table">
+				<thead>
+					<tr>
+						<th>${__("Item")}</th>
+						<th>${__("Qty")}</th>
+						<th>${__("Current Business Type")}</th>
+						<th>${__("Suggested Business Type")}</th>
+						<th>${__("Current Accounting Classification")}</th>
+						<th>${__("Expected Accounting Classification")}</th>
+						<th>${__("Confidence")}</th>
+						<th>${__("Evidence")}</th>
+						<th>${__("Downstream Effect")}</th>
+						<th>${__("Change Type")}</th>
+					</tr>
+				</thead>
+				<tbody></tbody>
+			</table>
+		`);
+		const $tb = $table.find("tbody");
+		rows.forEach((r) => {
+			const rowId = r.secondary_row || "";
+			const enabled = !!r.approval_enabled;
+			const checked = !!this.typeApprovals[rowId];
+			const sugType = r.suggested_type || "—";
+			const $tr = $(`
+				<tr data-secondary-row="${frappe.utils.escape_html(rowId)}">
+					<td>${frappe.utils.escape_html(r.item_code || "")}</td>
+					<td>${flt(r.qty)} ${frappe.utils.escape_html(r.uom || "")}</td>
+					<td>${frappe.utils.escape_html(r.current_type || "")}</td>
+					<td>${frappe.utils.escape_html(sugType)}</td>
+					<td>${frappe.utils.escape_html(r.current_iran_class || "")}</td>
+					<td>${frappe.utils.escape_html(r.suggested_iran_class || "")}</td>
+					<td>${frappe.utils.escape_html(r.confidence || "")}</td>
+					<td></td>
+					<td>${frappe.utils.escape_html(r.downstream_impact || "")}</td>
+					<td class="jcsr-approve-cell"></td>
+				</tr>
+			`);
+			const $ev = $("<details><summary>View</summary></details>");
+			const $ul = $("<ul>");
+			(r.evidence || []).forEach((e) => $ul.append($("<li>").text(e)));
+			$ev.append($ul);
+			$tr.find("td").eq(7).append($ev);
+
+			const $cb = $(
+				`<input type="checkbox" class="jcsr-type-approve" ${enabled ? "" : "disabled"} ${
+					checked ? "checked" : ""
+				} />`
+			);
+			// Default unchecked — never preselect
+			if (!checked) $cb.prop("checked", false);
+			$cb.on("change", () => {
+				if ($cb.is(":checked")) {
+					frappe.confirm(
+						__(
+							"Suggested Secondary Type Change: {0} → {1}. Expected accounting classification: {2} → {3}. Approve this row only?",
+							[
+								r.current_type,
+								r.suggested_type,
+								r.current_iran_class,
+								r.suggested_iran_class,
+							]
+						),
+						() => {
+							this.typeApprovals[rowId] = {
+								job_card: this.jc.get_value(),
+								secondary_row: rowId,
+								current_type: r.current_type,
+								approved_type: r.suggested_type,
+								evidence_fingerprint: r.evidence_fingerprint,
+								item_code: r.item_code,
+							};
+							this.btn_apply.prop("disabled", true); // require new dry-run
+						},
+						() => {
+							$cb.prop("checked", false);
+							delete this.typeApprovals[rowId];
+						}
+					);
+				} else {
+					delete this.typeApprovals[rowId];
+					this.btn_apply.prop("disabled", true);
+				}
+			});
+			$tr.find(".jcsr-approve-cell").append($cb);
+			$tb.append($tr);
+		});
+		this.$typeRec.append($table);
+	}
+
 	render_evidence(rows) {
 		this.$evidence.empty();
 		$('<h5 class="jcsr-section-title">').text(__("Evidence")).appendTo(this.$evidence);
@@ -414,26 +615,62 @@ class JobCardStockRebuildPage {
 		this.$downstream.empty();
 		if (!downstream) return;
 		$('<h5 class="jcsr-section-title">')
-			.text(__("Downstream Manufacture Preview (not persisted)"))
+			.text(__("Selected Job Card Manufacture Readiness (simulation, not persisted)"))
 			.appendTo(this.$downstream);
-		const items = (downstream.simulation && downstream.simulation.items) || [];
-		if (!items.length) {
-			this.$downstream.append(
-				`<p class="jcsr-empty">${frappe.utils.escape_html(
-					downstream.simulation && downstream.simulation.error
-						? downstream.simulation.error
-						: __("No simulated items.")
-				)}</p>`
+		const status = downstream.status || (downstream.ok ? "PASS" : "BLOCKED");
+		const err = downstream.error || "";
+		this.$downstream.append(
+			`<div class="jcsr-alert ${downstream.ok ? "ok" : "warn"}">
+				<strong>${__("Manufacture Readiness")}:</strong> ${frappe.utils.escape_html(status)}
+				${err ? "<br>" + frappe.utils.escape_html(err) : ""}
+			</div>`
+		);
+		const stage = downstream.stage || [];
+		if (stage.length) {
+			$("<h6>").text(__("Stage-equivalent output set")).appendTo(this.$downstream);
+			const $st = $(
+				`<table class="jcsr-table"><thead><tr>
+					<th>#</th><th>${__("Item")}</th><th>${__("Qty")}</th><th>${__("UOM")}</th>
+					<th>${__("Type")}</th><th>${__("Bucket")}</th><th>${__("Factor")}</th>
+				</tr></thead><tbody></tbody></table>`
 			);
+			stage.forEach((r) => {
+				$st.find("tbody").append(`
+					<tr>
+						<td>${r.idx || ""}</td>
+						<td>${frappe.utils.escape_html(r.item_code || "")}</td>
+						<td>${flt(r.qty)}</td>
+						<td>${frappe.utils.escape_html(r.uom || "")}</td>
+						<td>${frappe.utils.escape_html(r.sec || "")}</td>
+						<td>${frappe.utils.escape_html(r.bucket || "")}</td>
+						<td>${r.factor != null ? r.factor : ""}</td>
+					</tr>
+				`);
+			});
+			this.$downstream.append($st);
+		}
+		const items = downstream.rows || (downstream.simulation && downstream.simulation.items) || [];
+		if (!items.length) {
+			if (!stage.length) {
+				this.$downstream.append(
+					`<p class="jcsr-empty">${frappe.utils.escape_html(
+						err || __("No simulated items.")
+					)}</p>`
+				);
+			}
 			return;
 		}
+		$("<h6>").text(__("Generated draft rows")).appendTo(this.$downstream);
 		const $table = $(`
 			<table class="jcsr-table">
 				<thead>
 					<tr>
 						<th>${__("Item")}</th>
 						<th>${__("Qty")}</th>
+						<th>${__("Sec Type")}</th>
+						<th>${__("FG")}</th>
 						<th>${__("S Warehouse")}</th>
+						<th>${__("T Warehouse")}</th>
 					</tr>
 				</thead>
 				<tbody></tbody>
@@ -445,11 +682,29 @@ class JobCardStockRebuildPage {
 				<tr>
 					<td>${frappe.utils.escape_html(i.item_code || "")}</td>
 					<td>${flt(i.qty)}</td>
+					<td>${frappe.utils.escape_html(i.secondary_item_type || "")}</td>
+					<td>${i.is_finished_item ? 1 : 0}</td>
 					<td>${frappe.utils.escape_html(i.s_warehouse || "")}</td>
+					<td>${frappe.utils.escape_html(i.t_warehouse || "")}</td>
 				</tr>
 			`);
 		});
 		this.$downstream.append($table);
+		const classified = downstream.classified || {};
+		if (Object.keys(classified).length) {
+			$("<h6>").text(__("Iran classification buckets")).appendTo(this.$downstream);
+			Object.keys(classified).forEach((k) => {
+				const rows = classified[k] || [];
+				this.$downstream.append(
+					`<div><code>${frappe.utils.escape_html(k)}</code>: ${rows
+						.map(
+							(r) =>
+								`${frappe.utils.escape_html(r.item_code)}×${flt(r.qty)}`
+						)
+						.join(", ")}</div>`
+				);
+			});
+		}
 	}
 }
 

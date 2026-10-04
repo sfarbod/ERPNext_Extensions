@@ -1,7 +1,8 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 """Job Card Stock Rebuild service — SCAN / PREVIEW / DRY RUN / APPLY / VERIFY.
 
-Phase 1: reconstruct Job Card tracking state from submitted SE/SLE.
+v5.4.1: tracking rebuild + optional per-row Secondary type reclassification
+with explicit user approval. Runtime scope = selected Job Card dependency closure.
 Never mutates Manufacture / SLE / GL / valuation.
 """
 
@@ -18,14 +19,20 @@ from frappe.utils import flt, now_datetime
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild import statuses as S
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.evidence import build_evidence
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.guards import (
-	apply_gate_statuses,
-	classify_secondary_unknown_block,
 	expect_rm_candidate,
 	inventory_custom14_server_script,
 	simulate_manufacture_candidates,
-	simulate_stage_output_guard_on_secondary,
+)
+from erpnext_extensions.iran_accounting.job_card_stock_rebuild.readiness import (
+	simulate_normal_make_stock_entry,
+	stage_contains_item,
 )
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.secondary import inventory_secondary
+from erpnext_extensions.iran_accounting.job_card_stock_rebuild.secondary_type import (
+	apply_type_approvals,
+	suggest_secondary_type_changes,
+	validate_type_approvals,
+)
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.semantics import (
 	TRACKING_FIELDS,
 	derive_tracking_for_item,
@@ -36,19 +43,60 @@ from erpnext_extensions.iran_accounting.job_card_stock_rebuild.semantics import 
 )
 
 
+def _parse_approvals(raw) -> list[dict]:
+	if not raw:
+		return []
+	if isinstance(raw, str):
+		raw = json.loads(raw) if raw.strip().startswith("[") else []
+	return list(raw or [])
+
+
 def _snapshot_jc(job_card: str) -> dict:
 	items = load_job_card_items(job_card)
 	meta = frappe.db.get_value(
 		"Job Card",
 		job_card,
-		["name", "docstatus", "status", "work_order", "modified", "for_quantity", "production_item"],
+		["name", "docstatus", "status", "work_order", "modified", "for_quantity", "production_item", "finished_good"],
 		as_dict=1,
 	)
+	type_sug = suggest_secondary_type_changes(job_card) if meta else {"rows": []}
 	return {
 		"job_card": meta,
 		"items": items,
-		"secondary": inventory_secondary(job_card, []).get("rows") if meta else [],
+		"secondary_types": type_sug.get("rows") or [],
 	}
+
+
+def _jc_hard_blockers(statuses: list[str], material_rows: list[dict], type_suggestions: dict) -> list[str]:
+	"""Escalate only JC-unsafe conditions (dependency-aware)."""
+	hard = []
+	for s in statuses:
+		if s in (
+			S.AMBIGUOUS_OWNERSHIP,
+			S.BATCH_MISMATCH,
+			S.UOM_MAPPING_REQUIRED,
+			S.SECONDARY_ITEM_MISMATCH,
+			S.COMPONENT_SCRAP_MISMATCH,
+			S.RETURN_MISMATCH,
+		):
+			hard.append(s)
+	# OVER_CONSUMED only blocks if any material row with writes/actions needs rebuild
+	if S.OVER_CONSUMED in statuses:
+		if any(
+			r.get("action") not in ("NO CHANGE", None)
+			and S.OVER_CONSUMED in (r.get("statuses") or [])
+			for r in material_rows
+		):
+			hard.append(S.OVER_CONSUMED)
+	# Duplicate secondary / MANUAL REVIEW that disables approval and is unresolved
+	for row in type_suggestions.get("rows") or []:
+		if row.get("action") == "BLOCKED" or (
+			row.get("suggested_type") == "MANUAL REVIEW"
+			and row.get("block_reason")
+			and "duplicate" in (row.get("block_reason") or "").lower()
+		):
+			hard.append(S.SECONDARY_ITEM_MISMATCH)
+	return list(dict.fromkeys(hard))
 
 
 def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str | None = None) -> dict:
@@ -70,19 +118,16 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 	if evidence.get("posting_order_warning"):
 		statuses.append(S.POSTING_ORDER_WARNING)
 
-	# Ownership: all SE must carry job_card (query already filters). Orphan WIP not owned → stop.
 	for item in collapsed:
 		jc_item = jc_items.get(item["item_code"])
 		has_rm_activity = any(
 			flt(item.get(k)) > 1e-9 for k in ("issued", "returned", "consumed", "component_scrap")
 		)
-		# Finished goods / secondary-only SE rows without a JC Item are not Phase-1 RM targets.
 		if not jc_item and not has_rm_activity:
 			continue
 		if not jc_item and has_rm_activity:
-			# RM movement without a JC Item row → orphan / manual review
+			# Informational orphan — does not auto-block whole JC unless ownership ambiguous on writes
 			statuses.append(S.ORPHAN_WIP)
-			statuses.append(S.MANUAL_REVIEW)
 			material_rows.append(
 				{
 					"item_code": item["item_code"],
@@ -95,7 +140,7 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 					"wip_remainder": item["wip_remainder"],
 					"net_available_for_manufacture": item["net_available_for_manufacture"],
 					"field_plan": [],
-					"statuses": [S.ORPHAN_WIP, S.MANUAL_REVIEW],
+					"statuses": [S.ORPHAN_WIP],
 					"action": "MANUAL REVIEW",
 					"batch_no": item.get("batch_no"),
 					"batches": item.get("batches"),
@@ -110,8 +155,8 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 		derived = derive_tracking_for_item(jc_item, item)
 		links = propose_link_backfills(job_card, item)
 		for lp in links:
-			if lp.get("status") in S.APPLY_BLOCKERS:
-				statuses.append(lp["status"])
+			if lp.get("status") == S.AMBIGUOUS_OWNERSHIP:
+				statuses.append(S.AMBIGUOUS_OWNERSHIP)
 			if lp.get("action") == "BACKFILL LINK":
 				writes.append({"type": "sed_job_card_item", **lp})
 		link_proposals.extend(links)
@@ -119,9 +164,12 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 
 		action = derived["action"]
 		if any(lp.get("action") == "BACKFILL LINK" for lp in links):
-			action = "UPDATE TRACKING" if action == "NO CHANGE" else action
-			action = "BACKFILL LINK" if action == "NO CHANGE" else (
-				"UPDATE TRACKING + BACKFILL LINK" if "UPDATE" in action else action
+			action = (
+				"UPDATE TRACKING + BACKFILL LINK"
+				if "UPDATE" in action
+				else "BACKFILL LINK"
+				if action == "NO CHANGE"
+				else action
 			)
 		if any(lp.get("action") == "BLOCKED" for lp in links):
 			action = "BLOCKED"
@@ -164,16 +212,14 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 		)
 
 	secondary = inventory_secondary(job_card, evidence["movements"])
+	type_suggestions = suggest_secondary_type_changes(job_card)
 	statuses.extend(secondary.get("statuses") or [])
-	statuses.extend(classify_secondary_unknown_block(secondary["rows"]))
+	statuses.extend(type_suggestions.get("statuses") or [])
+	if any(r.get("action") == "TYPE_CHANGE_SUGGESTED" for r in type_suggestions.get("rows") or []):
+		statuses.append(S.TYPE_CHANGE_SUGGESTED)
 
-	stage_guard = simulate_stage_output_guard_on_secondary(secondary["rows"])
 	custom14 = inventory_custom14_server_script()
 
-	# Suppress consumed_qty-only sync when WIP is already closed and all other
-	# tracking/link fields already match (CTRL PO-JOB08761 pattern: Core
-	# consumed_qty stayed 0 because Manufacture job_card_item was NULL, but
-	# transferred/custom WIP fields already reflect a balanced remainder).
 	link_backfills = [w for w in writes if w.get("type") == "sed_job_card_item"]
 	non_consumed_field_writes = [
 		w
@@ -196,26 +242,35 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 			for fp in r.get("field_plan") or []:
 				if fp.get("fieldname") == "consumed_qty" and fp.get("write_required"):
 					fp["write_required"] = False
-					fp["why"] = (
-						fp.get("why")
-						+ " Suppressed: WIP already closed and other tracking fields match (NO CHANGE)."
-					)
 
-	gate = apply_gate_statuses(statuses, stage_guard, secondary.get("statuses") or [])
-
-	# Balanced when no tracking writes and no link backfills
 	tracking_writes = [
 		w
 		for w in writes
 		if (w.get("type") == "jc_item_field" and w.get("write_required"))
 		or (w.get("type") == "sed_job_card_item" and w.get("action") == "BACKFILL LINK")
 	]
-	if not tracking_writes and gate["overall_status"] not in S.APPLY_BLOCKERS:
-		gate["overall_status"] = S.BALANCED
-		gate["apply_allowed"] = False
 
-	if tracking_writes and gate["apply_allowed"]:
-		gate["overall_status"] = S.REBUILD_READY
+	hard = _jc_hard_blockers(statuses, material_rows, type_suggestions)
+	approvable_types = [r for r in (type_suggestions.get("rows") or []) if r.get("approval_enabled")]
+	has_work = bool(tracking_writes) or bool(approvable_types)
+
+	# Full selected-JC manufacture readiness (current DB state — no type approval yet)
+	readiness = simulate_normal_make_stock_entry(job_card)
+	mfg_ready = bool(readiness.get("ok"))
+	if not mfg_ready:
+		statuses.append(S.MANUFACTURE_READINESS_BLOCKED)
+		statuses.append(S.DOWNSTREAM_MANUFACTURE_BLOCKED)
+
+	if hard:
+		overall = hard[0]
+		apply_allowed = False
+	elif has_work:
+		overall = S.REBUILD_READY if tracking_writes else S.TYPE_CHANGE_SUGGESTED
+		apply_allowed = True
+	else:
+		overall = S.BALANCED
+		apply_allowed = False
+
 	wo = frappe.db.get_value("Job Card", job_card, "work_order")
 
 	return {
@@ -223,25 +278,26 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 		"job_card": job_card,
 		"work_order": wo,
 		"fingerprint": evidence["fingerprint"],
+		"fingerprint_scope": "selected_job_card_dependency_closure",
 		"posting_order_warning": evidence.get("posting_order_warning"),
 		"material_rows": material_rows,
 		"link_proposals": link_proposals,
 		"secondary": secondary,
-		"stage_guard": stage_guard,
+		"secondary_type_suggestions": type_suggestions,
 		"custom14": custom14,
 		"writes": tracking_writes,
-		"statuses": gate["statuses"],
-		"warnings": gate["warnings"],
-		"blockers": gate["blockers"],
-		"apply_allowed": gate["apply_allowed"] and bool(tracking_writes),
-		"overall_status": gate["overall_status"]
-		if tracking_writes
-		else (S.BALANCED if not gate["blockers"] else gate["overall_status"]),
-		"manufacture_repair_required": gate["manufacture_repair_required"],
-		"manufacture_blocked_by_stage_output_configuration": gate[
-			"manufacture_blocked_by_stage_output_configuration"
-		],
-		"job_card_rebuild_valid": gate["job_card_rebuild_valid"],
+		"statuses": list(dict.fromkeys(statuses)),
+		"warnings": [s for s in statuses if s in S.WARNINGS_ALLOW_REBUILD],
+		"blockers": hard,
+		"apply_allowed": apply_allowed,
+		"overall_status": overall,
+		"manufacture_repair_required": S.MISSING_MANUFACTURE_CONSUMPTION in statuses
+		or S.PARTIAL_MANUFACTURE_CONSUMPTION in statuses,
+		"manufacture_readiness": readiness,
+		"manufacture_readiness_status": (
+			S.MANUFACTURE_READINESS_PASS if mfg_ready else S.MANUFACTURE_READINESS_BLOCKED
+		),
+		"job_card_rebuild_valid": not hard,
 		"evidence_summary": {
 			"stock_entry_count": len(evidence["stock_entries"]),
 			"movement_count": len(evidence["movements"]),
@@ -252,7 +308,6 @@ def _build_plan(job_card: str, item_filter: str | None = None, batch_filter: str
 def scan_job_card(
 	job_card: str, item_filter: str | None = None, batch_filter: str | None = None
 ) -> dict:
-	"""SCAN — read-only evidence + status (no mutations)."""
 	plan = _build_plan(job_card, item_filter, batch_filter)
 	plan["mode"] = "SCAN"
 	plan["mutated"] = False
@@ -262,25 +317,12 @@ def scan_job_card(
 def preview_rebuild(
 	job_card: str, item_filter: str | None = None, batch_filter: str | None = None
 ) -> dict:
-	"""PREVIEW — same as scan plus proposed field/link table (no mutations)."""
 	plan = _build_plan(job_card, item_filter, batch_filter)
 	plan["mode"] = "PREVIEW"
 	plan["mutated"] = False
 	plan["proposed_snapshot"] = {
 		"writes": plan["writes"],
-		"material_rows": [
-			{
-				"item_code": r["item_code"],
-				"jc_item": r["jc_item"],
-				"field_plan": r["field_plan"],
-				"issued": r["issued"],
-				"returned": r["returned"],
-				"consumed": r["consumed"],
-				"wip_remainder": r["wip_remainder"],
-				"net_available_for_manufacture": r["net_available_for_manufacture"],
-			}
-			for r in plan["material_rows"]
-		],
+		"secondary_type_suggestions": plan["secondary_type_suggestions"],
 	}
 	return plan
 
@@ -302,7 +344,6 @@ def _apply_writes(writes: list[dict]) -> list[dict]:
 		elif w.get("type") == "sed_job_card_item":
 			if w.get("action") != "BACKFILL LINK" or not w.get("write_required", True):
 				continue
-			# Link backfill only — no qty/rate/SLE/GL mutation
 			frappe.db.set_value(
 				"Stock Entry Detail",
 				w["detail_name"],
@@ -314,19 +355,12 @@ def _apply_writes(writes: list[dict]) -> list[dict]:
 	return applied
 
 
-def _verify_after(job_card: str, plan: dict) -> dict:
-	"""Reload and confirm derived tracking matches DB."""
-	fresh = _build_plan(job_card)
+def _verify_tracking(job_card: str, plan: dict) -> dict:
 	mismatches = []
 	for row in plan["material_rows"]:
 		if not row.get("jc_item"):
 			continue
-		cur = frappe.db.get_value(
-			"Job Card Item",
-			row["jc_item"],
-			list(TRACKING_FIELDS),
-			as_dict=1,
-		)
+		cur = frappe.db.get_value("Job Card Item", row["jc_item"], list(TRACKING_FIELDS), as_dict=1)
 		for fp in row["field_plan"]:
 			if not fp["write_required"]:
 				continue
@@ -351,38 +385,10 @@ def _verify_after(job_card: str, plan: dict) -> dict:
 						"actual": actual,
 					}
 				)
-	return {
-		"ok": not mismatches,
-		"mismatches": mismatches,
-		"fresh_overall": fresh.get("overall_status"),
-		"fresh_apply_allowed": fresh.get("apply_allowed"),
-	}
-
-
-def _downstream_checks(job_card: str, plan: dict) -> dict:
-	sim = simulate_manufacture_candidates(job_card)
-	checks = {"simulation": sim, "rm_checks": [], "ok": sim.get("ok", False)}
-	if not sim.get("ok"):
-		checks["status"] = S.DOWNSTREAM_MANUFACTURE_BLOCKED
-		return checks
-	for row in plan["material_rows"]:
-		expected = flt(row.get("net_available_for_manufacture"))
-		if expected <= 0:
-			continue
-		# Only require candidate when missing/partial manufacture consumption
-		if S.MISSING_MANUFACTURE_CONSUMPTION in row.get("statuses", []) or S.PARTIAL_MANUFACTURE_CONSUMPTION in row.get(
-			"statuses", []
-		):
-			chk = expect_rm_candidate(sim, row["item_code"], expected)
-			checks["rm_checks"].append(chk)
-			if not chk["ok"]:
-				checks["ok"] = False
-				checks["status"] = S.DOWNSTREAM_MANUFACTURE_BLOCKED
-	return checks
+	return {"ok": not mismatches, "mismatches": mismatches}
 
 
 def _write_audit(payload: dict) -> str | None:
-	"""Persist Job Card Stock Rebuild Log when DocType exists."""
 	if not frappe.db.exists("DocType", "Job Card Stock Rebuild Log"):
 		return None
 	doc = frappe.get_doc(
@@ -401,15 +407,31 @@ def _write_audit(payload: dict) -> str | None:
 					"fingerprint": payload.get("fingerprint"),
 					"evidence_summary": payload.get("evidence_summary"),
 					"statuses": payload.get("statuses"),
+					"secondary_type_suggestions": payload.get("secondary_type_suggestions"),
+					"secondary_type_approvals": payload.get("secondary_type_approvals"),
+					"manufacture_readiness_status": payload.get("manufacture_readiness_status"),
 				},
 				default=str,
 			),
-			"proposed_snapshot": json.dumps(payload.get("proposed_snapshot") or payload.get("writes") or {}, default=str),
+			"proposed_snapshot": json.dumps(payload.get("proposed_snapshot") or {}, default=str),
 			"after_snapshot": json.dumps(payload.get("after_snapshot") or {}, default=str),
-			"verification_snapshot": json.dumps(payload.get("verification") or {}, default=str),
+			"verification_snapshot": json.dumps(
+				{
+					"verification": payload.get("verification"),
+					"manufacture_readiness": {
+						"status": (payload.get("manufacture_readiness") or {}).get("status"),
+						"error": (payload.get("manufacture_readiness") or {}).get("error"),
+						"stage": (payload.get("manufacture_readiness") or {}).get("stage"),
+						"classified_keys": list(
+							((payload.get("manufacture_readiness") or {}).get("classified") or {}).keys()
+						),
+					},
+				},
+				default=str,
+			),
 			"warnings": json.dumps(payload.get("warnings") or [], default=str),
 			"affected_links": json.dumps(
-				[w for w in (payload.get("applied") or []) if w.get("type") == "sed_job_card_item"],
+				[w for w in (payload.get("applied") or []) if w.get("type") in ("sed_job_card_item", "secondary_item_type")],
 				default=str,
 			),
 			"error": payload.get("error") or "",
@@ -424,28 +446,33 @@ def dry_run_rebuild(
 	fingerprint: str | None = None,
 	item_filter: str | None = None,
 	batch_filter: str | None = None,
+	secondary_type_approvals=None,
 ) -> dict:
-	"""DRY RUN — real rebuild inside a rolled-back transaction."""
+	"""DRY RUN — apply tracking + optional approved type changes inside savepoint, then rollback."""
+	approvals_in = _parse_approvals(secondary_type_approvals)
 	plan = _build_plan(job_card, item_filter, batch_filter)
 	plan["mode"] = "DRY_RUN"
+	plan["secondary_type_approvals"] = approvals_in
+
 	if fingerprint and fingerprint != plan["fingerprint"]:
 		plan["overall_status"] = S.STALE_PREVIEW
 		plan["apply_allowed"] = False
-		plan["blockers"] = list(dict.fromkeys((plan.get("blockers") or []) + [S.STALE_PREVIEW]))
-		plan["dry_run"] = "FAIL"
+		plan["dry_run_status"] = "DRY_RUN_FAIL"
 		plan["error"] = "STALE_PREVIEW — re-scan required"
 		plan["mutated"] = False
 		return plan
 
-	if not plan.get("apply_allowed") and plan.get("overall_status") == S.BALANCED:
-		plan["dry_run"] = "PASS"
-		plan["dry_run_status"] = "DRY_RUN_PASS"
-		plan["note"] = "BALANCED / NO REBUILD REQUIRED"
+	v = validate_type_approvals(
+		job_card, approvals_in, (plan.get("secondary_type_suggestions") or {}).get("rows") or []
+	)
+	if not v["ok"]:
+		plan["dry_run_status"] = "DRY_RUN_FAIL"
+		plan["error"] = json.dumps(v["errors"], default=str)
 		plan["mutated"] = False
 		return plan
+	normalized = v["normalized"]
 
-	if plan.get("blockers"):
-		plan["dry_run"] = "FAIL"
+	if plan.get("blockers") and not normalized and not plan.get("writes"):
 		plan["dry_run_status"] = "DRY_RUN_FAIL"
 		plan["error"] = "Blocked: " + ", ".join(plan["blockers"])
 		plan["mutated"] = False
@@ -457,34 +484,52 @@ def dry_run_rebuild(
 	try:
 		frappe.db.sql("select name from `tabJob Card` where name=%s for update", job_card)
 		applied = _apply_writes(plan["writes"])
-		verification = _verify_after(job_card, plan)
+		applied_types = apply_type_approvals(normalized) if normalized else []
+		applied.extend(applied_types)
+		verification = _verify_tracking(job_card, plan) if plan["writes"] else {"ok": True, "mismatches": []}
 		if not verification["ok"]:
 			raise RuntimeError(f"Post-write verification failed: {verification['mismatches']}")
-		downstream = _downstream_checks(job_card, plan)
-		stage_after = simulate_stage_output_guard_on_secondary(plan["secondary"]["rows"])
+
+		# Full selected-JC real Make path AFTER temporary mutations
+		readiness = simulate_normal_make_stock_entry(job_card)
+		# Also keep RM candidate checks for missing manufacture consumption
+		rm_sim = simulate_manufacture_candidates(job_card)
+		rm_checks = []
+		for row in plan["material_rows"]:
+			expected = flt(row.get("net_available_for_manufacture"))
+			if expected <= 0:
+				continue
+			if S.MISSING_MANUFACTURE_CONSUMPTION in (row.get("statuses") or []):
+				rm_checks.append(expect_rm_candidate(rm_sim, row["item_code"], expected))
+
 		result = deepcopy(plan)
 		result["before_snapshot"] = before
 		result["applied"] = applied
 		result["verification"] = verification
-		result["downstream"] = downstream
-		result["stage_guard_after"] = stage_after
-		result["mutated"] = False  # savepoint rolled back
-		if not downstream.get("ok"):
-			result["dry_run"] = "FAIL"
-			result["dry_run_status"] = "DRY_RUN_FAIL"
-			result["error"] = downstream.get("status") or downstream.get("simulation", {}).get("error")
-			result["overall_status"] = S.DOWNSTREAM_MANUFACTURE_BLOCKED
-		elif stage_after.get("manufacture_blocked_by_stage_output_configuration"):
-			result["dry_run"] = "PASS"
-			result["dry_run_status"] = "DRY_RUN_PASS"
-			result["job_card_rebuild_valid"] = True
-			result["manufacture_blocked_by_stage_output_configuration"] = True
-			result["note"] = (
-				"JOB_CARD_REBUILD_VALID BUT MANUFACTURE_BLOCKED_BY_STAGE_OUTPUT_CONFIGURATION"
+		result["manufacture_readiness"] = readiness
+		result["manufacture_readiness_status"] = (
+			S.MANUFACTURE_READINESS_PASS if readiness.get("ok") else S.MANUFACTURE_READINESS_BLOCKED
+		)
+		result["rm_simulation"] = {"simulation": rm_sim, "rm_checks": rm_checks}
+		result["mutated"] = False
+		result["type_approvals_applied_in_txn"] = normalized
+		result["dry_run_status"] = "DRY_RUN_PASS"
+		result["dry_run"] = "PASS"
+		if normalized:
+			result["statuses"] = list(
+				dict.fromkeys((result.get("statuses") or []) + [S.TYPE_CHANGE_APPROVED])
 			)
-		else:
-			result["dry_run"] = "PASS"
-			result["dry_run_status"] = "DRY_RUN_PASS"
+		if not readiness.get("ok"):
+			result["note"] = (
+				"DRY_RUN_PASS with MANUFACTURE_READINESS_BLOCKED"
+				if not normalized
+				else f"Approved type change still blocked: {readiness.get('error')}"
+			)
+			# Approved types that were meant to fix readiness but didn't → dry-run FAIL for apply path
+			if normalized:
+				result["dry_run_status"] = "DRY_RUN_FAIL"
+				result["dry_run"] = "FAIL"
+				result["error"] = readiness.get("error") or S.MANUFACTURE_READINESS_BLOCKED
 		return result
 	except Exception as exc:
 		plan["dry_run"] = "FAIL"
@@ -502,23 +547,38 @@ def apply_rebuild(
 	confirm: int | bool = 0,
 	item_filter: str | None = None,
 	batch_filter: str | None = None,
+	secondary_type_approvals=None,
 ) -> dict:
-	"""APPLY — atomic rebuild of approved tracking/link fields."""
+	"""APPLY — atomic tracking + explicitly approved Secondary type changes."""
 	if not cint_truthy(confirm):
 		frappe.throw(frappe._("Confirmation required before Apply."))
 
+	approvals_in = _parse_approvals(secondary_type_approvals)
 	plan = _build_plan(job_card, item_filter, batch_filter)
 	plan["mode"] = "APPLY"
+	plan["secondary_type_approvals"] = approvals_in
+
 	if fingerprint != plan["fingerprint"]:
 		plan["overall_status"] = S.STALE_PREVIEW
-		plan["apply_allowed"] = False
 		plan["error"] = "STALE_PREVIEW — re-scan required"
 		plan["mutated"] = False
 		_write_audit(plan)
 		return plan
 
-	if plan.get("overall_status") == S.BALANCED or not plan.get("apply_allowed"):
+	v = validate_type_approvals(
+		job_card, approvals_in, (plan.get("secondary_type_suggestions") or {}).get("rows") or []
+	)
+	if not v["ok"]:
+		plan["error"] = json.dumps(v["errors"], default=str)
+		plan["mutated"] = False
+		_write_audit(plan)
+		return plan
+	normalized = v["normalized"]
+
+	has_mutations = bool(plan.get("writes")) or bool(normalized)
+	if not has_mutations:
 		plan["status"] = S.NO_CHANGE
+		plan["overall_status"] = S.BALANCED
 		plan["note"] = "BALANCED / NO REBUILD REQUIRED"
 		plan["mutated"] = False
 		_write_audit(plan)
@@ -540,34 +600,53 @@ def apply_rebuild(
 		]
 		if fresh_fp != fingerprint:
 			raise RuntimeError(S.STALE_PREVIEW)
+
 		applied = _apply_writes(plan["writes"])
-		verification = _verify_after(job_card, plan)
-		if not verification["ok"]:
-			raise RuntimeError(f"Verification failed: {verification['mismatches']}")
-		downstream = _downstream_checks(job_card, plan)
-		if not downstream.get("ok"):
+		applied_types = apply_type_approvals(normalized) if normalized else []
+		applied.extend(applied_types)
+
+		verification = _verify_tracking(job_card, plan) if plan["writes"] else {"ok": True}
+		if not verification.get("ok"):
+			raise RuntimeError(f"Verification failed: {verification.get('mismatches')}")
+
+		# Verify approved types persisted
+		for a in normalized:
+			cur = frappe.db.get_value("Job Card Secondary Item", a["secondary_row"], "secondary_item_type")
+			if cur != a["approved_type"]:
+				raise RuntimeError(f"Type apply failed for {a['secondary_row']}")
+
+		readiness = simulate_normal_make_stock_entry(job_card)
+		if normalized and not readiness.get("ok"):
 			raise RuntimeError(
-				downstream.get("status")
-				or downstream.get("simulation", {}).get("error")
-				or "DOWNSTREAM_MANUFACTURE_BLOCKED"
+				readiness.get("error")
+				or "MANUFACTURE_READINESS_BLOCKED after approved type changes"
 			)
+		# If only tracking writes and readiness blocked by pre-existing stage issue, allow
+		# persistence of tracking (Phase 1 contract) — type approvals require readiness PASS.
+
 		after = _snapshot_jc(job_card)
 		plan["before_snapshot"] = before
 		plan["after_snapshot"] = after
 		plan["applied"] = applied
 		plan["verification"] = verification
-		plan["downstream"] = downstream
+		plan["manufacture_readiness"] = readiness
+		plan["manufacture_readiness_status"] = (
+			S.MANUFACTURE_READINESS_PASS if readiness.get("ok") else S.MANUFACTURE_READINESS_BLOCKED
+		)
 		plan["overall_status"] = S.REBUILT
 		plan["status"] = S.REBUILT
 		plan["mutated"] = True
-		plan["manufacture_repair_required"] = plan.get("manufacture_repair_required")
+		plan["proposed_snapshot"] = {
+			"writes": plan["writes"],
+			"secondary_type_approvals": normalized,
+		}
 		log_name = _write_audit(plan)
 		plan["audit_log"] = log_name
 		return plan
 	except Exception as exc:
 		frappe.db.rollback(save_point=sp)
 		plan["error"] = str(exc)
-		plan["overall_status"] = S.MANUAL_REVIEW if str(exc) != S.STALE_PREVIEW else S.STALE_PREVIEW
+		plan["overall_status"] = S.STALE_PREVIEW if str(exc) == S.STALE_PREVIEW else S.MANUAL_REVIEW
 		plan["mutated"] = False
 		_write_audit(plan)
 		return plan
@@ -585,10 +664,7 @@ def cint_truthy(v) -> bool:
 def scan_work_order_readonly(work_order: str) -> dict:
 	"""Read-only candidate scan across Job Cards of a Work Order (no Apply)."""
 	jcs = frappe.get_all(
-		"Job Card",
-		filters={"work_order": work_order},
-		pluck="name",
-		order_by="name",
+		"Job Card", filters={"work_order": work_order}, pluck="name", order_by="name"
 	)
 	results = []
 	for jc in jcs:
@@ -599,6 +675,7 @@ def scan_work_order_readonly(work_order: str) -> dict:
 				"overall_status": plan["overall_status"],
 				"apply_allowed": plan["apply_allowed"],
 				"manufacture_repair_required": plan["manufacture_repair_required"],
+				"manufacture_readiness_status": plan.get("manufacture_readiness_status"),
 				"statuses": plan["statuses"],
 			}
 		)

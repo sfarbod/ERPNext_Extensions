@@ -60,3 +60,10 @@
 	margin-top: 6px;
 	font-size: 12px;
 }
+.jc-stock-rebuild-page .jcsr-type-table .jcsr-approve-cell {
+	text-align: center;
+}
+.jc-stock-rebuild-page .jcsr-confirm {
+	text-align: left;
+	max-width: 520px;
+}

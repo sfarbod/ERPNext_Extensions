@@ -1,7 +1,8 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Job Card Stock Rebuild — Phase 1 tracking-state reconstruction (v5.4.1).
+"""Job Card Stock Rebuild — tracking + approved Secondary type reconciliation (v5.4.1).
 
-Authoritative source: submitted Stock Entry / SLE.
+Authoritative source: submitted Stock Entry / SLE for the selected Job Card.
+Secondary Item business-type changes require explicit per-row user approval.
 Does NOT cancel, amend, regenerate, or submit Manufacture.
 """
 

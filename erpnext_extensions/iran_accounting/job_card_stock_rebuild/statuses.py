@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Deterministic status codes for Job Card Stock Rebuild (v5.4.1 Phase 1)."""
+"""Deterministic status codes for Job Card Stock Rebuild (v5.4.1)."""
 
 from __future__ import annotations
 
@@ -22,16 +22,20 @@ MANUAL_REVIEW = "MANUAL_REVIEW"
 REBUILD_READY = "REBUILD_READY"
 REBUILT = "REBUILT"
 NO_CHANGE = "NO_CHANGE"
+TYPE_CHANGE_SUGGESTED = "TYPE_CHANGE_SUGGESTED"
+TYPE_CHANGE_APPROVED = "TYPE_CHANGE_APPROVED"
+MANUFACTURE_READINESS_PASS = "MANUFACTURE_READINESS_PASS"
+MANUFACTURE_READINESS_BLOCKED = "MANUFACTURE_READINESS_BLOCKED"
 
-# Apply blockers (any of these → APPLY disabled)
+# Hard Apply blockers for selected JC dependency-unsafe conditions.
+# DOWNSTREAM_MANUFACTURE_BLOCKED is a readiness status — Apply of approved
+# type corrections may proceed and must re-verify readiness after mutation.
 APPLY_BLOCKERS = frozenset(
 	{
 		AMBIGUOUS_OWNERSHIP,
 		BATCH_MISMATCH,
 		UOM_MAPPING_REQUIRED,
 		STALE_PREVIEW,
-		DOWNSTREAM_MANUFACTURE_BLOCKED,
-		MANUAL_REVIEW,
 		OVER_CONSUMED,
 		RETURN_MISMATCH,
 		COMPONENT_SCRAP_MISMATCH,
@@ -39,8 +43,18 @@ APPLY_BLOCKERS = frozenset(
 	}
 )
 
-# Warnings that allow tracking rebuild but flag Manufacture Phase 2
-WARNINGS_ALLOW_REBUILD = frozenset({POSTING_ORDER_WARNING})
+# Row-level / informational — do not auto-escalate alone
+WARNINGS_ALLOW_REBUILD = frozenset(
+	{
+		POSTING_ORDER_WARNING,
+		MISSING_MANUFACTURE_CONSUMPTION,
+		PARTIAL_MANUFACTURE_CONSUMPTION,
+		TYPE_CHANGE_SUGGESTED,
+		DOWNSTREAM_MANUFACTURE_BLOCKED,
+		MANUFACTURE_READINESS_BLOCKED,
+		MANUAL_REVIEW,  # row-level unless escalated by service
+	}
+)
 
 __all__ = [
 	"BALANCED",
@@ -62,6 +76,10 @@ __all__ = [
 	"REBUILD_READY",
 	"REBUILT",
 	"NO_CHANGE",
+	"TYPE_CHANGE_SUGGESTED",
+	"TYPE_CHANGE_APPROVED",
+	"MANUFACTURE_READINESS_PASS",
+	"MANUFACTURE_READINESS_BLOCKED",
 	"APPLY_BLOCKERS",
 	"WARNINGS_ALLOW_REBUILD",
 ]

@@ -234,16 +234,69 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 		if earliest_mfg < latest_xfer:
 			posting_order_warning = True
 
+	# Job-Card dependency closure only — do NOT include unrelated JC / global DB stamps.
+	wo_name = frappe.db.get_value("Job Card", job_card, "work_order")
+	wo_identity = {}
+	if wo_name:
+		wo_identity = frappe.db.get_value(
+			"Work Order",
+			wo_name,
+			["name", "bom_no", "production_item", "wip_warehouse", "fg_warehouse"],
+			as_dict=1,
+		) or {}
+	jc_items_fp = frappe.db.sql(
+		"""
+		select name, item_code, transferred_qty, consumed_qty, required_qty,
+		       custom_issued_qty, custom_returned_qty, custom_still_in_wip, custom_returnable_qty
+		from `tabJob Card Item` where parent=%s order by idx
+		""",
+		job_card,
+		as_dict=1,
+	)
+	jc_sec_fp = []
+	try:
+		cols = set(frappe.db.get_table_columns("Job Card Secondary Item") or [])
+		sec_fields = [
+			c
+			for c in (
+				"name",
+				"item_code",
+				"secondary_item_type",
+				"stock_qty",
+				"stock_uom",
+				"bom_secondary_item",
+				"custom_output_equivalent_factor",
+			)
+			if c in cols
+		]
+		if sec_fields:
+			jc_sec_fp = frappe.db.sql(
+				f"select {', '.join(sec_fields)} from `tabJob Card Secondary Item` where parent=%s order by idx",
+				job_card,
+				as_dict=1,
+			)
+	except Exception:
+		jc_sec_fp = []
+	# SLE belonging to this JC's Stock Entries only (not global SLE stamps)
+	se_names = [s.name for s in ses]
+	sle_fp = []
+	if se_names:
+		sle_fp = frappe.db.sql(
+			"""
+			select name, voucher_no, item_code, actual_qty, modified
+			from `tabStock Ledger Entry`
+			where voucher_no in %s and is_cancelled=0
+			order by voucher_no, name
+			""",
+			(se_names,),
+			as_dict=1,
+		)
 	fingerprint_payload = {
 		"job_card": job_card,
 		"jc_modified": str(frappe.db.get_value("Job Card", job_card, "modified") or ""),
-		"wo": frappe.db.get_value("Job Card", job_card, "work_order"),
-		"wo_modified": str(
-			frappe.db.get_value(
-				"Work Order", frappe.db.get_value("Job Card", job_card, "work_order"), "modified"
-			)
-			or ""
-		),
+		"wo_identity": wo_identity,
+		"jc_items": jc_items_fp,
+		"jc_secondary": jc_sec_fp,
 		"ses": [
 			{"name": s.name, "modified": str(s.modified), "purpose": s.purpose, "is_return": _is_return(s)}
 			for s in ses
@@ -251,6 +304,16 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 		"details": [
 			{"name": m["detail_name"], "job_card_item": m["job_card_item"], "qty": m["qty"]}
 			for m in movements
+		],
+		"sle": [
+			{
+				"name": s.name,
+				"voucher_no": s.voucher_no,
+				"item_code": s.item_code,
+				"actual_qty": flt(s.actual_qty),
+				"modified": str(s.modified),
+			}
+			for s in sle_fp
 		],
 	}
 	digest = hashlib.sha256(
