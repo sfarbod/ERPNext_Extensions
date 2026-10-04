@@ -120,6 +120,7 @@ def scan_golden_rule(job_card: str) -> dict[str, Any]:
 			flt(item.get("issued")) <= 1e-9
 			and flt(item.get("returned")) <= 1e-9
 			and flt(item.get("consumed")) <= 1e-9
+			and flt(item.get("mi_consumed")) <= 1e-9
 			and flt(item.get("component_scrap")) <= 1e-9
 		):
 			continue
@@ -129,6 +130,15 @@ def scan_golden_rule(job_card: str) -> dict[str, Any]:
 		suggestion = _suggest(item, jc_meta) if status != STATUS_OK else {
 			"action": None, "qty": 0.0, "confidence": None, "reason": None
 		}
+		# If MI already proves consumption, prefer OK / merge suggestion over missing consume.
+		if flt(item.get("mi_consumed")) > 1e-9 and flt(item.get("wip_remainder")) <= 1e-9:
+			status = STATUS_MULTIPLE_MANUFACTURE if multi_mfg else STATUS_OK
+			suggestion = {
+				"action": None,
+				"qty": 0.0,
+				"confidence": "HIGH",
+				"reason": "Material Issue already proves WIP outflow; merge into Manufacture if selected",
+			}
 		rows.append(
 			{
 				"item_code": item["item_code"],
@@ -136,6 +146,7 @@ def scan_golden_rule(job_card: str) -> dict[str, Any]:
 				"issued": flt(item["issued"]),
 				"returned": flt(item["returned"]),
 				"consumed": flt(item["consumed"]),
+				"mi_consumed": flt(item.get("mi_consumed") or 0),
 				"scrap": flt(item["component_scrap"]),
 				"paired_scrap": flt(item.get("paired_component_scrap") or 0),
 				"remaining_wip": flt(item["wip_remainder"]),

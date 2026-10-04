@@ -34,8 +34,16 @@ class TestManufacturePlanV550(FrappeTestCase):
 		self.assertTrue(found)
 		self.assertAlmostEqual(found[0]["qty"], 1148)
 		self.assertEqual(plan["canonical_manufacture"]["historical_stamp"], "5.3.34")
-		# Returns/logistics not merged into manufacture rows as CONSUME of FG logistics
-		self.assertTrue(any(d["role"] == "TEMP CANCEL / RECREATE" for d in plan["documents"]))
+		# Shared multi-item FG logistics → SHARED_BLOCKED (no blind cancel of co-moved items)
+		self.assertTrue(any("SHARED_BLOCKED" in b for b in plan["blockers"]))
+		self.assertFalse(plan["apply_allowed"])
+		self.assertTrue(
+			any(
+				d.get("name") in ("MAT-STE-2026-31725", "MAT-STE-2026-31726")
+				and d.get("role") == "BLOCKED"
+				for d in plan["documents"]
+			)
+		)
 
 	def test_m06_po_job08830_dn_blocked(self):
 		if not frappe.db.exists("Job Card", "PO-JOB08830"):

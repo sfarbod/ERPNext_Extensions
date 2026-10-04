@@ -456,6 +456,7 @@ def _write_audit(payload: dict) -> str | None:
 						"fingerprint": payload.get("fingerprint"),
 						"dispositions": payload.get("dispositions"),
 						"merge_documents": payload.get("merge_documents"),
+						"merge_material_issues": payload.get("merge_material_issues"),
 					},
 					default=str,
 				),
@@ -501,6 +502,7 @@ def run_repair(
 		dispositions=plan_input.get("dispositions"),
 		merge_documents=plan_input.get("merge_documents"),
 		stamp_mode=plan_input.get("stamp_mode"),
+		merge_material_issues=plan_input.get("merge_material_issues"),
 	)
 	client_fp = plan_input.get("fingerprint")
 	if client_fp and client_fp != plan["fingerprint"]:
@@ -525,8 +527,9 @@ def run_repair(
 
 	repair_run_id = str(uuid.uuid4())
 	merge_docs = list(plan.get("merge_documents") or [])
+	merge_mis = list(plan.get("merge_material_issues") or [])
 	logistics = [x.name for x in (plan.get("downstream_logistics") or [])]
-	scope = merge_docs + logistics
+	scope = merge_docs + merge_mis + logistics
 	before = _snapshot_business(job_card, scope)
 
 	result = {
@@ -538,6 +541,7 @@ def run_repair(
 		"fingerprint": plan["fingerprint"],
 		"dispositions": plan.get("dispositions"),
 		"merge_documents": merge_docs,
+		"merge_material_issues": merge_mis,
 		"canonical_manufacture": plan.get("canonical_manufacture"),
 		"blockers": [],
 		"cancelled": [],
@@ -559,6 +563,7 @@ def run_repair(
 			dispositions=plan_input.get("dispositions"),
 			merge_documents=plan_input.get("merge_documents"),
 			stamp_mode=plan_input.get("stamp_mode"),
+			merge_material_issues=plan_input.get("merge_material_issues"),
 		)
 		if fresh["fingerprint"] != plan["fingerprint"]:
 			raise RuntimeError("STALE PLAN after lock")
@@ -574,24 +579,32 @@ def run_repair(
 				if i == 0:
 					_fail_point("after_first_cancel")
 
-			# 2) Cancel manufactures
+			# 2) Cancel proven Material Issues being merged into Manufacture
+			for name in merge_mis:
+				_cancel_se(name)
+				result["cancelled"].append(name)
+				_fail_point("after_mi_cancel")
+
+			# 3) Cancel manufactures
 			for name in merge_docs:
 				_cancel_se(name)
 				result["cancelled"].append(name)
+			if merge_mis:
+				_fail_point("after_mi_and_mfg_cancel")
 			_fail_point("after_mfg_cancel")
 
-			# 3) Create + submit canonical
+			# 4) Create + submit canonical (includes MI consumption)
 			canonical = _build_canonical_se(fresh)
 			result["created"].append(canonical)
 			result["canonical_name"] = canonical
 
-			# 4) Recreate logistics in original chrono (reverse of cancel list)
+			# 5) Recreate logistics in original chrono (reverse of cancel list)
 			for name in reversed(logistics):
 				new_name = _recreate_logistics(name, batch_snapshot=logistics_batches.get(name))
 				result["recreated_logistics"].append({"from": name, "to": new_name})
 			_fail_point("after_logistics_recreate")
 
-			# 5) Sync valuation
+			# 6) Sync valuation
 			val_vouchers = [canonical] + [x["to"] for x in result["recreated_logistics"]]
 			val = sync_valuation_for_vouchers(val_vouchers)
 			result["valuation"] = val
@@ -599,7 +612,7 @@ def run_repair(
 			if not val.get("ok"):
 				raise RuntimeError(val.get("error") or "Sync valuation failed")
 
-			# 6) Verify
+			# 7) Verify (MI must remain cancelled only if commit — dry run rolls back)
 			verification = _verify(fresh, canonical)
 			result["verification"] = verification
 			if not verification.get("ok"):

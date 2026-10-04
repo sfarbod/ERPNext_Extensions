@@ -108,6 +108,12 @@ def classify_movement(purpose: str, is_return: bool, row: dict) -> str | None:
 		if t_wh and sec in ("Co-Product", "By-Product", "Additional Finished Good"):
 			return "SECONDARY_OUTPUT"
 		return "MFG_OTHER"
+	if purpose == "Material Issue":
+		# Proven only when linked via Stock Entry.job_card (collector scope).
+		# Treated as manufacturing WIP outflow candidate — not automatic CONSUME.
+		if s_wh and not t_wh:
+			return "MATERIAL_ISSUE"
+		return "OTHER"
 	return "OTHER"
 
 
@@ -120,6 +126,7 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 			"issued": 0.0,
 			"returned": 0.0,
 			"consumed": 0.0,
+			"mi_consumed": 0.0,
 			"component_scrap": 0.0,
 			"product_reject": 0.0,
 			"ordinary_scrap": 0.0,
@@ -181,6 +188,9 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 				agg["link_candidates"].append(rec)
 			elif bucket == "CONSUME":
 				agg["consumed"] += qty
+			elif bucket == "MATERIAL_ISSUE":
+				# Physical WIP outflow via Material Issue — counted once (not MFG consume).
+				agg["mi_consumed"] += qty
 			elif bucket == "COMPONENT_SCRAP":
 				agg["component_scrap"] += qty
 			elif bucket == "PRODUCT_REJECT":
@@ -191,7 +201,7 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 				# FG / Co-/By-/AFG outputs are not component WIP drains.
 				pass
 			else:
-				# Proven component WIP outflow that is not CONSUME/RETURN/SCRAP.
+				# Proven component WIP outflow that is not CONSUME/RETURN/SCRAP/MI.
 				agg["other"] += qty
 
 		if se.purpose == "Manufacture":
@@ -212,13 +222,15 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 	items_out = []
 	for (item, batch), agg in sorted(by_item_batch.items()):
 		paired = flt(paired_map.get((item, batch)))
+		# MI physical outflow is OTHER_PROVEN_COMPONENT_WIP_OUTFLOW for Golden Rule.
+		other_proven = flt(agg["other"]) + flt(agg["mi_consumed"])
 		remainder = golden_remainder(
 			agg["issued"],
 			agg["returned"],
 			agg["consumed"],
 			agg["component_scrap"],
 			paired,
-			agg["other"],
+			other_proven,
 		)
 		items_out.append(
 			{
@@ -227,13 +239,17 @@ def build_evidence(job_card: str, item_filter: str | None = None, batch_filter: 
 				"issued": flt(agg["issued"]),
 				"returned": flt(agg["returned"]),
 				"consumed": flt(agg["consumed"]),
+				"mi_consumed": flt(agg["mi_consumed"]),
 				"component_scrap": flt(agg["component_scrap"]),
 				"paired_component_scrap": paired,
 				"product_reject": flt(agg["product_reject"]),
 				"ordinary_scrap": flt(agg["ordinary_scrap"]),
 				"other": flt(agg["other"]),
 				"wip_remainder": remainder,
-				"net_available_for_manufacture": flt(agg["issued"]) - flt(agg["returned"]) - flt(agg["consumed"]),
+				"net_available_for_manufacture": flt(agg["issued"])
+				- flt(agg["returned"])
+				- flt(agg["consumed"])
+				- flt(agg["mi_consumed"]),
 				"scrap_pair_ok": flt(agg["component_scrap"]) <= paired + 1e-9,
 				"evidence": agg["evidence"],
 				"link_candidates": agg["link_candidates"],

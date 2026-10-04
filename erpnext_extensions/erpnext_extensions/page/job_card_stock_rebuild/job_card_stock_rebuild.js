@@ -773,9 +773,14 @@ class JobCardStockRebuildPage {
 		this.$mfg.find('input[data-merge]:checked').each((_, el) => {
 			merge_documents.push($(el).attr("data-merge"));
 		});
+		const merge_material_issues = [];
+		this.$mfg.find('input[data-merge-mi]:checked').each((_, el) => {
+			merge_material_issues.push($(el).attr("data-merge-mi"));
+		});
 		return {
 			dispositions,
 			merge_documents,
+			merge_material_issues,
 			stamp_mode: "HISTORICAL",
 			fingerprint: this.mfgFingerprint,
 		};
@@ -868,7 +873,8 @@ class JobCardStockRebuildPage {
 				<thead><tr>
 					<th>${__("Item")}</th><th>${__("Batch")}</th>
 					<th>${__("Issued")}</th><th>${__("Returned")}</th>
-					<th>${__("Consumed")}</th><th>${__("Scrap")}</th>
+					<th>${__("MFG Consume")}</th><th>${__("Material Issue")}</th>
+					<th>${__("Scrap")}</th>
 					<th>${__("Remaining")}</th><th>${__("Suggested")}</th>
 					<th>${__("Consumed*")}</th><th>${__("Scrap*")}</th>
 					<th>${__("Return*")}</th><th>${__("Still WIP*")}</th>
@@ -887,7 +893,8 @@ class JobCardStockRebuildPage {
 					<td>${frappe.utils.escape_html(r.item_code)}</td>
 					<td>${frappe.utils.escape_html(r.batch_no || "")}</td>
 					<td>${flt(r.issued)}</td><td>${flt(r.returned)}</td>
-					<td>${flt(r.consumed)}</td><td>${flt(r.scrap)}</td>
+					<td>${flt(r.consumed)}</td><td>${flt(r.mi_consumed)}</td>
+					<td>${flt(r.scrap)}</td>
 					<td>${flt(r.remaining_wip)}</td>
 					<td title="${frappe.utils.escape_html(r.reason || "")}">${frappe.utils.escape_html(sug)}</td>
 					<td><input data-f="consumed" type="number" step="any" value="${flt(r.proposed_consumed)}" style="width:70px"></td>
@@ -900,26 +907,63 @@ class JobCardStockRebuildPage {
 		});
 		this.$mfg.append($table);
 
-		$("<h4 class='jcsr-section-title'>").text(__("Documents to Merge")).appendTo(this.$mfg);
+		$("<h4 class='jcsr-section-title'>").text(__("Documents")).appendTo(this.$mfg);
+		const $docTable = $(`
+			<table class="jcsr-table" data-role="mfg-documents">
+				<thead><tr>
+					<th>${__("Document")}</th><th>${__("Purpose")}</th>
+					<th>${__("Qty / rows")}</th><th>${__("Ownership")}</th>
+					<th>${__("Action")}</th>
+				</tr></thead><tbody></tbody>
+			</table>
+		`);
+		const $docTb = $docTable.find("tbody");
 		const docs = plan.documents || [];
 		docs.forEach((d) => {
-			if (d.role === "TEMP CANCEL / RECREATE") {
-				this.$mfg.append(
-					`<div class="text-muted">Logistics: ${frappe.utils.escape_html(
+			const purpose = d.purpose || "";
+			const ownership = d.ownership || d.role || "";
+			const qty = d.qty_summary || (d.fg_completed_qty != null ? `FG ${flt(d.fg_completed_qty)}` : "");
+			let actionCell = frappe.utils.escape_html(d.role || "");
+			if (purpose === "Manufacture" && (d.role === "MERGE" || d.role === "KEEP")) {
+				const checked = d.role === "MERGE" ? "checked" : "";
+				actionCell = `<label><input type="checkbox" data-merge="${frappe.utils.escape_html(
+					d.name
+				)}" ${checked}> ${frappe.utils.escape_html(d.role)}</label>`;
+			} else if (purpose === "Material Issue") {
+				const blocked = d.role === "BLOCKED" || d.shared_document;
+				if (blocked) {
+					actionCell = `<span class="text-danger">BLOCKED</span>`;
+				} else {
+					const checked = d.role === "MERGE" || d.propose_merge ? "checked" : "";
+					actionCell = `<label><input type="checkbox" data-merge-mi="${frappe.utils.escape_html(
 						d.name
-					)} (${frappe.utils.escape_html(d.purpose || "")})</div>`
-				);
-				return;
+					)}" ${checked}> ${d.role === "MERGE" ? "MERGE" : "KEEP / MERGE?"}</label>`;
+				}
+			} else if (d.role === "TEMP CANCEL / RECREATE") {
+				actionCell = `TEMP CANCEL / RECREATE`;
+			} else if (d.role === "BLOCKED") {
+				actionCell = `<span class="text-danger">BLOCKED</span>`;
 			}
-			const checked = d.role === "MERGE" ? "checked" : "";
-			this.$mfg.append(
-				`<label style="display:block;margin:2px 0">
-					<input type="checkbox" data-merge="${frappe.utils.escape_html(d.name)}" ${checked}>
-					${frappe.utils.escape_html(d.name)} — ${frappe.utils.escape_html(d.role)}
-					FG ${flt(d.fg_completed_qty)} stamp ${frappe.utils.escape_html(d.stamp || "")}
-				</label>`
-			);
+			$docTb.append(`
+				<tr data-doc="${frappe.utils.escape_html(d.name)}" title="${frappe.utils.escape_html(
+					d.reason || ""
+				)}">
+					<td>${frappe.utils.escape_html(d.name)}</td>
+					<td>${frappe.utils.escape_html(purpose)}</td>
+					<td>${frappe.utils.escape_html(qty)}</td>
+					<td>${frappe.utils.escape_html(String(ownership))}</td>
+					<td>${actionCell}</td>
+				</tr>
+			`);
 		});
+		this.$mfg.append($docTable);
+		if (plan.minimal_cancel_set && plan.minimal_cancel_set.length) {
+			this.$mfg.append(
+				`<div class="jcsr-meta" data-role="mfg-min-cancel">Minimal cancel set: ${plan.minimal_cancel_set
+					.map((x) => frappe.utils.escape_html(x))
+					.join(", ")}</div>`
+			);
+		}
 
 		$("<h4 class='jcsr-section-title'>").text(__("Final Manufacture Preview")).appendTo(this.$mfg);
 		const canon = plan.canonical_manufacture || {};
@@ -936,6 +980,7 @@ class JobCardStockRebuildPage {
 			`<table class="jcsr-table"><thead><tr>
 				<th>${__("Type")}</th><th>${__("Item")}</th><th>${__("Batch")}</th>
 				<th>${__("Qty")}</th><th>${__("S / T")}</th><th>${__("Rate source")}</th>
+				<th>${__("Source")}</th>
 			</tr></thead><tbody></tbody></table>`
 		);
 		(canon.rows || []).forEach((row) => {
@@ -949,6 +994,7 @@ class JobCardStockRebuildPage {
 						row.t_warehouse || ""
 					)}</td>
 					<td>${frappe.utils.escape_html(row.rate_source || "")}</td>
+					<td>${frappe.utils.escape_html(row.source_lineage || row.source_voucher || "")}</td>
 				</tr>
 			`);
 		});

@@ -50,4 +50,13 @@ Dry Run / Apply with synchronous valuation (no async RIV during repair).
 - `job_card_stock_rebuild/manufacture_plan.py`
 - `job_card_stock_rebuild/sync_valuation.py`
 - `job_card_stock_rebuild/atomic_repair.py`
+- `job_card_stock_rebuild/mi_ownership.py` — Material Issue ownership classifier
 - API: `scan_manufacture_reconciliation`, `dry_run_manufacture_repair`, `apply_manufacture_repair`
+
+## Hardening (same 5.5.0)
+
+- Proven Material Issue → MERGE into canonical Manufacture (SLE outgoing rate)
+- Shared multi-row MI → BLOCK (no row-split MVP)
+- Downstream dependency graph is Manufacture FG Item×Batch scoped
+- Shared logistics with later unrelated outbounds → SHARED_BLOCKED (no foreign cancel chain)
+- PO-JOB08760 pre-apply gate: BLOCKED until dedicated/safe logistics path exists

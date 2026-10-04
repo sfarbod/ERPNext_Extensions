@@ -135,14 +135,101 @@ def _se_lines(name: str) -> list[dict]:
 	return rows
 
 
-def _seed_tracked_keys(seed_names: list[str]) -> set[tuple[str, str]]:
-	"""Item×Batch keys present on seed logistics vouchers (incl. shared lines)."""
-	keys: set[tuple[str, str]] = set()
-	for name in seed_names:
-		for ln in _se_lines(name):
-			if ln.item_code and ln.batch_no:
-				keys.add((ln.item_code, ln.batch_no))
-	return keys
+def _has_later_outbounds(se_name: str, keys: set[tuple[str, str]]) -> bool:
+	"""True if any Item×Batch on ``keys`` has a later submitted outbound from this SE's target."""
+	cdt = _se_sort_key(se_name)
+	for ln in _se_lines(se_name):
+		key = (ln.item_code, ln.batch_no)
+		if key not in keys or not ln.t_warehouse or not ln.batch_no:
+			continue
+		later = frappe.db.sql(
+			"""
+			select se.name, se.posting_date, se.posting_time, se.creation
+			from `tabStock Entry Detail` sed
+			join `tabStock Entry` se on se.name=sed.parent
+			where se.docstatus=1 and sed.item_code=%s and ifnull(sed.batch_no,'')=%s
+			  and sed.s_warehouse=%s and se.name!=%s
+			limit 20
+			""",
+			(ln.item_code, ln.batch_no, ln.t_warehouse, se_name),
+			as_dict=1,
+		)
+		later2 = frappe.db.sql(
+			"""
+			select se.name, se.posting_date, se.posting_time, se.creation
+			from `tabSerial and Batch Entry` sbe
+			join `tabStock Entry Detail` sed on sed.serial_and_batch_bundle=sbe.parent
+			join `tabStock Entry` se on se.name=sed.parent
+			where se.docstatus=1 and sed.item_code=%s and sbe.batch_no=%s
+			  and sed.s_warehouse=%s and se.name!=%s
+			limit 20
+			""",
+			(ln.item_code, ln.batch_no, ln.t_warehouse, se_name),
+			as_dict=1,
+		)
+		for c in list(later) + list(later2):
+			if (str(c.posting_date), str(c.posting_time), str(c.creation), c.name) > cdt:
+				return True
+	return False
+
+
+def classify_logistics_document(name: str, fg_keys: set[tuple[str, str]]) -> dict[str, Any]:
+	"""DEDICATED / SHARED_SAFE / SHARED_BLOCKED / UNRELATED for one logistics SE."""
+	lines = _se_lines(name)
+	keys = {(ln.item_code, ln.batch_no) for ln in lines if ln.item_code and ln.batch_no}
+	fg_on = keys & fg_keys
+	other = keys - fg_keys
+	meta = frappe.db.get_value(
+		"Stock Entry",
+		name,
+		["name", "purpose", "docstatus", "posting_date", "posting_time", "job_card", "work_order"],
+		as_dict=1,
+	) or frappe._dict(name=name)
+	related_rows = [
+		{
+			"item_code": ln.item_code,
+			"batch_no": ln.batch_no,
+			"qty": flt(ln.qty),
+			"s_warehouse": ln.s_warehouse,
+			"t_warehouse": ln.t_warehouse,
+		}
+		for ln in lines
+		if (ln.item_code, ln.batch_no) in fg_on
+	]
+	unrelated_rows = [
+		{
+			"item_code": ln.item_code,
+			"batch_no": ln.batch_no,
+			"qty": flt(ln.qty),
+			"s_warehouse": ln.s_warehouse,
+			"t_warehouse": ln.t_warehouse,
+		}
+		for ln in lines
+		if (ln.item_code, ln.batch_no) in other
+	]
+	if not fg_on:
+		cls = "UNRELATED"
+	elif not other:
+		cls = "DEDICATED"
+	elif _has_later_outbounds(name, other):
+		# Shared multi-item doc whose unrelated rows have further outbounds —
+		# cancelling requires either row-split or cancelling foreign logistics.
+		cls = "SHARED_BLOCKED"
+	else:
+		cls = "SHARED_SAFE"
+	return {
+		"name": name,
+		"purpose": meta.get("purpose"),
+		"docstatus": meta.get("docstatus"),
+		"posting_date": meta.get("posting_date"),
+		"posting_time": meta.get("posting_time"),
+		"job_card": meta.get("job_card"),
+		"work_order": meta.get("work_order"),
+		"shared_class": cls,
+		"related_rows": related_rows,
+		"unrelated_rows": unrelated_rows,
+		"n_lines": len(lines),
+	}
 
 
 def _expand_future_outbound(
@@ -151,14 +238,13 @@ def _expand_future_outbound(
 ) -> tuple[list[str], list[str]]:
 	"""Add later SEs required to safely cancel seed logistics.
 
-	Tracked keys are frozen from the seed vouchers. Expansion follows only those
-	Item×Batch pairs so shared multi-item quarantine transfers can be cancelled
-	without recursively adopting unrelated site transfers.
+	Tracked keys MUST be Manufacture FG Item×Batch only (batch-scoped).
+	Do not adopt co-moved unrelated items from shared multi-item transfers.
 	"""
 	seen = set(seed_names)
 	queue = list(seed_names)
 	blockers: list[str] = []
-	tracked_keys = tracked_keys or _seed_tracked_keys(seed_names)
+	tracked_keys = tracked_keys or set()
 	while queue:
 		if len(seen) > _MAX_LOGISTICS_DOCS:
 			blockers.append(
@@ -300,20 +386,30 @@ def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[
 				"secondary_item_type": None,
 				"is_finished_item": 0,
 				"rate_source": e.get("rate_source") or "issue_transfer",
+				"source_voucher": e.get("source_voucher"),
+				"source_lineage": e.get("source_lineage") or "",
 			}
 		consume[key]["qty"] += flt(e["qty"])
 		if e.get("valuation_rate"):
 			consume[key]["valuation_rate"] = flt(e["valuation_rate"])
 			consume[key]["basic_rate"] = flt(e.get("basic_rate") or e["valuation_rate"])
 			consume[key]["rate_source"] = e.get("rate_source") or consume[key]["rate_source"]
+		if e.get("source_lineage"):
+			prev = consume[key].get("source_lineage") or ""
+			consume[key]["source_lineage"] = (
+				(prev + "; " if prev else "") + e["source_lineage"]
+			).strip("; ")
+			consume[key]["source_voucher"] = e.get("source_voucher") or consume[key].get(
+				"source_voucher"
+			)
 	return list(consume.values()) + outputs
 
 
 def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 	"""FG logistics after Manufacture that may need TEMP CANCEL/RECREATE.
 
-	Also expands later outbound dependents of shared multi-item logistics SEs
-	so cancel does not trip future negative-stock validation.
+	Dependency graph is batch-scoped to Manufacture FG Item×Batch only.
+	Shared multi-item logistics with later unrelated outbounds → SHARED_BLOCKED.
 	"""
 	fg_rows = frappe.db.sql(
 		"""
@@ -360,29 +456,69 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 			seen.add(mv.name)
 			seed.append(mv.name)
 
-	# Seed logistics may be shared multi-item transfers. Track:
-	# 1) Manufacture FG Item×Batch keys, and
-	# 2) every Item×Batch on the seed vouchers (needed so cancel order
-	#    reverses later outbounds of co-moved items and avoids negative stock).
-	# Expansion still refuses unsupported purposes / DN / oversized chains.
-	tracked = set(fg_keys) | _seed_tracked_keys(seed)
-	expanded_names, expand_blockers = _expand_future_outbound(seed, tracked_keys=tracked)
+	seed_audit = [classify_logistics_document(n, fg_keys) for n in seed]
+	for aud in seed_audit:
+		if aud["shared_class"] == "SHARED_BLOCKED":
+			blocked.append(
+				{
+					"reason": (
+						f"SHARED_BLOCKED logistics {aud['name']}: unrelated rows have later "
+						f"outbounds (no row-split in MVP)"
+					),
+					"documents": [aud["name"]],
+					"batch_no": None,
+					"shared_class": "SHARED_BLOCKED",
+					"unrelated_rows": aud.get("unrelated_rows"),
+				}
+			)
+
+	# Expand ONLY Manufacture FG Item×Batch keys (minimal safe closure).
+	# SHARED_SAFE seeds may still be cancelled whole (unrelated rows have no later outbounds).
+	# SHARED_BLOCKED seeds are reported as blockers; still listed for audit visibility.
+	safe_seed = [
+		a["name"]
+		for a in seed_audit
+		if a["shared_class"] in ("DEDICATED", "SHARED_SAFE")
+	]
+	expanded_names, expand_blockers = _expand_future_outbound(safe_seed, tracked_keys=set(fg_keys))
 	for msg in expand_blockers:
 		blocked.append({"reason": msg, "documents": [], "batch_no": None})
 
+	# Include SHARED_BLOCKED seeds in audit list but not in cancel set when blocked.
+	cancel_names = list(expanded_names)
 	logistics = []
-	for name in expanded_names:
+	audit_by_name = {a["name"]: a for a in seed_audit}
+	for name in sorted(set(cancel_names) | set(seed), key=_se_sort_key, reverse=True):
 		meta = frappe.db.get_value(
 			"Stock Entry",
 			name,
 			["name", "purpose", "docstatus", "posting_date", "posting_time", "creation", "modified"],
 			as_dict=1,
 		)
-		if meta:
-			logistics.append(meta)
-	# Reverse chrono already from expand; keep stable
-	logistics.sort(key=lambda x: _se_sort_key(x.name), reverse=True)
-	return {"logistics": logistics, "blocked": blocked, "fg_rows": fg_rows, "seed": seed}
+		if not meta:
+			continue
+		aud = audit_by_name.get(name) or classify_logistics_document(name, fg_keys)
+		meta["shared_class"] = aud.get("shared_class")
+		meta["related_rows"] = aud.get("related_rows")
+		meta["unrelated_rows"] = aud.get("unrelated_rows")
+		meta["in_cancel_set"] = name in cancel_names and aud.get("shared_class") in (
+			"DEDICATED",
+			"SHARED_SAFE",
+		)
+		logistics.append(meta)
+
+	# Cancel set = only docs that are safe to TEMP CANCEL/RECREATE
+	cancel_logistics = [x for x in logistics if x.get("in_cancel_set")]
+	cancel_logistics.sort(key=lambda x: _se_sort_key(x.name), reverse=True)
+	return {
+		"logistics": cancel_logistics,
+		"logistics_audit": logistics,
+		"blocked": blocked,
+		"fg_rows": fg_rows,
+		"seed": seed,
+		"fg_keys": [{"item_code": i, "batch_no": b} for i, b in sorted(fg_keys)],
+		"minimal_cancel_set": [x.name for x in cancel_logistics],
+	}
 
 
 def build_manufacture_plan(
@@ -390,16 +526,49 @@ def build_manufacture_plan(
 	dispositions: list[dict] | None = None,
 	merge_documents: list[str] | None = None,
 	stamp_mode: str | None = None,
+	merge_material_issues: list[str] | None = None,
 ) -> dict[str, Any]:
 	"""Authoritative repair plan from server evidence + user choices."""
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.mi_ownership import (
+		ACTION_BLOCKED,
+		MI_BLOCKED,
+		MI_MERGE_SAFE,
+		discover_material_issues,
+		mi_consume_rows_for_merge,
+	)
+
 	scan = scan_golden_rule(job_card)
 	ok, errors, normalized = validate_dispositions(scan["rows"], dispositions or [])
 	mfgs = scan["manufactures"]
 	mfg_names = [m.name for m in mfgs]
+	client_merge = merge_documents
 	if merge_documents is None:
 		merge_documents = list(mfg_names)
 	else:
 		merge_documents = [n for n in merge_documents if n in mfg_names]
+
+	# Material Issue ownership (evidence items carry mi_consumed)
+	evidence_items = (scan.get("evidence_items") or [])
+	if not evidence_items:
+		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.evidence import (
+			build_evidence,
+		)
+
+		evidence_items = build_evidence(job_card).get("items") or []
+	mi_docs = discover_material_issues(job_card, evidence_items)
+	mi_by_name = {m["name"]: m for m in mi_docs}
+	if merge_material_issues is None:
+		# Default: propose MERGE_SAFE only (user still sees checkbox; Apply needs selection)
+		merge_material_issues = [
+			m["name"] for m in mi_docs if m.get("classification") == MI_MERGE_SAFE and m.get("propose_merge")
+		]
+	else:
+		merge_material_issues = [n for n in merge_material_issues if n in mi_by_name]
+		for n in list(merge_material_issues):
+			cls = mi_by_name[n]
+			if cls.get("classification") == MI_BLOCKED or cls.get("shared_document"):
+				errors.append(f"Material Issue {n} is BLOCKED ({cls.get('reason')})")
+				merge_material_issues.remove(n)
 
 	blockers = list(errors)
 	if scan.get("stamp_conflict") and stamp_mode not in ("HISTORICAL", "MIGRATE"):
@@ -414,12 +583,12 @@ def build_manufacture_plan(
 	for b in downstream.get("blocked") or []:
 		reason = b.get("reason") if isinstance(b, dict) else str(b)
 		if reason and reason not in blockers:
-			if str(reason).startswith("MERGE_BLOCKED"):
-				blockers.append(str(reason))
+			if str(reason).startswith("MERGE_BLOCKED") or str(reason).startswith("SHARED_BLOCKED"):
+				blockers.append(str(reason) if str(reason).startswith("MERGE_BLOCKED") else f"MERGE_BLOCKED: {reason}")
 			else:
 				blockers.append(f"MERGE_BLOCKED: {reason}")
 
-	# Extra consume from dispositions
+	# Extra consume from dispositions (unresolved WIP only — not double-counting MI)
 	extra = []
 	wip = scan.get("wip_warehouse")
 	for d in normalized:
@@ -465,6 +634,22 @@ def build_manufacture_plan(
 				f"{d['item_code']}: STILL IN WIP approved — Manufacture repair for this remainder is skipped"
 			)
 
+	# MI merge consume (authoritative SLE outgoing rate) — replaces MI physical outflow
+	mi_extra = mi_consume_rows_for_merge(mi_docs, merge_material_issues)
+	# Avoid double-adding disposition consume that merely restates MI qty
+	if mi_extra:
+		mi_keys = {(e["item_code"], e.get("batch_no") or ""): flt(e["qty"]) for e in mi_extra}
+		filtered_extra = []
+		for e in extra:
+			key = (e["item_code"], e.get("batch_no") or "")
+			if key in mi_keys and abs(flt(e["qty"]) - mi_keys[key]) <= 1e-6:
+				# disposition equals MI merge qty — keep MI lineage only
+				continue
+			filtered_extra.append(e)
+		extra = filtered_extra + mi_extra
+	else:
+		extra = extra + mi_extra
+
 	details = _collect_mfg_rows(merge_documents)
 	canonical_rows = _merge_consume_rows(details, extra) if details or extra else list(
 		_merge_consume_rows([], extra)
@@ -504,6 +689,7 @@ def build_manufacture_plan(
 				"scan_fp": scan["fingerprint"],
 				"dispositions": normalized,
 				"merge_documents": merge_documents,
+				"merge_material_issues": merge_material_issues,
 				"stamp": stamp,
 				"stamp_mode": stamp_mode or "HISTORICAL",
 				"logistics": [x.name for x in downstream["logistics"]],
@@ -518,29 +704,76 @@ def build_manufacture_plan(
 		documents.append(
 			{
 				"name": m.name,
+				"purpose": "Manufacture",
 				"role": "MERGE" if m.name in merge_documents else "KEEP",
+				"ownership": "MANUFACTURE",
 				"fg_completed_qty": flt(m.fg_completed_qty),
 				"stamp": m.stamp,
 				"posting_date": str(m.posting_date),
 			}
 		)
-	for lg in downstream["logistics"]:
+	for mi in mi_docs:
+		in_merge = mi["name"] in merge_material_issues
+		role = "MERGE" if in_merge else ("BLOCKED" if mi.get("action") == ACTION_BLOCKED else "KEEP")
+		qty_desc = ", ".join(
+			f"{r['item_code']} × {flt(r['qty'])}" for r in (mi.get("rows") or [])[:4]
+		)
 		documents.append(
 			{
-				"name": lg.name,
-				"role": "TEMP CANCEL / RECREATE",
-				"purpose": lg.purpose,
-				"posting_date": str(lg.posting_date),
+				"name": mi["name"],
+				"purpose": "Material Issue",
+				"role": role,
+				"ownership": mi.get("classification"),
+				"action": mi.get("action"),
+				"reason": mi.get("reason"),
+				"qty_summary": qty_desc,
+				"propose_merge": bool(mi.get("propose_merge")),
+				"shared_document": bool(mi.get("shared_document")),
+				"rows": mi.get("rows") or [],
+				"posting_date": str(
+					frappe.db.get_value("Stock Entry", mi["name"], "posting_date") or ""
+				),
+			}
+		)
+	# Cancel-set logistics + full audit (including SHARED_BLOCKED seeds)
+	for lg in downstream.get("logistics_audit") or downstream["logistics"]:
+		shared_cls = getattr(lg, "shared_class", None) or (
+			lg.get("shared_class") if isinstance(lg, dict) else None
+		)
+		in_cancel = getattr(lg, "in_cancel_set", None)
+		if in_cancel is None and isinstance(lg, dict):
+			in_cancel = lg.get("in_cancel_set")
+		role = (
+			"TEMP CANCEL / RECREATE"
+			if in_cancel
+			else ("BLOCKED" if shared_cls == "SHARED_BLOCKED" else "AUDIT")
+		)
+		documents.append(
+			{
+				"name": lg.name if hasattr(lg, "name") else lg.get("name"),
+				"role": role,
+				"purpose": lg.purpose if hasattr(lg, "purpose") else lg.get("purpose"),
+				"ownership": shared_cls,
+				"posting_date": str(
+					lg.posting_date if hasattr(lg, "posting_date") else lg.get("posting_date")
+				),
+				"related_rows": (
+					lg.related_rows if hasattr(lg, "related_rows") else lg.get("related_rows")
+				),
+				"unrelated_rows": (
+					lg.unrelated_rows
+					if hasattr(lg, "unrelated_rows")
+					else lg.get("unrelated_rows")
+				),
 			}
 		)
 
-	apply_allowed = not blockers and bool(merge_documents) and (
+	needs_repair = (
 		any(flt(d.get("proposed_consumed")) > 0 for d in normalized)
 		or len(merge_documents) > 1
-		or any(flt(r.get("remaining_wip")) > 1e-9 for r in scan["rows"]) is False and len(merge_documents) >= 1
+		or bool(merge_material_issues)
 	)
-	# Allow repair when missing consumption dispositions present OR multi-mfg merge
-	needs_repair = any(flt(d.get("proposed_consumed")) > 0 for d in normalized) or len(merge_documents) > 1
+	apply_allowed = not blockers and bool(merge_documents) and needs_repair
 	if not needs_repair and not blockers:
 		blockers.append("Nothing to repair")
 		apply_allowed = False
@@ -553,9 +786,14 @@ def build_manufacture_plan(
 		"scan": scan,
 		"dispositions": normalized,
 		"merge_documents": merge_documents,
+		"merge_material_issues": merge_material_issues,
+		"material_issues": mi_docs,
 		"documents": documents,
 		"downstream_logistics": downstream["logistics"],
+		"downstream_logistics_audit": downstream.get("logistics_audit") or downstream["logistics"],
 		"downstream_blocked": downstream["blocked"],
+		"minimal_cancel_set": downstream.get("minimal_cancel_set")
+		or [x.name for x in downstream["logistics"]],
 		"canonical_manufacture": {
 			"purpose": "Manufacture",
 			"job_card": job_card,
@@ -566,11 +804,12 @@ def build_manufacture_plan(
 			"historical_stamp": stamp,
 			"stamp_mode": stamp_mode or "HISTORICAL",
 			"rows": canonical_rows,
-			"supersedes": list(merge_documents),
+			"supersedes": list(merge_documents) + list(merge_material_issues),
 		},
 		"returns_needed": returns_needed,
 		"blockers": blockers,
 		"apply_allowed": apply_allowed,
 		"fingerprint": plan_fp,
 		"scan_fingerprint": scan["fingerprint"],
+		"client_merge_provided": client_merge is not None,
 	}

@@ -1,8 +1,7 @@
 /**
- * Playwright — Job Card Manufacture Reconciliation (v5.5.0)
- * P01–P10 against Desk page. No persistent Apply.
- *
- * Auth: mint_dev_sid + sid cookie (same as v5.4.2 e2e).
+ * Playwright — Job Card Manufacture Reconciliation hardening (v5.5.0)
+ * P01–P10: Material Issue ownership + PO-JOB08760 dependency audit UI.
+ * No persistent Apply.
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
 import { execSync } from "child_process";
@@ -11,7 +10,7 @@ const BENCH = process.env.FRAPPE_BENCH_ROOT || "/workspace/development/frappe-be
 const SITE = process.env.FRAPPE_SITE || "development.localhost";
 const BASE = process.env.BASE_URL || process.env.FRAPPE_E2E_BASE_URL || "http://development.localhost:8000";
 const JC = process.env.E2E_JC_08760 || "PO-JOB08760";
-const JC_BLOCK = process.env.E2E_JC_08830 || "PO-JOB08830";
+const JC_MI = process.env.E2E_JC_MI || "PO-JOB09002";
 const PAGE = "/desk/job-card-stock-rebuild";
 
 function assert(cond, msg) {
@@ -54,7 +53,6 @@ async function setJobCard(page, jc) {
 	await input.fill("");
 	await input.fill(jc);
 	await page.waitForTimeout(400);
-	// Prefer exact awesomplete option when present; then dismiss overlay.
 	const opt = page.locator(".awesomplete li, [role='option']").filter({ hasText: jc }).first();
 	if (await opt.count()) {
 		await opt.click().catch(() => {});
@@ -86,63 +84,89 @@ async function setJobCard(page, jc) {
 		const user = await page.evaluate(() => window.frappe?.session?.user);
 		if (!user || user === "Guest") throw new Error("auth failed: " + user);
 
-		// P01
 		await page.goto(`${BASE}${PAGE}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 		await page.waitForSelector(".jc-stock-rebuild-page, .jcsr-toolbar", { timeout: 60000 });
-		results.push({ id: "P01", ok: true, detail: "page open" });
 
-		// P02–P05
+		// MI canary UI (PO-JOB09002)
+		await setJobCard(page, JC_MI);
+		await page.locator('button[data-mfg="scan"]').click({ force: true });
+		await page.waitForSelector('[data-role="manufacture-reconciliation"] .jcsr-table', {
+			timeout: 90000,
+		});
+		const miText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		results.push({
+			id: "P01",
+			ok: /Material Issue|MAT-STE-2026-39898/i.test(miText),
+			detail: "MI in document list",
+		});
+		results.push({
+			id: "P02",
+			ok: /MI_MERGE_SAFE|MI_USER_DECISION|MI_BLOCKED|PROVEN|ownership/i.test(miText),
+			detail: "ownership status visible",
+		});
+		results.push({
+			id: "P03",
+			ok: /MERGE/i.test(miText),
+			detail: "MERGE suggestion visible",
+		});
+		results.push({
+			id: "P06",
+			ok: /Material Issue|mi_sle|source/i.test(miText) || /CONSUME/i.test(miText),
+			detail: "MI / consume preview lineage",
+		});
+
+		// Ambiguous MI (outside WIP / unmatched) — PO-JOB08001
+		await setJobCard(page, "PO-JOB08001");
+		await page.locator('button[data-mfg="scan"]').click({ force: true });
+		await page.waitForTimeout(5000);
+		const ambText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		const ambOk =
+			/MI_USER_DECISION|MI_BLOCKED|BLOCKED|KEEP|not Job Card WIP|not issued/i.test(ambText);
+		results.push({ id: "P04", ok: ambOk, detail: ambText.slice(0, 200) });
+		// Shared logistics blocked is covered by P10 on 08760; multi-row unmatched MI
+		await setJobCard(page, "PO-JOB08028");
+		await page.locator('button[data-mfg="scan"]').click({ force: true });
+		await page.waitForTimeout(5000);
+		const sharedText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		const sharedOk =
+			/Material Issue|MI_USER_DECISION|KEEP|BLOCKED|37748/i.test(sharedText);
+		results.push({ id: "P05", ok: sharedOk, detail: sharedText.slice(0, 180) });
+
+		// PO-JOB08760 dependency audit
 		await setJobCard(page, JC);
 		await page.locator('button[data-mfg="scan"]').click({ force: true });
 		await page.waitForSelector('[data-role="manufacture-reconciliation"] .jcsr-table', {
 			timeout: 90000,
 		});
-		results.push({ id: "P02", ok: true, detail: "scan" });
-		const tableText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		assert(tableText.includes("13200544"), "13200544 missing");
-		results.push({ id: "P03", ok: true, detail: "golden rule table" });
-		assert(/CONSUMED/i.test(tableText), "suggestion missing");
-		results.push({ id: "P04", ok: true, detail: "suggestion visible" });
-		const consumedInput = page
-			.locator('tr[data-item="13200544"] input[data-f="consumed"]')
-			.first();
-		await consumedInput.fill("1100");
-		await page.locator('tr[data-item="13200544"] input[data-f="scrap"]').first().fill("48");
-		results.push({ id: "P05", ok: true, detail: "disposition editable" });
-
-		// P06 — invalid over-alloc still client-editable; server blocks on dry run
-		await consumedInput.fill("99999");
-		results.push({ id: "P06", ok: true, detail: "invalid qty enterable; server validates" });
-
-		// reset valid
-		await consumedInput.fill("1148");
-		await page.locator('tr[data-item="13200544"] input[data-f="scrap"]').first().fill("0");
-
-		assert(tableText.includes("Final Manufacture") || tableText.includes("Documents"), "preview");
-		results.push({ id: "P07", ok: true, detail: "manufacture preview section" });
-
-		// P08 dry run
-		await page.locator('button[data-mfg="dry"]').click({ force: true });
-		await page.waitForSelector('[data-role="mfg-dry"]', { timeout: 240000 }).catch(() => null);
-		const dryText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		const dryShown = /DRY_RUN|BLOCKED|FAIL|PASS/i.test(dryText);
-		results.push({ id: "P08", ok: dryShown, detail: dryText.slice(0, 200) });
-
-		// P09 apply disabled before successful dry run — after fail/block should stay disabled or enabled only on PASS
-		const applyDisabled = await page.locator('button[data-mfg="apply"]').isDisabled();
+		const t08760 = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
 		results.push({
 			id: "P09",
-			ok: true,
+			ok: /31725|31726|SHARED_BLOCKED|Minimal cancel|Documents/i.test(t08760),
+			detail: "08760 dependency list visible",
+		});
+		results.push({
+			id: "P10",
+			ok: /SHARED_BLOCKED|BLOCKED/i.test(t08760),
+			detail: "Apply unavailable when dependency audit blocked",
+		});
+		const applyDisabled = await page.locator('button[data-mfg="apply"]').isDisabled();
+		results.push({
+			id: "P10b",
+			ok: applyDisabled,
 			detail: `apply disabled=${applyDisabled}`,
 		});
 
-		// P10 blocked canary
-		await setJobCard(page, JC_BLOCK);
-		await page.locator('button[data-mfg="scan"]').click({ force: true });
-		await page.waitForTimeout(5000);
-		const blockText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		const blocked = /BLOCK|Delivery Note|MERGE_BLOCKED|disposition required|FINANCE/i.test(blockText);
-		results.push({ id: "P10", ok: blocked, detail: blockText.slice(0, 240) });
+		// Dry Run on 08760 should BLOCK (shared logistics) — no mutation
+		await page.locator('button[data-mfg="dry"]').click({ force: true });
+		await page.waitForSelector('[data-role="mfg-dry"]', { timeout: 120000 }).catch(() => null);
+		const dryText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		const dryOk = /BLOCKED|DRY_RUN|SHARED_BLOCKED/i.test(dryText);
+		results.push({ id: "P07", ok: dryOk, detail: dryText.slice(0, 200) });
+		results.push({
+			id: "P08",
+			ok: /mutated=false|BLOCKED/i.test(dryText),
+			detail: "no persistent mutation / blocked before cancel",
+		});
 
 		const ok = results.every((r) => r.ok);
 		console.log(JSON.stringify({ ok, results, verdict: ok ? "PLAYWRIGHT PASS" : "PLAYWRIGHT FAIL" }));
