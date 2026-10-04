@@ -394,12 +394,50 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 
 	# Expand ONLY Manufacture FG Item×Batch keys (minimal safe closure).
 	# Entire seed must be DEDICATED or SHARED_RECREATE_SAFE — one SHARED_BLOCKED
-	# sibling blocks the cancel set (no foreign-chain expansion).
+	# sibling blocks the cancel set unless a temporary Material Receipt bridge
+	# can cover the exact cancel shortfall (no foreign-chain expansion).
 	_SAFE = ("DEDICATED", "SHARED_RECREATE_SAFE")
 	seed_all_safe = bool(seed_audit) and all(a["shared_class"] in _SAFE for a in seed_audit)
+	temporary_bridge: dict[str, Any] = {
+		"required": False,
+		"shortages": [],
+		"cancel_names": list(seed_desc),
+	}
+	bridge_unlock = False
 	if seed and not seed_all_safe:
-		# Do not partially cancel a FG chain when a sibling shared doc is blocked.
-		safe_seed = []
+		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.temporary_stock_bridge import (
+			plan_temporary_bridge,
+		)
+
+		temporary_bridge = plan_temporary_bridge(seed_desc)
+		# Unlock only when exact shortages are known and every row has a rate.
+		if temporary_bridge.get("required") and temporary_bridge.get("shortages"):
+			rates_ok = all(
+				flt(r.get("valuation_rate")) > 0 and flt(r.get("shortage_qty")) > 0
+				for r in temporary_bridge["shortages"]
+			)
+			if rates_ok:
+				bridge_unlock = True
+				# Drop SHARED_BLOCKED stock-shortfall blockers — bridge covers them.
+				blocked = [b for b in blocked if b.get("shared_class") != "SHARED_BLOCKED"]
+				for aud in seed_audit:
+					if aud.get("shared_class") == "SHARED_BLOCKED":
+						aud["bridge_unlock"] = True
+						aud["shared_reason_raw"] = aud.get("reason")
+						aud["reason"] = (
+							"Cancel shortfall bridged by temporary Material Receipt; "
+							+ (aud.get("reason") or "")
+						)
+				safe_seed = [
+					a["name"]
+					for a in seed_audit
+					if a["shared_class"] in _SAFE or a.get("bridge_unlock")
+				]
+			else:
+				safe_seed = []
+		else:
+			# Do not partially cancel a FG chain when a sibling shared doc is blocked.
+			safe_seed = []
 	else:
 		safe_seed = [a["name"] for a in seed_audit if a["shared_class"] in _SAFE]
 	expanded_names, expand_blockers = _expand_future_outbound(
@@ -428,11 +466,17 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 		meta["shared_reason"] = aud.get("reason")
 		meta["related_rows"] = aud.get("related_rows")
 		meta["unrelated_rows"] = aud.get("unrelated_rows")
-		meta["in_cancel_set"] = name in cancel_probe and aud.get("shared_class") in _SAFE
+		meta["bridge_unlock"] = bool(aud.get("bridge_unlock"))
+		meta["in_cancel_set"] = name in cancel_probe and (
+			aud.get("shared_class") in _SAFE or aud.get("bridge_unlock")
+		)
 		logistics.append(meta)
 
 	cancel_logistics = [x for x in logistics if x.get("in_cancel_set")]
 	cancel_logistics.sort(key=lambda x: _se_sort_key(x.name), reverse=True)
+	if bridge_unlock:
+		temporary_bridge["required"] = True
+		temporary_bridge["unlock"] = True
 	return {
 		"logistics": cancel_logistics,
 		"logistics_audit": logistics,
@@ -441,6 +485,7 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 		"seed": seed,
 		"fg_keys": [{"item_code": i, "batch_no": b} for i, b in sorted(fg_keys)],
 		"minimal_cancel_set": [x.name for x in cancel_logistics],
+		"temporary_bridge": temporary_bridge,
 	}
 
 
@@ -616,6 +661,18 @@ def build_manufacture_plan(
 				"stamp": stamp,
 				"stamp_mode": stamp_mode or "HISTORICAL",
 				"logistics": [x.name for x in downstream["logistics"]],
+				"temp_bridge": {
+					"required": bool((downstream.get("temporary_bridge") or {}).get("required")),
+					"shortages": [
+						{
+							"item_code": s.get("item_code"),
+							"batch_no": s.get("batch_no"),
+							"warehouse": s.get("warehouse"),
+							"shortage_qty": flt(s.get("shortage_qty")),
+						}
+						for s in ((downstream.get("temporary_bridge") or {}).get("shortages") or [])
+					],
+				},
 			},
 			default=str,
 			sort_keys=True,
@@ -658,6 +715,7 @@ def build_manufacture_plan(
 				),
 			}
 		)
+	temporary_bridge = downstream.get("temporary_bridge") or {"required": False, "shortages": []}
 	# Cancel-set logistics + full audit (including SHARED_BLOCKED seeds)
 	for lg in downstream.get("logistics_audit") or downstream["logistics"]:
 		shared_cls = getattr(lg, "shared_class", None) or (
@@ -666,15 +724,24 @@ def build_manufacture_plan(
 		in_cancel = getattr(lg, "in_cancel_set", None)
 		if in_cancel is None and isinstance(lg, dict):
 			in_cancel = lg.get("in_cancel_set")
-		if shared_cls == "SHARED_RECREATE_SAFE":
+		bridge_unlock = bool(
+			getattr(lg, "bridge_unlock", None)
+			if hasattr(lg, "bridge_unlock")
+			else (lg.get("bridge_unlock") if isinstance(lg, dict) else False)
+		)
+		if shared_cls == "SHARED_RECREATE_SAFE" or (bridge_unlock and in_cancel):
 			role = "TEMP CANCEL / RECREATE"
-			ownership_label = "SHARED — SAFE TO RECREATE"
+			ownership_label = (
+				"SHARED — BRIDGE UNLOCK" if bridge_unlock else "SHARED — SAFE TO RECREATE"
+			)
 		elif shared_cls == "DEDICATED":
 			role = "TEMP CANCEL / RECREATE" if in_cancel else "AUDIT"
 			ownership_label = "DEDICATED"
 		elif shared_cls == "SHARED_BLOCKED":
-			role = "BLOCKED"
-			ownership_label = "SHARED — BLOCKED"
+			role = "BLOCKED" if not bridge_unlock else "TEMP CANCEL / RECREATE"
+			ownership_label = (
+				"SHARED — BRIDGE UNLOCK" if bridge_unlock else "SHARED — BLOCKED"
+			)
 		else:
 			role = "AUDIT"
 			ownership_label = shared_cls or "AUDIT"
@@ -685,6 +752,7 @@ def build_manufacture_plan(
 				"purpose": lg.purpose if hasattr(lg, "purpose") else lg.get("purpose"),
 				"ownership": ownership_label,
 				"shared_class": shared_cls,
+				"bridge_unlock": bridge_unlock,
 				"shared_reason": (
 					lg.shared_reason
 					if hasattr(lg, "shared_reason")
@@ -732,6 +800,7 @@ def build_manufacture_plan(
 		"downstream_blocked": downstream["blocked"],
 		"minimal_cancel_set": downstream.get("minimal_cancel_set")
 		or [x.name for x in downstream["logistics"]],
+		"temporary_bridge": temporary_bridge,
 		"canonical_manufacture": {
 			"purpose": "Manufacture",
 			"job_card": job_card,

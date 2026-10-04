@@ -50,24 +50,31 @@ class TestMIOwnershipV550(FrappeTestCase):
 		if not frappe.db.exists("Job Card", "PO-JOB08760"):
 			self.skipTest("missing PO-JOB08760")
 		down = discover_downstream("PO-JOB08760", ["MAT-STE-2026-31724-1"])
-		reasons = " ".join(
-			(b.get("reason") if isinstance(b, dict) else str(b)) for b in (down.get("blocked") or [])
-		)
-		self.assertIn("SHARED_BLOCKED", reasons)
 		# Minimal cancel set must NOT include foreign co-item chain docs
 		minimal = set(down.get("minimal_cancel_set") or [])
 		self.assertNotIn("MAT-STE-2026-37777", minimal)
 		self.assertNotIn("MAT-STE-2026-37643", minimal)
-		# 31725 must remain SHARED_BLOCKED (unrelated cancel shortfall).
-		# 31726 may be SHARED_RECREATE_SAFE alone but set still blocked by 31725.
+		# Raw class remains SHARED_BLOCKED; temporary bridge unlocks cancel set.
 		audit = {a.name if hasattr(a, "name") else a["name"]: a for a in down.get("logistics_audit") or []}
 		if "MAT-STE-2026-31725" in audit:
-			cls = getattr(audit["MAT-STE-2026-31725"], "shared_class", None) or audit[
-				"MAT-STE-2026-31725"
-			].get("shared_class")
+			row = audit["MAT-STE-2026-31725"]
+			cls = getattr(row, "shared_class", None) or row.get("shared_class")
 			self.assertEqual(cls, "SHARED_BLOCKED")
+			bridge_unlock = getattr(row, "bridge_unlock", None)
+			if bridge_unlock is None:
+				bridge_unlock = row.get("bridge_unlock")
+			self.assertTrue(bridge_unlock)
+		bridge = down.get("temporary_bridge") or {}
+		self.assertTrue(bridge.get("required"))
+		self.assertIn("MAT-STE-2026-31725", minimal)
+		self.assertFalse(
+			any(
+				(b.get("shared_class") if isinstance(b, dict) else None) == "SHARED_BLOCKED"
+				for b in (down.get("blocked") or [])
+			)
+		)
 
-	def test_08760_plan_blocked_shared(self):
+	def test_08760_plan_bridge_unlock(self):
 		if not frappe.db.exists("Job Card", "PO-JOB08760"):
 			self.skipTest("missing PO-JOB08760")
 		plan = build_manufacture_plan(
@@ -85,8 +92,9 @@ class TestMIOwnershipV550(FrappeTestCase):
 			merge_documents=["MAT-STE-2026-31724-1"],
 			stamp_mode="HISTORICAL",
 		)
-		self.assertFalse(plan["apply_allowed"])
-		self.assertTrue(any("SHARED_BLOCKED" in b for b in plan["blockers"]))
+		self.assertTrue(plan["apply_allowed"])
+		self.assertFalse(any("SHARED_BLOCKED" in b for b in plan["blockers"]))
+		self.assertTrue((plan.get("temporary_bridge") or {}).get("required"))
 
 	def test_mi_evidence_bucket(self):
 		if not frappe.db.exists("Job Card", "PO-JOB09002"):

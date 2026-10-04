@@ -86,7 +86,7 @@ class TestSharedLogisticsV550(FrappeTestCase):
 		self.assertFalse(ok)
 		self.assertTrue(reason)
 
-	def test_08760_plan_still_blocked(self):
+	def test_08760_plan_bridge_unlock(self):
 		plan = build_manufacture_plan(
 			"PO-JOB08760",
 			dispositions=[
@@ -102,10 +102,16 @@ class TestSharedLogisticsV550(FrappeTestCase):
 			merge_documents=["MAT-STE-2026-31724-1"],
 			stamp_mode="HISTORICAL",
 		)
-		self.assertFalse(plan["apply_allowed"])
-		self.assertTrue(any("31725" in b and "SHARED_BLOCKED" in b for b in plan["blockers"]))
-		# 31726 may show SAFE TO RECREATE in documents while set still blocked by 31725
+		# Temporary receipt bridge unlocks SHARED_BLOCKED cancel shortfall.
+		self.assertTrue(plan["apply_allowed"])
+		self.assertFalse(any("SHARED_BLOCKED" in b for b in plan["blockers"]))
+		bridge = plan.get("temporary_bridge") or {}
+		self.assertTrue(bridge.get("required"))
+		self.assertTrue(bridge.get("unlock"))
 		docs = {d["name"]: d for d in plan["documents"]}
+		if "MAT-STE-2026-31725" in docs:
+			self.assertEqual(docs["MAT-STE-2026-31725"].get("role"), "TEMP CANCEL / RECREATE")
+			self.assertTrue(docs["MAT-STE-2026-31725"].get("bridge_unlock"))
 		if "MAT-STE-2026-31726" in docs:
 			self.assertIn(
 				docs["MAT-STE-2026-31726"].get("shared_class"),
@@ -152,7 +158,7 @@ class TestSharedLogisticsAtomicV550(FrappeTestCase):
 			n: cint(frappe.db.get_value("Stock Entry", n, "docstatus")) for n in names
 		}
 
-	def test_sl_a01_a08_blocked_or_rollback(self):
+	def test_sl_a01_a08_failpoints_rollback(self):
 		points = (
 			"after_first_shared_cancel",
 			"after_both_shared_cancel",
@@ -170,10 +176,5 @@ class TestSharedLogisticsAtomicV550(FrappeTestCase):
 			after = self._baseline()
 			self.assertEqual(before, after, msg=point)
 			self.assertFalse(res.get("mutated"), msg=point)
-			self.assertIn(
-				res.get("status"),
-				("BLOCKED", "DRY_RUN_FAIL", "STALE PLAN", "DRY_RUN_PASS"),
-				msg=f"{point}: {res.get('status')}",
-			)
-			# On current evidence 08760 is BLOCKED before cancel — that is acceptable.
+			self.assertEqual(res.get("status"), "DRY_RUN_FAIL", msg=f"{point}: {res.get('status')}")
 			frappe.flags.jc_repair_fail_at = None

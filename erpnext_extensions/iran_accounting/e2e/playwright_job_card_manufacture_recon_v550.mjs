@@ -1,5 +1,5 @@
 /**
- * Playwright — shared logistics recreate hardening (v5.5.0)
+ * Playwright — temporary receipt bridge (v5.5.0)
  * P01–P10 against PO-JOB08760. No persistent Apply.
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
@@ -19,10 +19,6 @@ const FOREIGN = [
 	"MAT-STE-2026-37643",
 	"MAT-STE-2026-37777",
 ];
-
-function assert(cond, msg) {
-	if (!cond) throw new Error(msg);
-}
 
 function benchExecute(method, kwargs) {
 	let cmd = `cd ${BENCH} && bench --site ${SITE} execute ${method}`;
@@ -71,8 +67,19 @@ async function setJobCard(page, jc) {
 	await page.waitForTimeout(400);
 }
 
+function docstatus(name) {
+	const v = benchExecute("frappe.client.get_value", {
+		doctype: "Stock Entry",
+		filters: { name },
+		fieldname: "docstatus",
+	});
+	const ds = v?.message?.docstatus ?? v?.docstatus;
+	return Number(ds);
+}
+
 (async () => {
 	const results = [];
+	const consoleErrors = [];
 	let browser;
 	try {
 		browser = await chromium.launch({ headless: true });
@@ -85,6 +92,10 @@ async function setJobCard(page, jc) {
 		extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
 	});
 	const page = await context.newPage();
+	page.on("console", (msg) => {
+		if (msg.type() === "error") consoleErrors.push(msg.text());
+	});
+	page.on("pageerror", (err) => consoleErrors.push(String(err)));
 	try {
 		await loginWithDevSid(page);
 		await page.goto(`${BASE}/desk`, { waitUntil: "domcontentloaded", timeout: 120000 });
@@ -93,68 +104,119 @@ async function setJobCard(page, jc) {
 
 		await page.goto(`${BASE}${PAGE}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 		await page.waitForSelector(".jc-stock-rebuild-page, .jcsr-toolbar", { timeout: 60000 });
-		results.push({ id: "P01", ok: true, detail: "page open" });
 
 		await setJobCard(page, JC);
 		await page.locator('button[data-mfg="scan"]').click({ force: true });
 		await page.waitForSelector('[data-role="manufacture-reconciliation"] .jcsr-table', {
 			timeout: 90000,
 		});
-		results.push({ id: "P02", ok: true, detail: "scan" });
+		results.push({ id: "P01", ok: true, detail: "scan PO-JOB08760" });
+
 		const text = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
-		results.push({ id: "P03", ok: /31725/.test(text), detail: "31725 shown" });
-		results.push({ id: "P04", ok: /31726/.test(text), detail: "31726 shown" });
+		const bridgeText = await page
+			.locator('[data-role="mfg-temp-bridge"]')
+			.innerText()
+			.catch(() => "");
+		results.push({
+			id: "P02",
+			ok: /Temporary Receipt Required:\s*YES/i.test(bridgeText || text),
+			detail: (bridgeText || "").slice(0, 200),
+		});
+		results.push({
+			id: "P03",
+			ok: /20100041/.test(bridgeText || text) && /Rows:\s*3/i.test(bridgeText || text),
+			detail: "exact shortage visible",
+		});
+		results.push({
+			id: "P04",
+			ok: /13200544/.test(text) && /1148/.test(text) && /5\.3\.34/.test(text),
+			detail: "canonical preview",
+		});
+
+		// Drive Dry Run via page object method + response wait (more reliable than button alone).
+		const dryRespPromise = page.waitForResponse(
+			(r) =>
+				r.url().includes("dry_run_manufacture_repair") &&
+				(r.status() === 200 || r.status() >= 400),
+			{ timeout: 600000 }
+		);
+		await page.evaluate(() => {
+			const pg = frappe?.erpnext_extensions?.job_card_stock_rebuild
+				|| window.erpnext_extensions?.job_card_stock_rebuild;
+			if (!pg || !pg.run_mfg_dry) throw new Error("page object missing run_mfg_dry");
+			pg.run_mfg_dry();
+		});
+		const dryResp = await dryRespPromise;
+		const dryJson = await dryResp.json().catch(() => ({}));
+		const dryMsg = dryJson.message || {};
+		await page.waitForSelector('[data-role="mfg-dry"]', { timeout: 60000 }).catch(() => null);
+		const dryText =
+			(await page
+				.locator('[data-role="mfg-dry"]')
+				.innerText()
+				.catch(() => "")) ||
+			`${dryMsg.status || ""} ${dryMsg.error || ""}`;
+		const dryPass = dryMsg.status === "DRY_RUN_PASS" || /DRY_RUN_PASS/i.test(dryText);
 		results.push({
 			id: "P05",
-			ok: /SHARED|SAFE TO RECREATE|BLOCKED/i.test(text),
-			detail: "safe/blocked status visible",
+			ok: Boolean(dryMsg.status) || /DRY_RUN/i.test(dryText),
+			detail: `http=${dryResp.status()} status=${dryMsg.status || "n/a"}`,
 		});
 		results.push({
 			id: "P06",
-			ok: /unrelated|20100041|20100193/i.test(text),
-			detail: "unrelated rows visible",
-		});
-		// Foreign docs may appear only as "later:" audit notes on unrelated rows —
-		// they must not appear as repair-scope document rows (cancel/recreate).
-		const docRows = await page.locator('[data-role="mfg-documents"] tr[data-doc]').allTextContents();
-		const scopeText = docRows.join("\n");
-		const foreignInScope = FOREIGN.filter((n) => scopeText.includes(n));
-		results.push({
-			id: "P07",
-			ok: foreignInScope.length === 0,
-			detail:
-				foreignInScope.length === 0
-					? "foreign 7 absent from document scope"
-					: "foreign in scope: " + foreignInScope.join(","),
+			ok: dryPass,
+			detail: (dryText || dryMsg.status || "").slice(0, 220),
 		});
 
-		await page.locator('button[data-mfg="dry"]').click({ force: true });
-		await page.waitForSelector('[data-role="mfg-dry"]', { timeout: 180000 }).catch(() => null);
-		const dryText = await page.locator('[data-role="manufacture-reconciliation"]').innerText();
+		const foreignOk = FOREIGN.every((n) => docstatus(n) === 1);
+		results.push({ id: "P07", ok: foreignOk, detail: "foreign seven docs untouched" });
+
+		const tempCount = benchExecute(
+			"erpnext_extensions.iran_accounting.job_card_stock_rebuild.tests._temp_count.count"
+		);
+		const nTemp = tempCount?.count ?? 0;
 		results.push({
 			id: "P08",
-			ok: /DRY_RUN|BLOCKED|PASS|FAIL/i.test(dryText),
-			detail: dryText.slice(0, 220),
+			ok: nTemp === 0,
+			detail: `temp count=${nTemp}`,
 		});
+
+		const applyDisabled = await page.locator('button[data-mfg="apply"]').isDisabled();
 		results.push({
 			id: "P09",
-			ok: /Equivalence|BLOCKED|SHARED_BLOCKED|mutated=false/i.test(dryText),
-			detail: "equivalence or block result visible",
-		});
-		const applyDisabled = await page.locator('button[data-mfg="apply"]').isDisabled();
-		const dryPass = /DRY_RUN_PASS/i.test(dryText);
-		results.push({
-			id: "P10",
 			ok: dryPass ? !applyDisabled : applyDisabled,
 			detail: `apply disabled=${applyDisabled} dryPass=${dryPass}`,
 		});
 
+		const scopeOk = ["MAT-STE-2026-31724-1", "MAT-STE-2026-31725", "MAT-STE-2026-31726"].every(
+			(n) => docstatus(n) === 1
+		);
+		results.push({
+			id: "P10",
+			ok: dryPass && scopeOk && foreignOk && nTemp === 0,
+			detail: "Dry Run leaves zero persistent mutation",
+		});
+
 		const ok = results.every((r) => r.ok);
-		console.log(JSON.stringify({ ok, results, verdict: ok ? "PLAYWRIGHT PASS" : "PLAYWRIGHT FAIL" }));
+		console.log(
+			JSON.stringify({
+				ok,
+				results,
+				consoleErrors: consoleErrors.slice(0, 8),
+				verdict: ok ? "PLAYWRIGHT PASS" : "PLAYWRIGHT FAIL",
+			})
+		);
 		await browser.close();
 		process.exit(ok ? 0 : 1);
 	} catch (err) {
-		console.log(JSON.stringify({ ok: false, results, error: String(err) }));
+		console.log(
+			JSON.stringify({
+				ok: false,
+				results,
+				error: String(err),
+				consoleErrors: consoleErrors.slice(0, 12),
+			})
+		);
 		await browser.close();
 		process.exit(1);
 	}

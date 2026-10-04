@@ -818,6 +818,8 @@ class JobCardStockRebuildPage {
 			args: { job_card: jc, plan: plan },
 			freeze: true,
 			freeze_message: __("Dry Run Manufacture Repair (will rollback)…"),
+			// Shared logistics + temporary receipt bridge can exceed default ajax timeout.
+			timeout: 600,
 			callback: (r) => {
 				this.mfgDry = r.message || {};
 				this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
@@ -984,6 +986,30 @@ class JobCardStockRebuildPage {
 					.join(", ")}</div>`
 			);
 		}
+		const bridge = plan.temporary_bridge || {};
+		const shortages = bridge.shortages || [];
+		this.$mfg.append(
+			`<div class="jcsr-meta" data-role="mfg-temp-bridge">
+				<strong>${__("Temporary Receipt Required")}:</strong> ${
+					bridge.required ? __("YES") : __("NO")
+				}
+				${
+					bridge.required
+						? ` · ${__("Rows")}: ${shortages.length}<br>` +
+						  shortages
+								.map(
+									(s) =>
+										`${frappe.utils.escape_html(s.item_code)} / ${frappe.utils.escape_html(
+											s.batch_no || ""
+										)} @ ${frappe.utils.escape_html(s.warehouse || "")} × ${flt(
+											s.shortage_qty
+										)} @ ${flt(s.valuation_rate)}`
+								)
+								.join("<br>")
+						: ""
+				}
+			</div>`
+		);
 
 		$("<h4 class='jcsr-section-title'>").text(__("Final Manufacture Preview")).appendTo(this.$mfg);
 		const canon = plan.canonical_manufacture || {};

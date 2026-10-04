@@ -573,6 +573,13 @@ def run_repair(
 				compare_recreated_equivalence,
 				snapshot_stock_entry,
 			)
+			from erpnext_extensions.iran_accounting.job_card_stock_rebuild.temporary_stock_bridge import (
+				cancel_temp_receipt,
+				create_and_submit_temp_receipt,
+				delete_temp_receipt,
+				plan_temporary_bridge,
+				verify_temp_absent,
+			)
 
 			# Full document snapshots + batch rates before cancel
 			logistics_batches = {name: _snapshot_se_batches(name) for name in logistics}
@@ -593,6 +600,21 @@ def run_repair(
 					if rr.get("item_code") and rr.get("batch_no"):
 						fg_keys.add((rr["item_code"], rr["batch_no"]))
 
+			# 0) Temporary Material Receipt bridge (exact cancel shortages only)
+			bridge_plan = fresh.get("temporary_bridge") or plan_temporary_bridge(logistics)
+			result["temporary_bridge"] = {
+				"required": bool(bridge_plan.get("required")),
+				"shortages": bridge_plan.get("shortages") or [],
+			}
+			temp_name = ""
+			if bridge_plan.get("required") and bridge_plan.get("shortages"):
+				temp_name = create_and_submit_temp_receipt(bridge_plan, repair_run_id)
+				result["temporary_receipt"] = temp_name
+				result["created"].append(temp_name)
+				# Invalidate cancel-probe cache — stock changed.
+				frappe.flags.jc_shared_cancel_probe_cache = {}
+				_fail_point("after_temp_receipt_submit")
+
 			# 1) Temp cancel logistics reverse chrono (already sorted desc)
 			for i, name in enumerate(logistics):
 				_cancel_se(name)
@@ -600,8 +622,10 @@ def run_repair(
 				if i == 0:
 					_fail_point("after_first_cancel")
 					_fail_point("after_first_shared_cancel")
+					_fail_point("after_31726_cancel")
 				if i == 1:
 					_fail_point("after_both_shared_cancel")
+					_fail_point("after_31725_cancel")
 
 			# 2) Cancel proven Material Issues being merged into Manufacture
 			for name in merge_mis:
@@ -629,6 +653,7 @@ def run_repair(
 				result["recreated_logistics"].append({"from": name, "to": new_name})
 				if ri == 0:
 					_fail_point("after_first_shared_recreate")
+					_fail_point("after_31725_recreate")
 				eq = compare_recreated_equivalence(
 					logistics_snaps[name], new_name, fg_keys=fg_keys
 				)
@@ -641,11 +666,29 @@ def run_repair(
 					)
 				if ri == 1:
 					_fail_point("after_second_shared_recreate")
+					_fail_point("after_31726_recreate")
 			_fail_point("after_logistics_recreate")
 			_fail_point("during_unrelated_equivalence")
 			result["logistics_equivalence"] = equivalence
 
-			# 6) Sync valuation
+			# 6) Cancel + delete temporary receipt (must not survive repair)
+			if temp_name:
+				cancel_temp_receipt(temp_name)
+				_fail_point("after_temp_receipt_cancel")
+				del_res = delete_temp_receipt(temp_name)
+				result["temporary_receipt_delete"] = del_res
+				_fail_point("after_temp_receipt_delete")
+				absent = verify_temp_absent(temp_name)
+				result["temporary_receipt_absent"] = absent
+				if not absent.get("ok"):
+					raise RuntimeError(
+						"Temp receipt cleanup failed: " + "; ".join(absent.get("errors") or [])
+					)
+				# Remove from created list — document no longer exists
+				result["created"] = [n for n in result["created"] if n != temp_name]
+				result["temporary_receipt"] = None
+
+			# 7) Sync valuation
 			val_vouchers = [canonical] + [x["to"] for x in result["recreated_logistics"]]
 			val = sync_valuation_for_vouchers(val_vouchers)
 			result["valuation"] = val
@@ -653,7 +696,7 @@ def run_repair(
 			if not val.get("ok"):
 				raise RuntimeError(val.get("error") or "Sync valuation failed")
 
-			# 7) Verify (MI must remain cancelled only if commit — dry run rolls back)
+			# 8) Verify (MI must remain cancelled only if commit — dry run rolls back)
 			verification = _verify(fresh, canonical)
 			result["verification"] = verification
 			if not verification.get("ok"):
