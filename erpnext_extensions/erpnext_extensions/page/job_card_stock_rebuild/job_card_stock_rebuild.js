@@ -106,6 +106,51 @@ class JobCardStockRebuildPage {
 		this.$typeRec = $('<div data-role="type-reconciliation">').appendTo(this.$body);
 		this.$evidence = $('<div data-role="evidence">').appendTo(this.$body);
 		this.$downstream = $('<div data-role="downstream">').appendTo(this.$body);
+
+		// v5.5.0 — Manufacture Reconciliation (Golden Rule)
+		$('<hr class="jcsr-divider">').appendTo(this.$body);
+		$('<h3 class="jcsr-section-title">')
+			.text(__("Manufacture Reconciliation"))
+			.appendTo(this.$body);
+		$('<p class="jcsr-help">')
+			.html(
+				__(
+					"Golden Rule for Job Card × Item × Batch. Decide unexplained WIP, preview one canonical Manufacture, Dry Run (rollback), then Apply atomically. Persistent Apply is System Manager only."
+				) +
+					` · <a href="/app/query-report/Job%20Card%20Golden%20Rule%20Audit">${__(
+						"Job Card Golden Rule Audit"
+					)}</a>`
+			)
+			.appendTo(this.$body);
+		const $mfgActions = $('<div class="jcsr-actions jcsr-mfg-actions">').appendTo(this.$body);
+		this.btn_mfg_scan = $(
+			`<button type="button" class="btn btn-default" data-mfg="scan">${__(
+				"Scan Manufacture"
+			)}</button>`
+		)
+			.appendTo($mfgActions)
+			.on("click", () => this.run_mfg_scan());
+		this.btn_mfg_dry = $(
+			`<button type="button" class="btn btn-warning" data-mfg="dry" disabled>${__(
+				"Dry Run Manufacture Repair"
+			)}</button>`
+		)
+			.appendTo($mfgActions)
+			.on("click", () => this.run_mfg_dry());
+		this.btn_mfg_apply = $(
+			`<button type="button" class="btn btn-danger" data-mfg="apply" disabled>${__(
+				"Apply Manufacture Repair"
+			)}</button>`
+		)
+			.appendTo($mfgActions)
+			.on("click", () => this.run_mfg_apply());
+		this.$mfg = $('<div data-role="manufacture-reconciliation" class="jcsr-mfg">').appendTo(
+			this.$body
+		);
+		this.mfgScan = null;
+		this.mfgPlan = null;
+		this.mfgDry = null;
+		this.mfgFingerprint = null;
 	}
 
 	apply_route_options() {
@@ -131,6 +176,13 @@ class JobCardStockRebuildPage {
 		this.$typeRec.empty();
 		this.$evidence.empty();
 		this.$downstream.empty();
+		this.mfgScan = null;
+		this.mfgPlan = null;
+		this.mfgDry = null;
+		this.mfgFingerprint = null;
+		if (this.$mfg) this.$mfg.empty();
+		if (this.btn_mfg_dry) this.btn_mfg_dry.prop("disabled", true);
+		if (this.btn_mfg_apply) this.btn_mfg_apply.prop("disabled", true);
 	}
 
 	args() {
@@ -705,6 +757,319 @@ class JobCardStockRebuildPage {
 				);
 			});
 		}
+	}
+
+	collect_mfg_plan() {
+		const dispositions = [];
+		this.$mfg.find("tr[data-item]").each((_, tr) => {
+			const $tr = $(tr);
+			dispositions.push({
+				item_code: $tr.attr("data-item"),
+				batch_no: $tr.attr("data-batch") || "",
+				proposed_consumed: flt($tr.find('[data-f="consumed"]').val()),
+				proposed_scrap: flt($tr.find('[data-f="scrap"]').val()),
+				proposed_return: flt($tr.find('[data-f="return"]').val()),
+				proposed_still_in_wip: flt($tr.find('[data-f="still"]').val()),
+			});
+		});
+		const merge_documents = [];
+		this.$mfg.find('input[data-merge]:checked').each((_, el) => {
+			merge_documents.push($(el).attr("data-merge"));
+		});
+		const merge_material_issues = [];
+		this.$mfg.find('input[data-merge-mi]:checked').each((_, el) => {
+			merge_material_issues.push($(el).attr("data-merge-mi"));
+		});
+		return {
+			dispositions,
+			merge_documents,
+			merge_material_issues,
+			stamp_mode: "HISTORICAL",
+			fingerprint: this.mfgFingerprint,
+		};
+	}
+
+	run_mfg_scan() {
+		const jc = this.jc.get_value();
+		if (!jc) {
+			frappe.msgprint(__("Select a Job Card"));
+			return;
+		}
+		frappe.call({
+			method: this.api + ".scan_manufacture_reconciliation",
+			args: { job_card: jc },
+			freeze: true,
+			freeze_message: __("Scanning Golden Rule…"),
+			callback: (r) => {
+				const data = r.message || {};
+				this.mfgScan = data.scan;
+				this.mfgPlan = data.plan;
+				this.mfgFingerprint = (data.plan || {}).fingerprint;
+				this.mfgDry = null;
+				this.render_mfg();
+				this.btn_mfg_dry.prop("disabled", false);
+				this.btn_mfg_apply.prop("disabled", true);
+			},
+		});
+	}
+
+	run_mfg_dry() {
+		const jc = this.jc.get_value();
+		const plan = this.collect_mfg_plan();
+		frappe.call({
+			method: this.api + ".dry_run_manufacture_repair",
+			args: { job_card: jc, plan: plan },
+			freeze: true,
+			freeze_message: __("Dry Run Manufacture Repair (will rollback)…"),
+			// Shared logistics + temporary receipt bridge can exceed default ajax timeout.
+			timeout: 600,
+			callback: (r) => {
+				this.mfgDry = r.message || {};
+				this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
+				this.render_mfg_dry();
+				const pass = this.mfgDry.ok && this.mfgDry.status === "DRY_RUN_PASS";
+				this.btn_mfg_apply.prop("disabled", !pass);
+			},
+		});
+	}
+
+	run_mfg_apply() {
+		frappe.confirm(
+			__(
+				"Apply will CANCEL/SUBMIT real Stock Entries atomically. Continue only with authorization."
+			),
+			() => {
+				const jc = this.jc.get_value();
+				const plan = this.collect_mfg_plan();
+				frappe.call({
+					method: this.api + ".apply_manufacture_repair",
+					args: { job_card: jc, plan: plan, confirm: 1 },
+					freeze: true,
+					callback: (r) => {
+						const msg = r.message || {};
+						frappe.msgprint({
+							title: msg.ok ? __("Apply PASS") : __("Apply FAIL"),
+							indicator: msg.ok ? "green" : "red",
+							message: `<pre>${frappe.utils.escape_html(
+								JSON.stringify(msg, null, 2).slice(0, 4000)
+							)}</pre>`,
+						});
+					},
+				});
+			}
+		);
+	}
+
+	render_mfg() {
+		this.$mfg.empty();
+		const scan = this.mfgScan || {};
+		const plan = this.mfgPlan || {};
+		const rows = scan.rows || [];
+		$("<h4 class='jcsr-section-title'>").text(__("Golden Rule")).appendTo(this.$mfg);
+		if (plan.blockers && plan.blockers.length) {
+			this.$mfg.append(
+				`<div class="jcsr-alert blocker">${frappe.utils.escape_html(
+					plan.blockers.join("; ")
+				)}</div>`
+			);
+		}
+		const $table = $(`
+			<table class="jcsr-table">
+				<thead><tr>
+					<th>${__("Item")}</th><th>${__("Batch")}</th>
+					<th>${__("Issued")}</th><th>${__("Returned")}</th>
+					<th>${__("MFG Consume")}</th><th>${__("Material Issue")}</th>
+					<th>${__("Scrap")}</th>
+					<th>${__("Remaining")}</th><th>${__("Suggested")}</th>
+					<th>${__("Consumed*")}</th><th>${__("Scrap*")}</th>
+					<th>${__("Return*")}</th><th>${__("Still WIP*")}</th>
+					<th>${__("Status")}</th>
+				</tr></thead><tbody></tbody>
+			</table>
+		`);
+		const $tb = $table.find("tbody");
+		rows.forEach((r) => {
+			const sug = r.suggested_action
+				? `${r.suggested_action} ${flt(r.suggested_qty)} (${r.confidence || ""})`
+				: "";
+			$tb.append(`
+				<tr data-item="${frappe.utils.escape_html(r.item_code)}"
+				    data-batch="${frappe.utils.escape_html(r.batch_no || "")}">
+					<td>${frappe.utils.escape_html(r.item_code)}</td>
+					<td>${frappe.utils.escape_html(r.batch_no || "")}</td>
+					<td>${flt(r.issued)}</td><td>${flt(r.returned)}</td>
+					<td>${flt(r.consumed)}</td><td>${flt(r.mi_consumed)}</td>
+					<td>${flt(r.scrap)}</td>
+					<td>${flt(r.remaining_wip)}</td>
+					<td title="${frappe.utils.escape_html(r.reason || "")}">${frappe.utils.escape_html(sug)}</td>
+					<td><input data-f="consumed" type="number" step="any" value="${flt(r.proposed_consumed)}" style="width:70px"></td>
+					<td><input data-f="scrap" type="number" step="any" value="${flt(r.proposed_scrap)}" style="width:70px"></td>
+					<td><input data-f="return" type="number" step="any" value="${flt(r.proposed_return)}" style="width:70px"></td>
+					<td><input data-f="still" type="number" step="any" value="${flt(r.proposed_still_in_wip)}" style="width:70px"></td>
+					<td>${frappe.utils.escape_html(r.status || "")}</td>
+				</tr>
+			`);
+		});
+		this.$mfg.append($table);
+
+		$("<h4 class='jcsr-section-title'>").text(__("Documents")).appendTo(this.$mfg);
+		const $docTable = $(`
+			<table class="jcsr-table" data-role="mfg-documents">
+				<thead><tr>
+					<th>${__("Document")}</th><th>${__("Purpose")}</th>
+					<th>${__("Qty / rows")}</th><th>${__("Ownership")}</th>
+					<th>${__("Action")}</th>
+				</tr></thead><tbody></tbody>
+			</table>
+		`);
+		const $docTb = $docTable.find("tbody");
+		const docs = plan.documents || [];
+		docs.forEach((d) => {
+			const purpose = d.purpose || "";
+			const ownership = d.ownership || d.role || "";
+			const qty = d.qty_summary || (d.fg_completed_qty != null ? `FG ${flt(d.fg_completed_qty)}` : "");
+			let actionCell = frappe.utils.escape_html(d.role || "");
+			if (purpose === "Manufacture" && (d.role === "MERGE" || d.role === "KEEP")) {
+				const checked = d.role === "MERGE" ? "checked" : "";
+				actionCell = `<label><input type="checkbox" data-merge="${frappe.utils.escape_html(
+					d.name
+				)}" ${checked}> ${frappe.utils.escape_html(d.role)}</label>`;
+			} else if (purpose === "Material Issue") {
+				const blocked = d.role === "BLOCKED" || d.shared_document;
+				if (blocked) {
+					actionCell = `<span class="text-danger">BLOCKED</span>`;
+				} else {
+					const checked = d.role === "MERGE" || d.propose_merge ? "checked" : "";
+					actionCell = `<label><input type="checkbox" data-merge-mi="${frappe.utils.escape_html(
+						d.name
+					)}" ${checked}> ${d.role === "MERGE" ? "MERGE" : "KEEP / MERGE?"}</label>`;
+				}
+			} else if (d.role === "TEMP CANCEL / RECREATE") {
+				actionCell = `TEMP CANCEL / RECREATE`;
+			} else if (d.role === "BLOCKED") {
+				actionCell = `<span class="text-danger">BLOCKED</span>`;
+			}
+			const unrel = (d.unrelated_rows || [])
+				.map(
+					(r) =>
+						`${r.item_code}×${flt(r.qty)}${r.downstream_note ? " [" + r.downstream_note + "]" : ""}`
+				)
+				.join("; ");
+			const rel = (d.related_rows || [])
+				.map((r) => `${r.item_code}×${flt(r.qty)}`)
+				.join("; ");
+			const detail =
+				(rel ? `affected: ${rel}` : "") +
+				(unrel ? (rel ? " | " : "") + `unrelated: ${unrel}` : "") +
+				(d.shared_reason ? ` | ${d.shared_reason}` : d.reason ? ` | ${d.reason}` : "");
+			$docTb.append(`
+				<tr data-doc="${frappe.utils.escape_html(d.name)}" title="${frappe.utils.escape_html(
+					detail || d.reason || ""
+				)}">
+					<td>${frappe.utils.escape_html(d.name)}</td>
+					<td>${frappe.utils.escape_html(purpose)}</td>
+					<td>${frappe.utils.escape_html(qty || rel || "")}</td>
+					<td>${frappe.utils.escape_html(String(ownership))}</td>
+					<td>${actionCell}</td>
+				</tr>
+			`);
+			if (detail && (d.shared_class || d.unrelated_rows)) {
+				$docTb.append(`
+					<tr class="text-muted" data-doc-detail="${frappe.utils.escape_html(d.name)}">
+						<td colspan="5" style="font-size:11px">${frappe.utils.escape_html(detail)}</td>
+					</tr>
+				`);
+			}
+		});
+		this.$mfg.append($docTable);
+		if (plan.minimal_cancel_set && plan.minimal_cancel_set.length) {
+			this.$mfg.append(
+				`<div class="jcsr-meta" data-role="mfg-min-cancel">Minimal cancel set: ${plan.minimal_cancel_set
+					.map((x) => frappe.utils.escape_html(x))
+					.join(", ")}</div>`
+			);
+		}
+		const bridge = plan.temporary_bridge || {};
+		const shortages = bridge.shortages || [];
+		this.$mfg.append(
+			`<div class="jcsr-meta" data-role="mfg-temp-bridge">
+				<strong>${__("Temporary Receipt Required")}:</strong> ${
+					bridge.required ? __("YES") : __("NO")
+				}
+				${
+					bridge.required
+						? ` · ${__("Rows")}: ${shortages.length}<br>` +
+						  shortages
+								.map(
+									(s) =>
+										`${frappe.utils.escape_html(s.item_code)} / ${frappe.utils.escape_html(
+											s.batch_no || ""
+										)} @ ${frappe.utils.escape_html(s.warehouse || "")} × ${flt(
+											s.shortage_qty
+										)} @ ${flt(s.valuation_rate)}`
+								)
+								.join("<br>")
+						: ""
+				}
+			</div>`
+		);
+
+		$("<h4 class='jcsr-section-title'>").text(__("Final Manufacture Preview")).appendTo(this.$mfg);
+		const canon = plan.canonical_manufacture || {};
+		this.$mfg.append(
+			`<div class="jcsr-meta">Stamp: <code>${frappe.utils.escape_html(
+				canon.historical_stamp || ""
+			)}</code> · FG qty ${flt(canon.fg_completed_qty)} · supersedes ${(
+				canon.supersedes || []
+			)
+				.map((x) => frappe.utils.escape_html(x))
+				.join(", ")}</div>`
+		);
+		const $ct = $(
+			`<table class="jcsr-table"><thead><tr>
+				<th>${__("Type")}</th><th>${__("Item")}</th><th>${__("Batch")}</th>
+				<th>${__("Qty")}</th><th>${__("S / T")}</th><th>${__("Rate source")}</th>
+				<th>${__("Source")}</th>
+			</tr></thead><tbody></tbody></table>`
+		);
+		(canon.rows || []).forEach((row) => {
+			$ct.find("tbody").append(`
+				<tr>
+					<td>${frappe.utils.escape_html(row.type || "")}</td>
+					<td>${frappe.utils.escape_html(row.item_code || "")}</td>
+					<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
+					<td>${flt(row.qty)}</td>
+					<td>${frappe.utils.escape_html(row.s_warehouse || "")} → ${frappe.utils.escape_html(
+						row.t_warehouse || ""
+					)}</td>
+					<td>${frappe.utils.escape_html(row.rate_source || "")}</td>
+					<td>${frappe.utils.escape_html(row.source_lineage || row.source_voucher || "")}</td>
+				</tr>
+			`);
+		});
+		this.$mfg.append($ct);
+	}
+
+	render_mfg_dry() {
+		const d = this.mfgDry || {};
+		const cls = d.ok ? "ok" : "blocker";
+		let eqHtml = "";
+		(d.logistics_equivalence || []).forEach((eq) => {
+			eqHtml += `<div class="jcsr-meta">Equivalence ${frappe.utils.escape_html(
+				eq.original || ""
+			)} → ${frappe.utils.escape_html(eq.recreated || "")}: ${
+				eq.ok ? "PASS" : "FAIL"
+			}</div>`;
+		});
+		this.$mfg.prepend(
+			`<div class="jcsr-alert ${cls}" data-role="mfg-dry">
+				<strong>${frappe.utils.escape_html(d.status || "")}</strong>
+				${d.error ? " — " + frappe.utils.escape_html(d.error) : ""}
+				<div class="jcsr-meta">mutated=${d.mutated} committed=${d.committed}
+				canonical=${frappe.utils.escape_html(d.canonical_name || "")}</div>
+				${eqHtml}
+			</div>`
+		);
 	}
 }
 
