@@ -849,6 +849,7 @@ def run_repair(
 			timer.end("T24")
 		else:
 			result["audit"] = _write_audit(result)
+			_fail_point("before_commit")
 			frappe.db.commit()
 			result["mutated"] = True
 			result["committed"] = True
