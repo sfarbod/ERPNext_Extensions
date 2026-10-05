@@ -29,6 +29,46 @@ class JobCardStockRebuildPage {
 		return frappe.session.user === "Administrator" || roles.includes("System Manager");
 	}
 
+	/**
+	 * Core frappe.request.call ignores opts.timeout. Apply a one-shot XHR timeout
+	 * to the next $.ajax only (Manufacture Repair Dry Run / Apply), then restore.
+	 * Does not change Desk-wide $.ajaxSettings.
+	 */
+	_call_mfg_repair(opts, timeout_ms = 600000) {
+		const original_ajax = $.ajax;
+		let armed = true;
+		$.ajax = function (settings) {
+			settings = settings || {};
+			if (armed) {
+				armed = false;
+				$.ajax = original_ajax;
+				if (settings.timeout == null) {
+					settings.timeout = timeout_ms;
+				}
+			}
+			return original_ajax.call(this, settings);
+		};
+		const user_always = opts.always;
+		opts.always = function () {
+			if (armed) {
+				armed = false;
+				$.ajax = original_ajax;
+			}
+			if (user_always) {
+				user_always.apply(this, arguments);
+			}
+		};
+		try {
+			return frappe.call(opts);
+		} catch (e) {
+			if (armed) {
+				armed = false;
+				$.ajax = original_ajax;
+			}
+			throw e;
+		}
+	}
+
 	render() {
 		this.$body.empty();
 		if (!this.can_run()) {
@@ -816,10 +856,7 @@ class JobCardStockRebuildPage {
 	run_mfg_dry() {
 		const jc = this.jc.get_value();
 		const plan = this.collect_mfg_plan();
-		// Frappe core request.js currently ignores opts.timeout; force XHR timeout via ajaxSetup once.
-		const prev_ajax = $.ajaxSettings && $.ajaxSettings.timeout;
-		$.ajaxSetup({ timeout: 600000 }); // 10 minutes (ms)
-		frappe.call({
+		this._call_mfg_repair({
 			method: this.api + ".dry_run_manufacture_repair",
 			args: { job_card: jc, plan: plan },
 			freeze: true,
@@ -830,9 +867,6 @@ class JobCardStockRebuildPage {
 				this.render_mfg_dry();
 				const pass = this.mfgDry.ok && this.mfgDry.status === "DRY_RUN_PASS";
 				this.btn_mfg_apply.prop("disabled", !pass);
-			},
-			always: () => {
-				$.ajaxSetup({ timeout: prev_ajax });
 			},
 		});
 	}
@@ -845,10 +879,11 @@ class JobCardStockRebuildPage {
 			() => {
 				const jc = this.jc.get_value();
 				const plan = this.collect_mfg_plan();
-				frappe.call({
+				this._call_mfg_repair({
 					method: this.api + ".apply_manufacture_repair",
 					args: { job_card: jc, plan: plan, confirm: 1 },
 					freeze: true,
+					freeze_message: __("Applying Manufacture Repair…"),
 					callback: (r) => {
 						const msg = r.message || {};
 						frappe.msgprint({

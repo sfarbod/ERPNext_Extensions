@@ -1,8 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Synchronous valuation adapter for atomic Manufacture repair (v5.5.0).
+"""Synchronous valuation adapter for atomic Manufacture repair (v5.5.1).
 
 Suppresses automatic async RIV creation during repair and runs scoped
-``update_entries_after`` without RIV progress commits.
+``update_entries_after`` without RIV progress commits. Dependant SLE
+expansion is limited to repair Item×Warehouse roots (performance hotfix).
 """
 
 from __future__ import annotations
