@@ -52,6 +52,7 @@ def sum_prior_opening_allocations(opening_advance: str, exclude_clearance_name: 
 				AND IFNULL(c.funding_source_type, '') = %s
 				AND {res_clause}
 				{excl_sql}
+			LOCK IN SHARE MODE
 			""",
 			tuple(params),
 		)[0][0]

@@ -9,6 +9,8 @@ from frappe.utils import cint, flt
 
 from erpnext_extensions.petty_management.services.clearance_reservation import (
 	clearance_reserves_pm_request_balance_sql,
+	lock_pm_opening_advances_for_allocation,
+	lock_pm_requests_for_allocation,
 	pm_request_allocation_sql_filter,
 )
 from erpnext_extensions.petty_management.services.constants import (
@@ -65,6 +67,14 @@ def get_pm_request_paid_amount(pm_request: str) -> float:
 
 
 def sum_prior_pm_request_allocations(pm_request: str, exclude_clearance_name: str | None) -> float:
+	"""Sum active reservations for a PM Request (excluding optional clearance).
+
+	Must be called only after ``lock_pm_requests_for_allocation`` in the same
+	transaction so the parent ``FOR UPDATE`` serializes allocators. The first
+	consistent read then runs after the lock is held and sees latest committed
+	sibling allocations (InnoDB REPEATABLE READ snapshot starts at first
+	consistent read — keep that read after the parent lock).
+	"""
 	params: list[Any] = [pm_request]
 	excl_sql = ""
 	if exclude_clearance_name:
@@ -73,6 +83,8 @@ def sum_prior_pm_request_allocations(pm_request: str, exclude_clearance_name: st
 
 	res_clause = clearance_reserves_pm_request_balance_sql("p")
 
+	# Locking read (latest committed). Safe under GET_LOCK serialization — allocators
+	# do not overlap writes to these rows, avoiding MariaDB 1020 snapshot conflicts.
 	return flt(
 		frappe.db.sql(
 			f"""
@@ -85,6 +97,7 @@ def sum_prior_pm_request_allocations(pm_request: str, exclude_clearance_name: st
 				AND {pm_request_allocation_sql_filter("c")}
 				AND {res_clause}
 				{excl_sql}
+			LOCK IN SHARE MODE
 			""",
 			tuple(params),
 		)[0][0]
@@ -106,6 +119,7 @@ def pm_request_passes_clearance_filters(
 	holder: str,
 	clearance_petty: str,
 	exclude_clearance_name: str | None = None,
+	skip_zero_available: bool = False,
 ) -> tuple[bool, str]:
 	if not pm_request_name:
 		return False, _("PM Request is empty")
@@ -127,7 +141,10 @@ def pm_request_passes_clearance_filters(
 			"PM Request {0} has no submitted Payment Entry. Please create/submit Payment Entry first."
 		).format(pm_request_name)
 	available = get_pm_request_available_amount(pm_request_name, exclude_clearance_name)
-	if available <= _EPS:
+	# v5.5.5: zero-available is a funding-headroom gate. Skip ONLY for corrective
+	# Return / remark-only paths (same scope as v5.2.11 over-allocation skip).
+	# Structural checks above always run. Finance Approve / Draft remain strict.
+	if not skip_zero_available and available <= _EPS:
 		return False, _("PM Request {0} has no available balance for clearance.").format(pm_request_name)
 	return True, ""
 
@@ -148,6 +165,23 @@ def validate_request_allocations(doc: Document) -> None:
 	if legacy_rows:
 		validate_legacy_allocation_rows(doc, legacy_rows)
 		return
+
+	# v5.5.5 — lock funding parents in deterministic order before reading reservation
+	# aggregates so concurrent Clearance saves cannot both over-reserve.
+	req_names = []
+	opening_names = []
+	for row in non_legacy:
+		source_type = allocation_row_funding_source_type(row)
+		if source_type == FUNDING_SOURCE_OPENING_ADVANCE:
+			oa = (getattr(row, "pm_opening_advance", None) or "").strip()
+			if oa:
+				opening_names.append(oa)
+		else:
+			req = (getattr(row, "pm_request", None) or "").strip()
+			if req:
+				req_names.append(req)
+	lock_pm_requests_for_allocation(req_names)
+	lock_pm_opening_advances_for_allocation(opening_names)
 
 	seen_req = set()
 	seen_opening = set()
@@ -358,6 +392,7 @@ def validate_pm_request_matches_clearance(row: Document, doc: Document, clr_pett
 		holder=doc.holder or "",
 		clearance_petty=clr_petty,
 		exclude_clearance_name=doc.name if getattr(doc, "name", None) else None,
+		skip_zero_available=_skip_funding_availability_over_allocation_gate(doc),
 	)
 	if not ok:
 		frappe.throw(_("Row {0}: {1}").format(row.idx, reason))
@@ -371,6 +406,7 @@ def stamp_allocation_snapshot(row: Document, doc: Document, clr_petty: str) -> N
 		employee=doc.employee,
 		holder=doc.holder or "",
 		petty_cash_account=clr_petty,
+		skip_zero_available=_skip_funding_availability_over_allocation_gate(doc),
 	)
 	row.request_amount = flt(ctx.get("request_amount"))
 	row.paid_amount = flt(ctx.get("paid_amount"))
@@ -403,11 +439,14 @@ def get_pm_request_allocation_context(
 	employee: str | None = None,
 	holder: str | None = None,
 	petty_cash_account: str | None = None,
+	skip_zero_available: bool | None = None,
 ) -> dict[str, Any]:
 	"""Public UI API for stamping one PM Request allocation row.
 
 	PM Clearance uses this from the grid when a PM Request is selected. Keep the
 	signature aligned with ``pm_clearance.js`` and validation server-side.
+
+	Authoritative availability is live paid − other active reservations (not child snapshots).
 	"""
 	if not pm_request:
 		return {}
@@ -415,14 +454,21 @@ def get_pm_request_allocation_context(
 	exclude_clearance = (
 		pm_clearance if pm_clearance and frappe.db.exists("PM Clearance", pm_clearance) else None
 	)
+	cl_doc = None
 	if exclude_clearance:
-		cl = frappe.get_doc("PM Clearance", pm_clearance)
-		if not frappe.has_permission("PM Clearance", "read", doc=cl):
+		cl_doc = frappe.get_doc("PM Clearance", pm_clearance)
+		if not frappe.has_permission("PM Clearance", "read", doc=cl_doc):
 			frappe.throw(_("Not permitted"), frappe.PermissionError)
-		company = cl.company
-		employee = cl.employee
-		holder = cl.holder or get_pm_holder_name(cl.employee, cl.company) or ""
-		petty_cash_account = clearance_petty_cash_account(cl) or get_holder_petty_cash_account(holder)
+		company = cl_doc.company
+		employee = cl_doc.employee
+		holder = cl_doc.holder or get_pm_holder_name(cl_doc.employee, cl_doc.company) or ""
+		petty_cash_account = clearance_petty_cash_account(cl_doc) or get_holder_petty_cash_account(
+			holder
+		)
+
+	if skip_zero_available is None and cl_doc is not None:
+		skip_zero_available = _skip_funding_availability_over_allocation_gate(cl_doc)
+	skip_zero_available = bool(skip_zero_available)
 
 	req = get_pm_request_doc_for_read(pm_request)
 	req_holder = req.holder or get_pm_holder_name(req.employee, req.company) or ""
@@ -447,6 +493,7 @@ def get_pm_request_allocation_context(
 		holder=holder or req_holder,
 		clearance_petty=(petty_cash_account or req_petty or "").strip(),
 		exclude_clearance_name=exclude_clearance,
+		skip_zero_available=skip_zero_available,
 	)
 	if not ok:
 		frappe.throw(msg, title=_("Invalid PM Request"))
