@@ -106,11 +106,11 @@ def _policy_available_for_clearance(doc: Document) -> tuple[float, float, float]
 		funded_avail = flt(getattr(doc, "funded_available", 0))
 		opening_avail = flt(getattr(doc, "opening_available", 0))
 
-	if cint(doc.docstatus) == 1 and doc.get("request_allocations"):
+	# v5.5.5: row snapshots use per-source SQL with exclude_clearance for Draft and
+	# submitted alike (Draft now reserves). Use as floor when holder aggregate lags.
+	if doc.get("request_allocations"):
 		non_legacy = [r for r in doc.request_allocations if not getattr(r, "is_legacy_row", 0)]
 		if non_legacy:
-			# Row snapshots (just validated) use per-source SQL with exclude_clearance; use as floor when
-			# holder aggregate paid SQL is stale under heavy sequential suites.
 			row_headroom = sum(flt(r.available_amount) for r in non_legacy)
 			if row_headroom > total_avail + EPSILON:
 				total_avail = row_headroom

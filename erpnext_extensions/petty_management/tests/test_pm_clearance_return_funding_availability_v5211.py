@@ -339,6 +339,8 @@ class TestPmClearanceReturnFundingAvailabilityV5211(unittest.TestCase):
 			{"funding_source_type": "PM Request", "pm_request": req, "allocated_amount": 1_000},
 		)
 		cl_c.flags.ignore_mandatory = True
+		# v5.5.5: Draft insert would reserve; this sibling is force-cancelled next.
+		cl_c.flags.ignore_validate = True
 		cl_c.insert(ignore_permissions=True)
 		frappe.db.set_value(
 			"PM Clearance",

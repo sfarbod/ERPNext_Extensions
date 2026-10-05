@@ -121,11 +121,13 @@ def sync_clearance_holder_fields(doc: Document) -> Document:
 
 
 def clearance_exclude_name_for_validation(doc: Document) -> str | None:
-	"""Submitted clearances reserve funding; settle/validate must not double-count own allocation."""
-	from frappe.utils import cint
+	"""Exclude current Clearance from reservation aggregates during its own validate.
 
+	v5.5.5: Draft / Pending (docstatus 0) also reserve funding, so self-exclusion
+	applies to any named document — not only submitted (docstatus 1) rows.
+	"""
 	name = (getattr(doc, "name", None) or "").strip()
-	if not name or cint(doc.docstatus) != 1:
+	if not name:
 		return None
 	return name
 
