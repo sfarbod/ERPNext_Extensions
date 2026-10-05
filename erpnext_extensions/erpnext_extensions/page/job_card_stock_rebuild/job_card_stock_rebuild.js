@@ -191,6 +191,8 @@ class JobCardStockRebuildPage {
 		this.mfgPlan = null;
 		this.mfgDry = null;
 		this.mfgFingerprint = null;
+		/** @type {Object.<string,{consumed:number,scrap:number,return:number,still:number}>} */
+		this.mfgDecisions = {};
 	}
 
 	apply_route_options() {
@@ -220,9 +222,56 @@ class JobCardStockRebuildPage {
 		this.mfgPlan = null;
 		this.mfgDry = null;
 		this.mfgFingerprint = null;
+		this.mfgDecisions = {};
 		if (this.$mfg) this.$mfg.empty();
 		if (this.btn_mfg_dry) this.btn_mfg_dry.prop("disabled", true);
 		if (this.btn_mfg_apply) this.btn_mfg_apply.prop("disabled", true);
+	}
+
+	mfg_row_key(item_code, batch_no) {
+		return String(item_code || "") + "\u0000" + String(batch_no || "");
+	}
+
+	/**
+	 * Prefill editable disposition fields from backend Scan suggestion.
+	 * Does NOT invent a second suggestion engine — maps suggested_action / suggested_qty
+	 * (with proposed_* fallback when already filled by the server).
+	 */
+	init_mfg_decisions_from_scan(rows) {
+		this.mfgDecisions = {};
+		(rows || []).forEach((r) => {
+			const key = this.mfg_row_key(r.item_code, r.batch_no);
+			this.mfgDecisions[key] = jcsr_prefill_from_suggestion(r);
+		});
+	}
+
+	capture_mfg_decisions_from_dom() {
+		if (!this.$mfg) return;
+		this.$mfg.find("tr[data-item]").each((_, tr) => {
+			const $tr = $(tr);
+			const key = this.mfg_row_key($tr.attr("data-item"), $tr.attr("data-batch") || "");
+			this.mfgDecisions[key] = {
+				consumed: flt($tr.find('[data-f="consumed"]').val()),
+				scrap: flt($tr.find('[data-f="scrap"]').val()),
+				return: flt($tr.find('[data-f="return"]').val()),
+				still: flt($tr.find('[data-f="still"]').val()),
+			};
+		});
+	}
+
+	bind_mfg_decision_inputs($root) {
+		const self = this;
+		$root.find('input[data-f]').on("input change", function () {
+			const $tr = $(this).closest("tr[data-item]");
+			if (!$tr.length) return;
+			const key = self.mfg_row_key($tr.attr("data-item"), $tr.attr("data-batch") || "");
+			self.mfgDecisions[key] = {
+				consumed: flt($tr.find('[data-f="consumed"]').val()),
+				scrap: flt($tr.find('[data-f="scrap"]').val()),
+				return: flt($tr.find('[data-f="return"]').val()),
+				still: flt($tr.find('[data-f="still"]').val()),
+			};
+		});
 	}
 
 	args() {
@@ -800,16 +849,25 @@ class JobCardStockRebuildPage {
 	}
 
 	collect_mfg_plan() {
+		// Final visible values win — never replace user edits with original Scan suggestion.
+		this.capture_mfg_decisions_from_dom();
 		const dispositions = [];
 		this.$mfg.find("tr[data-item]").each((_, tr) => {
 			const $tr = $(tr);
+			const key = this.mfg_row_key($tr.attr("data-item"), $tr.attr("data-batch") || "");
+			const d = this.mfgDecisions[key] || {
+				consumed: flt($tr.find('[data-f="consumed"]').val()),
+				scrap: flt($tr.find('[data-f="scrap"]').val()),
+				return: flt($tr.find('[data-f="return"]').val()),
+				still: flt($tr.find('[data-f="still"]').val()),
+			};
 			dispositions.push({
 				item_code: $tr.attr("data-item"),
 				batch_no: $tr.attr("data-batch") || "",
-				proposed_consumed: flt($tr.find('[data-f="consumed"]').val()),
-				proposed_scrap: flt($tr.find('[data-f="scrap"]').val()),
-				proposed_return: flt($tr.find('[data-f="return"]').val()),
-				proposed_still_in_wip: flt($tr.find('[data-f="still"]').val()),
+				proposed_consumed: flt(d.consumed),
+				proposed_scrap: flt(d.scrap),
+				proposed_return: flt(d.return),
+				proposed_still_in_wip: flt(d.still),
 			});
 		});
 		const merge_documents = [];
@@ -846,6 +904,8 @@ class JobCardStockRebuildPage {
 				this.mfgPlan = data.plan;
 				this.mfgFingerprint = (data.plan || {}).fingerprint;
 				this.mfgDry = null;
+				// NEW SCAN: reinitialize editable decisions from backend suggestions.
+				this.init_mfg_decisions_from_scan((data.scan && data.scan.rows) || []);
 				this.render_mfg();
 				this.btn_mfg_dry.prop("disabled", false);
 				this.btn_mfg_apply.prop("disabled", true);
@@ -931,6 +991,10 @@ class JobCardStockRebuildPage {
 			const sug = r.suggested_action
 				? `${r.suggested_action} ${flt(r.suggested_qty)} (${r.confidence || ""})`
 				: "";
+			const key = this.mfg_row_key(r.item_code, r.batch_no);
+			// Preserve user edits across re-render; fall back to Scan suggestion prefill.
+			const d = this.mfgDecisions[key] || jcsr_prefill_from_suggestion(r);
+			this.mfgDecisions[key] = d;
 			$tb.append(`
 				<tr data-item="${frappe.utils.escape_html(r.item_code)}"
 				    data-batch="${frappe.utils.escape_html(r.batch_no || "")}">
@@ -941,15 +1005,16 @@ class JobCardStockRebuildPage {
 					<td>${flt(r.scrap)}</td>
 					<td>${flt(r.remaining_wip)}</td>
 					<td title="${frappe.utils.escape_html(r.reason || "")}">${frappe.utils.escape_html(sug)}</td>
-					<td><input data-f="consumed" type="number" step="any" value="${flt(r.proposed_consumed)}" style="width:70px"></td>
-					<td><input data-f="scrap" type="number" step="any" value="${flt(r.proposed_scrap)}" style="width:70px"></td>
-					<td><input data-f="return" type="number" step="any" value="${flt(r.proposed_return)}" style="width:70px"></td>
-					<td><input data-f="still" type="number" step="any" value="${flt(r.proposed_still_in_wip)}" style="width:70px"></td>
+					<td><input data-f="consumed" type="number" step="any" value="${flt(d.consumed)}" style="width:70px"></td>
+					<td><input data-f="scrap" type="number" step="any" value="${flt(d.scrap)}" style="width:70px"></td>
+					<td><input data-f="return" type="number" step="any" value="${flt(d.return)}" style="width:70px"></td>
+					<td><input data-f="still" type="number" step="any" value="${flt(d.still)}" style="width:70px"></td>
 					<td>${frappe.utils.escape_html(r.status || "")}</td>
 				</tr>
 			`);
 		});
 		this.$mfg.append($table);
+		this.bind_mfg_decision_inputs($table);
 
 		$("<h4 class='jcsr-section-title'>").text(__("Documents")).appendTo(this.$mfg);
 		const $docTable = $(`
@@ -1115,4 +1180,56 @@ class JobCardStockRebuildPage {
 function flt(v) {
 	const n = parseFloat(v);
 	return isNaN(n) ? 0 : n;
+}
+
+/**
+ * Map backend Scan suggestion → editable disposition quantities.
+ * Canonical actions from golden_rule / scan response only — no second inference engine.
+ *
+ * Concrete recommendations (including LOW confidence) prefill.
+ * MANUAL REVIEW / AMBIGUOUS / BLOCKED / empty → leave unset (zeros).
+ */
+function jcsr_prefill_from_suggestion(row) {
+	const r = row || {};
+	const action = String(r.suggested_action || r.disposition || "")
+		.trim()
+		.toUpperCase()
+		.replace(/\s+/g, "_");
+	const qty = flt(r.suggested_qty);
+	const out = { consumed: 0, scrap: 0, return: 0, still: 0 };
+
+	if (action === "CONSUMED" && qty > 0) {
+		out.consumed = qty;
+		return out;
+	}
+	if ((action === "SCRAP" || action === "COMPONENT_SCRAP") && qty > 0) {
+		out.scrap = qty;
+		return out;
+	}
+	if (action === "RETURN" && qty > 0) {
+		out.return = qty;
+		return out;
+	}
+	if ((action === "STILL_IN_WIP" || action === "STILL_WIP") && qty > 0) {
+		out.still = qty;
+		return out;
+	}
+
+	// Fallback: trust server-filled proposed_* when already allocated to a concrete bucket.
+	const pc = flt(r.proposed_consumed);
+	const ps = flt(r.proposed_scrap);
+	const pr = flt(r.proposed_return);
+	const pw = flt(r.proposed_still_in_wip);
+	if (pc + ps + pr + pw > 0) {
+		out.consumed = pc;
+		out.scrap = ps;
+		out.return = pr;
+		out.still = pw;
+	}
+	return out;
+}
+
+// Expose for Playwright / unit evaluation in the desk page context.
+if (typeof window !== "undefined") {
+	window.jcsr_prefill_from_suggestion = jcsr_prefill_from_suggestion;
 }
