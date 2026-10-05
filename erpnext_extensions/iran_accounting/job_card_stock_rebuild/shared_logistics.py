@@ -11,7 +11,9 @@ be required, classify SHARED_BLOCKED.
 
 from __future__ import annotations
 
-from typing import Any
+import uuid
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 import frappe
 from frappe.utils import cint, flt, get_datetime
@@ -23,6 +25,54 @@ SHARED_BLOCKED = "SHARED_BLOCKED"
 UNRELATED = "UNRELATED"
 
 _SHARED_RECREATE_PURPOSES = {"Material Transfer"}
+
+
+@contextmanager
+def _owned_cancel_probe_savepoint(sp: str) -> Iterator[None]:
+	"""Own the DB transaction boundary for a cancel probe.
+
+	Nested ``frappe.db.rollback()`` (full) or ``frappe.db.commit()`` destroys
+	MySQL/MariaDB SAVEPOINTs. The probe's ``finally`` then raises
+	OperationalError 1305 ("SAVEPOINT ... does not exist") and aborts Scan.
+
+	During the probe:
+	- full rollback is demoted to rollback-to-our-savepoint
+	- commit is blocked (Scan must remain read-only from the user's view)
+	"""
+	frappe.db.savepoint(sp)
+	orig_rollback = frappe.db.rollback
+	orig_commit = frappe.db.commit
+
+	def _guarded_commit(*_a, **_k):
+		frappe.throw(
+			"commit blocked during shared-logistics cancel probe",
+			frappe.ValidationError,
+		)
+
+	def _guarded_rollback(*, save_point=None, chain=False):
+		if save_point:
+			return orig_rollback(save_point=save_point, chain=chain)
+		# Nested full rollback would drop our SAVEPOINT; demote to it instead.
+		return orig_rollback(save_point=sp)
+
+	frappe.db.commit = _guarded_commit  # type: ignore[method-assign]
+	frappe.db.rollback = _guarded_rollback  # type: ignore[method-assign]
+	try:
+		yield
+	finally:
+		frappe.db.commit = orig_commit  # type: ignore[method-assign]
+		frappe.db.rollback = orig_rollback  # type: ignore[method-assign]
+		try:
+			orig_rollback(save_point=sp)
+		except Exception:
+			# Boundary already lost (raw SQL COMMIT/ROLLBACK, reconnect).
+			# Full rollback restores a clean request transaction; never leave
+			# probe mutations hanging. Caller treats probe as failed.
+			try:
+				orig_rollback()
+			except Exception:
+				pass
+			raise
 
 
 def detail_batch(row: dict) -> str:
@@ -194,25 +244,23 @@ def simulate_cancel_stock_ok(cancel_names_desc: list[str]) -> tuple[bool, str]:
 		suppress_auto_riv,
 	)
 
-	# Nested savepoint so Scan/Plan can run inside an outer transaction.
-	sp = f"jc_shared_cancel_{abs(hash(key)) % 10_000_000}"
-	frappe.db.savepoint(sp)
+	# Stable unique savepoint (avoid hash randomization / collisions).
+	sp = f"jc_shared_cancel_{uuid.uuid4().hex[:12]}"
 	ok = True
 	reason = "ok"
 	try:
-		with suppress_auto_riv():
-			for name in names:
-				doc = frappe.get_doc("Stock Entry", name)
-				doc.flags.ignore_permissions = True
-				doc.cancel()
+		with _owned_cancel_probe_savepoint(sp):
+			with suppress_auto_riv():
+				for name in names:
+					doc = frappe.get_doc("Stock Entry", name)
+					doc.flags.ignore_permissions = True
+					doc.cancel()
 	except Exception as exc:
 		ok = False
 		# Strip HTML anchors from Core stock messages for compact blockers.
 		msg = frappe.as_unicode(exc)
 		msg = frappe.utils.strip_html(msg) if hasattr(frappe.utils, "strip_html") else msg
 		reason = f"{names}: {msg}"[:500]
-	finally:
-		frappe.db.rollback(save_point=sp)
 
 	cache[key] = (ok, reason)
 	return cache[key]

@@ -539,20 +539,34 @@ def run_repair(
 	plan_input: dict | None = None,
 	dry_run: bool = True,
 	confirm: int | bool = 0,
+	progress_cb=None,
 ) -> dict[str, Any]:
 	"""Same engine for Dry Run and Apply.
 
 	dry_run=True  → always rollback
 	dry_run=False → commit once after verification (requires confirm)
+
+	``progress_cb(phase_code, **extra)`` is optional (queued Dry Run UI).
+	It must NOT commit the business transaction.
 	"""
 	if not dry_run and not cint(confirm):
 		frappe.throw(frappe._("Confirmation required before Apply."))
 
+	def _progress(code: str, **extra):
+		if progress_cb:
+			try:
+				progress_cb(code, **extra)
+			except Exception:
+				pass
+
 	timer = _PhaseTimer()
 	timer.mark("T00")
+	_progress("T00")
+	_fail_point("preparing")
 
 	plan_input = plan_input or {}
 	timer.start("T01")
+	_progress("T01")
 	plan = build_manufacture_plan(
 		job_card,
 		dispositions=plan_input.get("dispositions"),
@@ -618,10 +632,13 @@ def run_repair(
 	frappe.flags[PREVENTION_FLAG] = True
 	try:
 		timer.start("T02")
+		_progress("T02")
 		_lock_scope(job_card, scope)
 		timer.end("T02")
+		_fail_point("after_locking")
 		# Re-validate plan after lock
 		timer.start("T03")
+		_progress("T03")
 		fresh = build_manufacture_plan(
 			job_card,
 			dispositions=plan_input.get("dispositions"),
@@ -648,6 +665,7 @@ def run_repair(
 
 			# Full document snapshots + batch rates before cancel
 			timer.start("T04")
+			_progress("T04")
 			logistics_batches = {name: _snapshot_se_batches(name) for name in logistics}
 			logistics_snaps = {name: snapshot_stock_entry(name) for name in logistics}
 			result["logistics_snapshots"] = {
@@ -669,6 +687,7 @@ def run_repair(
 
 			# 0) Temporary Material Receipt bridge (exact cancel shortages only)
 			timer.start("T05")
+			_progress("T05")
 			bridge_plan = fresh.get("temporary_bridge") or plan_temporary_bridge(logistics)
 			result["temporary_bridge"] = {
 				"required": bool(bridge_plan.get("required")),
@@ -678,6 +697,7 @@ def run_repair(
 			temp_name = ""
 			if bridge_plan.get("required") and bridge_plan.get("shortages"):
 				timer.start("T06_T07")
+				_progress("T06_T07")
 				temp_name = create_and_submit_temp_receipt(bridge_plan, repair_run_id)
 				timer.end("T06_T07", temp_name=temp_name)
 				result["temporary_receipt"] = temp_name
@@ -690,6 +710,7 @@ def run_repair(
 			for i, name in enumerate(logistics):
 				phase = "T08" if i == 0 else ("T09" if i == 1 else f"T08x{i}")
 				timer.start(phase)
+				_progress("T08" if i == 0 else "T09")
 				_cancel_se(name)
 				timer.end(phase, voucher=name)
 				result["cancelled"].append(name)
@@ -711,6 +732,7 @@ def run_repair(
 
 			# 3) Cancel manufactures
 			timer.start("T10")
+			_progress("T10")
 			for name in merge_docs:
 				_cancel_se(name)
 				result["cancelled"].append(name)
@@ -721,16 +743,19 @@ def run_repair(
 
 			# 4) Create + submit canonical (includes MI consumption)
 			timer.start("T11_T12")
+			_progress("T11_T12")
 			canonical = _build_canonical_se(fresh)
 			timer.end("T11_T12", canonical=canonical)
 			result["created"].append(canonical)
 			result["canonical_name"] = canonical
+			_fail_point("after_canonical")
 
 			# 5) Recreate logistics in original chrono (reverse of cancel list)
 			equivalence = []
 			for ri, name in enumerate(reversed(logistics)):
 				phase = "T13" if ri == 0 else ("T14" if ri == 1 else f"T13x{ri}")
 				timer.start(phase)
+				_progress("T13" if ri == 0 else "T14")
 				new_name = _recreate_logistics(name, batch_snapshot=logistics_batches.get(name))
 				result["recreated_logistics"].append({"from": name, "to": new_name})
 				if ri == 0:
@@ -777,8 +802,9 @@ def run_repair(
 
 			# 7) Sync valuation
 			timer.start("T17")
+			_progress("T17")
 			val_vouchers = [canonical] + [x["to"] for x in result["recreated_logistics"]]
-			val = sync_valuation_for_vouchers(val_vouchers)
+			val = sync_valuation_for_vouchers(val_vouchers, progress_cb=progress_cb)
 			result["valuation"] = val
 			timer.end(
 				"T17",
@@ -792,6 +818,8 @@ def run_repair(
 
 			# 8) Verify (MI must remain cancelled only if commit — dry run rolls back)
 			timer.start("T18_T22")
+			_progress("T18_T22")
+			_fail_point("during_verify")
 			verification = _verify(fresh, canonical)
 			result["verification"] = verification
 			timer.end("T18_T22", verify_ok=bool(verification.get("ok")))
@@ -805,13 +833,16 @@ def run_repair(
 		)
 
 		if dry_run:
+			_fail_point("before_rollback")
 			timer.start("T23")
+			_progress("T23")
 			frappe.db.rollback()
 			timer.end("T23")
 			result["mutated"] = False
 			result["committed"] = False
 			# Audit after rollback would also roll back — write audit in new txn for dry run
 			timer.start("T24")
+			_progress("T24")
 			frappe.db.begin()
 			result["audit"] = _write_audit(result)
 			frappe.db.commit()
