@@ -149,7 +149,11 @@ def _combine_posting(posting_date, posting_time):
 	return get_combine_datetime(posting_date, posting_time)
 
 
-def sync_valuation_for_vouchers(voucher_names: Iterable[str], limit_pairs: int = 80) -> dict:
+def sync_valuation_for_vouchers(
+	voucher_names: Iterable[str],
+	limit_pairs: int = 80,
+	progress_cb=None,
+) -> dict:
 	"""Synchronously repost affected item×warehouse ledgers for vouchers.
 
 	Uses Core ``update_entries_after`` with no RIV document (no mid-flight commit).
@@ -162,6 +166,8 @@ def sync_valuation_for_vouchers(voucher_names: Iterable[str], limit_pairs: int =
 	while reposting raw materials. Track those covered roots and skip a later
 	queued pair when Core has already reposted the same Item×Warehouse from an
 	earlier-or-equal posting datetime (same intent as Core's dependant skip).
+
+	``progress_cb`` is optional and must not commit the business transaction.
 	"""
 	from erpnext.stock.stock_ledger import update_entries_after
 
@@ -210,8 +216,21 @@ def sync_valuation_for_vouchers(voucher_names: Iterable[str], limit_pairs: int =
 	covered: dict[tuple[str, str], object] = {}
 	allowed_pairs = {(p.item_code, p.warehouse) for p in pairs}
 	t_all0 = time.perf_counter()
+	roots_total = len(pairs)
+	roots_done = 0
+	if progress_cb:
+		try:
+			progress_cb(
+				"T17",
+				valuation_roots_done=0,
+				valuation_roots_total=roots_total,
+			)
+		except Exception:
+			pass
 	with _scope_dependant_repost(allowed_pairs, already_covered=covered):
 		for p in pairs:
+			if getattr(frappe.flags, "jc_repair_fail_at", None) == "during_valuation":
+				raise RuntimeError("INJECTED_FAILURE:during_valuation")
 			key = (p.item_code, p.warehouse)
 			pair_dt = _combine_posting(p.posting_date, p.posting_time)
 			covered_from = covered.get(key)
@@ -238,6 +257,16 @@ def sync_valuation_for_vouchers(voucher_names: Iterable[str], limit_pairs: int =
 						"reason": "dependant_already_covered",
 					}
 				)
+				roots_done += 1
+				if progress_cb:
+					try:
+						progress_cb(
+							"T17",
+							valuation_roots_done=roots_done,
+							valuation_roots_total=roots_total,
+						)
+					except Exception:
+						pass
 				continue
 
 			future_n = frappe.db.sql(
@@ -286,6 +315,16 @@ def sync_valuation_for_vouchers(voucher_names: Iterable[str], limit_pairs: int =
 				}
 			)
 			done.append((p.item_code, p.warehouse, str(p.posting_date)))
+			roots_done += 1
+			if progress_cb:
+				try:
+					progress_cb(
+						"T17",
+						valuation_roots_done=roots_done,
+						valuation_roots_total=roots_total,
+					)
+				except Exception:
+					pass
 	return {
 		"ok": True,
 		"pairs": done,
