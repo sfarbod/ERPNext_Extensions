@@ -12,6 +12,7 @@ import frappe
 
 PAGE = "job-card-stock-rebuild"
 LABEL = "Job Card Stock Rebuild"
+REPORT = "Job Card Golden Rule Audit"
 ROLES = ("System Manager", "Administrator")
 CARD = "Repair Tools"
 
@@ -21,6 +22,29 @@ def execute():
 	_ensure_manufacturing_workspace()
 	_ensure_sidebar("Production Control")
 	_ensure_sidebar("Manufacturing")
+	_ensure_report_link()
+
+
+def _ensure_report_link():
+	"""Link Golden Rule Audit report under Manufacturing workspace Repair Tools."""
+	if not frappe.db.exists("Report", REPORT):
+		return
+	if not frappe.db.exists("Workspace", "Manufacturing"):
+		return
+	ws = frappe.get_doc("Workspace", "Manufacturing")
+	if any((r.link_to or "") == REPORT for r in (ws.links or [])):
+		return
+	ws.append(
+		"links",
+		{
+			"type": "Link",
+			"label": REPORT,
+			"link_type": "Report",
+			"link_to": REPORT,
+			"icon": "table",
+		},
+	)
+	ws.save(ignore_permissions=True)
 
 
 def _ensure_page_roles():

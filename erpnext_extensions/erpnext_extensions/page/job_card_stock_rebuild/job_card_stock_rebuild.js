@@ -113,10 +113,13 @@ class JobCardStockRebuildPage {
 			.text(__("Manufacture Reconciliation"))
 			.appendTo(this.$body);
 		$('<p class="jcsr-help">')
-			.text(
+			.html(
 				__(
 					"Golden Rule for Job Card × Item × Batch. Decide unexplained WIP, preview one canonical Manufacture, Dry Run (rollback), then Apply atomically. Persistent Apply is System Manager only."
-				)
+				) +
+					` · <a href="/app/query-report/Job%20Card%20Golden%20Rule%20Audit">${__(
+						"Job Card Golden Rule Audit"
+					)}</a>`
 			)
 			.appendTo(this.$body);
 		const $mfgActions = $('<div class="jcsr-actions jcsr-mfg-actions">').appendTo(this.$body);

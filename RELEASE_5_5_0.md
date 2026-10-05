@@ -1,64 +1,82 @@
-# Release 5.5.0 — Job Card Golden Rule Manufacture Reconciliation
+# ERPNext Extensions v5.5.0 — Release Notes
 
-## Summary
+**Version:** 5.5.0  
+**Manufacture Costing Contract:** 5.3.43 (unchanged)  
+**Focus:** Job Card Manufacture Reconciliation (Golden Rule) + controlled historical repair
 
-Extends **Job Card Stock Rebuild** with a focused Manufacture Reconciliation
-flow: Golden Rule detection, user-approved disposition of unexplained WIP,
-one canonical Manufacture preview, multi-document merge, and atomic
-Dry Run / Apply with synchronous valuation (no async RIV during repair).
+---
 
-## What this release does
+## Golden Rule
 
-- Golden Rule at Job Card × Item × Batch:
-  `ISSUED = RETURNED + PHYSICAL_WIP_CONSUME + OTHER + LEGITIMATE_REMAINING_WIP`
-- Component Scrap pairing fix: scrap output is not a second WIP drain when
-  paired with a Manufacture CONSUME source row
-- User-editable dispositions: Consumed / Scrap / Return / Still in WIP
-- Documents to merge → one canonical Manufacture (issues/returns/logistics stay separate)
-- Downstream FG logistics discovered via batch lineage; TEMP CANCEL / RECREATE
-- Historical Repair Mode default (e.g. PO-JOB08760 → stamp 5.3.34)
-- Dry Run and Apply share the same engine; Dry Run always rolls back
-- Apply: one database transaction, suppress auto-RIV, sync valuation, verify, commit once
-- MVP blocks Delivery Note / sales dependencies, stamp conflicts, unpaired scrap, etc.
+Authoritative equation for each Job Card × Component Item × Batch:
 
-## What this release does NOT do
+`ISSUED = RETURNED + PHYSICAL MANUFACTURE CONSUME + OTHER PROVEN WIP OUTFLOW + LEGITIMATE REMAINING WIP`
 
-- No temporary Product Receipt
-- No ERPNext Core patch
-- No SQL mutation of submitted accounting docs
-- No async RIV inside the repair transaction
-- No new Desk tool (extends Job Card Stock Rebuild)
-- No change to `MANUFACTURE_COSTING_CONTRACT_VERSION` (**5.3.43**)
+WIP remainder drives disposition suggestions (CONSUMED / SCRAP / RETURN / STILL IN WIP / MANUAL REVIEW).
 
-## Compatibility
+## Job Card Stock Rebuild
 
-- ERPNext **16.37.0** / Frappe **16.36.1**
-- erpnext_extensions **5.5.0**
-- Costing contract **5.3.43** (historical repair may reproduce older stamps)
+Desk page for evidence scan, disposition, Dry Run (rollback), and System Manager Apply.  
+Fingerprints lock plan staleness. Historical Repair Mode preserves original Manufacture stamps (e.g. 5.3.34).
 
-## Primary canary — PO-JOB08760
+## Canonical Manufacture
 
-- `13200544` Issued 1160 / Returned 12 / Consumed 0 / Remaining 1148
-- Suggestion: CONSUMED 1148 (HIGH) — user approval required
-- Canonical Manufacture adds consume + keeps FG 545 Quarantine / 29 Retain
-- Dry Run must rollback; persistent Apply requires separate authorization
+Exactly one active submitted Manufacture after successful repair, containing:
 
-## Modules
+- existing valid consumption  
+- approved unresolved WIP consume  
+- paired Component Scrap  
+- secondary outputs  
+- MAIN FG rows  
 
-- `job_card_stock_rebuild/scrap_pairing.py`
-- `job_card_stock_rebuild/golden_rule.py`
-- `job_card_stock_rebuild/manufacture_plan.py`
-- `job_card_stock_rebuild/sync_valuation.py`
-- `job_card_stock_rebuild/atomic_repair.py`
-- `job_card_stock_rebuild/mi_ownership.py` — Material Issue ownership classifier
-- API: `scan_manufacture_reconciliation`, `dry_run_manufacture_repair`, `apply_manufacture_repair`
+## Manufacture Merge
 
-## Hardening (same 5.5.0)
+Multiple Manufacture documents can be selected for merge into one canonical SE.  
+Unsupported downstream (e.g. Delivery Note) blocks Apply.
 
-- Proven Material Issue → MERGE into canonical Manufacture (SLE outgoing rate)
-- Shared multi-row MI → BLOCK (no row-split MVP)
-- Downstream dependency graph is Manufacture FG Item×Batch scoped
-- Shared Material Transfer recreate: `DEDICATED` / `SHARED_RECREATE_SAFE` / `SHARED_BLOCKED`
-  via savepoint cancel probe (no row-split; no foreign-chain expansion)
-- Physical equivalence check on recreated shared logistics
-- PO-JOB08760: `31726` SAFE alone; `31725` BLOCKED (unrelated stock shortfall) → pre-apply BLOCKED
+## Material Issue Merge
+
+Proven manufacturing Material Issues may merge into canonical Manufacture (`MI_MERGE_SAFE`).  
+Shared / ambiguous / finance-review MIs remain blocked for MVP. Feature unchanged by temporary bridge work.
+
+## Component Scrap Pairing
+
+Consume ↔ Component Scrap paired once. Scrap quantity is visible but does not double-drain Remaining WIP.
+
+## Atomic Repair
+
+Dry Run and Apply share one engine. Failures roll back everything. Sync valuation only; no async RIV.  
+Audit log written after Dry Run rollback / Apply commit.
+
+## Temporary Receipt Bridge
+
+Disposable Material Receipt covers exact cancel shortages so shared logistics can be cancelled/recreated without foreign-document chains. Lifecycle: create → submit → use → cancel → delete. Must not survive Apply. Excluded from Golden Rule evidence.
+
+## Shared Logistics
+
+Classification: DEDICATED / SHARED_RECREATE_SAFE / SHARED_BLOCKED.  
+Whole-document recreate (no row-split). Bridge unlocks stock-shortfall SHARED_BLOCKED when exact shortages are known.
+
+## Golden Rule Audit Report
+
+**Report:** Job Card Golden Rule Audit  
+**Date basis:** `Job Card.posting_date`  
+**Grain:** Job Card × Component Item × Batch  
+**Read-only.** Default shows exceptions only (`Show Balanced` optional).  
+Flags: missing consumption, unexplained WIP, over consume/return, scrap mismatch, multiple Manufacture, merge/MI review, blocked/ambiguous.  
+Links to Job Card and Job Card Stock Rebuild.
+
+## Safety / Rollback
+
+- Dry Run always rolls back business mutations  
+- Apply commits once after verification  
+- Pre-Apply Development DB backup recommended  
+- No Core patch, no SQL repair, no Fix All from the audit report  
+
+## Historical Repair Mode
+
+Repaired Manufactures keep the selected historical contract stamp (e.g. 5.3.34) while the live contract remains 5.3.43.
+
+## Controlled Canary
+
+PO-JOB08760 — disposition `13200544 × 1148 = CONSUMED` applied atomically with temporary receipt bridge and shared logistics recreate.

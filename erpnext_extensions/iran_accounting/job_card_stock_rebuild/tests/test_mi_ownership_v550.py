@@ -46,55 +46,48 @@ class TestMIOwnershipV550(FrappeTestCase):
 			c = classify_material_issue("MAT-STE-2026-31839", "PO-JOB08001", ev)
 			self.assertIn(c["classification"], (MI_BLOCKED, MI_USER_DECISION, MI_MERGE_SAFE))
 
-	def test_08760_shared_logistics_blocked(self):
+	def test_08760_shared_logistics_no_foreign(self):
+		"""Post-Apply: replacements may still need bridge; foreign seven never expand."""
 		if not frappe.db.exists("Job Card", "PO-JOB08760"):
 			self.skipTest("missing PO-JOB08760")
-		down = discover_downstream("PO-JOB08760", ["MAT-STE-2026-31724-1"])
-		# Minimal cancel set must NOT include foreign co-item chain docs
+		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule import (
+			scan_golden_rule,
+		)
+
+		mfg = scan_golden_rule("PO-JOB08760")["manufactures"][0].name
+		down = discover_downstream("PO-JOB08760", [mfg])
 		minimal = set(down.get("minimal_cancel_set") or [])
 		self.assertNotIn("MAT-STE-2026-37777", minimal)
 		self.assertNotIn("MAT-STE-2026-37643", minimal)
-		# Raw class remains SHARED_BLOCKED; temporary bridge unlocks cancel set.
-		audit = {a.name if hasattr(a, "name") else a["name"]: a for a in down.get("logistics_audit") or []}
-		if "MAT-STE-2026-31725" in audit:
-			row = audit["MAT-STE-2026-31725"]
-			cls = getattr(row, "shared_class", None) or row.get("shared_class")
-			self.assertEqual(cls, "SHARED_BLOCKED")
-			bridge_unlock = getattr(row, "bridge_unlock", None)
-			if bridge_unlock is None:
-				bridge_unlock = row.get("bridge_unlock")
-			self.assertTrue(bridge_unlock)
-		bridge = down.get("temporary_bridge") or {}
-		self.assertTrue(bridge.get("required"))
-		self.assertIn("MAT-STE-2026-31725", minimal)
-		self.assertFalse(
-			any(
-				(b.get("shared_class") if isinstance(b, dict) else None) == "SHARED_BLOCKED"
-				for b in (down.get("blocked") or [])
-			)
-		)
+		# Cancelled originals must not re-enter cancel set
+		self.assertNotIn("MAT-STE-2026-31725", minimal)
+		self.assertNotIn("MAT-STE-2026-31726", minimal)
 
-	def test_08760_plan_bridge_unlock(self):
+	def test_08760_plan_nothing_to_repair(self):
 		if not frappe.db.exists("Job Card", "PO-JOB08760"):
 			self.skipTest("missing PO-JOB08760")
+		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule import (
+			scan_golden_rule,
+		)
+
+		mfg = scan_golden_rule("PO-JOB08760")["manufactures"][0].name
 		plan = build_manufacture_plan(
 			"PO-JOB08760",
 			dispositions=[
 				{
 					"item_code": "13200544",
 					"batch_no": "5648-13200544-PR-10741",
-					"proposed_consumed": 1148,
+					"proposed_consumed": 0,
 					"proposed_scrap": 0,
 					"proposed_return": 0,
 					"proposed_still_in_wip": 0,
 				}
 			],
-			merge_documents=["MAT-STE-2026-31724-1"],
+			merge_documents=[mfg],
 			stamp_mode="HISTORICAL",
 		)
-		self.assertTrue(plan["apply_allowed"])
-		self.assertFalse(any("SHARED_BLOCKED" in b for b in plan["blockers"]))
-		self.assertTrue((plan.get("temporary_bridge") or {}).get("required"))
+		self.assertFalse(plan["apply_allowed"])
+		self.assertTrue(any("Nothing to repair" in b for b in plan["blockers"]))
 
 	def test_mi_evidence_bucket(self):
 		if not frappe.db.exists("Job Card", "PO-JOB09002"):
