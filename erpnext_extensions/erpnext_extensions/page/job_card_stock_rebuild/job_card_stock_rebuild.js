@@ -195,6 +195,9 @@ class JobCardStockRebuildPage {
 		this.mfgDecisions = {};
 		this.mfgDryRunId = null;
 		this.mfgDryPollTimer = null;
+		this.mfgApplyRunId = null;
+		this.mfgApplyPollTimer = null;
+		this.mfgRepairMode = null; // DRY_RUN | APPLY
 		this.$mfgDryProgress = $('<div data-role="mfg-dry-progress" class="jcsr-mfg-dry-progress">').appendTo(
 			this.$body
 		);
@@ -925,34 +928,73 @@ class JobCardStockRebuildPage {
 		});
 	}
 
-	_mfg_dry_storage_key(jc) {
-		return "jcsr_dry_run:" + String(jc || "");
+	_mfg_repair_storage_key(jc) {
+		return "jcsr_repair:" + String(jc || "");
 	}
 
-	_stop_mfg_dry_poll() {
+	/** @deprecated use _mfg_repair_storage_key */
+	_mfg_dry_storage_key(jc) {
+		return this._mfg_repair_storage_key(jc);
+	}
+
+	_stop_mfg_repair_poll() {
 		if (this.mfgDryPollTimer) {
 			clearInterval(this.mfgDryPollTimer);
 			this.mfgDryPollTimer = null;
 		}
+		if (this.mfgApplyPollTimer) {
+			clearInterval(this.mfgApplyPollTimer);
+			this.mfgApplyPollTimer = null;
+		}
+	}
+
+	_stop_mfg_dry_poll() {
+		this._stop_mfg_repair_poll();
+	}
+
+	_set_mfg_repair_controls(active, mode) {
+		const m = mode || this.mfgRepairMode || "DRY_RUN";
+		if (this.btn_mfg_dry) {
+			this.btn_mfg_dry.prop("disabled", !!active && m === "APPLY");
+			this.btn_mfg_dry.text(
+				active && m === "DRY_RUN"
+					? __("Dry Run in progress…")
+					: __("Dry Run Manufacture Repair")
+			);
+		}
+		if (this.btn_mfg_apply) {
+			if (active) {
+				this.btn_mfg_apply.prop("disabled", m === "DRY_RUN");
+				this.btn_mfg_apply.text(
+					m === "APPLY" ? __("Apply in progress…") : __("Apply Manufacture Repair")
+				);
+			} else {
+				this.btn_mfg_apply.text(__("Apply Manufacture Repair"));
+				// Apply enabled only after a successful Dry Run unless already committed UI state
+				const pass =
+					this.mfgDry &&
+					(this.mfgDry.status === "DRY_RUN_PASS" || this.mfgDry.ok === true) &&
+					!this.mfgDry.committed;
+				this.btn_mfg_apply.prop("disabled", !pass);
+			}
+		}
+		if (this.btn_mfg_scan && active) {
+			this.btn_mfg_scan.prop("disabled", true);
+		} else if (this.btn_mfg_scan) {
+			this.btn_mfg_scan.prop("disabled", false);
+		}
 	}
 
 	_set_mfg_dry_controls(active) {
-		if (this.btn_mfg_dry) {
-			// Keep clickable while active so a second click can reconnect to the
-			// same run (server-side single-flight). Apply stays blocked.
-			this.btn_mfg_dry.prop("disabled", false);
-			this.btn_mfg_dry.text(
-				active ? __("Dry Run in progress…") : __("Dry Run Manufacture Repair")
-			);
-		}
-		if (this.btn_mfg_apply) this.btn_mfg_apply.prop("disabled", true);
+		this._set_mfg_repair_controls(active, "DRY_RUN");
 	}
 
-	_render_mfg_dry_progress(st) {
+	_render_mfg_repair_progress(st) {
 		const s = st || {};
 		const pct = Math.max(0, Math.min(100, parseInt(s.progress || 0, 10) || 0));
 		const phase = s.phase || "";
 		const status = s.status || "";
+		const mode = s.mode || this.mfgRepairMode || "";
 		let valDetail = "";
 		if (s.valuation_roots_total) {
 			valDetail = ` · ${__("Valuation")} ${s.valuation_roots_done || 0} / ${
@@ -960,104 +1002,190 @@ class JobCardStockRebuildPage {
 			}`;
 		}
 		const msg = s.message || status || "";
+		const barColor = mode === "APPLY" ? "#d9534f" : "#f0ad4e";
 		if (!this.$mfgDryProgress) return;
 		this.$mfgDryProgress.html(`
 			<div class="jcsr-alert ok" data-role="mfg-dry-progress-box">
 				<strong>${frappe.utils.escape_html(status)}</strong>
 				— ${frappe.utils.escape_html(phase)} (${pct}%)${frappe.utils.escape_html(valDetail)}
 				<div class="jcsr-meta">${frappe.utils.escape_html(msg)}
-				· run=${frappe.utils.escape_html(s.run_id || "")}</div>
+				· ${frappe.utils.escape_html(mode)}
+				· run=${frappe.utils.escape_html(s.run_id || "")}
+				· job=${frappe.utils.escape_html(s.job_id || "")}</div>
 				<div style="background:#eee;height:8px;border-radius:4px;margin-top:6px;overflow:hidden">
-					<div style="background:#f0ad4e;height:8px;width:${pct}%"></div>
+					<div style="background:${barColor};height:8px;width:${pct}%"></div>
 				</div>
 			</div>
 		`);
 	}
 
-	_poll_mfg_dry_status(runId) {
-		this._stop_mfg_dry_poll();
+	_render_mfg_dry_progress(st) {
+		this._render_mfg_repair_progress(st);
+	}
+
+	_poll_mfg_repair_status(runId, mode) {
+		this._stop_mfg_repair_poll();
+		this.mfgRepairMode = mode;
+		const statusMethod =
+			mode === "APPLY"
+				? this.api + ".get_manufacture_repair_apply_status"
+				: this.api + ".get_manufacture_repair_dry_run_status";
 		const tick = () => {
 			frappe.call({
-				method: this.api + ".get_manufacture_repair_dry_run_status",
+				method: statusMethod,
 				args: { run_id: runId },
 				callback: (r) => {
 					const st = r.message || {};
-					this._render_mfg_dry_progress(st);
-					const terminal = ["PASS", "FAILED", "STALE_PLAN", "BLOCKED", "CANCELLED"].includes(
-						st.status
-					);
+					st.mode = st.mode || mode;
+					this._render_mfg_repair_progress(st);
+					const terminal = [
+						"PASS",
+						"COMMITTED",
+						"FAILED",
+						"STALE_PLAN",
+						"BLOCKED",
+						"CANCELLED",
+					].includes(st.status);
 					if (!terminal) return;
-					this._stop_mfg_dry_poll();
-					this._set_mfg_dry_controls(false);
+					this._stop_mfg_repair_poll();
 					this.mfgDryRunId = null;
+					this.mfgApplyRunId = null;
 					const jc = this.jc.get_value();
 					try {
-						localStorage.removeItem(this._mfg_dry_storage_key(jc));
+						localStorage.removeItem(this._mfg_repair_storage_key(jc));
 					} catch (e) {
 						/* ignore */
 					}
 					const result = st.result || {};
-					this.mfgDry = Object.assign({}, result, {
-						status: st.status === "PASS" ? "DRY_RUN_PASS" : st.status,
-						ok: st.status === "PASS",
-						error: st.error || result.error,
-						mutated: result.mutated === true ? true : false,
-						committed: result.committed === true ? true : false,
-						canonical_name: result.canonical_name,
-						logistics_equivalence: result.logistics_equivalence,
-						fingerprint: result.fingerprint,
-						phase_timings: result.phase_timings,
-						queued: true,
-						run_id: runId,
-					});
-					this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
-					this.render_mfg_dry();
-					const pass = this.mfgDry.ok && this.mfgDry.status === "DRY_RUN_PASS";
-					this.btn_mfg_apply.prop("disabled", !pass);
-					if (this.$mfgDryProgress) {
-						const cls = pass ? "ok" : "blocker";
-						this.$mfgDryProgress
-							.find("[data-role='mfg-dry-progress-box']")
-							.removeClass("ok blocker")
-							.addClass(cls);
+					if (mode === "APPLY") {
+						const committed =
+							st.status === "COMMITTED" || result.committed === true;
+						this.mfgDry = Object.assign({}, result, {
+							status: committed ? "APPLY_PASS" : st.status,
+							ok: committed,
+							error: st.error || result.error,
+							mutated: result.mutated === true,
+							committed: committed,
+							canonical_name: result.canonical_name,
+							logistics_equivalence: result.logistics_equivalence,
+							fingerprint: result.fingerprint,
+							phase_timings: result.phase_timings,
+							queued: true,
+							run_id: runId,
+							mode: "APPLY",
+						});
+						this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
+						this.render_mfg_dry();
+						this._set_mfg_repair_controls(false, "APPLY");
+						this.btn_mfg_apply.prop("disabled", true);
+						this.btn_mfg_dry.prop("disabled", false);
+						if (this.$mfgDryProgress) {
+							const cls = committed ? "ok" : "blocker";
+							const box = this.$mfgDryProgress.find("[data-role='mfg-dry-progress-box']");
+							box.removeClass("ok blocker").addClass(cls);
+							if (committed) {
+								box.prepend(
+									`<div><strong>${__(
+										"APPLY PASS — COMMITTED"
+									)}</strong> · mutated=true · committed=true
+									· ${frappe.utils.escape_html(result.canonical_name || "")}</div>`
+								);
+							}
+						}
+						if (committed) {
+							frappe.show_alert({
+								message: __("APPLY PASS — COMMITTED"),
+								indicator: "green",
+							});
+							// Rescan to refresh Golden Rule
+							this.run_mfg_scan();
+						}
+					} else {
+						this.mfgDry = Object.assign({}, result, {
+							status: st.status === "PASS" ? "DRY_RUN_PASS" : st.status,
+							ok: st.status === "PASS",
+							error: st.error || result.error,
+							mutated: result.mutated === true ? true : false,
+							committed: result.committed === true ? true : false,
+							canonical_name: result.canonical_name,
+							logistics_equivalence: result.logistics_equivalence,
+							fingerprint: result.fingerprint,
+							phase_timings: result.phase_timings,
+							queued: true,
+							run_id: runId,
+							mode: "DRY_RUN",
+						});
+						this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
+						this.render_mfg_dry();
+						this._set_mfg_repair_controls(false, "DRY_RUN");
+						const pass = this.mfgDry.ok && this.mfgDry.status === "DRY_RUN_PASS";
+						this.btn_mfg_apply.prop("disabled", !pass);
+						if (this.$mfgDryProgress) {
+							const cls = pass ? "ok" : "blocker";
+							this.$mfgDryProgress
+								.find("[data-role='mfg-dry-progress-box']")
+								.removeClass("ok blocker")
+								.addClass(cls);
+						}
 					}
 				},
 			});
 		};
 		tick();
-		this.mfgDryPollTimer = setInterval(tick, 2000);
+		const timer = setInterval(tick, 2000);
+		if (mode === "APPLY") this.mfgApplyPollTimer = timer;
+		else this.mfgDryPollTimer = timer;
+	}
+
+	_poll_mfg_dry_status(runId) {
+		this._poll_mfg_repair_status(runId, "DRY_RUN");
 	}
 
 	_resume_mfg_dry_if_active(jc) {
 		if (!jc) return;
 		let stored = null;
 		try {
-			stored = localStorage.getItem(this._mfg_dry_storage_key(jc));
+			stored = localStorage.getItem(this._mfg_repair_storage_key(jc));
 		} catch (e) {
 			stored = null;
 		}
 		frappe.call({
-			method: this.api + ".get_active_manufacture_repair_dry_run",
+			method: this.api + ".get_active_manufacture_repair_apply",
 			args: { job_card: jc },
 			callback: (r) => {
 				const msg = r.message || {};
 				const runId = (msg.active && msg.run_id) || stored;
 				if (!runId) return;
-				this.mfgDryRunId = runId;
-				this._set_mfg_dry_controls(true);
-				this._poll_mfg_dry_status(runId);
+				const mode = (msg.mode || "DRY_RUN").toUpperCase();
+				if (mode === "APPLY") {
+					this.mfgApplyRunId = runId;
+					this.mfgRepairMode = "APPLY";
+					this._set_mfg_repair_controls(true, "APPLY");
+					this._poll_mfg_repair_status(runId, "APPLY");
+				} else {
+					this.mfgDryRunId = runId;
+					this.mfgRepairMode = "DRY_RUN";
+					this._set_mfg_repair_controls(true, "DRY_RUN");
+					this._poll_mfg_repair_status(runId, "DRY_RUN");
+				}
 			},
 		});
 	}
 
 	run_mfg_dry() {
 		const jc = this.jc.get_value();
+		if (this.mfgApplyRunId || this.mfgApplyPollTimer) {
+			frappe.msgprint(__("APPLY_IN_PROGRESS — wait for Apply to finish"));
+			return;
+		}
 		const plan = this.collect_mfg_plan();
-		this._set_mfg_dry_controls(true);
-		this._render_mfg_dry_progress({
+		this.mfgRepairMode = "DRY_RUN";
+		this._set_mfg_repair_controls(true, "DRY_RUN");
+		this._render_mfg_repair_progress({
 			status: "QUEUED",
 			phase: "QUEUED",
 			progress: 0,
+			mode: "DRY_RUN",
 			message: __("Starting Dry Run…"),
 		});
 		frappe.call({
@@ -1068,57 +1196,99 @@ class JobCardStockRebuildPage {
 				const msg = r.message || {};
 				const runId = msg.run_id;
 				if (!runId) {
-					this._set_mfg_dry_controls(false);
+					this._set_mfg_repair_controls(false, "DRY_RUN");
 					frappe.msgprint(__("Failed to start Dry Run"));
+					return;
+				}
+				const mode = (msg.mode || "DRY_RUN").toUpperCase();
+				if (mode === "APPLY") {
+					this.mfgApplyRunId = runId;
+					this._set_mfg_repair_controls(true, "APPLY");
+					this._poll_mfg_repair_status(runId, "APPLY");
 					return;
 				}
 				this.mfgDryRunId = runId;
 				try {
-					localStorage.setItem(this._mfg_dry_storage_key(jc), runId);
+					localStorage.setItem(this._mfg_repair_storage_key(jc), runId);
 				} catch (e) {
 					/* ignore */
 				}
-				this._render_mfg_dry_progress({
+				this._render_mfg_repair_progress({
 					status: msg.status || "QUEUED",
 					phase: msg.phase || "QUEUED",
 					progress: msg.progress || 0,
+					mode: "DRY_RUN",
 					message: msg.message || (msg.already_running ? __("Reconnected") : __("Queued")),
 					run_id: runId,
+					job_id: msg.job_id,
 				});
-				this._poll_mfg_dry_status(runId);
+				this._poll_mfg_repair_status(runId, "DRY_RUN");
 			},
 			error: () => {
-				this._set_mfg_dry_controls(false);
+				this._set_mfg_repair_controls(false, "DRY_RUN");
 			},
 		});
 	}
 
 	run_mfg_apply() {
 		const jc = this.jc.get_value();
-		if (this.mfgDryPollTimer || this.mfgDryRunId) {
-			frappe.msgprint(__("DRY_RUN_IN_PROGRESS — wait for the queued Dry Run to finish"));
+		if (this.mfgDryPollTimer || this.mfgDryRunId || this.mfgApplyPollTimer || this.mfgApplyRunId) {
+			frappe.msgprint(__("REPAIR_IN_PROGRESS — wait for the active repair to finish"));
 			return;
 		}
 		frappe.confirm(
 			__(
-				"Apply will CANCEL/SUBMIT real Stock Entries atomically. Continue only with authorization."
+				"This operation will permanently rebuild the Manufacture repair after verification. It will run in the background and may take several minutes. Continue only with authorization."
 			),
 			() => {
 				const plan = this.collect_mfg_plan();
-				this._call_mfg_repair({
-					method: this.api + ".apply_manufacture_repair",
+				this.mfgRepairMode = "APPLY";
+				this._set_mfg_repair_controls(true, "APPLY");
+				this._render_mfg_repair_progress({
+					status: "QUEUED",
+					phase: "QUEUED",
+					progress: 0,
+					mode: "APPLY",
+					message: __("Starting Apply…"),
+				});
+				frappe.call({
+					method: this.api + ".start_manufacture_repair_apply",
 					args: { job_card: jc, plan: plan, confirm: 1 },
-					freeze: true,
-					freeze_message: __("Applying Manufacture Repair…"),
+					freeze: false,
 					callback: (r) => {
 						const msg = r.message || {};
-						frappe.msgprint({
-							title: msg.ok ? __("Apply PASS") : __("Apply FAIL"),
-							indicator: msg.ok ? "green" : "red",
-							message: `<pre>${frappe.utils.escape_html(
-								JSON.stringify(msg, null, 2).slice(0, 4000)
-							)}</pre>`,
+						if (msg.already_committed) {
+							this._set_mfg_repair_controls(false, "APPLY");
+							frappe.msgprint(__("Apply already committed — rescan; do not re-run"));
+							this.run_mfg_scan();
+							return;
+						}
+						const runId = msg.run_id;
+						if (!runId) {
+							this._set_mfg_repair_controls(false, "APPLY");
+							frappe.msgprint(__("Failed to start Apply"));
+							return;
+						}
+						this.mfgApplyRunId = runId;
+						try {
+							localStorage.setItem(this._mfg_repair_storage_key(jc), runId);
+						} catch (e) {
+							/* ignore */
+						}
+						this._render_mfg_repair_progress({
+							status: msg.status || "QUEUED",
+							phase: msg.phase || "QUEUED",
+							progress: msg.progress || 0,
+							mode: "APPLY",
+							message:
+								msg.message || (msg.already_running ? __("Reconnected") : __("Queued")),
+							run_id: runId,
+							job_id: msg.job_id,
 						});
+						this._poll_mfg_repair_status(runId, "APPLY");
+					},
+					error: () => {
+						this._set_mfg_repair_controls(false, "APPLY");
 					},
 				});
 			}
