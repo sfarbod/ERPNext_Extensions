@@ -130,11 +130,27 @@ def _snapshot_business(job_card: str, se_names: list[str]) -> dict:
 
 
 def _cancel_se(name: str):
+	"""Cancel a submitted Stock Entry via Core ``doc.cancel()``.
+
+	Also stamps the configured Workflow cancellation state. Core skips
+	``validate_workflow`` / ``set_workflow_state_on_action`` on cancel
+	(``_save`` omits ``_validate`` when ``_action == "cancel"``); interactive
+	cancels rely on ``apply_workflow`` to stamp ``next_state`` first. Repair
+	mirrors that stamp so ``docstatus=2`` never finishes with a submitted
+	``workflow_state``.
+	"""
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.workflow_cancel import (
+		ensure_cancel_workflow_state_persisted,
+		stamp_cancel_workflow_state,
+	)
+
 	doc = frappe.get_doc("Stock Entry", name)
 	if doc.docstatus != 1:
 		return
 	doc.flags.ignore_permissions = True
+	stamp_cancel_workflow_state(doc)
 	doc.cancel()
+	ensure_cancel_workflow_state_persisted(doc)
 
 
 def _snapshot_se_batches(name: str) -> list[dict]:
