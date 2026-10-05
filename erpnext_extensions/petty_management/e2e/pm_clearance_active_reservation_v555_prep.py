@@ -362,3 +362,276 @@ def try_sibling_alloc(
 	except Exception as e:
 		frappe.db.rollback()
 		return {"ok": False, "error": str(e)[:500]}
+
+
+def _insert_clearance(emp: str, req: str, pi: str, alloc: float, *, owner: str, manager: str) -> str:
+	cl = frappe.new_doc("PM Clearance")
+	cl.company = tpm.COMPANY
+	cl.employee = emp
+	cl.transaction_date = today()
+	tpm._append_pm_clearance_detail_row(
+		cl,
+		{
+			"settlement_type": "Purchase Invoice",
+			"purchase_invoice": pi,
+			"allocated_amount": alloc,
+			"outstanding_amount": 1000,
+		},
+	)
+	cl.append(
+		"request_allocations",
+		{"funding_source_type": "PM Request", "pm_request": req, "allocated_amount": alloc},
+	)
+	cl.flags.ignore_mandatory = True
+	cl.insert(ignore_permissions=True)
+	frappe.db.set_value(
+		"PM Clearance",
+		cl.name,
+		{"owner": owner, "manager_approver": manager},
+		update_modified=False,
+	)
+	return cl.name
+
+
+@frappe.whitelist()
+def prepare_pending_reservation_fixture() -> dict:
+	"""Draft A=700 for Desk submit → Pending Manager / Finance reservation tests."""
+	frappe.set_user("Administrator")
+	tpm._ensure_company_context()
+	holder, manager, reviewer = _setup_users_settings()
+	pi = _existing_submitted_pi()
+	orig = flt(frappe.db.get_value("Purchase Invoice", pi, "outstanding_amount"))
+	emp = tpm._make_employee()
+	frappe.db.set_value("Employee", emp, "expense_approver", manager, update_modified=False)
+	frappe.db.set_value("Employee", emp, "user_id", holder, update_modified=False)
+	tpm._make_holder(emp)
+	frappe.db.set_value("Purchase Invoice", pi, "outstanding_amount", 1000, update_modified=False)
+	req, pe = tpm._fund_pm_request(emp, 1000)
+	a = _insert_clearance(emp, req, pi, 700, owner=holder, manager=manager)
+	frappe.db.commit()
+	return {
+		"clearance_a": a,
+		"pm_request": req,
+		"payment_entry": pe,
+		"purchase_invoice": pi,
+		"original_pi_outstanding": orig,
+		"employee": emp,
+		"company": tpm.COMPANY,
+		"password": PASSWORD,
+		"users": {
+			"holder": {"email": holder, "password": PASSWORD},
+			"manager": {"email": manager, "password": PASSWORD},
+			"reviewer": {"email": reviewer, "password": PASSWORD},
+		},
+	}
+
+
+@frappe.whitelist()
+def prepare_return_retain_fixture() -> dict:
+	"""A=700 Draft + B=300 Draft for Return-retains-reservation Desk flow."""
+	frappe.set_user("Administrator")
+	tpm._ensure_company_context()
+	holder, manager, reviewer = _setup_users_settings()
+	pi = _existing_submitted_pi()
+	orig = flt(frappe.db.get_value("Purchase Invoice", pi, "outstanding_amount"))
+	emp = tpm._make_employee()
+	frappe.db.set_value("Employee", emp, "expense_approver", manager, update_modified=False)
+	frappe.db.set_value("Employee", emp, "user_id", holder, update_modified=False)
+	tpm._make_holder(emp)
+	frappe.db.set_value("Purchase Invoice", pi, "outstanding_amount", 1000, update_modified=False)
+	req, pe = tpm._fund_pm_request(emp, 1000)
+	a = _insert_clearance(emp, req, pi, 700, owner=holder, manager=manager)
+	b = _insert_clearance(emp, req, pi, 300, owner=holder, manager=manager)
+	frappe.db.commit()
+	return {
+		"clearance_a": a,
+		"clearance_b": b,
+		"pm_request": req,
+		"payment_entry": pe,
+		"purchase_invoice": pi,
+		"original_pi_outstanding": orig,
+		"employee": emp,
+		"company": tpm.COMPANY,
+		"password": PASSWORD,
+		"users": {
+			"holder": {"email": holder, "password": PASSWORD},
+			"manager": {"email": manager, "password": PASSWORD},
+			"reviewer": {"email": reviewer, "password": PASSWORD},
+		},
+	}
+
+
+@frappe.whitelist()
+def prepare_correction_flow_fixture() -> dict:
+	"""Legacy-style over-allocation: settled 300 + pending 800 against paid 1000."""
+	frappe.set_user("Administrator")
+	tpm._ensure_company_context()
+	holder, manager, reviewer = _setup_users_settings()
+	pi = _existing_submitted_pi()
+	orig = flt(frappe.db.get_value("Purchase Invoice", pi, "outstanding_amount"))
+	emp = tpm._make_employee()
+	frappe.db.set_value("Employee", emp, "expense_approver", manager, update_modified=False)
+	frappe.db.set_value("Employee", emp, "user_id", holder, update_modified=False)
+	tpm._make_holder(emp)
+	frappe.db.set_value("Purchase Invoice", pi, "outstanding_amount", 1000, update_modified=False)
+	req, pe = tpm._fund_pm_request(emp, 1000)
+
+	# Valid pending first
+	pending = _insert_clearance(emp, req, pi, 700, owner=holder, manager=manager)
+	frappe.db.set_value(
+		"PM Clearance",
+		pending,
+		{
+			"workflow_state": resolve_workflow_state_link("Pending Finance Review"),
+			"status": "Pending Approval",
+		},
+		update_modified=False,
+	)
+	# Force over-allocation (800) after settled sibling consumes 300
+	settled = frappe.new_doc("PM Clearance")
+	settled.company = tpm.COMPANY
+	settled.employee = emp
+	settled.transaction_date = today()
+	tpm._append_pm_clearance_detail_row(
+		settled,
+		{
+			"settlement_type": "Purchase Invoice",
+			"purchase_invoice": pi,
+			"allocated_amount": 300,
+			"outstanding_amount": 1000,
+		},
+	)
+	settled.append(
+		"request_allocations",
+		{"funding_source_type": "PM Request", "pm_request": req, "allocated_amount": 300},
+	)
+	settled.flags.ignore_mandatory = True
+	settled.flags.ignore_validate = True
+	settled.insert(ignore_permissions=True)
+	frappe.db.set_value(
+		"PM Clearance",
+		settled.name,
+		{
+			"workflow_state": resolve_workflow_state_link("Approved"),
+			"status": "Settled",
+			"docstatus": 1,
+		},
+		update_modified=False,
+	)
+	frappe.db.sql(
+		"""
+		update `tabPM Clearance Request Allocation`
+		set allocated_amount=800 where parent=%s and parentfield='request_allocations'
+		""",
+		(pending,),
+	)
+	frappe.db.sql(
+		"update `tabPM Clearance Detail` set allocated_amount=800 where parent=%s",
+		(pending,),
+	)
+	frappe.db.set_value(
+		"PM Clearance", pending, "total_expense_amount", 800, update_modified=False
+	)
+	frappe.db.commit()
+	return {
+		"pm_clearance": pending,
+		"settled_clearance": settled.name,
+		"pm_request": req,
+		"payment_entry": pe,
+		"purchase_invoice": pi,
+		"original_pi_outstanding": orig,
+		"employee": emp,
+		"company": tpm.COMPANY,
+		"correct_to": 700,
+		"password": PASSWORD,
+		"paid": get_pm_request_paid_amount(req),
+		"available_excl_pending": get_pm_request_available_amount(req, pending),
+		"users": {
+			"holder": {"email": holder, "password": PASSWORD},
+			"manager": {"email": manager, "password": PASSWORD},
+			"reviewer": {"email": reviewer, "password": PASSWORD},
+		},
+	}
+
+
+@frappe.whitelist()
+def prepare_draft_delete_fixture() -> dict:
+	"""Draft A=700 for delete-release Desk lifecycle (Administrator UI delete)."""
+	from frappe.utils.password import check_password
+
+	fx = prepare_draft_reservation_fixture()
+	admin_password = "pm_admin_e2e_v555"
+	try:
+		check_password("Administrator", admin_password)
+	except Exception:
+		update_password("Administrator", admin_password)
+		frappe.db.commit()
+	fx["administrator"] = {"email": "Administrator", "password": admin_password}
+	return fx
+
+
+@frappe.whitelist()
+def create_sibling_draft(
+	pm_request: str,
+	employee: str,
+	purchase_invoice: str,
+	company: str,
+	amount: float,
+	owner: str,
+	manager: str,
+) -> dict:
+	"""Persist a sibling Draft (for Desk edit/save)."""
+	frappe.set_user("Administrator")
+	try:
+		name = _insert_clearance(
+			employee, pm_request, purchase_invoice, flt(amount), owner=owner, manager=manager
+		)
+		frappe.db.commit()
+		return {"ok": True, "name": name}
+	except Exception as e:
+		frappe.db.rollback()
+		return {"ok": False, "error": str(e)[:500]}
+
+
+@frappe.whitelist()
+def delete_clearance(pm_clearance: str) -> dict:
+	"""Administrator delete — used when test user lacks Delete (no permission broadening)."""
+	frappe.set_user("Administrator")
+	if not frappe.db.exists("PM Clearance", pm_clearance):
+		return {"ok": True, "already_gone": True}
+	frappe.delete_doc("PM Clearance", pm_clearance, force=1, ignore_permissions=True)
+	frappe.db.commit()
+	return {"ok": True, "name": pm_clearance}
+
+
+@frappe.whitelist()
+def get_request_reservation_audit(pm_request: str) -> dict:
+	"""Authoritative DB reservation view for a PM Request."""
+	frappe.set_user("Administrator")
+	paid = get_pm_request_paid_amount(pm_request)
+	prior = sum_prior_pm_request_allocations(pm_request, None)
+	res = clearance_reserves_pm_request_balance_sql("p")
+	rows = frappe.db.sql(
+		f"""
+		select p.name, p.docstatus, p.status, p.workflow_state, r.allocated_amount
+		from `tabPM Clearance Request Allocation` r
+		inner join `tabPM Clearance` p on p.name=r.parent and r.parenttype='PM Clearance'
+		where r.parentfield='request_allocations'
+		  and ifnull(r.is_legacy_row,0)=0
+		  and r.pm_request=%s
+		  and {res}
+		order by p.creation
+		""",
+		(pm_request,),
+		as_dict=True,
+	)
+	for row in rows:
+		row["workflow_title"] = _wf_title(row.workflow_state)
+	return {
+		"pm_request": pm_request,
+		"paid": paid,
+		"reserved_aggregate": prior,
+		"available": paid - prior,
+		"active_rows": rows,
+		"over_funded": prior > paid + 0.01,
+	}
