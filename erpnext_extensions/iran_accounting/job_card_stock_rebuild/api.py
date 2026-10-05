@@ -229,3 +229,29 @@ def apply_manufacture_repair(job_card: str, plan=None, confirm: int | bool = 0):
 	)
 
 	return _apply(job_card, plan=_parse_plan(plan), confirm=confirm)
+
+
+@frappe.whitelist()
+def scan_stale_cancelled_workflow(names=None, limit: int = 500):
+	"""Read-only report: cancelled Stock Entries with stale workflow_state.
+
+	Does not mutate historical documents.
+	"""
+	_guard()
+	from frappe.utils import cint
+
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.workflow_cancel import (
+		scan_stale_cancelled_stock_entry_workflow,
+	)
+
+	parsed = names
+	if isinstance(names, str) and names.strip():
+		parsed = (
+			json.loads(names)
+			if names.strip().startswith("[")
+			else [n.strip() for n in names.split(",") if n.strip()]
+		)
+	elif not names:
+		parsed = None
+	n = max(1, min(cint(limit) or 500, 5000))
+	return scan_stale_cancelled_stock_entry_workflow(names=parsed, limit=n)

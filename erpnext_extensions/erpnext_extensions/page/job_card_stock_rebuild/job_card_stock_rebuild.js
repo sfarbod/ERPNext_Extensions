@@ -162,6 +162,13 @@ class JobCardStockRebuildPage {
 					)}</a>`
 			)
 			.appendTo(this.$body);
+		$('<p class="jcsr-help jcsr-consumed-help">')
+			.text(
+				__(
+					"مصرف از پای‌کار*: کل مقدار خروجی ماده از پای‌کار در سند ساخت؛ مقدار ماده‌ای که به ضایعات تبدیل می‌شود نیز در مصرف منبع لحاظ می‌شود و ضایعات دوباره از مانده کسر نمی‌شود."
+				)
+			)
+			.appendTo(this.$body);
 		const $mfgActions = $('<div class="jcsr-actions jcsr-mfg-actions">').appendTo(this.$body);
 		this.btn_mfg_scan = $(
 			`<button type="button" class="btn btn-default" data-mfg="scan">${__(
@@ -1316,7 +1323,16 @@ class JobCardStockRebuildPage {
 					<th>${__("MFG Consume")}</th><th>${__("Material Issue")}</th>
 					<th>${__("Scrap")}</th>
 					<th>${__("Remaining")}</th><th>${__("Suggested")}</th>
-					<th>${__("Consumed*")}</th><th>${__("Scrap*")}</th>
+					<th title="${frappe.utils.escape_html(
+						__(
+							"کل مقدار خروجی ماده از پای‌کار در سند ساخت؛ مقدار ماده‌ای که به ضایعات تبدیل می‌شود نیز در مصرف منبع لحاظ می‌شود و ضایعات دوباره از مانده کسر نمی‌شود."
+						)
+					)}">${__("مصرف از پای‌کار*")}</th>
+					<th title="${frappe.utils.escape_html(
+						__(
+							"ضایعات قطعه بخشی از مصرف فیزیکی منبع است و دوباره از مانده پای‌کار کسر نمی‌شود."
+						)
+					)}">${__("Scrap*")}</th>
 					<th>${__("Return*")}</th><th>${__("Still WIP*")}</th>
 					<th>${__("Status")}</th>
 				</tr></thead><tbody></tbody>
