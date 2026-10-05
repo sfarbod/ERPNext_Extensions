@@ -816,19 +816,23 @@ class JobCardStockRebuildPage {
 	run_mfg_dry() {
 		const jc = this.jc.get_value();
 		const plan = this.collect_mfg_plan();
+		// Frappe core request.js currently ignores opts.timeout; force XHR timeout via ajaxSetup once.
+		const prev_ajax = $.ajaxSettings && $.ajaxSettings.timeout;
+		$.ajaxSetup({ timeout: 600000 }); // 10 minutes (ms)
 		frappe.call({
 			method: this.api + ".dry_run_manufacture_repair",
 			args: { job_card: jc, plan: plan },
 			freeze: true,
 			freeze_message: __("Dry Run Manufacture Repair (will rollback)…"),
-			// Shared logistics + temporary receipt bridge can exceed default ajax timeout.
-			timeout: 600,
 			callback: (r) => {
 				this.mfgDry = r.message || {};
 				this.mfgFingerprint = this.mfgDry.fingerprint || this.mfgFingerprint;
 				this.render_mfg_dry();
 				const pass = this.mfgDry.ok && this.mfgDry.status === "DRY_RUN_PASS";
 				this.btn_mfg_apply.prop("disabled", !pass);
+			},
+			always: () => {
+				$.ajaxSetup({ timeout: prev_ajax });
 			},
 		});
 	}
