@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from copy import deepcopy
 from typing import Any
@@ -25,6 +26,57 @@ from erpnext_extensions.iran_accounting.stock_posting_order.prevention import PR
 def _fail_point(name: str):
 	if getattr(frappe.flags, "jc_repair_fail_at", None) == name:
 		raise RuntimeError(f"INJECTED_FAILURE:{name}")
+
+
+class _PhaseTimer:
+	"""Temporary Dry Run / Apply phase instrumentation (non-secret)."""
+
+	def __init__(self):
+		self.t0 = time.perf_counter()
+		self.phases: list[dict[str, Any]] = []
+		self._open: dict[str, float] = {}
+
+	def start(self, code: str):
+		self._open[code] = time.perf_counter()
+
+	def end(self, code: str, **extra):
+		start = self._open.pop(code, None)
+		now = time.perf_counter()
+		if start is None:
+			start = now
+		row = {
+			"phase": code,
+			"start": round(start - self.t0, 4),
+			"end": round(now - self.t0, 4),
+			"elapsed": round(now - start, 4),
+			"cumulative": round(now - self.t0, 4),
+		}
+		if extra:
+			row.update(extra)
+		self.phases.append(row)
+		return row
+
+	def mark(self, code: str, **extra):
+		"""Instant marker (zero-width phase)."""
+		now = time.perf_counter()
+		row = {
+			"phase": code,
+			"start": round(now - self.t0, 4),
+			"end": round(now - self.t0, 4),
+			"elapsed": 0.0,
+			"cumulative": round(now - self.t0, 4),
+		}
+		if extra:
+			row.update(extra)
+		self.phases.append(row)
+		return row
+
+	def as_dict(self) -> dict[str, Any]:
+		return {
+			"total_elapsed": round(time.perf_counter() - self.t0, 4),
+			"phases": list(self.phases),
+			"slowest": sorted(self.phases, key=lambda r: r.get("elapsed") or 0, reverse=True)[:8],
+		}
 
 
 def _lock_scope(job_card: str, stock_entries: list[str]):
@@ -496,7 +548,11 @@ def run_repair(
 	if not dry_run and not cint(confirm):
 		frappe.throw(frappe._("Confirmation required before Apply."))
 
+	timer = _PhaseTimer()
+	timer.mark("T00")
+
 	plan_input = plan_input or {}
+	timer.start("T01")
 	plan = build_manufacture_plan(
 		job_card,
 		dispositions=plan_input.get("dispositions"),
@@ -504,9 +560,10 @@ def run_repair(
 		stamp_mode=plan_input.get("stamp_mode"),
 		merge_material_issues=plan_input.get("merge_material_issues"),
 	)
+	timer.end("T01")
 	client_fp = plan_input.get("fingerprint")
 	if client_fp and client_fp != plan["fingerprint"]:
-		return {
+		out = {
 			"ok": False,
 			"status": "STALE PLAN",
 			"error": "STALE PLAN — re-scan / rebuild plan required",
@@ -514,8 +571,10 @@ def run_repair(
 			"mutated": False,
 			"fingerprint": plan["fingerprint"],
 		}
+		out["phase_timings"] = timer.as_dict()
+		return out
 	if plan.get("blockers"):
-		return {
+		out = {
 			"ok": False,
 			"status": "BLOCKED",
 			"blockers": plan["blockers"],
@@ -524,6 +583,8 @@ def run_repair(
 			"mutated": False,
 			"plan": plan,
 		}
+		out["phase_timings"] = timer.as_dict()
+		return out
 
 	repair_run_id = str(uuid.uuid4())
 	merge_docs = list(plan.get("merge_documents") or [])
@@ -556,8 +617,11 @@ def run_repair(
 	frappe.flags[HISTORICAL_REPAIR_FLAG] = True
 	frappe.flags[PREVENTION_FLAG] = True
 	try:
+		timer.start("T02")
 		_lock_scope(job_card, scope)
+		timer.end("T02")
 		# Re-validate plan after lock
+		timer.start("T03")
 		fresh = build_manufacture_plan(
 			job_card,
 			dispositions=plan_input.get("dispositions"),
@@ -567,6 +631,7 @@ def run_repair(
 		)
 		if fresh["fingerprint"] != plan["fingerprint"]:
 			raise RuntimeError("STALE PLAN after lock")
+		timer.end("T03")
 
 		with suppress_auto_riv():
 			from erpnext_extensions.iran_accounting.job_card_stock_rebuild.shared_logistics import (
@@ -582,6 +647,7 @@ def run_repair(
 			)
 
 			# Full document snapshots + batch rates before cancel
+			timer.start("T04")
 			logistics_batches = {name: _snapshot_se_batches(name) for name in logistics}
 			logistics_snaps = {name: snapshot_stock_entry(name) for name in logistics}
 			result["logistics_snapshots"] = {
@@ -599,16 +665,21 @@ def run_repair(
 				for rr in (getattr(d, "related_rows", None) or (d.get("related_rows") if isinstance(d, dict) else None) or []):
 					if rr.get("item_code") and rr.get("batch_no"):
 						fg_keys.add((rr["item_code"], rr["batch_no"]))
+			timer.end("T04", logistics=len(logistics), fg_keys=len(fg_keys))
 
 			# 0) Temporary Material Receipt bridge (exact cancel shortages only)
+			timer.start("T05")
 			bridge_plan = fresh.get("temporary_bridge") or plan_temporary_bridge(logistics)
 			result["temporary_bridge"] = {
 				"required": bool(bridge_plan.get("required")),
 				"shortages": bridge_plan.get("shortages") or [],
 			}
+			timer.end("T05", shortages=len(bridge_plan.get("shortages") or []))
 			temp_name = ""
 			if bridge_plan.get("required") and bridge_plan.get("shortages"):
+				timer.start("T06_T07")
 				temp_name = create_and_submit_temp_receipt(bridge_plan, repair_run_id)
+				timer.end("T06_T07", temp_name=temp_name)
 				result["temporary_receipt"] = temp_name
 				result["created"].append(temp_name)
 				# Invalidate cancel-probe cache — stock changed.
@@ -617,7 +688,10 @@ def run_repair(
 
 			# 1) Temp cancel logistics reverse chrono (already sorted desc)
 			for i, name in enumerate(logistics):
+				phase = "T08" if i == 0 else ("T09" if i == 1 else f"T08x{i}")
+				timer.start(phase)
 				_cancel_se(name)
+				timer.end(phase, voucher=name)
 				result["cancelled"].append(name)
 				if i == 0:
 					_fail_point("after_first_cancel")
@@ -629,26 +703,34 @@ def run_repair(
 
 			# 2) Cancel proven Material Issues being merged into Manufacture
 			for name in merge_mis:
+				timer.start("T10_MI")
 				_cancel_se(name)
+				timer.end("T10_MI", voucher=name)
 				result["cancelled"].append(name)
 				_fail_point("after_mi_cancel")
 
 			# 3) Cancel manufactures
+			timer.start("T10")
 			for name in merge_docs:
 				_cancel_se(name)
 				result["cancelled"].append(name)
+			timer.end("T10", count=len(merge_docs))
 			if merge_mis:
 				_fail_point("after_mi_and_mfg_cancel")
 			_fail_point("after_mfg_cancel")
 
 			# 4) Create + submit canonical (includes MI consumption)
+			timer.start("T11_T12")
 			canonical = _build_canonical_se(fresh)
+			timer.end("T11_T12", canonical=canonical)
 			result["created"].append(canonical)
 			result["canonical_name"] = canonical
 
 			# 5) Recreate logistics in original chrono (reverse of cancel list)
 			equivalence = []
 			for ri, name in enumerate(reversed(logistics)):
+				phase = "T13" if ri == 0 else ("T14" if ri == 1 else f"T13x{ri}")
+				timer.start(phase)
 				new_name = _recreate_logistics(name, batch_snapshot=logistics_batches.get(name))
 				result["recreated_logistics"].append({"from": name, "to": new_name})
 				if ri == 0:
@@ -658,6 +740,7 @@ def run_repair(
 					logistics_snaps[name], new_name, fg_keys=fg_keys
 				)
 				equivalence.append(eq)
+				timer.end(phase, from_voucher=name, to_voucher=new_name, eq_ok=bool(eq.get("ok")))
 				if not eq.get("ok"):
 					_fail_point("during_unrelated_equivalence")
 					raise RuntimeError(
@@ -673,10 +756,14 @@ def run_repair(
 
 			# 6) Cancel + delete temporary receipt (must not survive repair)
 			if temp_name:
+				timer.start("T15")
 				cancel_temp_receipt(temp_name)
+				timer.end("T15", temp_name=temp_name)
 				_fail_point("after_temp_receipt_cancel")
+				timer.start("T16")
 				del_res = delete_temp_receipt(temp_name)
 				result["temporary_receipt_delete"] = del_res
+				timer.end("T16", deleted=bool(del_res.get("ok") if isinstance(del_res, dict) else del_res))
 				_fail_point("after_temp_receipt_delete")
 				absent = verify_temp_absent(temp_name)
 				result["temporary_receipt_absent"] = absent
@@ -689,16 +776,25 @@ def run_repair(
 				result["temporary_receipt"] = None
 
 			# 7) Sync valuation
+			timer.start("T17")
 			val_vouchers = [canonical] + [x["to"] for x in result["recreated_logistics"]]
 			val = sync_valuation_for_vouchers(val_vouchers)
 			result["valuation"] = val
+			timer.end(
+				"T17",
+				pairs=val.get("count"),
+				future_sle_total=val.get("future_sle_total"),
+				val_elapsed=val.get("elapsed"),
+			)
 			_fail_point("after_valuation")
 			if not val.get("ok"):
 				raise RuntimeError(val.get("error") or "Sync valuation failed")
 
 			# 8) Verify (MI must remain cancelled only if commit — dry run rolls back)
+			timer.start("T18_T22")
 			verification = _verify(fresh, canonical)
 			result["verification"] = verification
+			timer.end("T18_T22", verify_ok=bool(verification.get("ok")))
 			if not verification.get("ok"):
 				raise RuntimeError("; ".join(verification.get("errors") or ["verification failed"]))
 
@@ -709,32 +805,42 @@ def run_repair(
 		)
 
 		if dry_run:
+			timer.start("T23")
 			frappe.db.rollback()
+			timer.end("T23")
 			result["mutated"] = False
 			result["committed"] = False
 			# Audit after rollback would also roll back — write audit in new txn for dry run
+			timer.start("T24")
 			frappe.db.begin()
 			result["audit"] = _write_audit(result)
 			frappe.db.commit()
+			timer.end("T24")
 		else:
 			result["audit"] = _write_audit(result)
 			frappe.db.commit()
 			result["mutated"] = True
 			result["committed"] = True
+		result["phase_timings"] = timer.as_dict()
 		return result
 	except Exception as exc:
+		timer.start("T23")
 		frappe.db.rollback()
+		timer.end("T23", error=True)
 		result["ok"] = False
 		result["status"] = "DRY_RUN_FAIL" if dry_run else "APPLY_FAIL"
 		result["error"] = str(exc)
 		result["mutated"] = False
 		result["committed"] = False
 		try:
+			timer.start("T24")
 			frappe.db.begin()
 			result["audit"] = _write_audit(result)
 			frappe.db.commit()
+			timer.end("T24")
 		except Exception:
 			pass
+		result["phase_timings"] = timer.as_dict()
 		return result
 	finally:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = prev_hist_flag
