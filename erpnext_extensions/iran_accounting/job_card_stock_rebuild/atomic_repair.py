@@ -407,7 +407,15 @@ def _build_canonical_se(plan: dict) -> str:
 		):
 			child["is_scrap_item"] = 0
 			child["secondary_item_type"] = child.get("secondary_item_type") or "Scrap"
+		if row.get("job_card_item"):
+			child["job_card_item"] = row["job_card_item"]
 		doc.append("items", child)
+
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.tracking_reconstruction import (
+		assert_canonical_jci_complete,
+	)
+
+	assert_canonical_jci_complete(canon.get("rows") or [])
 
 	doc.flags.ignore_permissions = True
 	# Site Server Script "Custom 9" bumps Manufacture after MTfM; skip via doc.flags.
@@ -678,6 +686,10 @@ def run_repair(
 				plan_temporary_bridge,
 				verify_temp_absent,
 			)
+			from erpnext_extensions.iran_accounting.job_card_stock_rebuild.tracking_reconstruction import (
+				apply_job_card_tracking,
+				apply_sed_backfills,
+			)
 
 			# Full document snapshots + batch rates before cancel
 			timer.start("T04")
@@ -700,6 +712,37 @@ def run_repair(
 					if rr.get("item_code") and rr.get("batch_no"):
 						fg_keys.add((rr["item_code"], rr["batch_no"]))
 			timer.end("T04", logistics=len(logistics), fg_keys=len(fg_keys))
+
+			# 0a) Job Card tracking reconstruction (metadata) — before cancel/submit
+			# so Custom 2/6 see linked MTfM and Core-compatible transferred_qty.
+			tracking = fresh.get("tracking_repair") or {}
+			result["tracking_repair"] = {
+				"components": tracking.get("components") or [],
+				"sed_counts": (tracking.get("sed_linkage") or {}).get("counts") or {},
+			}
+			_fail_point("after_jci_map")
+			timer.start("T04b")
+			_progress("T04b")
+			sed_applied = apply_sed_backfills(
+				(tracking.get("sed_linkage") or {}).get("safe_backfills") or []
+			)
+			result["tracking_repair"]["sed_backfilled"] = sed_applied
+			timer.end("T04b", n=len(sed_applied))
+			_fail_point("after_sed_backfill")
+
+			timer.start("T04c")
+			_progress("T04c")
+			# transferred = issued−returned; consumed left until post-cancel pre_submit write
+			xfer_applied = apply_job_card_tracking(
+				job_card,
+				tracking.get("components") or [],
+				phase="pre_submit",
+			)
+			# First pass only stamps transferred/customs; consumed=0 is correct after we
+			# cancel merged manufactures below — re-assert then.
+			result["tracking_repair"]["transferred_updates"] = xfer_applied
+			timer.end("T04c", n=len(xfer_applied))
+			_fail_point("after_transferred_update")
 
 			# 0) Temporary Material Receipt bridge (exact cancel shortages only)
 			timer.start("T05")
@@ -757,6 +800,18 @@ def run_repair(
 				_fail_point("after_mi_and_mfg_cancel")
 			_fail_point("after_mfg_cancel")
 
+			# 3b) Re-assert pre-submit tracking after cancel (consumed=0; transferred net)
+			timer.start("T10b")
+			_progress("T10b")
+			cons_applied = apply_job_card_tracking(
+				job_card,
+				tracking.get("components") or [],
+				phase="pre_submit",
+			)
+			result["tracking_repair"]["consumed_updates"] = cons_applied
+			timer.end("T10b", n=len(cons_applied))
+			_fail_point("after_consumed_update")
+
 			# 4) Create + submit canonical (includes MI consumption)
 			timer.start("T11_T12")
 			_progress("T11_T12")
@@ -765,6 +820,7 @@ def run_repair(
 			result["created"].append(canonical)
 			result["canonical_name"] = canonical
 			_fail_point("after_canonical")
+			_fail_point("after_canonical_submit")
 
 			# 5) Recreate logistics in original chrono (reverse of cancel list)
 			equivalence = []

@@ -8,7 +8,7 @@ import unittest
 def run():
 	loader = unittest.TestLoader()
 	suite = loader.loadTestsFromName(
-		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.tests.test_golden_rule_audit_v550"
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.tests.test_golden_rule_audit_v5510"
 	)
 	result = unittest.TextTestRunner(verbosity=2).run(suite)
 	details = []

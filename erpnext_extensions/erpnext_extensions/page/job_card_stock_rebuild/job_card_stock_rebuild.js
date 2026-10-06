@@ -1470,6 +1470,46 @@ class JobCardStockRebuildPage {
 			</div>`
 		);
 
+		$("<h4 class='jcsr-section-title'>").text(__("Job Card Tracking Repair")).appendTo(this.$mfg);
+		const tracking = plan.tracking_repair || {};
+		const sedCounts = (tracking.sed_linkage && tracking.sed_linkage.counts) || {};
+		this.$mfg.append(
+			`<div class="jcsr-meta" data-role="mfg-tracking-meta">
+				${__("Historical SED")}: ${frappe.utils.escape_html(String(sedCounts.total || 0))} ·
+				SAFE_BACKFILL: ${frappe.utils.escape_html(String(sedCounts.SAFE_BACKFILL || 0))} ·
+				AMBIGUOUS: ${frappe.utils.escape_html(String(sedCounts.AMBIGUOUS || 0))} ·
+				NOT_REQUIRED: ${frappe.utils.escape_html(String(sedCounts.NOT_REQUIRED || 0))}
+			</div>`
+		);
+		const $trk = $(
+			`<table class="jcsr-table" data-role="mfg-tracking-repair"><thead><tr>
+				<th>${__("Item")}</th><th>${__("Job Card Item")}</th>
+				<th>${__("Transferred")}</th><th>${__("Consumed")}</th>
+				<th>${__("SED links")}</th><th>${__("Mapping")}</th>
+			</tr></thead><tbody></tbody></table>`
+		);
+		(tracking.components || []).forEach((c) => {
+			const xfer = `${flt(c.current_transferred)} → ${
+				c.proposed_transferred == null ? "—" : flt(c.proposed_transferred)
+			}`;
+			const cons = `${flt(c.current_consumed)} → ${
+				c.proposed_consumed_after_apply == null
+					? "—"
+					: flt(c.proposed_consumed_after_apply)
+			}`;
+			$trk.find("tbody").append(`
+				<tr>
+					<td>${frappe.utils.escape_html(c.item_code || "")}</td>
+					<td><code>${frappe.utils.escape_html(c.job_card_item || "")}</code></td>
+					<td>${frappe.utils.escape_html(xfer)}</td>
+					<td>${frappe.utils.escape_html(cons)}</td>
+					<td>${flt(c.sed_links_to_backfill)}</td>
+					<td>${frappe.utils.escape_html(c.mapping_status || "")}</td>
+				</tr>
+			`);
+		});
+		this.$mfg.append($trk);
+
 		$("<h4 class='jcsr-section-title'>").text(__("Final Manufacture Preview")).appendTo(this.$mfg);
 		const canon = plan.canonical_manufacture || {};
 		this.$mfg.append(
@@ -1484,7 +1524,8 @@ class JobCardStockRebuildPage {
 		const $ct = $(
 			`<table class="jcsr-table"><thead><tr>
 				<th>${__("Type")}</th><th>${__("Item")}</th><th>${__("Batch")}</th>
-				<th>${__("Qty")}</th><th>${__("S / T")}</th><th>${__("Rate source")}</th>
+				<th>${__("Qty")}</th><th>${__("Job Card Item")}</th>
+				<th>${__("S / T")}</th><th>${__("Rate source")}</th>
 				<th>${__("Source")}</th>
 			</tr></thead><tbody></tbody></table>`
 		);
@@ -1495,6 +1536,7 @@ class JobCardStockRebuildPage {
 					<td>${frappe.utils.escape_html(row.item_code || "")}</td>
 					<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
 					<td>${flt(row.qty)}</td>
+					<td><code>${frappe.utils.escape_html(row.job_card_item || "")}</code></td>
 					<td>${frappe.utils.escape_html(row.s_warehouse || "")} → ${frappe.utils.escape_html(
 						row.t_warehouse || ""
 					)}</td>
