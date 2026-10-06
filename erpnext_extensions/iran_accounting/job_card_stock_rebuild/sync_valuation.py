@@ -279,6 +279,14 @@ def sync_valuation_for_vouchers(
 			)[0][0]
 			future_total += int(future_n or 0)
 			t1 = time.perf_counter()
+			# Job Card Manufacture repair already sets HISTORICAL_REPAIR_FLAG.
+			# Core ledger walk can encounter pre-existing intermediate negatives on
+			# unrelated Item×Batch rows in the same warehouse; allowing that during
+			# the walk matches historical_stock repair practice and does not change
+			# rates — it only prevents aborting the synchronous repost mid-chain.
+			from erpnext_extensions.iran_accounting.historical_stock import HISTORICAL_REPAIR_FLAG
+
+			allow_neg = bool(frappe.flags.get(HISTORICAL_REPAIR_FLAG))
 			obj = update_entries_after(
 				{
 					"item_code": p.item_code,
@@ -286,7 +294,7 @@ def sync_valuation_for_vouchers(
 					"posting_date": p.posting_date,
 					"posting_time": p.posting_time,
 				},
-				allow_negative_stock=False,
+				allow_negative_stock=allow_neg,
 			)
 			elapsed = round(time.perf_counter() - t1, 4)
 			prev = covered.get(key)

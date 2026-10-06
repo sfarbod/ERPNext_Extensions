@@ -623,6 +623,29 @@ def build_manufacture_plan(
 		_merge_consume_rows([], extra)
 	)
 
+	# Deterministic Job Card Item stamp on every CONSUME / source row (mandatory
+	# for Custom 6). Historical NULL JCI must not be copied onto the canonical.
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.tracking_reconstruction import (
+		build_jci_resolution,
+		canonical_consume_totals,
+		propose_tracking_reconstruction,
+		stamp_canonical_consume_rows,
+	)
+
+	jci_resolution = build_jci_resolution(job_card)
+	canonical_rows, jci_stamp_errors = stamp_canonical_consume_rows(canonical_rows, jci_resolution)
+	for err in jci_stamp_errors:
+		blockers.append(err)
+	tracking_repair = propose_tracking_reconstruction(
+		job_card,
+		dispositions=normalized,
+		canonical_consume_by_item=canonical_consume_totals(canonical_rows),
+		jci_resolution=jci_resolution,
+	)
+	for err in tracking_repair.get("blockers") or []:
+		if err not in blockers:
+			blockers.append(err)
+
 	# Posting datetime from latest selected MFG
 	posting_date = None
 	posting_time = None
@@ -813,6 +836,8 @@ def build_manufacture_plan(
 			"rows": canonical_rows,
 			"supersedes": list(merge_documents) + list(merge_material_issues),
 		},
+		"tracking_repair": tracking_repair,
+		"jci_resolution": jci_resolution,
 		"returns_needed": returns_needed,
 		"blockers": blockers,
 		"apply_allowed": apply_allowed,
