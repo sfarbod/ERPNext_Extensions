@@ -188,10 +188,33 @@ def align_manufacture_finished_good_residual(doc) -> None:
 		uses_type_c_sa_residual_policy,
 	)
 
-	# TYPE C: keep qty×integer-rate amounts; do not absorb leftover into FG.
+	# TYPE C policy: contract owns Product Reject / equal-rate composition.
+	# CLASS_TYPE_C leftover posts via Stock Adjustment — never close into FG.
+	# With real header operating cost spread across FG + Product Reject, classify
+	# may return TYPE_A_REAL_ADDITIONAL_COST; pool-closing into FG still destroys
+	# the equal issued rate (historical MAT-STE Product Reject + operating cost).
 	if uses_type_c_sa_residual_policy(doc):
 		result = classify_manufacture_irr_residual(doc)
 		if result.classification == CLASS_TYPE_C:
+			_refresh_header_totals(doc)
+			return
+		from erpnext_extensions.iran_accounting.scrap_costing import _has_product_reject
+
+		if _has_product_reject(doc):
+			fg_only = [
+				row
+				for row in (doc.get("items") or [])
+				if row.get("is_finished_item") and row.get("t_warehouse")
+			]
+			if len(fg_only) == 1:
+				currency = get_company_currency(doc.company)
+				qty = flt(
+					fg_only[0].transfer_qty
+					if fg_only[0].get("transfer_qty") not in (None, "")
+					else fg_only[0].get("qty")
+				)
+				if qty:
+					_apply_integer_rates(fg_only[0], qty, currency)
 			_refresh_header_totals(doc)
 			return
 
