@@ -558,9 +558,18 @@ def _verify(plan: dict, canonical_name: str) -> dict:
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule import scan_golden_rule
 
 	scan = scan_golden_rule(job_card)
+	offset_keys = {
+		(k.get("item_code"), k.get("batch_no") or "")
+		for k in (plan.get("approved_batch_offset_keys") or [])
+	}
 	for row in scan["rows"]:
 		# Skip non-component noise (defensive; scan already filters FG-only rows).
 		if flt(row.get("issued")) <= 1e-9 and flt(row.get("consumed")) <= 1e-9:
+			continue
+		key = (row["item_code"], row.get("batch_no") or "")
+		# Explicit approved zero-net batch offset: remaining may stay non-zero per batch.
+		if key in offset_keys:
+			row["repair_status"] = "APPROVED_BATCH_OFFSET"
 			continue
 		# Allow still-in-wip only if disposition said so
 		disp = next(
@@ -624,6 +633,8 @@ def _write_audit(payload: dict) -> str | None:
 						"dispositions": payload.get("dispositions"),
 						"merge_documents": payload.get("merge_documents"),
 						"merge_material_issues": payload.get("merge_material_issues"),
+						"batch_offset_approvals": payload.get("batch_offset_approvals"),
+						"approved_batch_offsets": payload.get("approved_batch_offsets"),
 					},
 					default=str,
 				),
@@ -688,6 +699,7 @@ def run_repair(
 		merge_documents=plan_input.get("merge_documents"),
 		stamp_mode=plan_input.get("stamp_mode"),
 		merge_material_issues=plan_input.get("merge_material_issues"),
+		batch_offset_approvals=plan_input.get("batch_offset_approvals"),
 	)
 	timer.end("T01")
 	client_fp = plan_input.get("fingerprint")
@@ -733,12 +745,62 @@ def run_repair(
 		"merge_documents": merge_docs,
 		"merge_material_issues": merge_mis,
 		"canonical_manufacture": plan.get("canonical_manufacture"),
+		"batch_offset_approvals": plan.get("batch_offset_approvals"),
+		"approved_batch_offsets": plan.get("approved_batch_offsets"),
+		"approved_batch_offset_keys": plan.get("approved_batch_offset_keys"),
+		"batch_offset_preview": plan.get("batch_offset_preview"),
+		"exception_only": bool(plan.get("exception_only")),
 		"blockers": [],
 		"cancelled": [],
 		"created": [],
 		"recreated_logistics": [],
 		"before_snapshot": before,
 	}
+
+	# Exception-only: validate + audit APPROVED_BATCH_OFFSET with zero stock mutation.
+	if plan.get("exception_only"):
+		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule import (
+			scan_golden_rule,
+		)
+
+		_progress("T10")
+		scan = scan_golden_rule(job_card)
+		for row in scan.get("rows") or []:
+			key = (row["item_code"], row.get("batch_no") or "")
+			if key in {
+				(k.get("item_code"), k.get("batch_no") or "")
+				for k in (plan.get("approved_batch_offset_keys") or [])
+			}:
+				row["repair_status"] = "APPROVED_BATCH_OFFSET"
+		result.update(
+			{
+				"ok": True,
+				"status": "DRY_RUN_PASS" if dry_run else "APPLY_PASS",
+				"mutated": False,
+				"committed": False,
+				"verification": {
+					"ok": True,
+					"errors": [],
+					"scan": scan,
+					"approved_batch_offsets": plan.get("approved_batch_offsets"),
+					"exception_status": "APPROVED_BATCH_OFFSET",
+				},
+				"after_snapshot": before,
+			}
+		)
+		if dry_run:
+			frappe.db.rollback()
+			result["committed"] = False
+			result["mutated"] = False
+			# Persist audit outside rolled-back business txn (same as stock dry-run).
+			result["audit"] = _write_audit(result)
+			frappe.db.commit()
+		else:
+			result["audit"] = _write_audit(result)
+			frappe.db.commit()
+			result["committed"] = True
+		result["phase_timings"] = timer.as_dict()
+		return result
 
 	# Outer transaction: rely on rollback/commit explicitly.
 	# Workstation status writes from Core Job Card side-effects are NOT part of
@@ -767,6 +829,7 @@ def run_repair(
 			merge_documents=plan_input.get("merge_documents"),
 			stamp_mode=plan_input.get("stamp_mode"),
 			merge_material_issues=plan_input.get("merge_material_issues"),
+			batch_offset_approvals=plan_input.get("batch_offset_approvals"),
 		)
 		if fresh["fingerprint"] != plan["fingerprint"]:
 			raise RuntimeError("STALE PLAN after lock")

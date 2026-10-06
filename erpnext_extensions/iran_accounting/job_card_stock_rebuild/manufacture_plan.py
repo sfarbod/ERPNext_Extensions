@@ -711,8 +711,14 @@ def build_manufacture_plan(
 	merge_documents: list[str] | None = None,
 	stamp_mode: str | None = None,
 	merge_material_issues: list[str] | None = None,
+	batch_offset_approvals: list[dict] | None = None,
 ) -> dict[str, Any]:
 	"""Authoritative repair plan from server evidence + user choices."""
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.batch_offset import (
+		STATUS_APPROVED,
+		detect_batch_offset_candidates,
+		resolve_batch_offset_approvals,
+	)
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.mi_ownership import (
 		ACTION_BLOCKED,
 		MI_BLOCKED,
@@ -722,7 +728,16 @@ def build_manufacture_plan(
 	)
 
 	scan = scan_golden_rule(job_card)
-	ok, errors, normalized = validate_dispositions(scan["rows"], dispositions or [])
+	offset_candidates = detect_batch_offset_candidates(job_card, scan["rows"])
+	offset_res = resolve_batch_offset_approvals(
+		job_card, scan["rows"], batch_offset_approvals, candidates=offset_candidates
+	)
+	ok, errors, normalized = validate_dispositions(
+		scan["rows"],
+		dispositions or [],
+		offset_exempt_keys=offset_res["exempt_keys"],
+	)
+	errors = list(errors) + list(offset_res.get("blockers") or [])
 	mfgs = scan["manufactures"]
 	mfg_names = [m.name for m in mfgs]
 	client_merge = merge_documents
@@ -927,6 +942,9 @@ def build_manufacture_plan(
 		if flt(d.get("proposed_return")) > 1e-9
 	]
 
+	approved_offset_items = sorted(
+		{g["item_code"] for g in (offset_res.get("approved_groups") or [])}
+	)
 	plan_fp = hashlib.sha256(
 		json.dumps(
 			{
@@ -936,6 +954,17 @@ def build_manufacture_plan(
 				"merge_material_issues": merge_material_issues,
 				"stamp": stamp,
 				"stamp_mode": stamp_mode or "HISTORICAL",
+				"batch_offset_approvals": [
+					{
+						"item_code": g["item_code"],
+						"evidence_fingerprint": g.get("evidence_fingerprint"),
+						"decision": g.get("decision"),
+					}
+					for g in sorted(
+						offset_res.get("approved_groups") or [],
+						key=lambda x: x["item_code"],
+					)
+				],
 				"logistics": [x.name for x in downstream["logistics"]],
 				"temp_bridge": {
 					"required": bool((downstream.get("temporary_bridge") or {}).get("required")),
@@ -1050,17 +1079,46 @@ def build_manufacture_plan(
 			}
 		)
 
-	needs_repair = (
+	stock_repair_needed = (
 		any(flt(d.get("proposed_consumed")) > 0 for d in normalized)
 		or len(merge_documents) > 1
 		or bool(merge_material_issues)
 	)
+	exception_only = bool(offset_res.get("approved_groups")) and not stock_repair_needed
+	needs_repair = stock_repair_needed or bool(offset_res.get("approved_groups"))
 	apply_allowed = not blockers and bool(merge_documents) and needs_repair
+	# Exception-only path records APPROVED_BATCH_OFFSET without stock mutation.
+	if exception_only and not blockers and bool(merge_documents):
+		apply_allowed = True
 	if not needs_repair and not blockers:
 		blockers.append("Nothing to repair")
 		apply_allowed = False
 	if blockers:
 		apply_allowed = False
+
+	# Annotate scan rows for UI / audit when offset approved
+	approved_keys = offset_res.get("exempt_keys") or set()
+	for r in scan.get("rows") or []:
+		key = (r["item_code"], r.get("batch_no") or "")
+		if key in approved_keys:
+			r["repair_status"] = STATUS_APPROVED
+			r["batch_offset_status"] = STATUS_APPROVED
+
+	batch_offset_preview = []
+	for g in offset_res.get("approved_groups") or []:
+		batch_offset_preview.append(
+			{
+				"exception": "BATCH_OFFSET_EXCEPTION",
+				"item_code": g["item_code"],
+				"batches": [
+					{"batch_no": b.get("batch_no"), "remaining_wip": b.get("remaining_wip")}
+					for b in (g.get("batches") or [])
+				],
+				"net": 0.0,
+				"action": "NO_STOCK_DOCUMENT_CHANGE",
+				"status": STATUS_APPROVED,
+			}
+		)
 
 	return {
 		"job_card": job_card,
@@ -1097,4 +1155,14 @@ def build_manufacture_plan(
 		"fingerprint": plan_fp,
 		"scan_fingerprint": scan["fingerprint"],
 		"client_merge_provided": client_merge is not None,
+		"batch_offset_candidates": offset_candidates,
+		"batch_offset_approvals": offset_res.get("audit") or [],
+		"approved_batch_offsets": offset_res.get("approved_groups") or [],
+		"approved_batch_offset_keys": [
+			{"item_code": k[0], "batch_no": k[1]} for k in sorted(approved_keys)
+		],
+		"batch_offset_preview": batch_offset_preview,
+		"stock_repair_needed": stock_repair_needed,
+		"exception_only": exception_only,
+		"approved_offset_items": approved_offset_items,
 	}

@@ -200,6 +200,8 @@ class JobCardStockRebuildPage {
 		this.mfgFingerprint = null;
 		/** @type {Object.<string,{consumed:number,scrap:number,return:number,still:number}>} */
 		this.mfgDecisions = {};
+		/** @type {Object.<string,{item_code:string,evidence_fingerprint:string,accepted:boolean}>} */
+		this.batchOffsetApprovals = {};
 		this.mfgDryRunId = null;
 		this.mfgDryPollTimer = null;
 		this.mfgApplyRunId = null;
@@ -239,6 +241,7 @@ class JobCardStockRebuildPage {
 		this.mfgDry = null;
 		this.mfgFingerprint = null;
 		this.mfgDecisions = {};
+		this.batchOffsetApprovals = {};
 		this._stop_mfg_dry_poll();
 		this.mfgDryRunId = null;
 		if (this.$mfg) this.$mfg.empty();
@@ -899,10 +902,23 @@ class JobCardStockRebuildPage {
 		this.$mfg.find('input[data-merge-mi]:checked').each((_, el) => {
 			merge_material_issues.push($(el).attr("data-merge-mi"));
 		});
+		const batch_offset_approvals = [];
+		Object.keys(this.batchOffsetApprovals || {}).forEach((item) => {
+			const a = this.batchOffsetApprovals[item];
+			if (a && a.accepted) {
+				batch_offset_approvals.push({
+					item_code: a.item_code,
+					evidence_fingerprint: a.evidence_fingerprint,
+					accepted: 1,
+					decision: "ACCEPT_BATCH_OFFSET_NO_REPAIR",
+				});
+			}
+		});
 		return {
 			dispositions,
 			merge_documents,
 			merge_material_issues,
+			batch_offset_approvals,
 			stamp_mode: "HISTORICAL",
 			fingerprint: this.mfgFingerprint,
 		};
@@ -927,6 +943,11 @@ class JobCardStockRebuildPage {
 				this.mfgDry = null;
 				// NEW SCAN: reinitialize editable decisions from backend suggestions.
 				this.init_mfg_decisions_from_scan((data.scan && data.scan.rows) || []);
+				this.batchOffsetApprovals = {};
+				this.batchOffsetCandidates =
+					data.batch_offset_candidates ||
+					(data.plan && data.plan.batch_offset_candidates) ||
+					[];
 				this.render_mfg();
 				this.btn_mfg_dry.prop("disabled", false);
 				this.btn_mfg_apply.prop("disabled", true);
@@ -1302,6 +1323,76 @@ class JobCardStockRebuildPage {
 		);
 	}
 
+	render_batch_offset_panel(candidates) {
+		const self = this;
+		const eligible = (candidates || []).filter((c) => c && c.eligible);
+		if (!eligible.length) return;
+		$("<h4 class='jcsr-section-title'>")
+			.text(__("Batch Difference / Offset"))
+			.appendTo(this.$mfg);
+		eligible.forEach((c) => {
+			const item = c.item_code;
+			const checked = !!(this.batchOffsetApprovals[item] && this.batchOffsetApprovals[item].accepted);
+			const batchLines = (c.batches || [])
+				.map(
+					(b) =>
+						`<div><code>${frappe.utils.escape_html(b.batch_no || "")}</code>
+						${flt(b.remaining_wip) >= 0 ? "+" : ""}${flt(b.remaining_wip)}
+						${checked ? " · <strong>APPROVED BATCH OFFSET / NO REPAIR</strong>" : ""}</div>`
+				)
+				.join("");
+			const $box = $(`
+				<div class="jcsr-alert" data-batch-offset-item="${frappe.utils.escape_html(item)}"
+				     style="border:1px solid #c8c8c8;padding:10px;margin:8px 0">
+					<div><strong>${__("Item")}: ${frappe.utils.escape_html(item)}</strong>
+					· ${__("Classification")}: BATCH OFFSET
+					· ${__("Net Item Remaining")}: ${flt(c.net_remaining)}</div>
+					<div style="margin:6px 0">${batchLines}</div>
+					<div class="text-muted" style="margin-bottom:6px">
+						${frappe.utils.escape_html(
+							c.explanation ||
+								__(
+									"Item-level quantity is balanced, but historical Batch attribution is inconsistent. Selecting this option accepts the historical Batch difference and leaves the original stock documents unchanged."
+								)
+						)}
+					</div>
+					<label>
+						<input type="checkbox" data-batch-offset-accept="${frappe.utils.escape_html(item)}"
+						       ${checked ? "checked" : ""}>
+						${__("Accept Batch Difference — No Repair")}
+						<span class="text-muted"> — ${__("اختلاف بچ پذیرفته شود — بدون اصلاح اسناد")}</span>
+					</label>
+				</div>
+			`);
+			$box.find("input[data-batch-offset-accept]").on("change", function () {
+				const on = $(this).is(":checked");
+				if (on) {
+					self.batchOffsetApprovals[item] = {
+						item_code: item,
+						evidence_fingerprint: c.evidence_fingerprint,
+						accepted: true,
+					};
+					// Clear stock dispositions for this item's batches — NO REPAIR.
+					(c.batches || []).forEach((b) => {
+						const key = self.mfg_row_key(item, b.batch_no || "");
+						self.mfgDecisions[key] = {
+							consumed: 0,
+							scrap: 0,
+							return: 0,
+							still: 0,
+						};
+					});
+				} else {
+					delete self.batchOffsetApprovals[item];
+				}
+				// Plan fingerprint includes approvals — force rebuild on next Dry Run.
+				self.mfgFingerprint = null;
+				self.render_mfg();
+			});
+			this.$mfg.append($box);
+		});
+	}
+
 	render_mfg() {
 		this.$mfg.empty();
 		const scan = this.mfgScan || {};
@@ -1367,6 +1458,36 @@ class JobCardStockRebuildPage {
 		});
 		this.$mfg.append($table);
 		this.bind_mfg_decision_inputs($table);
+
+		this.render_batch_offset_panel(
+			this.batchOffsetCandidates ||
+				(plan.batch_offset_candidates || [])
+		);
+
+		const previewOffsets = plan.batch_offset_preview || [];
+		if (previewOffsets.length) {
+			$("<h4 class='jcsr-section-title'>")
+				.text(__("BATCH OFFSET EXCEPTION"))
+				.appendTo(this.$mfg);
+			previewOffsets.forEach((p) => {
+				const batches = (p.batches || [])
+					.map(
+						(b) =>
+							`${frappe.utils.escape_html(b.batch_no || "")}: ${flt(
+								b.remaining_wip
+							)}`
+					)
+					.join("<br>");
+				this.$mfg.append(`
+					<div class="jcsr-alert ok">
+						<strong>${__("Item")}: ${frappe.utils.escape_html(p.item_code)}</strong><br>
+						${batches}<br>
+						${__("Net")}: ${flt(p.net)} · ${__("Action")}:
+						<code>${frappe.utils.escape_html(p.action || "NO_STOCK_DOCUMENT_CHANGE")}</code>
+					</div>
+				`);
+			});
+		}
 
 		$("<h4 class='jcsr-section-title'>").text(__("Documents")).appendTo(this.$mfg);
 		const $docTable = $(`
