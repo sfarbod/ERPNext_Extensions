@@ -20,6 +20,10 @@ from erpnext_extensions.iran_accounting.job_card_stock_rebuild.sync_valuation im
 	suppress_auto_riv,
 	sync_valuation_for_vouchers,
 )
+from erpnext_extensions.iran_accounting.job_card_stock_rebuild.workstation_isolation import (
+	SKIP_WORKSTATION_WRITES_FLAG,
+	ensure_workstation_isolation_patches,
+)
 from erpnext_extensions.iran_accounting.stock_posting_order.prevention import PREVENTION_FLAG
 
 
@@ -650,10 +654,16 @@ def run_repair(
 	}
 
 	# Outer transaction: rely on rollback/commit explicitly.
+	# Workstation status writes from Core Job Card side-effects are NOT part of
+	# stock reconciliation truth — isolate them so concurrent Production
+	# Workstation updates cannot raise MariaDB 1020 / overwrite live status.
 	prev_hist_flag = frappe.flags.get(HISTORICAL_REPAIR_FLAG)
 	prev_ppo_flag = frappe.flags.get(PREVENTION_FLAG)
+	prev_ws_skip = frappe.flags.get(SKIP_WORKSTATION_WRITES_FLAG)
+	ensure_workstation_isolation_patches()
 	frappe.flags[HISTORICAL_REPAIR_FLAG] = True
 	frappe.flags[PREVENTION_FLAG] = True
+	frappe.flags[SKIP_WORKSTATION_WRITES_FLAG] = True
 	try:
 		timer.start("T02")
 		_progress("T02")
@@ -949,6 +959,7 @@ def run_repair(
 	finally:
 		frappe.flags[HISTORICAL_REPAIR_FLAG] = prev_hist_flag
 		frappe.flags[PREVENTION_FLAG] = prev_ppo_flag
+		frappe.flags[SKIP_WORKSTATION_WRITES_FLAG] = prev_ws_skip
 
 
 def dry_run_manufacture_repair(job_card: str, plan: dict | None = None) -> dict:
