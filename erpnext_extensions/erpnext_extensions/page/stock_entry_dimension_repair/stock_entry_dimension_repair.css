@@ -1,0 +1,50 @@
+.se-dim-repair-page .se-dim-section {
+	margin-bottom: 18px;
+	padding-bottom: 12px;
+	border-bottom: 1px solid var(--border-color, #d1d8dd);
+}
+
+.se-dim-repair-page .se-dim-toolbar,
+.se-dim-repair-page .se-dim-targets {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	align-items: end;
+}
+
+.se-dim-repair-page .se-dim-meta-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 6px 16px;
+	margin: 10px 0;
+}
+
+.se-dim-repair-page .se-dim-status.mixed {
+	color: #c0392b;
+	font-weight: 600;
+}
+
+.se-dim-repair-page .se-dim-status.uniform {
+	color: #1e8449;
+	font-weight: 600;
+}
+
+.se-dim-repair-page tr.se-dim-row-diff {
+	background: #fff6e5;
+}
+
+.se-dim-repair-page .se-dim-group.mixed-group {
+	margin-top: 4px;
+}
+
+.se-dim-repair-page .se-dim-diff {
+	white-space: pre-wrap;
+	max-height: 280px;
+	overflow: auto;
+	background: var(--control-bg, #f5f7fa);
+	padding: 8px;
+}
+
+.se-dim-repair-page .se-dim-alert {
+	margin: 8px 0;
+}

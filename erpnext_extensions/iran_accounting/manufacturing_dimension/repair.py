@@ -89,11 +89,13 @@ def _require_stock_entry(name: str):
 	return frappe.get_doc("Stock Entry", name)
 
 
-def _row_payload(row) -> dict:
+def _row_payload(row, item_names: dict | None = None) -> dict:
+	item_code = row.item_code
 	return {
 		"idx": row.idx,
 		"row_name": row.name,
-		"item_code": row.item_code,
+		"item_code": item_code,
+		"item_name": (item_names or {}).get(item_code) or "",
 		"department": _norm(getattr(row, "department", None)),
 		"cost_center": _norm(getattr(row, "cost_center", None)),
 	}
@@ -106,7 +108,19 @@ def _group_key(department: str, cost_center: str) -> str:
 def scan_stock_entry_dimensions(stock_entry: str) -> dict:
 	"""Read-only scan of SED dimensions and distinct groups."""
 	se = _require_stock_entry(stock_entry)
-	rows = [_row_payload(r) for r in (se.items or []) if r.item_code]
+	item_codes = [r.item_code for r in (se.items or []) if r.item_code]
+	item_names = {}
+	if item_codes:
+		for row in frappe.db.sql(
+			"""
+			SELECT name, item_name FROM `tabItem`
+			WHERE name IN %s
+			""",
+			(tuple(set(item_codes)),),
+			as_dict=True,
+		):
+			item_names[row.name] = row.item_name or ""
+	rows = [_row_payload(r, item_names) for r in (se.items or []) if r.item_code]
 	groups_map: dict[str, list[dict]] = {}
 	for r in rows:
 		key = _group_key(r["department"], r["cost_center"])

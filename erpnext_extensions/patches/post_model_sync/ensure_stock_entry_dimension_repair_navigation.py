@@ -1,12 +1,15 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 """Expose Stock Entry Dimension Repair on Stock / Accounts workspaces.
 
-Idempotent. Does not change accounting engines.
+Idempotent. Ensures the standard Page document exists (import from app files
+if migrate sync has not yet created it), then wires navigation once.
+Does not change accounting engines.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import frappe
 
@@ -17,11 +20,42 @@ CARD = "Repair Tools"
 
 
 def execute():
+	_ensure_page_document()
 	_ensure_page_roles()
 	for ws_name in ("Stock", "Accounts", "Manufacturing"):
 		_ensure_workspace(ws_name)
 	for sb_name in ("Stock", "Accounts", "Manufacturing", "Production Control"):
 		_ensure_sidebar(sb_name)
+
+
+def _page_json_path() -> Path:
+	# erpnext_extensions/patches/post_model_sync/this_file.py
+	# → erpnext_extensions/erpnext_extensions/page/stock_entry_dimension_repair/...
+	app_root = Path(__file__).resolve().parents[2]
+	return (
+		app_root
+		/ "erpnext_extensions"
+		/ "page"
+		/ "stock_entry_dimension_repair"
+		/ "stock_entry_dimension_repair.json"
+	)
+
+
+def _ensure_page_document():
+	"""Create/sync the standard Page from filesystem if missing."""
+	if frappe.db.exists("Page", PAGE):
+		return
+	path = _page_json_path()
+	if not path.is_file():
+		frappe.log_error(
+			f"Stock Entry Dimension Repair page JSON missing: {path}",
+			"ensure_stock_entry_dimension_repair_navigation",
+		)
+		return
+	from frappe.modules.import_file import import_file_by_path
+
+	import_file_by_path(str(path), force=True, ignore_version=True)
+	frappe.clear_cache(doctype="Page")
 
 
 def _ensure_page_roles():
