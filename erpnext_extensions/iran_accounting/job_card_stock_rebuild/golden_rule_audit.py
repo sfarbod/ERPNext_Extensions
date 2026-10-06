@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Read-only Job Card Golden Rule Audit (v5.5.10).
+"""Read-only Job Card Golden Rule Audit (v5.5.12).
 
 Date basis: Job Card.posting_date.
 Grain: Job Card × Component Item (batch ignored for this report only).
@@ -49,6 +49,15 @@ REASON_BLOCKED = "BLOCKED"
 REASON_SCRAP_PAIR_MISMATCH = "SCRAP_PAIR_MISMATCH"
 
 DATE_BASIS = "Job Card.posting_date"
+
+
+def get_job_card_status_options() -> list[str]:
+	"""Authoritative Job Card.status Select options from DocType meta."""
+	meta = frappe.get_meta("Job Card")
+	df = meta.get_field("status")
+	if not df or not df.options:
+		return []
+	return [o.strip() for o in str(df.options).split("\n") if o and o.strip()]
 
 
 def _mi_review_label(mi_docs: list[dict]) -> str:
@@ -176,8 +185,14 @@ def list_job_cards_in_range(
 	to_date,
 	job_card: str | None = None,
 	work_order: str | None = None,
+	job_card_status: str | None = None,
+	operation: str | None = None,
 ) -> list[dict]:
-	"""Bulk Job Card header fetch — filtered by posting_date."""
+	"""Bulk Job Card header fetch — filtered by posting_date (+ optional status/operation).
+
+	Preserves existing inclusion: docstatus < 2 (Draft + Submitted; not Cancelled docs).
+	Job Card Status filter uses business field ``status`` (not docstatus).
+	"""
 	if not from_date or not to_date:
 		frappe.throw(frappe._("From Date and To Date are required"))
 	from_date = getdate(from_date)
@@ -193,10 +208,17 @@ def list_job_cards_in_range(
 	if work_order:
 		conds.append("work_order = %(work_order)s")
 		params["work_order"] = work_order
+	if job_card_status:
+		conds.append("status = %(job_card_status)s")
+		params["job_card_status"] = job_card_status
+	if operation:
+		# NULL / blank Operation never matches a specific Operation filter
+		conds.append("operation = %(operation)s")
+		params["operation"] = operation
 
 	return frappe.db.sql(
 		f"""
-		select name, status, work_order, posting_date, finished_good, production_item,
+		select name, status, operation, work_order, posting_date, finished_good, production_item,
 		       for_quantity, total_completed_qty, company, modified
 		from `tabJob Card`
 		where {' and '.join(conds)}
@@ -212,13 +234,19 @@ def run_golden_rule_audit(filters: dict | None = None) -> dict[str, Any]:
 	filters = frappe._dict(filters or {})
 	show_balanced = cint(filters.get("show_balanced"))
 	item_filter = (filters.get("item") or "").strip()
+	# Golden Rule Status / Reason (BALANCED, REVIEW, …) — not Job Card.status
 	status_filter = (filters.get("status") or "").strip().upper()
+	job_card_status_filter = (filters.get("job_card_status") or "").strip()
+	operation_filter = (filters.get("operation") or "").strip()
 
+	# Status / Operation filters applied here so summary counts use the filtered JC set
 	job_cards = list_job_cards_in_range(
 		filters.get("from_date"),
 		filters.get("to_date"),
 		job_card=filters.get("job_card"),
 		work_order=filters.get("work_order"),
+		job_card_status=job_card_status_filter or None,
+		operation=operation_filter or None,
 	)
 
 	rows_out: list[dict] = []
@@ -299,8 +327,9 @@ def run_golden_rule_audit(filters: dict | None = None) -> dict[str, Any]:
 			jc_rows.append(
 				{
 					"job_card": jc.name,
-					"job_card_status": jc.status,
 					"work_order": jc.work_order,
+					"job_card_status": jc.status or "",
+					"operation": jc.operation or "",
 					"production_item": jc.finished_good or jc.production_item,
 					"component_item": agg["item_code"],
 					"item_name": agg.get("item_name") or "",
@@ -327,8 +356,9 @@ def run_golden_rule_audit(filters: dict | None = None) -> dict[str, Any]:
 			jc_rows.append(
 				{
 					"job_card": jc.name,
-					"job_card_status": jc.status,
 					"work_order": jc.work_order,
+					"job_card_status": jc.status or "",
+					"operation": jc.operation or "",
 					"production_item": jc.finished_good or jc.production_item,
 					"component_item": "",
 					"item_name": "",

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Script Report: Job Card Golden Rule Audit (v5.5.10).
+"""Script Report: Job Card Golden Rule Audit (v5.5.12).
 
 READ-ONLY. Date basis = Job Card.posting_date.
 Grain = Job Card × Component Item (batch ignored).
@@ -53,6 +53,19 @@ def get_columns():
 			"fieldtype": "Link",
 			"options": "Work Order",
 			"width": 130,
+		},
+		{
+			"label": _("Job Card Status"),
+			"fieldname": "job_card_status",
+			"fieldtype": "Data",
+			"width": 130,
+		},
+		{
+			"label": _("Operation"),
+			"fieldname": "operation",
+			"fieldtype": "Link",
+			"options": "Operation",
+			"width": 160,
 		},
 		{
 			"label": _("Item"),
