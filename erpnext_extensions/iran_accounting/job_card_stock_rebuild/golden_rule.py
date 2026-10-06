@@ -226,9 +226,19 @@ def scan_golden_rule(job_card: str) -> dict[str, Any]:
 	}
 
 
-def validate_dispositions(rows: list[dict], dispositions: list[dict]) -> tuple[bool, list[str], list[dict]]:
-	"""Validate user dispositions against authoritative remaining WIP."""
+def validate_dispositions(
+	rows: list[dict],
+	dispositions: list[dict],
+	offset_exempt_keys: set[tuple[str, str]] | None = None,
+) -> tuple[bool, list[str], list[dict]]:
+	"""Validate user dispositions against authoritative remaining WIP.
+
+	``offset_exempt_keys`` — Job Card × Item × Batch keys covered by an
+	explicit APPROVED_BATCH_OFFSET (v5.5.14). Those rows require zero stock
+	disposition and do not trigger "disposition required".
+	"""
 	errors = []
+	exempt = offset_exempt_keys or set()
 	by_key = {(r["item_code"], r.get("batch_no") or ""): r for r in rows}
 	normalized = []
 	seen = set()
@@ -244,6 +254,25 @@ def validate_dispositions(rows: list[dict], dispositions: list[dict]) -> tuple[b
 		s = flt(d.get("proposed_scrap"))
 		r = flt(d.get("proposed_return"))
 		w = flt(d.get("proposed_still_in_wip"))
+		if key in exempt:
+			if max(c, s, r, w) > 1e-9:
+				errors.append(
+					f"{key}: BATCH_OFFSET approved — no stock disposition allowed "
+					"(NO_STOCK_DOCUMENT_CHANGE)"
+				)
+				continue
+			normalized.append(
+				{
+					**base,
+					"proposed_consumed": 0,
+					"proposed_scrap": 0,
+					"proposed_return": 0,
+					"proposed_still_in_wip": 0,
+					"disposition": "APPROVED_BATCH_OFFSET",
+					"repair_status": "APPROVED_BATCH_OFFSET",
+				}
+			)
+			continue
 		if min(c, s, r, w) < -1e-9:
 			errors.append(f"{key}: negative allocation")
 			continue
@@ -271,6 +300,19 @@ def validate_dispositions(rows: list[dict], dispositions: list[dict]) -> tuple[b
 	# Unresolved rows without disposition
 	for key, base in by_key.items():
 		if key in seen:
+			continue
+		if key in exempt:
+			normalized.append(
+				{
+					**base,
+					"proposed_consumed": 0,
+					"proposed_scrap": 0,
+					"proposed_return": 0,
+					"proposed_still_in_wip": 0,
+					"disposition": "APPROVED_BATCH_OFFSET",
+					"repair_status": "APPROVED_BATCH_OFFSET",
+				}
+			)
 			continue
 		if flt(base["remaining_wip"]) > 1e-9:
 			errors.append(f"{key}: disposition required for remaining {base['remaining_wip']}")

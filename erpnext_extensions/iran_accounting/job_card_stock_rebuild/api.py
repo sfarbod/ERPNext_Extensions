@@ -103,6 +103,10 @@ def scan_manufacture_reconciliation(job_card: str):
 		build_manufacture_plan,
 	)
 
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.batch_offset import (
+		detect_batch_offset_candidates,
+	)
+
 	scan = scan_golden_rule(job_card)
 	# Default plan preview using suggested dispositions
 	dispositions = []
@@ -119,7 +123,10 @@ def scan_manufacture_reconciliation(job_card: str):
 			}
 		)
 	plan = build_manufacture_plan(job_card, dispositions=dispositions)
-	return {"scan": scan, "plan": plan}
+	candidates = plan.get("batch_offset_candidates") or detect_batch_offset_candidates(
+		job_card, scan.get("rows") or []
+	)
+	return {"scan": scan, "plan": plan, "batch_offset_candidates": candidates}
 
 
 @frappe.whitelist()
