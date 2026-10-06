@@ -22,6 +22,9 @@ from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule impor
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan import (
 	build_manufacture_plan,
 )
+from erpnext_extensions.iran_accounting.job_card_stock_rebuild.queued_repair import (
+	_normalize_plan,
+)
 
 
 JC = "PO-JOB08773"
@@ -459,6 +462,120 @@ class TestBatchOffsetV5514(unittest.TestCase):
 		scan = scan_golden_rule("PO-JOB08760")
 		# Soft check — presence of JC scan
 		self.assertTrue(scan.get("rows") is not None)
+
+
+class TestQueueNormalizeBatchOffsetV5514(unittest.TestCase):
+	"""N01–N08: queued _normalize_plan must preserve Batch Offset approvals."""
+
+	def test_N01_absent_approvals_not_invented(self):
+		out = _normalize_plan({"dispositions": [], "stamp_mode": "HISTORICAL"})
+		self.assertNotIn("batch_offset_approvals", out)
+
+	def test_N02_empty_approvals_remain_empty(self):
+		out = _normalize_plan({"dispositions": [], "batch_offset_approvals": []})
+		self.assertIn("batch_offset_approvals", out)
+		self.assertEqual(out["batch_offset_approvals"], [])
+
+	def test_N03_valid_approval_survives(self):
+		src = {
+			"item_code": ITEM,
+			"accepted": 1,
+			"decision": DECISION_ACCEPT,
+			"evidence_fingerprint": "abc123",
+		}
+		out = _normalize_plan({"dispositions": [], "batch_offset_approvals": [src]})
+		self.assertEqual(len(out["batch_offset_approvals"]), 1)
+		self.assertEqual(out["batch_offset_approvals"][0]["item_code"], ITEM)
+		self.assertEqual(out["batch_offset_approvals"][0]["accepted"], 1)
+		self.assertEqual(out["batch_offset_approvals"][0]["decision"], DECISION_ACCEPT)
+
+	def test_N04_fingerprint_survives_exactly(self):
+		fp = "2286afbace588362b1a76da9e3e99801ffdd09b12b521b2409e409c8ff4bfee4"
+		out = _normalize_plan(
+			{
+				"dispositions": [],
+				"batch_offset_approvals": [
+					{"item_code": ITEM, "accepted": 1, "evidence_fingerprint": fp}
+				],
+			}
+		)
+		self.assertEqual(out["batch_offset_approvals"][0]["evidence_fingerprint"], fp)
+
+	def test_N05_multiple_approvals_survive(self):
+		approvals = [
+			{"item_code": "A", "accepted": 1, "evidence_fingerprint": "fp-a"},
+			{"item_code": "B", "accepted": 1, "evidence_fingerprint": "fp-b"},
+		]
+		out = _normalize_plan({"batch_offset_approvals": approvals})
+		self.assertEqual([a["item_code"] for a in out["batch_offset_approvals"]], ["A", "B"])
+
+	def test_N06_unrelated_fields_unchanged(self):
+		out = _normalize_plan(
+			{
+				"dispositions": [{"item_code": "X"}],
+				"merge_documents": ["SE-1"],
+				"merge_material_issues": ["MI-1"],
+				"stamp_mode": "HISTORICAL",
+				"fingerprint": "plan-fp",
+				"unknown_field": "must-not-invent-behavior-change",
+			}
+		)
+		self.assertEqual(out["dispositions"], [{"item_code": "X"}])
+		self.assertEqual(out["merge_documents"], ["SE-1"])
+		self.assertEqual(out["merge_material_issues"], ["MI-1"])
+		self.assertEqual(out["stamp_mode"], "HISTORICAL")
+		self.assertEqual(out["fingerprint"], "plan-fp")
+		self.assertNotIn("unknown_field", out)
+		self.assertNotIn("batch_offset_approvals", out)
+
+	def test_N07_unchecked_plan_remains_strict(self):
+		scan, cand = _cand()
+		raw = {
+			"dispositions": _dispositions_covering_scan(scan),
+			"stamp_mode": "HISTORICAL",
+			"merge_documents": [m["name"] for m in scan.get("manufactures") or []],
+		}
+		snap = _normalize_plan(raw)
+		self.assertNotIn("batch_offset_approvals", snap)
+		plan = build_manufacture_plan(
+			JC,
+			dispositions=snap["dispositions"],
+			merge_documents=snap["merge_documents"],
+			stamp_mode=snap["stamp_mode"],
+			batch_offset_approvals=snap.get("batch_offset_approvals"),
+		)
+		self.assertFalse(plan.get("approved_batch_offsets"))
+		d926 = next(
+			d
+			for d in plan["dispositions"]
+			if d["item_code"] == ITEM and (d.get("batch_no") or "") == B926
+		)
+		self.assertGreater(flt(d926.get("proposed_consumed")), 0)
+
+	def test_N08_stale_approval_reaches_engine(self):
+		scan, cand = _cand()
+		raw = {
+			"dispositions": _dispositions_covering_scan(scan, approve_item=ITEM),
+			"stamp_mode": "HISTORICAL",
+			"merge_documents": [m["name"] for m in scan.get("manufactures") or []],
+			"batch_offset_approvals": [
+				{
+					"item_code": ITEM,
+					"accepted": 1,
+					"evidence_fingerprint": "deadbeef",
+				}
+			],
+		}
+		snap = _normalize_plan(raw)
+		self.assertEqual(snap["batch_offset_approvals"][0]["evidence_fingerprint"], "deadbeef")
+		plan = build_manufacture_plan(
+			JC,
+			dispositions=snap["dispositions"],
+			merge_documents=snap["merge_documents"],
+			stamp_mode=snap["stamp_mode"],
+			batch_offset_approvals=snap["batch_offset_approvals"],
+		)
+		self.assertTrue(any("STALE_PLAN" in (b or "") for b in (plan.get("blockers") or [])))
 
 
 def cint_safe(v):

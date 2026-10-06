@@ -357,13 +357,21 @@ def _normalize_plan(plan) -> dict:
 	if isinstance(plan, str):
 		plan = json.loads(plan) if plan else {}
 	plan = dict(plan or {})
-	return {
+	out = {
 		"dispositions": plan.get("dispositions") or [],
 		"merge_documents": plan.get("merge_documents"),
 		"merge_material_issues": plan.get("merge_material_issues"),
 		"stamp_mode": plan.get("stamp_mode") or "HISTORICAL",
 		"fingerprint": plan.get("fingerprint"),
 	}
+	# Preserve operator Batch Offset approvals exactly — do not invent or default them.
+	if "batch_offset_approvals" in plan:
+		approvals = plan.get("batch_offset_approvals")
+		if isinstance(approvals, list):
+			out["batch_offset_approvals"] = [dict(a) if isinstance(a, dict) else a for a in approvals]
+		else:
+			out["batch_offset_approvals"] = approvals
+	return out
 
 
 def _already_running_payload(job_card: str, active: dict) -> dict:
