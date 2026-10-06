@@ -1,0 +1,28 @@
+{
+ "content": null,
+ "creation": "2026-10-06 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-10-06 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "stock-entry-dimension-repair",
+ "owner": "Administrator",
+ "page_name": "stock-entry-dimension-repair",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Administrator"
+  },
+  {
+   "role": "Accounts Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "title": "Stock Entry Dimension Repair"
+}
