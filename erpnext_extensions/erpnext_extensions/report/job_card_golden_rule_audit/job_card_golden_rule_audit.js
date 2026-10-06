@@ -1,5 +1,5 @@
 // Copyright (c) 2026, ERPNext Extensions contributors
-// Job Card Golden Rule Audit — Job Card × Item (batch ignored). v5.5.10
+// Job Card Golden Rule Audit — Job Card × Item (batch ignored). v5.5.12
 
 frappe.query_reports["Job Card Golden Rule Audit"] = {
 	filters: [
@@ -28,6 +28,28 @@ frappe.query_reports["Job Card Golden Rule Audit"] = {
 			label: __("Work Order"),
 			fieldtype: "Link",
 			options: "Work Order",
+		},
+		{
+			fieldname: "job_card_status",
+			label: __("Job Card Status"),
+			fieldtype: "Select",
+			// Authoritative options from Job Card.status DocType meta (not invented).
+			options: (() => {
+				const meta = frappe.meta.get_docfield("Job Card", "status");
+				const opts = (meta && meta.options) || "";
+				return [""].concat(
+					String(opts)
+						.split("\n")
+						.map((o) => o.trim())
+						.filter(Boolean)
+				).join("\n");
+			})(),
+		},
+		{
+			fieldname: "operation",
+			label: __("Operation"),
+			fieldtype: "Link",
+			options: "Operation",
 		},
 		{
 			fieldname: "item",
