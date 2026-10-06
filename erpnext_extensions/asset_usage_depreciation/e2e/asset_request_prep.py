@@ -431,3 +431,193 @@ def open_count_material_request(name: str) -> dict:
 	except Exception as exc:
 		return {"ok": False, "error": frappe.get_traceback() or str(exc)}
 
+
+@frappe.whitelist()
+def prepare_asset_connections_v558_e2e() -> dict:
+	"""Fixtures for Asset Connections dedupe + duplicate Asset Request E2E (v5.5.8)."""
+	from frappe.desk.notifications import get_open_count
+
+	frappe.set_user("Administrator")
+	frappe.clear_cache(doctype="Asset")
+	company = h.company()
+	if not company:
+		frappe.throw("No Company")
+	h.ensure_settings(
+		require_named_manager_approver=0,
+		prevent_duplicate_active_requests=0,
+		auto_create_asset_movement=1,
+		auto_create_material_request=0,
+		auto_submit_asset_movement=0,
+	)
+
+	# Prefer a real Asset that already has movements (e.g. 3958); else seed one.
+	asset_name = None
+	if frappe.db.exists("Asset", "3958"):
+		asset_name = "3958"
+	else:
+		via = frappe.db.sql(
+			"""
+			select asset, count(*) as c
+			from `tabAsset Movement Item`
+			where ifnull(asset, '') != ''
+			group by asset
+			order by c desc
+			limit 1
+			""",
+			as_dict=True,
+		)
+		if via:
+			asset_name = via[0].asset
+
+	seeded_movements = []
+	if not asset_name:
+		tag = random_string(5)
+		item = h.make_fixed_asset_item(code=f"AUD-E2E-558-{tag}")
+		asset_name = h.make_pool_asset(item_code=item, company_name=company)
+		employee = h.make_employee(company_name=company)
+		src = frappe.db.get_value("Asset", asset_name, "location") or h.ensure_location()
+		for idx in range(2):
+			am = frappe.get_doc(
+				{
+					"doctype": "Asset Movement",
+					"company": company,
+					"purpose": "Issue",
+					"transaction_date": f"2026-0{idx + 1}-10 09:00:00",
+					"assets": [
+						{
+							"asset": asset_name,
+							"source_location": src,
+							"to_employee": employee,
+						}
+					],
+				}
+			)
+			am.insert(ignore_permissions=True)
+			seeded_movements.append(am.name)
+
+	expected_movements = frappe.get_all(
+		"Asset Movement Item",
+		filters={"asset": asset_name},
+		pluck="parent",
+	)
+	expected_movements = list(dict.fromkeys(expected_movements))
+
+	# Duplicate request fixtures (same employee + item); setting OFF.
+	tag = random_string(5)
+	item = h.make_fixed_asset_item(code=f"AUD-E2E-DUP-{tag}")
+	_mgr_user, mgr_emp = h.ensure_line_manager(company)
+	emp_email = f"ar.e2e.dup.{tag}@example.com"
+	h.make_user(email=emp_email, roles=["Employee"], password=PASSWORD)
+	employee = h.make_employee(company_name=company, user_id=emp_email, reports_to=mgr_emp)
+	req_a = h.make_request(company_name=company, employee=employee, item_code=item)
+	h.submit_and_approve(req_a)
+	req_b = h.make_request(company_name=company, employee=employee, item_code=item)
+
+	dashboard = frappe.get_meta("Asset").get_dashboard_data()
+	am_groups = [
+		{"label": g.get("label"), "items": g.get("items")}
+		for g in (dashboard.get("transactions") or [])
+		if "Asset Movement" in (g.get("items") or [])
+	]
+	open_count = get_open_count("Asset", asset_name)
+	am_entries = [
+		d
+		for d in open_count["count"]["external_links_found"]
+		if d["doctype"] == "Asset Movement"
+	]
+
+	am_email = "ar.e2e.am@example.com"
+	h.make_user(
+		email=am_email,
+		roles=[
+			"Employee",
+			"Desk User",
+			ROLE_ASSET_MANAGER,
+			"System Manager",
+			"Accounts Manager",
+			"Asset Manager",
+		],
+		password=PASSWORD,
+	)
+	from frappe.utils.password import update_password, delete_login_failed_cache
+
+	frappe.db.set_value("User", am_email, {"user_type": "System User", "enabled": 1})
+	update_password(am_email, PASSWORD)
+	delete_login_failed_cache(am_email)
+	# Ensure Administrator can log in for Desk Connections assertions.
+	if frappe.db.exists("User", "Administrator"):
+		update_password("Administrator", PASSWORD)
+		delete_login_failed_cache("Administrator")
+	frappe.db.commit()
+
+	labels = [g.get("label") for g in (dashboard.get("transactions") or [])]
+	return {
+		"company": company,
+		"asset": asset_name,
+		"expected_movement_count": len(expected_movements),
+		"expected_movements": expected_movements,
+		"seeded_movements": seeded_movements,
+		"am_field": (dashboard.get("non_standard_fieldnames") or {}).get("Asset Movement"),
+		"am_groups": am_groups,
+		"open_count_am_entries": am_entries,
+		"has_usage": any(
+			"Asset Usage Period" in (g.get("items") or [])
+			for g in (dashboard.get("transactions") or [])
+		),
+		"has_request": any(
+			"Asset Request" in (g.get("items") or [])
+			for g in (dashboard.get("transactions") or [])
+		),
+		"has_equipment_profile": any(
+			"Equipment Profile" in (g.get("items") or [])
+			for g in (dashboard.get("transactions") or [])
+		),
+		"dashboard_labels": labels,
+		"req_a": req_a.name,
+		"req_b": req_b.name,
+		"employee": employee,
+		"item_code": item,
+		"prevent_duplicate": frappe.db.get_single_value(
+			"Asset Request Settings", "prevent_duplicate_active_requests"
+		),
+		"am_email": am_email,
+		"password": PASSWORD,
+	}
+
+
+@frappe.whitelist()
+def open_count_asset(name: str) -> dict:
+	from frappe.desk.notifications import get_open_count
+
+	frappe.set_user("Administrator")
+	try:
+		payload = get_open_count("Asset", name)
+		return {"ok": True, "payload": payload}
+	except Exception as exc:
+		return {"ok": False, "error": frappe.get_traceback() or str(exc)}
+
+
+@frappe.whitelist()
+def submit_draft_asset_request_for_approval(name: str) -> dict:
+	"""Apply AR Submit for Approval; return ok/error for Playwright assertions."""
+	from frappe.model.workflow import apply_workflow
+
+	frappe.set_user("Administrator")
+	doc = frappe.get_doc("Asset Request", name)
+	try:
+		apply_workflow(doc, "AR Submit for Approval")
+		doc.reload()
+		return {
+			"ok": True,
+			"workflow_state": doc.workflow_state,
+			"status": doc.status,
+			"message": None,
+		}
+	except Exception as exc:
+		return {
+			"ok": False,
+			"workflow_state": doc.workflow_state,
+			"status": doc.status,
+			"message": str(exc),
+		}
+

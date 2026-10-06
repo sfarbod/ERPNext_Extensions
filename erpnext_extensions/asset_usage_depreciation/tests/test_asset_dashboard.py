@@ -22,23 +22,30 @@ class TestAssetUsageDashboard(unittest.TestCase):
 	def test_dashboard_includes_usage_period_additively(self):
 		data = frappe.get_meta("Asset").get_dashboard_data()
 		self.assertEqual(data.non_standard_fieldnames.get("Asset Usage Period"), "asset")
+		self.assertEqual(data.non_standard_fieldnames.get("Asset Movement"), "asset")
 
 		# Core groups still present
 		labels = [_(g.get("label")) for g in data.transactions]
 		self.assertIn(_("Movement"), labels)
 		self.assertIn(_("Repair"), labels)
 		self.assertIn(_("Usage"), labels)
+		self.assertIn(_("Request"), labels)
 
 		usage_group = next(g for g in data.transactions if _(g.get("label")) == _("Usage"))
 		self.assertIn("Asset Usage Period", usage_group["items"])
 
-		# Existing connection still listed
+		# Asset Movement exactly once under Movement (v5.5.8)
+		am_groups = [g for g in data.transactions if "Asset Movement" in (g.get("items") or [])]
+		self.assertEqual(len(am_groups), 1)
+		self.assertEqual(_(am_groups[0].get("label")), _("Movement"))
+
 		all_items = []
 		for g in data.transactions:
 			all_items.extend(g.get("items") or [])
-		self.assertIn("Asset Movement", all_items)
+		self.assertEqual(all_items.count("Asset Movement"), 1)
 		self.assertIn("Asset Repair", all_items)
 		self.assertIn("Asset Usage Period", all_items)
+		self.assertIn("Asset Request", all_items)
 
 	def test_connection_count_and_filter_field(self):
 		from frappe.utils import random_string
