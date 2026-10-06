@@ -42,7 +42,7 @@ def collect_detail_rows(stock_entry: str) -> list[dict]:
 		       job_card_item, basic_rate, valuation_rate, basic_amount, amount,
 		       custom_output_class, custom_output_equivalent_factor,
 		       custom_physical_conversion, custom_equivalent_qty, custom_common_uom,
-		       custom_parent_co_product
+		       custom_parent_co_product, department, cost_center, expense_account
 		from `tabStock Entry Detail`
 		where parent=%s
 		order by idx

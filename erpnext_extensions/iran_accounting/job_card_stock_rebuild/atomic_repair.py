@@ -20,6 +20,9 @@ from erpnext_extensions.iran_accounting.job_card_stock_rebuild.sync_valuation im
 	suppress_auto_riv,
 	sync_valuation_for_vouchers,
 )
+from erpnext_extensions.iran_accounting.job_card_stock_rebuild.repair_stock_guards import (
+	ensure_repair_negative_stock_patches,
+)
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.workstation_isolation import (
 	SKIP_WORKSTATION_WRITES_FLAG,
 	ensure_workstation_isolation_patches,
@@ -233,18 +236,61 @@ def _snapshot_se_batches(name: str) -> list[dict]:
 	return out
 
 
+def _rate_snapshot_identity(row: dict | Any) -> tuple:
+	"""Deterministic SED identity for rate reapply (idx-independent fallback)."""
+	get = row.get if isinstance(row, dict) else lambda k, d=None: (
+		row.get(k) if hasattr(row, "get") else getattr(row, k, d)
+	)
+	return (
+		get("item_code") or "",
+		get("batch_no") or "",
+		get("s_warehouse") or "",
+		get("t_warehouse") or "",
+		cint(get("is_finished_item")),
+		(get("custom_output_class") or get("type") or ""),
+		get("job_card_item") or "",
+	)
+
+
 def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
 	"""Force snapshot rates (Core set_rate_for_outgoing_items overwrites mid-repair)."""
-	by_idx = {cint(r["idx"]): r for r in (batch_snapshot or [])}
-	# Prefer idx; item×batch fallback only when unique in snapshot.
+	snaps = batch_snapshot or []
+	by_idx = {cint(r["idx"]): r for r in snaps if r.get("idx") is not None}
+	# Prefer idx; then unique rich identity; then unique item×batch.
+	ident_counts: dict[tuple, int] = {}
+	by_ident: dict[tuple, dict] = {}
 	batch_counts: dict[tuple[str, str], int] = {}
 	by_item_batch: dict[tuple[str, str], dict] = {}
-	for r in batch_snapshot or []:
+	for r in snaps:
+		ikey = _rate_snapshot_identity(r)
+		ident_counts[ikey] = ident_counts.get(ikey, 0) + 1
+		by_ident[ikey] = r
 		key = (r["item_code"], r.get("batch_no") or "")
 		batch_counts[key] = batch_counts.get(key, 0) + 1
 		by_item_batch[key] = r
 	for row in doc.items:
 		snap = by_idx.get(cint(row.idx))
+		if not snap:
+			ikey = _rate_snapshot_identity(
+				{
+					"item_code": row.item_code,
+					"batch_no": row.batch_no,
+					"s_warehouse": row.s_warehouse,
+					"t_warehouse": row.t_warehouse,
+					"is_finished_item": row.is_finished_item,
+					"custom_output_class": getattr(row, "custom_output_class", None),
+					"type": None,
+					"job_card_item": getattr(row, "job_card_item", None),
+				}
+			)
+			if ident_counts.get(ikey) == 1:
+				snap = by_ident.get(ikey)
+			elif ident_counts.get(ikey, 0) > 1:
+				frappe.throw(
+					frappe._(
+						"AMBIGUOUS_RATE_IDENTITY: {0} / {1} matches multiple rate snapshots on {2}"
+					).format(row.item_code, row.batch_no, doc.name or doc.doctype)
+				)
 		if not snap:
 			key = (row.item_code, row.batch_no or "")
 			if batch_counts.get(key) == 1:
@@ -388,7 +434,21 @@ def _build_canonical_se(plan: dict) -> str:
 			break
 
 	doc.items = []
+	rate_snapshot: list[dict] = []
 	for idx, row in enumerate(canon.get("rows") or [], start=1):
+		rate = flt(row.get("basic_rate") or row.get("valuation_rate"))
+		is_source = (row.get("type") == "CONSUME") or (
+			row.get("s_warehouse")
+			and not row.get("t_warehouse")
+			and not cint(row.get("is_finished_item"))
+		)
+		if is_source and rate <= 1e-9:
+			frappe.throw(
+				frappe._(
+					"ZERO_RATE: canonical CONSUME {0} / {1} has no authoritative rate "
+					"(rate_source={2}) — blocked before submit"
+				).format(row.get("item_code"), row.get("batch_no") or "", row.get("rate_source"))
+			)
 		child = {
 			"item_code": row["item_code"],
 			"qty": flt(row["qty"]),
@@ -397,13 +457,18 @@ def _build_canonical_se(plan: dict) -> str:
 			"t_warehouse": row.get("t_warehouse"),
 			"batch_no": row.get("batch_no") or None,
 			"is_finished_item": cint(row.get("is_finished_item")),
-			"basic_rate": flt(row.get("basic_rate") or row.get("valuation_rate")),
-			"valuation_rate": flt(row.get("valuation_rate") or row.get("basic_rate")),
+			"basic_rate": rate,
+			"valuation_rate": flt(row.get("valuation_rate") or row.get("basic_rate") or rate),
 			"secondary_item_type": row.get("secondary_item_type"),
 			"use_serial_batch_fields": 1 if row.get("batch_no") else 0,
 			"expense_account": adj_account,
 			"cost_center": row.get("cost_center") or default_cc,
 		}
+		if row.get("department"):
+			child["department"] = row["department"]
+		if rate > 0:
+			child["set_basic_rate_manually"] = 1
+			child["allow_zero_valuation_rate"] = 0
 		if row.get("custom_output_class"):
 			child["custom_output_class"] = row["custom_output_class"]
 		if (row.get("type") == "COMPONENT_SCRAP") or (
@@ -414,6 +479,21 @@ def _build_canonical_se(plan: dict) -> str:
 		if row.get("job_card_item"):
 			child["job_card_item"] = row["job_card_item"]
 		doc.append("items", child)
+		rate_snapshot.append(
+			{
+				"idx": idx,
+				"item_code": row["item_code"],
+				"batch_no": row.get("batch_no") or "",
+				"s_warehouse": row.get("s_warehouse"),
+				"t_warehouse": row.get("t_warehouse"),
+				"is_finished_item": cint(row.get("is_finished_item")),
+				"custom_output_class": row.get("custom_output_class"),
+				"type": row.get("type"),
+				"job_card_item": row.get("job_card_item"),
+				"basic_rate": rate,
+				"valuation_rate": flt(row.get("valuation_rate") or rate),
+			}
+		)
 
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.tracking_reconstruction import (
 		assert_canonical_jci_complete,
@@ -428,7 +508,11 @@ def _build_canonical_se(plan: dict) -> str:
 	# otherwise bump posting after remaining WIP Issues / other dependents.
 	if hasattr(doc, "set_posting_time"):
 		doc.set_posting_time = 1
+	# Preserve plan rates through Core validate (same pattern as logistics recreate).
+	# Do NOT depend on live get_incoming_rate at backdated Manufacture posting.
+	_bind_preserve_rates(doc, batch_snapshot=rate_snapshot)
 	doc.insert()
+	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
 	# Re-assert posting after validate hooks.
 	if canon.get("posting_date"):
 		doc.posting_date = canon["posting_date"]
@@ -437,6 +521,9 @@ def _build_canonical_se(plan: dict) -> str:
 	if hasattr(doc, "set_posting_time"):
 		doc.set_posting_time = 1
 	doc.flags.jc_manufacture_repair = True
+	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
+	doc.save()
+	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
 	_fail_point("after_canonical_insert")
 	doc.submit()
 	# Current Manufacture contract may stamp 5.3.43 on submit; restore historical.
@@ -661,6 +748,7 @@ def run_repair(
 	prev_ppo_flag = frappe.flags.get(PREVENTION_FLAG)
 	prev_ws_skip = frappe.flags.get(SKIP_WORKSTATION_WRITES_FLAG)
 	ensure_workstation_isolation_patches()
+	ensure_repair_negative_stock_patches()
 	frappe.flags[HISTORICAL_REPAIR_FLAG] = True
 	frappe.flags[PREVENTION_FLAG] = True
 	frappe.flags[SKIP_WORKSTATION_WRITES_FLAG] = True

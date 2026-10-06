@@ -234,10 +234,188 @@ def _collect_mfg_rows(mfg_names: list[str]) -> list[dict]:
 	return out
 
 
+def _dept_value(row: dict | None) -> str:
+	return (str((row or {}).get("department") or "")).strip()
+
+
+def _merge_department_into(target: dict, source: dict, conflicts: list[dict]) -> None:
+	"""Copy department when unambiguous; record AMBIGUOUS_DEPARTMENT conflicts."""
+	incoming = _dept_value(source)
+	if not incoming:
+		return
+	existing = _dept_value(target)
+	if not existing:
+		target["department"] = incoming
+		if source.get("department_evidence"):
+			target["department_evidence"] = source.get("department_evidence")
+		return
+	if existing == incoming:
+		return
+	conflicts.append(
+		{
+			"item_code": target.get("item_code") or source.get("item_code"),
+			"batch_no": target.get("batch_no") or source.get("batch_no") or "",
+			"candidates": sorted({existing, incoming}),
+			"evidence": list(
+				dict.fromkeys(
+					[
+						*(target.get("department_evidence") or []),
+						*(source.get("department_evidence") or []),
+						source.get("source_voucher"),
+					]
+				)
+			),
+		}
+	)
+	target["_department_ambiguous"] = True
+
+
+def resolve_mtfm_department(job_card: str, item_code: str, batch_no: str = "") -> dict[str, Any]:
+	"""Deterministic Department from JC-owned non-return MTfM SED (item×batch)."""
+	rows = frappe.db.sql(
+		"""
+		select se.name, sed.department
+		from `tabStock Entry Detail` sed
+		join `tabStock Entry` se on se.name=sed.parent
+		where se.job_card=%s and se.purpose='Material Transfer for Manufacture'
+		  and se.docstatus=1 and ifnull(se.is_return,0)=0 and sed.item_code=%s
+		  and ifnull(sed.batch_no,'')=%s and ifnull(sed.department,'')!=''
+		order by se.posting_date desc, se.posting_time desc, se.name desc
+		""",
+		(job_card, item_code, batch_no or ""),
+		as_dict=1,
+	)
+	depts = sorted({_dept_value(r) for r in rows if _dept_value(r)})
+	evidence = list(dict.fromkeys(r.name for r in rows))
+	if not depts:
+		return {"department": None, "candidates": [], "evidence": evidence, "ok": False}
+	if len(depts) > 1:
+		return {
+			"department": None,
+			"candidates": depts,
+			"evidence": evidence,
+			"ok": False,
+			"ambiguous": True,
+		}
+	return {
+		"department": depts[0],
+		"candidates": depts,
+		"evidence": evidence,
+		"ok": True,
+		"ambiguous": False,
+	}
+
+
+def stamp_canonical_departments(
+	job_card: str,
+	rows: list[dict],
+	merge_documents: list[str] | None = None,
+) -> tuple[list[dict], list[str]]:
+	"""Ensure every canonical SED row has a proven Department (or block)."""
+	out: list[dict] = []
+	blockers: list[str] = []
+	# Historical template SED by strong identity for output / consume fill-in
+	hist_by_key: dict[tuple, list[dict]] = defaultdict(list)
+	for name in merge_documents or []:
+		for d in collect_detail_rows(name):
+			batch = d.get("batch_no") or ""
+			if not batch and d.get("serial_and_batch_bundle"):
+				batch = _detail_batch(d)
+			out_class = (d.get("custom_output_class") or "").strip()
+			key = (
+				d.get("item_code"),
+				batch,
+				d.get("s_warehouse") or "",
+				d.get("t_warehouse") or "",
+				cint(d.get("is_finished_item")),
+				out_class,
+			)
+			hist_by_key[key].append(
+				{
+					"department": _dept_value(d),
+					"source_voucher": name,
+					"department_evidence": [name],
+				}
+			)
+
+	for idx, row in enumerate(rows or [], start=1):
+		r = dict(row)
+		if r.get("_department_ambiguous"):
+			cands = sorted({_dept_value(r), *((r.get("_dept_candidates") or []))})
+			blockers.append(
+				"AMBIGUOUS_DEPARTMENT: "
+				f"{r.get('item_code')} / {r.get('batch_no') or ''} "
+				f"candidates={cands} evidence={r.get('department_evidence') or []}"
+			)
+			out.append(r)
+			continue
+		if _dept_value(r):
+			out.append(r)
+			continue
+
+		# Prefer matching historical Manufacture SED (same warehouses / class)
+		out_class = (r.get("custom_output_class") or "").strip()
+		hkey = (
+			r.get("item_code"),
+			r.get("batch_no") or "",
+			r.get("s_warehouse") or "",
+			r.get("t_warehouse") or "",
+			cint(r.get("is_finished_item")),
+			out_class,
+		)
+		hist = hist_by_key.get(hkey) or []
+		hist_depts = sorted({h["department"] for h in hist if h.get("department")})
+		if len(hist_depts) == 1:
+			r["department"] = hist_depts[0]
+			r["department_evidence"] = list(
+				dict.fromkeys(x for h in hist for x in (h.get("department_evidence") or []))
+			)
+			out.append(r)
+			continue
+		if len(hist_depts) > 1:
+			blockers.append(
+				"AMBIGUOUS_DEPARTMENT: "
+				f"{r.get('item_code')} / {r.get('batch_no') or ''} "
+				f"candidates={hist_depts} evidence="
+				f"{list(dict.fromkeys(x for h in hist for x in (h.get('department_evidence') or [])))}"
+			)
+			out.append(r)
+			continue
+
+		# CONSUME / source: JC MTfM fallback
+		is_source = (r.get("type") == "CONSUME") or (
+			r.get("s_warehouse") and not r.get("t_warehouse") and not cint(r.get("is_finished_item"))
+		)
+		if is_source:
+			resolved = resolve_mtfm_department(job_card, r.get("item_code"), r.get("batch_no") or "")
+			if resolved.get("ok"):
+				r["department"] = resolved["department"]
+				r["department_evidence"] = resolved.get("evidence") or []
+				out.append(r)
+				continue
+			if resolved.get("ambiguous"):
+				blockers.append(
+					"AMBIGUOUS_DEPARTMENT: "
+					f"{r.get('item_code')} / {r.get('batch_no') or ''} "
+					f"candidates={resolved.get('candidates')} evidence={resolved.get('evidence')}"
+				)
+				out.append(r)
+				continue
+
+		blockers.append(
+			"MISSING_DEPARTMENT: "
+			f"Row {idx} {r.get('item_code')} / {r.get('batch_no') or ''} "
+			f"type={r.get('type')} — no unique historical/MTfM Department"
+		)
+		out.append(r)
+	return out, blockers
+
+
 def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[dict]:
 	"""Merge CONSUME by Item×Batch; keep scrap/FG/secondary as listed."""
 	consume: dict[tuple[str, str], dict] = {}
 	outputs = []
+	dept_conflicts: list[dict] = []
 	for d in details:
 		qty = flt(d.get("transfer_qty") or d.get("qty"))
 		item = d.get("item_code")
@@ -249,6 +427,7 @@ def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[
 		is_scrap = out_class == "COMPONENT_SCRAP" or (
 			(d.get("secondary_item_type") or "") == "Scrap" and out_class != "MAIN_PRODUCT_REJECT"
 		)
+		dept = _dept_value(d)
 		if s_wh and not t_wh:
 			key = (item, batch)
 			if key not in consume:
@@ -265,7 +444,22 @@ def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[
 					"secondary_item_type": None,
 					"is_finished_item": 0,
 					"rate_source": "historical_mfg",
+					"department": dept or None,
+					"cost_center": d.get("cost_center"),
+					"department_evidence": [d.get("source_voucher")] if dept else [],
 				}
+			else:
+				_merge_department_into(
+					consume[key],
+					{
+						"item_code": item,
+						"batch_no": batch,
+						"department": dept,
+						"department_evidence": [d.get("source_voucher")] if dept else [],
+						"source_voucher": d.get("source_voucher"),
+					},
+					dept_conflicts,
+				)
 			consume[key]["qty"] += qty
 		elif is_fg or t_wh:
 			outputs.append(
@@ -284,6 +478,9 @@ def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[
 					"secondary_item_type": d.get("secondary_item_type"),
 					"is_finished_item": 1 if is_fg else 0,
 					"rate_source": "historical_mfg",
+					"department": dept or None,
+					"cost_center": d.get("cost_center"),
+					"department_evidence": [d.get("source_voucher")] if dept else [],
 				}
 			)
 	for e in extra_consume:
@@ -304,7 +501,12 @@ def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[
 				"rate_source": e.get("rate_source") or "issue_transfer",
 				"source_voucher": e.get("source_voucher"),
 				"source_lineage": e.get("source_lineage") or "",
+				"department": _dept_value(e) or None,
+				"cost_center": e.get("cost_center"),
+				"department_evidence": list(e.get("department_evidence") or []),
 			}
+		else:
+			_merge_department_into(consume[key], e, dept_conflicts)
 		consume[key]["qty"] += flt(e["qty"])
 		if e.get("valuation_rate"):
 			consume[key]["valuation_rate"] = flt(e["valuation_rate"])
@@ -318,7 +520,21 @@ def _merge_consume_rows(details: list[dict], extra_consume: list[dict]) -> list[
 			consume[key]["source_voucher"] = e.get("source_voucher") or consume[key].get(
 				"source_voucher"
 			)
-	return list(consume.values()) + outputs
+	merged = list(consume.values()) + outputs
+	# Attach conflict markers for stamp_canonical_departments
+	for c in dept_conflicts:
+		for row in merged:
+			if row.get("item_code") == c.get("item_code") and (row.get("batch_no") or "") == (
+				c.get("batch_no") or ""
+			):
+				row["_department_ambiguous"] = True
+				row["_dept_candidates"] = c.get("candidates") or []
+				row["department_evidence"] = list(
+					dict.fromkeys(
+						(row.get("department_evidence") or []) + (c.get("evidence") or [])
+					)
+				)
+	return merged
 
 
 def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
@@ -563,10 +779,11 @@ def build_manufacture_plan(
 		qty = flt(d.get("proposed_consumed"))
 		if qty <= 1e-9:
 			continue
-		# Rate from latest JC issue for item×batch
+		# Rate from latest JC issue for item×batch (policy unchanged — not weighted)
 		rate_row = frappe.db.sql(
 			"""
-			select sed.valuation_rate, sed.basic_rate, sed.s_warehouse, sed.t_warehouse
+			select se.name, sed.valuation_rate, sed.basic_rate, sed.s_warehouse, sed.t_warehouse,
+			       sed.department, sed.cost_center
 			from `tabStock Entry Detail` sed
 			join `tabStock Entry` se on se.name=sed.parent
 			where se.job_card=%s and se.purpose='Material Transfer for Manufacture'
@@ -579,6 +796,9 @@ def build_manufacture_plan(
 			as_dict=1,
 		)
 		rate = flt(rate_row[0].valuation_rate) if rate_row else 0
+		if rate <= 1e-9 and rate_row:
+			rate = flt(rate_row[0].basic_rate)
+		dept_info = resolve_mtfm_department(job_card, d["item_code"], d.get("batch_no") or "")
 		extra.append(
 			{
 				"item_code": d["item_code"],
@@ -588,8 +808,20 @@ def build_manufacture_plan(
 				"valuation_rate": rate,
 				"basic_rate": rate,
 				"rate_source": "issue_transfer",
+				"source_voucher": rate_row[0].name if rate_row else None,
+				"department": dept_info.get("department"),
+				"department_evidence": dept_info.get("evidence") or [],
+				"cost_center": (rate_row[0].cost_center if rate_row else None),
+				"_department_ambiguous": bool(dept_info.get("ambiguous")),
+				"_dept_candidates": dept_info.get("candidates") or [],
 			}
 		)
+		if rate <= 1e-9:
+			blockers.append(
+				"ZERO_RATE: "
+				f"{d['item_code']} / {d.get('batch_no') or ''} — "
+				"no authoritative MTfM issue_transfer rate"
+			)
 		if flt(d.get("proposed_return")) > 1e-9:
 			# Returns stay as separate Return Components — noted in plan, not Manufacture
 			pass
@@ -636,6 +868,27 @@ def build_manufacture_plan(
 	canonical_rows, jci_stamp_errors = stamp_canonical_consume_rows(canonical_rows, jci_resolution)
 	for err in jci_stamp_errors:
 		blockers.append(err)
+	canonical_rows, dept_errors = stamp_canonical_departments(
+		job_card, canonical_rows, merge_documents=merge_documents
+	)
+	for err in dept_errors:
+		if err not in blockers:
+			blockers.append(err)
+	# Pre-submit economic invariant for CONSUME / source rows
+	for idx, r in enumerate(canonical_rows or [], start=1):
+		is_source = (r.get("type") == "CONSUME") or (
+			r.get("s_warehouse") and not r.get("t_warehouse") and not cint(r.get("is_finished_item"))
+		)
+		if not is_source:
+			continue
+		if flt(r.get("basic_rate") or r.get("valuation_rate")) <= 1e-9:
+			msg = (
+				"ZERO_RATE: "
+				f"Row {idx} {r.get('item_code')} / {r.get('batch_no') or ''} "
+				f"rate_source={r.get('rate_source')} — positive rate required"
+			)
+			if msg not in blockers:
+				blockers.append(msg)
 	tracking_repair = propose_tracking_reconstruction(
 		job_card,
 		dispositions=normalized,
