@@ -55,7 +55,8 @@
    "label": "Require Named Manager Approver"
   },
   {
-   "default": "1",
+   "default": "0",
+   "description": "When enabled, block Submit for Approval if another active Asset Request already exists for the same employee and requested item. Default is off — duplicate active requests are allowed.",
    "fieldname": "prevent_duplicate_active_requests",
    "fieldtype": "Check",
    "label": "Prevent Duplicate Active Requests"

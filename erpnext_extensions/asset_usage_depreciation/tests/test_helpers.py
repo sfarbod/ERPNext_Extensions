@@ -145,7 +145,7 @@ def ensure_settings(**values) -> None:
 	changed = False
 	defaults = {
 		"require_named_manager_approver": 0,
-		"prevent_duplicate_active_requests": 1,
+		"prevent_duplicate_active_requests": 0,
 		"allow_category_substitution": 1,
 		"reserve_available_assets": 1,
 		"auto_create_asset_movement": 0,

@@ -272,7 +272,7 @@ class TestSubstitutionAndDuplicates(unittest.TestCase):
 		cls.skip = h.skip_if_unready()
 		if cls.skip:
 			return
-		h.ensure_settings(prevent_duplicate_active_requests=1, require_named_manager_approver=0)
+		h.ensure_settings(prevent_duplicate_active_requests=0, require_named_manager_approver=0)
 		cls.company = h.company()
 		cls.employee = h.make_employee(company_name=cls.company)
 
@@ -324,14 +324,44 @@ class TestSubstitutionAndDuplicates(unittest.TestCase):
 			apply_workflow(doc, "AR Submit for Approval")
 		h.ensure_settings(allow_category_substitution=1)
 
-	def test_duplicate_active_request_blocked(self):
+	def _employee_with_line_manager(self) -> str:
+		_mgr_user, mgr_emp = h.ensure_line_manager(self.company)
+		emp_email = f"ar.dup.{random_string(6)}@example.com"
+		h.make_user(email=emp_email, roles=["Employee"])
+		return h.make_employee(company_name=self.company, user_id=emp_email, reports_to=mgr_emp)
+
+	def test_duplicate_active_request_blocked_when_setting_on(self):
+		"""Legacy compatibility: setting ON still blocks duplicate active requests."""
 		self._ready()
+		h.ensure_settings(prevent_duplicate_active_requests=1, require_named_manager_approver=0)
+		try:
+			employee = self._employee_with_line_manager()
+			item = h.make_fixed_asset_item()
+			first = h.make_request(company_name=self.company, employee=employee, item_code=item)
+			first.workflow_state = "Pending Manager Approval"
+			first.status = "Pending Manager Approval"
+			first.save(ignore_permissions=True)
+			second = h.make_request(company_name=self.company, employee=employee, item_code=item)
+			second.workflow_state = "Pending Manager Approval"
+			with self.assertRaises(frappe.ValidationError):
+				second.save(ignore_permissions=True)
+		finally:
+			h.ensure_settings(prevent_duplicate_active_requests=0, require_named_manager_approver=0)
+
+	def test_duplicate_active_request_allowed_when_setting_off(self):
+		"""Default / setting OFF: same employee+item may leave Draft concurrently."""
+		self._ready()
+		h.ensure_settings(prevent_duplicate_active_requests=0, require_named_manager_approver=0)
+		employee = self._employee_with_line_manager()
 		item = h.make_fixed_asset_item()
-		first = h.make_request(company_name=self.company, employee=self.employee, item_code=item)
-		first.workflow_state = "Pending Manager Approval"
-		first.status = "Pending Manager Approval"
-		first.save(ignore_permissions=True)
-		second = h.make_request(company_name=self.company, employee=self.employee, item_code=item)
+		first = h.make_request(company_name=self.company, employee=employee, item_code=item)
+		h.submit_and_approve(first)
+		first.reload()
+		self.assertEqual(first.workflow_state, "Approved")
+		second = h.make_request(company_name=self.company, employee=employee, item_code=item)
 		second.workflow_state = "Pending Manager Approval"
-		with self.assertRaises(frappe.ValidationError):
-			second.save(ignore_permissions=True)
+		second.status = "Pending Manager Approval"
+		second.save(ignore_permissions=True)
+		second.reload()
+		self.assertEqual(second.workflow_state, "Pending Manager Approval")
+		self.assertNotEqual(first.name, second.name)
