@@ -1,8 +1,8 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Script Report: Job Card Golden Rule Audit (v5.5.0).
+"""Script Report: Job Card Golden Rule Audit (v5.5.10).
 
 READ-ONLY. Date basis = Job Card.posting_date.
-Grain = Job Card × Component Item × Batch.
+Grain = Job Card × Component Item (batch ignored).
 """
 
 from __future__ import annotations
@@ -21,23 +21,19 @@ def execute(filters=None):
 	result = run_golden_rule_audit(filters)
 	columns = get_columns()
 	data = result.get("rows") or []
-	# Attach summary message for UI (does not mutate DB)
 	c = result.get("counts") or {}
 	message = _(
-		"Date basis: {0}. Scanned JC: {1}. Balanced JC: {2}. Review JC: {3}. "
-		"Golden Fail: {4}. Multi MFG: {5}. Merge Review: {6}. MI Review: {7}. "
-		"Blocked: {8}. Exception rows: {9}."
+		"Date basis: {0}. Grain: Job Card × Item (batch ignored). "
+		"Total Job Cards: {1}. Balanced: {2}. Review: {3}. "
+		"Item rows: {4} (balanced {5} / review {6})."
 	).format(
 		DATE_BASIS,
 		c.get("total_job_cards"),
 		c.get("balanced_job_cards"),
 		c.get("review_job_cards"),
-		c.get("golden_rule_failures"),
-		c.get("multiple_manufacture_job_cards"),
-		c.get("merge_review_job_cards"),
-		c.get("material_issue_review_job_cards"),
-		c.get("blocked_job_cards"),
-		c.get("exception_rows"),
+		c.get("total_item_rows"),
+		c.get("balanced_item_rows"),
+		c.get("review_item_rows"),
 	)
 	return columns, data, message
 
@@ -52,124 +48,87 @@ def get_columns():
 			"width": 140,
 		},
 		{
-			"label": _("Job Card Status"),
-			"fieldname": "job_card_status",
-			"fieldtype": "Data",
-			"width": 110,
-		},
-		{
 			"label": _("Work Order"),
 			"fieldname": "work_order",
 			"fieldtype": "Link",
 			"options": "Work Order",
-			"width": 140,
+			"width": 130,
 		},
 		{
-			"label": _("Production Item"),
-			"fieldname": "production_item",
-			"fieldtype": "Link",
-			"options": "Item",
-			"width": 120,
-		},
-		{
-			"label": _("Component Item"),
+			"label": _("Item"),
 			"fieldname": "component_item",
 			"fieldtype": "Link",
 			"options": "Item",
 			"width": 120,
 		},
-		{"label": _("Batch"), "fieldname": "batch_no", "fieldtype": "Data", "width": 160},
-		{"label": _("Issued Qty"), "fieldname": "issued_qty", "fieldtype": "Float", "width": 90},
-		{"label": _("Returned Qty"), "fieldname": "returned_qty", "fieldtype": "Float", "width": 90},
 		{
-			"label": _("Manufacture Consumed Qty"),
-			"fieldname": "manufacture_consumed_qty",
-			"fieldtype": "Float",
-			"width": 120,
+			"label": _("Item Name"),
+			"fieldname": "item_name",
+			"fieldtype": "Data",
+			"width": 160,
 		},
+		{"label": _("Issued"), "fieldname": "issued_qty", "fieldtype": "Float", "width": 90},
+		{"label": _("Returned"), "fieldname": "returned_qty", "fieldtype": "Float", "width": 90},
 		{
-			"label": _("Component Scrap Qty"),
-			"fieldname": "component_scrap_qty",
+			"label": _("MFG Consume"),
+			"fieldname": "manufacture_consumed_qty",
 			"fieldtype": "Float",
 			"width": 110,
 		},
 		{
-			"label": _("Other Proven Outflow"),
+			"label": _("Material Issue"),
 			"fieldname": "other_proven_outflow",
 			"fieldtype": "Float",
-			"width": 120,
+			"width": 110,
 		},
+		{"label": _("Scrap"), "fieldname": "component_scrap_qty", "fieldtype": "Float", "width": 80},
 		{
-			"label": _("Remaining WIP"),
+			"label": _("Remaining"),
 			"fieldname": "remaining_wip",
 			"fieldtype": "Float",
 			"width": 100,
 		},
 		{
-			"label": _("Golden Difference"),
-			"fieldname": "golden_difference",
-			"fieldtype": "Float",
-			"width": 110,
-		},
-		{
-			"label": _("Golden Status"),
+			"label": _("Status"),
 			"fieldname": "golden_status",
 			"fieldtype": "Data",
-			"width": 150,
+			"width": 100,
 		},
 		{
-			"label": _("Manufacture Count"),
+			"label": _("Reason"),
+			"fieldname": "reason",
+			"fieldtype": "Data",
+			"width": 160,
+		},
+		{
+			"label": _("JC Summary"),
+			"fieldname": "job_card_summary",
+			"fieldtype": "Data",
+			"width": 100,
+		},
+		{
+			"label": _("MFG Count"),
 			"fieldname": "manufacture_count",
 			"fieldtype": "Int",
-			"width": 110,
+			"width": 80,
 		},
 		{
-			"label": _("Material Issue Count"),
-			"fieldname": "material_issue_count",
-			"fieldtype": "Int",
-			"width": 120,
-		},
-		{
-			"label": _("Merge Review"),
-			"fieldname": "merge_review",
-			"fieldtype": "Data",
-			"width": 90,
-		},
-		{
-			"label": _("Material Issue Review"),
+			"label": _("MI Review"),
 			"fieldname": "material_issue_review",
 			"fieldtype": "Data",
 			"width": 140,
 		},
 		{
-			"label": _("Suggested Disposition"),
+			"label": _("Suggested"),
 			"fieldname": "suggested_disposition",
 			"fieldtype": "Data",
 			"width": 130,
-		},
-		{
-			"label": _("Confidence"),
-			"fieldname": "confidence",
-			"fieldtype": "Data",
-			"width": 90,
-		},
-		{
-			"label": _("Repair Status"),
-			"fieldname": "repair_status",
-			"fieldtype": "Data",
-			"width": 110,
 		},
 		{
 			"label": _("Posting Date"),
 			"fieldname": "posting_date",
 			"fieldtype": "Date",
 			"width": 100,
-		},
-		{
-			"label": _("Job Card Summary"),
-			"fieldname": "job_card_summary",
-			"fieldtype": "Data",
-			"width": 140,
 		},
 		{
 			"label": _("Open Rebuild"),
