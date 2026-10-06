@@ -218,6 +218,32 @@ def align_manufacture_finished_good_residual(doc) -> None:
 			_refresh_header_totals(doc)
 			return
 
+	# Stage-equivalent allocation already owns and closes the material and
+	# operating-cost pools for participating Co-Products. Legacy FG residual
+	# pool-close must not reconsume Co-Product capitalized cost as material
+	# (other_incoming uses row.amount, which embeds additional_cost).
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		has_stage_participating_co_product,
+	)
+
+	if has_stage_participating_co_product(doc):
+		fg_only = [
+			row
+			for row in (doc.get("items") or [])
+			if row.get("is_finished_item") and row.get("t_warehouse")
+		]
+		if len(fg_only) == 1:
+			currency = get_company_currency(doc.company)
+			qty = flt(
+				fg_only[0].transfer_qty
+				if fg_only[0].get("transfer_qty") not in (None, "")
+				else fg_only[0].get("qty")
+			)
+			if qty:
+				_apply_integer_rates(fg_only[0], qty, currency)
+		_refresh_header_totals(doc)
+		return
+
 	fg_rows = [
 		row
 		for row in doc.get("items") or []
