@@ -10,7 +10,7 @@ FG material by exactly the Co-Product OH share and inventing Stock Adjustment.
 from __future__ import annotations
 
 import unittest
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from unittest import mock
 
 import frappe
@@ -33,6 +33,8 @@ SCRAP = "erpnext_extensions.iran_accounting.scrap_costing"
 STAGE = "erpnext_extensions.iran_accounting.manufacture_stage_costing"
 ROUND = "erpnext_extensions.iran_accounting.manufacture_rounding"
 STOCK = "erpnext_extensions.iran_accounting.stock_entry"
+CONTRACT = "erpnext_extensions.iran_accounting.manufacture_output_contract"
+QRA = "erpnext_extensions.iran_accounting.domain.qty_rate_amount"
 
 
 class _Row:
@@ -174,36 +176,50 @@ def _env(stock_uoms=None, uom_factors=None, jc_secondaries=None, main_item_codes
 			return [_Dict(uom=uom) for uom in uoms]
 		return []
 
-	with (
-		mock.patch(f"{SCRAP}.is_irr_company", return_value=True),
-		mock.patch(f"{SCRAP}.get_company_currency", return_value="IRR"),
-		mock.patch(f"{SCRAP}.get_currency_precision", return_value=0),
-		mock.patch(f"{SCRAP}.frappe.db.get_value", side_effect=_get_value),
-		mock.patch(f"{STAGE}.is_irr_company", return_value=True),
-		mock.patch(f"{STAGE}.get_company_currency", return_value="IRR"),
-		mock.patch(f"{STAGE}.frappe.db.get_value", side_effect=_get_value),
-		mock.patch(f"{STAGE}.frappe.get_all", side_effect=_get_all),
-		mock.patch(f"{ROUND}.is_irr_company", return_value=True),
-		mock.patch(f"{ROUND}.get_company_currency", return_value="IRR"),
-		mock.patch(f"{ROUND}.get_currency_precision", return_value=0),
-		mock.patch(f"{STOCK}.is_irr_company", return_value=True),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.is_irr_company",
-			return_value=True,
-		),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.get_company_currency",
-			return_value="IRR",
-		),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.get_currency_precision",
-			return_value=0,
-		),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual._persisted_docstatus",
-			return_value=0,
-		),
-	):
+	with ExitStack() as stack:
+		for target, kwargs in (
+			(f"{SCRAP}.is_irr_company", {"return_value": True}),
+			(f"{SCRAP}.get_company_currency", {"return_value": "IRR"}),
+			(f"{SCRAP}.get_currency_precision", {"return_value": 0}),
+			(f"{SCRAP}.frappe.db.get_value", {"side_effect": _get_value}),
+			(f"{STAGE}.is_irr_company", {"return_value": True}),
+			(f"{STAGE}.get_company_currency", {"return_value": "IRR"}),
+			(f"{STAGE}.frappe.db.get_value", {"side_effect": _get_value}),
+			(f"{STAGE}.frappe.get_all", {"side_effect": _get_all}),
+			(f"{ROUND}.is_irr_company", {"return_value": True}),
+			(f"{ROUND}.get_company_currency", {"return_value": "IRR"}),
+			(f"{ROUND}.get_currency_precision", {"return_value": 0}),
+			(f"{STOCK}.is_irr_company", {"return_value": True}),
+			(f"{CONTRACT}.is_irr_company", {"return_value": True}),
+			(f"{CONTRACT}.get_company_currency", {"return_value": "IRR"}),
+			(f"{QRA}.rounding.is_irr_company", {"return_value": True}),
+			(f"{QRA}.rounding.get_company_currency", {"return_value": "IRR"}),
+			(
+				"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual.get_currency_precision",
+				{"return_value": 0},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual._persisted_docstatus",
+				{"return_value": 0},
+			),
+		):
+			stack.enter_context(mock.patch(target, **kwargs))
 		yield
 
 

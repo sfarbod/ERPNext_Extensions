@@ -222,26 +222,33 @@ def align_manufacture_finished_good_residual(doc) -> None:
 	# operating-cost pools for participating Co-Products. Legacy FG residual
 	# pool-close must not reconsume Co-Product capitalized cost as material
 	# (other_incoming uses row.amount, which embeds additional_cost).
+	# Keep the 5.5.18 guard; also honour unified closed-plan ownership (Phase 1
+	# SAME_ITEM_MULTI_FG and STAGE_CO claim stamps).
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		is_allocation_closed,
+		polish_closed_plan_after_align,
+	)
 	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
 		has_stage_participating_co_product,
 	)
 
-	if has_stage_participating_co_product(doc):
+	if is_allocation_closed(doc) or has_stage_participating_co_product(doc):
 		fg_only = [
 			row
 			for row in (doc.get("items") or [])
 			if row.get("is_finished_item") and row.get("t_warehouse")
 		]
-		if len(fg_only) == 1:
-			currency = get_company_currency(doc.company)
+		currency = get_company_currency(doc.company)
+		# Closed Multi-FG: polish integer rates on every owned FG row without
+		# recomposing basic_amount from outgoing − peer amounts.
+		for fg in fg_only:
 			qty = flt(
-				fg_only[0].transfer_qty
-				if fg_only[0].get("transfer_qty") not in (None, "")
-				else fg_only[0].get("qty")
+				fg.transfer_qty if fg.get("transfer_qty") not in (None, "") else fg.get("qty")
 			)
 			if qty:
-				_apply_integer_rates(fg_only[0], qty, currency)
+				_apply_integer_rates(fg, qty, currency)
 		_refresh_header_totals(doc)
+		polish_closed_plan_after_align(doc)
 		return
 
 	fg_rows = [
