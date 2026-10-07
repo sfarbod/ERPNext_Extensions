@@ -648,6 +648,51 @@ class TestManufactureOutputContractV5519(unittest.TestCase):
 		self.assertEqual(flt(fg29.basic_amount), 60_430_884)
 		self.assertEqual(_sa(doc), 0)
 
+	def test_u21b_riv_last_writer_recovers_after_closed_stamp_loss(self):
+		"""RIV get_lazy_doc drops in-memory closed stamps; Core may re-double-pool.
+
+		Post-align SAME_ITEM_MULTI_FG re-assert must restore authoritative amounts
+		without Stage/By/Reject behavior changes.
+		"""
+		from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+			apply_irr_stock_entry_contract_after_calculate,
+		)
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			ALLOCATION_CLOSED_ATTR,
+			ALLOCATION_OWNER_ATTR,
+			ALLOCATION_PLAN_ATTR,
+			OWNED_ROW_IDS_ATTR,
+		)
+
+		doc = _doc_40687_fixture()
+		with _env(
+			stock_uoms={"FG": "Nos", "RM": "Nos", "OTHER": "Nos", "ZRM": "Nos"},
+			main_item_codes={"ZRM": "RM"},
+		):
+			apply_same_item_multi_fg(doc)
+			# Simulate RIV reload: closed-plan stamps are gone; Core double-pool returns.
+			for attr in (
+				ALLOCATION_CLOSED_ATTR,
+				ALLOCATION_OWNER_ATTR,
+				ALLOCATION_PLAN_ATTR,
+				OWNED_ROW_IDS_ATTR,
+			):
+				if hasattr(doc, attr):
+					delattr(doc, attr)
+			pool = 1_196_114_744
+			for r in doc.items:
+				if r.get("is_finished_item"):
+					r.basic_amount = pool
+					r.amount = pool
+					r.basic_rate = int(pool / r.qty)
+					r.valuation_rate = r.basic_rate
+			apply_irr_stock_entry_contract_after_calculate(doc)
+		fg545 = next(r for r in doc.items if r.qty == 545)
+		fg29 = next(r for r in doc.items if r.qty == 29)
+		self.assertEqual(flt(fg545.basic_amount), 1_135_683_860)
+		self.assertEqual(flt(fg29.basic_amount), 60_430_884)
+		self.assertEqual(_sa(doc), 0)
+
 	def test_u22_finalize_twice_idempotent(self):
 		doc = _doc_40687_fixture()
 		with _env(
