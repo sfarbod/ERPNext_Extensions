@@ -713,6 +713,7 @@ def build_manufacture_plan(
 	merge_material_issues: list[str] | None = None,
 	batch_offset_approvals: list[dict] | None = None,
 	partial_batch_offset_approvals: list[dict] | None = None,
+	manufacture_batch_replace_approvals: list[dict] | None = None,
 ) -> dict[str, Any]:
 	"""Authoritative repair plan from server evidence + user choices."""
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.batch_offset import (
@@ -722,6 +723,12 @@ def build_manufacture_plan(
 		detect_partial_batch_offset_candidates,
 		resolve_batch_offset_approvals,
 		resolve_partial_batch_offset_approvals,
+	)
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace import (
+		STATUS_APPROVED_REPLACE,
+		apply_replacements_to_canonical,
+		detect_manufacture_batch_replace_candidates,
+		resolve_manufacture_batch_replace_approvals,
 	)
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.mi_ownership import (
 		ACTION_BLOCKED,
@@ -745,23 +752,45 @@ def build_manufacture_plan(
 		partial_batch_offset_approvals,
 		candidates=partial_candidates,
 	)
-	exempt_keys = set(offset_res["exempt_keys"] or set()) | set(
+	replace_candidates = detect_manufacture_batch_replace_candidates(
+		job_card, scan["rows"]
+	)
+	offset_exempt_for_conflict = set(offset_res["exempt_keys"] or set()) | set(
 		partial_res["exempt_keys"] or set()
+	)
+	replace_res = resolve_manufacture_batch_replace_approvals(
+		job_card,
+		scan["rows"],
+		manufacture_batch_replace_approvals,
+		candidates=replace_candidates,
+		offset_approved_keys=offset_exempt_for_conflict,
+	)
+	exempt_keys = (
+		set(offset_res["exempt_keys"] or set())
+		| set(partial_res["exempt_keys"] or set())
+		| set(replace_res["exempt_keys"] or set())
 	)
 	ok, errors, normalized = validate_dispositions(
 		scan["rows"],
 		dispositions or [],
 		offset_exempt_keys=exempt_keys,
 	)
-	# Distinguish partial-approved disposition labels for audit/UI.
+	# Distinguish partial / replace approved disposition labels for audit/UI.
 	partial_keys = set(partial_res.get("exempt_keys") or set())
+	replace_keys = set(replace_res.get("exempt_keys") or set())
 	for d in normalized:
 		key = (d.get("item_code"), d.get("batch_no") or "")
-		if key in partial_keys:
+		if key in replace_keys:
+			d["disposition"] = STATUS_APPROVED_REPLACE
+			d["repair_status"] = STATUS_APPROVED_REPLACE
+		elif key in partial_keys:
 			d["disposition"] = STATUS_APPROVED_PARTIAL
 			d["repair_status"] = STATUS_APPROVED_PARTIAL
-	errors = list(errors) + list(offset_res.get("blockers") or []) + list(
-		partial_res.get("blockers") or []
+	errors = (
+		list(errors)
+		+ list(offset_res.get("blockers") or [])
+		+ list(partial_res.get("blockers") or [])
+		+ list(replace_res.get("blockers") or [])
 	)
 	mfgs = scan["manufactures"]
 	mfg_names = [m.name for m in mfgs]
@@ -895,6 +924,17 @@ def build_manufacture_plan(
 		_merge_consume_rows([], extra)
 	)
 
+	# REAL Manufacture Batch Replacement (v5.5.22): REMOVE wrong / ADD correct.
+	canonical_rows, replace_apply_errors = apply_replacements_to_canonical(
+		canonical_rows,
+		replace_res.get("approved_groups") or [],
+		job_card=job_card,
+		wip_warehouse=scan.get("wip_warehouse"),
+	)
+	for err in replace_apply_errors:
+		if err not in blockers:
+			blockers.append(err)
+
 	# Deterministic Job Card Item stamp on every CONSUME / source row (mandatory
 	# for Custom 6). Historical NULL JCI must not be copied onto the canonical.
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.tracking_reconstruction import (
@@ -970,6 +1010,7 @@ def build_manufacture_plan(
 	approved_offset_items = sorted(
 		{g["item_code"] for g in (offset_res.get("approved_groups") or [])}
 		| {g["item_code"] for g in (partial_res.get("approved_groups") or [])}
+		| {g["item_code"] for g in (replace_res.get("approved_groups") or [])}
 	)
 	plan_fp = hashlib.sha256(
 		json.dumps(
@@ -1006,6 +1047,25 @@ def build_manufacture_plan(
 							x["item_code"],
 							x.get("positive_batch") or "",
 							x.get("negative_batch") or "",
+						),
+					)
+				],
+				"manufacture_batch_replace_approvals": [
+					{
+						"item_code": g["item_code"],
+						"wrong_batch": g.get("wrong_batch"),
+						"correct_batch": g.get("correct_batch"),
+						"qty": g.get("qty"),
+						"evidence_fingerprint": g.get("evidence_fingerprint"),
+						"decision": g.get("decision"),
+						"value_delta": g.get("value_delta"),
+					}
+					for g in sorted(
+						replace_res.get("approved_groups") or [],
+						key=lambda x: (
+							x["item_code"],
+							x.get("wrong_batch") or "",
+							x.get("correct_batch") or "",
 						),
 					)
 				],
@@ -1123,17 +1183,20 @@ def build_manufacture_plan(
 			}
 		)
 
+	has_replace_approval = bool(replace_res.get("approved_groups"))
 	stock_repair_needed = (
 		any(flt(d.get("proposed_consumed")) > 0 for d in normalized)
 		or any(flt(d.get("proposed_scrap")) > 0 for d in normalized)
 		or any(flt(d.get("proposed_return")) > 0 for d in normalized)
 		or len(merge_documents) > 1
 		or bool(merge_material_issues)
+		or has_replace_approval
 	)
 	has_offset_approval = bool(offset_res.get("approved_groups")) or bool(
 		partial_res.get("approved_groups")
 	)
-	exception_only = has_offset_approval and not stock_repair_needed
+	# Replacement is a REAL stock repair — never exception-only.
+	exception_only = has_offset_approval and not stock_repair_needed and not has_replace_approval
 	needs_repair = stock_repair_needed or has_offset_approval
 	apply_allowed = not blockers and bool(merge_documents) and needs_repair
 	# Exception-only path records approved offset without stock mutation.
@@ -1145,12 +1208,17 @@ def build_manufacture_plan(
 	if blockers:
 		apply_allowed = False
 
-	# Annotate scan rows for UI / audit when offset approved
-	approved_keys = exempt_keys
+	# Annotate scan rows for UI / audit when offset / replace approved
+	offset_only_keys = set(offset_res.get("exempt_keys") or set()) | set(
+		partial_res.get("exempt_keys") or set()
+	)
 	full_keys = set(offset_res.get("exempt_keys") or set())
 	for r in scan.get("rows") or []:
 		key = (r["item_code"], r.get("batch_no") or "")
-		if key in partial_keys:
+		if key in replace_keys:
+			r["repair_status"] = STATUS_APPROVED_REPLACE
+			r["manufacture_batch_replace_status"] = STATUS_APPROVED_REPLACE
+		elif key in partial_keys:
 			r["repair_status"] = STATUS_APPROVED_PARTIAL
 			r["batch_offset_status"] = STATUS_APPROVED_PARTIAL
 		elif key in full_keys:
@@ -1189,6 +1257,38 @@ def build_manufacture_plan(
 				"unresolved_after_pair": g.get("unresolved_after_pair") or [],
 				"action": "NO_STOCK_DOCUMENT_CHANGE",
 				"status": STATUS_APPROVED_PARTIAL,
+			}
+		)
+	manufacture_batch_replace_preview = []
+	for g in replace_res.get("approved_groups") or []:
+		manufacture_batch_replace_preview.append(
+			{
+				"correction": "MANUFACTURE_BATCH_CORRECTION",
+				"item_code": g["item_code"],
+				"wrong_batch": g.get("wrong_batch"),
+				"correct_batch": g.get("correct_batch"),
+				"qty": g.get("qty"),
+				"wrong_rate": g.get("wrong_rate"),
+				"correct_rate": g.get("correct_rate"),
+				"wrong_value": g.get("wrong_value"),
+				"correct_value": g.get("correct_value"),
+				"value_delta": g.get("value_delta"),
+				"net_qty_change": 0.0,
+				"classification": g.get("classification"),
+				"action": "CANONICAL_MANUFACTURE_BATCH_REPLACE",
+				"status": STATUS_APPROVED_REPLACE,
+				"remove": {
+					"batch_no": g.get("wrong_batch"),
+					"qty": g.get("qty"),
+					"rate": g.get("wrong_rate"),
+					"value": g.get("wrong_value"),
+				},
+				"add": {
+					"batch_no": g.get("correct_batch"),
+					"qty": g.get("qty"),
+					"rate": g.get("correct_rate"),
+					"value": g.get("correct_value"),
+				},
 			}
 		)
 
@@ -1231,13 +1331,20 @@ def build_manufacture_plan(
 		"batch_offset_approvals": offset_res.get("audit") or [],
 		"approved_batch_offsets": offset_res.get("approved_groups") or [],
 		"approved_batch_offset_keys": [
-			{"item_code": k[0], "batch_no": k[1]} for k in sorted(approved_keys)
+			{"item_code": k[0], "batch_no": k[1]} for k in sorted(offset_only_keys)
 		],
 		"batch_offset_preview": batch_offset_preview,
 		"partial_batch_offset_candidates": partial_candidates,
 		"partial_batch_offset_approvals": partial_res.get("audit") or [],
 		"approved_partial_batch_offsets": partial_res.get("approved_groups") or [],
 		"partial_batch_offset_preview": partial_batch_offset_preview,
+		"manufacture_batch_replace_candidates": replace_candidates,
+		"manufacture_batch_replace_approvals": replace_res.get("audit") or [],
+		"approved_manufacture_batch_replacements": replace_res.get("approved_groups") or [],
+		"approved_manufacture_batch_replace_keys": [
+			{"item_code": k[0], "batch_no": k[1]} for k in sorted(replace_keys)
+		],
+		"manufacture_batch_replace_preview": manufacture_batch_replace_preview,
 		"stock_repair_needed": stock_repair_needed,
 		"exception_only": exception_only,
 		"approved_offset_items": approved_offset_items,

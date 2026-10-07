@@ -928,12 +928,28 @@ class JobCardStockRebuildPage {
 				});
 			}
 		});
+		const manufacture_batch_replace_approvals = [];
+		Object.keys(this.manufactureBatchReplaceApprovals || {}).forEach((key) => {
+			const a = this.manufactureBatchReplaceApprovals[key];
+			if (a && a.accepted) {
+				manufacture_batch_replace_approvals.push({
+					item_code: a.item_code,
+					wrong_batch: a.wrong_batch,
+					correct_batch: a.correct_batch,
+					qty: a.qty,
+					evidence_fingerprint: a.evidence_fingerprint,
+					accepted: 1,
+					decision: "REPLACE_MANUFACTURE_BATCH",
+				});
+			}
+		});
 		return {
 			dispositions,
 			merge_documents,
 			merge_material_issues,
 			batch_offset_approvals,
 			partial_batch_offset_approvals,
+			manufacture_batch_replace_approvals,
 			stamp_mode: "HISTORICAL",
 			fingerprint: this.mfgFingerprint,
 		};
@@ -960,6 +976,7 @@ class JobCardStockRebuildPage {
 				this.init_mfg_decisions_from_scan((data.scan && data.scan.rows) || []);
 				this.batchOffsetApprovals = {};
 				this.partialBatchOffsetApprovals = {};
+				this.manufactureBatchReplaceApprovals = {};
 				this.batchOffsetCandidates =
 					data.batch_offset_candidates ||
 					(data.plan && data.plan.batch_offset_candidates) ||
@@ -967,6 +984,10 @@ class JobCardStockRebuildPage {
 				this.partialBatchOffsetCandidates =
 					data.partial_batch_offset_candidates ||
 					(data.plan && data.plan.partial_batch_offset_candidates) ||
+					[];
+				this.manufactureBatchReplaceCandidates =
+					data.manufacture_batch_replace_candidates ||
+					(data.plan && data.plan.manufacture_batch_replace_candidates) ||
 					[];
 				this.render_mfg();
 				this.btn_mfg_dry.prop("disabled", false);
@@ -1417,6 +1438,120 @@ class JobCardStockRebuildPage {
 		return [c.item_code, c.positive_batch || "", c.negative_batch || ""].join("||");
 	}
 
+	_mfg_batch_replace_key(c) {
+		return [c.item_code, c.wrong_batch || "", c.correct_batch || ""].join("||");
+	}
+
+	render_manufacture_batch_replace_panel(candidates) {
+		const self = this;
+		const eligible = (candidates || []).filter((c) => c && c.eligible);
+		const ambiguous = (candidates || []).filter(
+			(c) => c && c.classification === "AMBIGUOUS_REPLACEMENT"
+		);
+		if (!eligible.length && !ambiguous.length) return;
+		$("<h4 class='jcsr-section-title'>")
+			.text(__("Correct Manufacture Batch"))
+			.appendTo(this.$mfg);
+		$("<div class='text-muted' style='margin-bottom:6px'>")
+			.text(__("اصلاح بچ مصرفی سند ساخت"))
+			.appendTo(this.$mfg);
+		ambiguous.forEach((c) => {
+			this.$mfg.append(`
+				<div class="jcsr-alert" style="border:1px solid #e2a06a;padding:10px;margin:8px 0">
+					<strong>${__("Item")}: ${frappe.utils.escape_html(c.item_code)}</strong>
+					· ${__("AMBIGUOUS_REPLACEMENT")} — ${__("select correct Batch explicitly")}<br>
+					${__("Wrong Batch")}: <code>${frappe.utils.escape_html(c.wrong_batch || "")}</code>
+					× ${flt(c.qty)}
+				</div>
+			`);
+		});
+		eligible.forEach((c) => {
+			const key = self._mfg_batch_replace_key(c);
+			const checked = !!(
+				this.manufactureBatchReplaceApprovals[key] &&
+				this.manufactureBatchReplaceApprovals[key].accepted
+			);
+			const $box = $(`
+				<div class="jcsr-alert" data-mfg-batch-replace-key="${frappe.utils.escape_html(key)}"
+				     style="border:1px solid #6a9cc8;padding:10px;margin:8px 0">
+					<div><strong>${__("Item")}: ${frappe.utils.escape_html(c.item_code)}</strong>
+					· ${__("Classification")}: ${frappe.utils.escape_html(c.classification || "")}
+					</div>
+					<div style="margin:6px 0">
+						${__("REMOVE")}: <code>${frappe.utils.escape_html(c.wrong_batch || "")}</code>
+						× ${flt(c.qty)}
+						· ${__("Rate")}: ${flt(c.wrong_rate)}
+						· ${__("Value")}: ${flt(c.wrong_value)}<br>
+						${__("ADD")}: <code>${frappe.utils.escape_html(c.correct_batch || "")}</code>
+						× ${flt(c.qty)}
+						· ${__("Rate")}: ${flt(c.correct_rate)}
+						· ${__("Value")}: ${flt(c.correct_value)}<br>
+						${__("Net Qty Change")}: 0
+						· ${__("Value Difference")}: ${flt(c.value_delta)} IRR
+					</div>
+					<div class="text-muted" style="margin:6px 0">
+						${frappe.utils.escape_html(
+							c.explanation ||
+								__(
+									"REAL Manufacture correction: remove wrong Batch and add correct Batch on the repaired canonical Manufacture."
+								)
+						)}
+					</div>
+					<label>
+						<input type="checkbox" data-mfg-batch-replace-accept="${frappe.utils.escape_html(key)}"
+						       ${checked ? "checked" : ""}>
+						${__("Correct Manufacture Batch — Replace Wrong Batch")}
+						<span class="text-muted"> — ${__("اصلاح بچ مصرفی سند ساخت")}</span>
+					</label>
+				</div>
+			`);
+			$box.find("input[data-mfg-batch-replace-accept]").on("change", function () {
+				const on = $(this).is(":checked");
+				if (on) {
+					// Mutual exclusion: clear overlapping Batch Offset approvals.
+					if (self.batchOffsetApprovals && self.batchOffsetApprovals[c.item_code]) {
+						delete self.batchOffsetApprovals[c.item_code];
+					}
+					Object.keys(self.partialBatchOffsetApprovals || {}).forEach((pk) => {
+						const p = self.partialBatchOffsetApprovals[pk];
+						if (
+							p &&
+							p.item_code === c.item_code &&
+							(p.positive_batch === c.correct_batch ||
+								p.negative_batch === c.wrong_batch ||
+								p.positive_batch === c.wrong_batch ||
+								p.negative_batch === c.correct_batch)
+						) {
+							delete self.partialBatchOffsetApprovals[pk];
+						}
+					});
+					self.manufactureBatchReplaceApprovals[key] = {
+						item_code: c.item_code,
+						wrong_batch: c.wrong_batch,
+						correct_batch: c.correct_batch,
+						qty: c.qty,
+						evidence_fingerprint: c.evidence_fingerprint,
+						accepted: true,
+					};
+					[c.wrong_batch, c.correct_batch].forEach((b) => {
+						const rk = self.mfg_row_key(c.item_code, b || "");
+						self.mfgDecisions[rk] = {
+							consumed: 0,
+							scrap: 0,
+							return: 0,
+							still: 0,
+						};
+					});
+				} else {
+					delete self.manufactureBatchReplaceApprovals[key];
+				}
+				self.mfgFingerprint = null;
+				self.render_mfg();
+			});
+			this.$mfg.append($box);
+		});
+	}
+
 	render_partial_batch_offset_panel(candidates) {
 		const self = this;
 		const eligible = (candidates || []).filter((c) => c && c.eligible);
@@ -1595,6 +1730,10 @@ class JobCardStockRebuildPage {
 			this.partialBatchOffsetCandidates ||
 				(plan.partial_batch_offset_candidates || [])
 		);
+		this.render_manufacture_batch_replace_panel(
+			this.manufactureBatchReplaceCandidates ||
+				(plan.manufacture_batch_replace_candidates || [])
+		);
 
 		const previewOffsets = plan.batch_offset_preview || [];
 		if (previewOffsets.length) {
@@ -1634,6 +1773,31 @@ class JobCardStockRebuildPage {
 						${__("Value Difference")}: ${flt(p.value_delta)} IRR
 						· ${__("Action")}:
 						<code>${frappe.utils.escape_html(p.action || "NO_STOCK_DOCUMENT_CHANGE")}</code>
+					</div>
+				`);
+			});
+		}
+		const previewReplace = plan.manufacture_batch_replace_preview || [];
+		if (previewReplace.length) {
+			$("<h4 class='jcsr-section-title'>")
+				.text(__("MANUFACTURE BATCH CORRECTION"))
+				.appendTo(this.$mfg);
+			previewReplace.forEach((p) => {
+				this.$mfg.append(`
+					<div class="jcsr-alert ok">
+						<strong>${__("Item")}: ${frappe.utils.escape_html(p.item_code)}</strong><br>
+						${__("REMOVE")}: <code>${frappe.utils.escape_html(p.wrong_batch || "")}</code>
+						× ${flt(p.qty)} · ${__("Rate")}: ${flt(p.wrong_rate)}
+						· ${__("Value")}: ${flt(p.wrong_value)}<br>
+						${__("ADD")}: <code>${frappe.utils.escape_html(p.correct_batch || "")}</code>
+						× ${flt(p.qty)} · ${__("Rate")}: ${flt(p.correct_rate)}
+						· ${__("Value")}: ${flt(p.correct_value)}<br>
+						${__("Net Qty Change")}: 0
+						· ${__("Value Difference")}: ${flt(p.value_delta)} IRR<br>
+						${__("Action")}:
+						<code>${frappe.utils.escape_html(
+							p.action || "CANONICAL_MANUFACTURE_BATCH_REPLACE"
+						)}</code>
 					</div>
 				`);
 			});

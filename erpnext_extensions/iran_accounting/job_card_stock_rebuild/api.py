@@ -107,6 +107,9 @@ def scan_manufacture_reconciliation(job_card: str):
 		detect_batch_offset_candidates,
 		detect_partial_batch_offset_candidates,
 	)
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace import (
+		detect_manufacture_batch_replace_candidates,
+	)
 
 	scan = scan_golden_rule(job_card)
 	# Default plan preview using suggested dispositions
@@ -132,11 +135,15 @@ def scan_manufacture_reconciliation(job_card: str):
 	) or detect_partial_batch_offset_candidates(
 		job_card, scan.get("rows") or [], full_candidates=candidates
 	)
+	replace_candidates = plan.get(
+		"manufacture_batch_replace_candidates"
+	) or detect_manufacture_batch_replace_candidates(job_card, scan.get("rows") or [])
 	return {
 		"scan": scan,
 		"plan": plan,
 		"batch_offset_candidates": candidates,
 		"partial_batch_offset_candidates": partial_candidates,
+		"manufacture_batch_replace_candidates": replace_candidates,
 	}
 
 

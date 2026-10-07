@@ -642,6 +642,15 @@ def _write_audit(payload: dict) -> str | None:
 						"merge_material_issues": payload.get("merge_material_issues"),
 						"batch_offset_approvals": payload.get("batch_offset_approvals"),
 						"approved_batch_offsets": payload.get("approved_batch_offsets"),
+						"partial_batch_offset_approvals": payload.get(
+							"partial_batch_offset_approvals"
+						),
+						"manufacture_batch_replace_approvals": payload.get(
+							"manufacture_batch_replace_approvals"
+						),
+						"approved_manufacture_batch_replacements": payload.get(
+							"approved_manufacture_batch_replacements"
+						),
 					},
 					default=str,
 				),
@@ -708,6 +717,9 @@ def run_repair(
 		merge_material_issues=plan_input.get("merge_material_issues"),
 		batch_offset_approvals=plan_input.get("batch_offset_approvals"),
 		partial_batch_offset_approvals=plan_input.get("partial_batch_offset_approvals"),
+		manufacture_batch_replace_approvals=plan_input.get(
+			"manufacture_batch_replace_approvals"
+		),
 	)
 	timer.end("T01")
 	client_fp = plan_input.get("fingerprint")
@@ -760,6 +772,15 @@ def run_repair(
 		"partial_batch_offset_approvals": plan.get("partial_batch_offset_approvals"),
 		"approved_partial_batch_offsets": plan.get("approved_partial_batch_offsets"),
 		"partial_batch_offset_preview": plan.get("partial_batch_offset_preview"),
+		"manufacture_batch_replace_approvals": plan.get(
+			"manufacture_batch_replace_approvals"
+		),
+		"approved_manufacture_batch_replacements": plan.get(
+			"approved_manufacture_batch_replacements"
+		),
+		"manufacture_batch_replace_preview": plan.get(
+			"manufacture_batch_replace_preview"
+		),
 		"exception_only": bool(plan.get("exception_only")),
 		"blockers": [],
 		"cancelled": [],
@@ -857,6 +878,9 @@ def run_repair(
 			batch_offset_approvals=plan_input.get("batch_offset_approvals"),
 			partial_batch_offset_approvals=plan_input.get(
 				"partial_batch_offset_approvals"
+			),
+			manufacture_batch_replace_approvals=plan_input.get(
+				"manufacture_batch_replace_approvals"
 			),
 		)
 		if fresh["fingerprint"] != plan["fingerprint"]:
