@@ -248,6 +248,10 @@ def simulate_cancel_stock_ok(cancel_names_desc: list[str]) -> tuple[bool, str]:
 	sp = f"jc_shared_cancel_{uuid.uuid4().hex[:12]}"
 	ok = True
 	reason = "ok"
+	# Cancel probes may raise expected Insufficient Stock for bridge planning.
+	# Capture and restore message_log so probe evidence does not leak as a
+	# user-facing modal (PROBE EVIDENCE ≠ TERMINAL BLOCKER).
+	prior_messages = list(getattr(frappe.local, "message_log", None) or [])
 	try:
 		with _owned_cancel_probe_savepoint(sp):
 			with suppress_auto_riv():
@@ -261,6 +265,8 @@ def simulate_cancel_stock_ok(cancel_names_desc: list[str]) -> tuple[bool, str]:
 		msg = frappe.as_unicode(exc)
 		msg = frappe.utils.strip_html(msg) if hasattr(frappe.utils, "strip_html") else msg
 		reason = f"{names}: {msg}"[:500]
+	finally:
+		frappe.local.message_log = prior_messages
 
 	cache[key] = (ok, reason)
 	return cache[key]

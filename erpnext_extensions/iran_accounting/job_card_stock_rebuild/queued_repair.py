@@ -371,6 +371,24 @@ def _normalize_plan(plan) -> dict:
 			out["batch_offset_approvals"] = [dict(a) if isinstance(a, dict) else a for a in approvals]
 		else:
 			out["batch_offset_approvals"] = approvals
+	# Preserve Partial Batch Offset pair approvals (v5.5.21).
+	if "partial_batch_offset_approvals" in plan:
+		partials = plan.get("partial_batch_offset_approvals")
+		if isinstance(partials, list):
+			out["partial_batch_offset_approvals"] = [
+				dict(a) if isinstance(a, dict) else a for a in partials
+			]
+		else:
+			out["partial_batch_offset_approvals"] = partials
+	# Preserve Manufacture Batch Replacement approvals (v5.5.22).
+	if "manufacture_batch_replace_approvals" in plan:
+		replaces = plan.get("manufacture_batch_replace_approvals")
+		if isinstance(replaces, list):
+			out["manufacture_batch_replace_approvals"] = [
+				dict(a) if isinstance(a, dict) else a for a in replaces
+			]
+		else:
+			out["manufacture_batch_replace_approvals"] = replaces
 	return out
 
 

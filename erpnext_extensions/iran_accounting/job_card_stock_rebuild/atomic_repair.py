@@ -309,6 +309,17 @@ def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
 		row.valuation_rate = rate
 		row.set_basic_rate_manually = 1
 		row.allow_zero_valuation_rate = 0
+		# MAIN_FG / finished incoming: do NOT force amount = qty×rate.
+		# Historical Manufacture may carry a legitimate integer-rate residual
+		# (e.g. 898 IRR) vs the allocatable material pool; recomposing amount
+		# from the snapshot rate recreates that residual and then fails R1
+		# after the output contract has (or should have) handled it.
+		# Source CONSUME and Component Scrap keep issued-rate amount identity.
+		is_main_fg = cint(row.is_finished_item) or (
+			(getattr(row, "custom_output_class", None) or "") == "MAIN_FG"
+		)
+		if is_main_fg:
+			continue
 		row.basic_amount = qty * rate
 		row.amount = qty * rate
 
@@ -395,6 +406,23 @@ def _prepare_se_for_repair_submit(doc, batch_snapshot: list[dict] | None = None)
 		if flt(row.basic_rate) > 0:
 			row.set_basic_rate_manually = 1
 			row.allow_zero_valuation_rate = 0
+
+def snapshot_historical_manufacture_residual(mfg_name: str) -> dict | None:
+	"""Capture value_difference + SA evidence BEFORE cancel (GL still live)."""
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		historical_repair_residual_evidence,
+	)
+
+	# Temporary probe doc flags — read live submitted residual.
+	probe = frappe._dict(
+		flags=frappe._dict(
+			jc_manufacture_repair=True,
+			jc_repair_historical_mfg=mfg_name,
+		)
+	)
+	# Force HISTORICAL_REPAIR_FLAG already set by run_repair.
+	return historical_repair_residual_evidence(probe)
+
 
 def _build_canonical_se(plan: dict) -> str:
 	canon = plan["canonical_manufacture"]
@@ -504,6 +532,11 @@ def _build_canonical_se(plan: dict) -> str:
 	doc.flags.ignore_permissions = True
 	# Site Server Script "Custom 9" bumps Manufacture after MTfM; skip via doc.flags.
 	doc.flags.jc_manufacture_repair = True
+	# Fingerprint the superseded historical Manufacture for residual preservation.
+	doc.flags.jc_repair_historical_mfg = template_name
+	# Pre-cancel residual snapshot (preferred — SA GL still live at capture time).
+	if plan.get("historical_manufacture_residual"):
+		doc.flags.jc_repair_historical_residual = plan.get("historical_manufacture_residual")
 	# Historical repair must keep the original Manufacture chronology; PPO would
 	# otherwise bump posting after remaining WIP Issues / other dependents.
 	if hasattr(doc, "set_posting_time"):
@@ -521,6 +554,9 @@ def _build_canonical_se(plan: dict) -> str:
 	if hasattr(doc, "set_posting_time"):
 		doc.set_posting_time = 1
 	doc.flags.jc_manufacture_repair = True
+	doc.flags.jc_repair_historical_mfg = template_name
+	if plan.get("historical_manufacture_residual"):
+		doc.flags.jc_repair_historical_residual = plan.get("historical_manufacture_residual")
 	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
 	doc.save()
 	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
@@ -562,12 +598,19 @@ def _verify(plan: dict, canonical_name: str) -> dict:
 		(k.get("item_code"), k.get("batch_no") or "")
 		for k in (plan.get("approved_batch_offset_keys") or [])
 	}
+	partial_keys = set()
+	for g in plan.get("approved_partial_batch_offsets") or []:
+		partial_keys.add((g["item_code"], g.get("positive_batch") or ""))
+		partial_keys.add((g["item_code"], g.get("negative_batch") or ""))
 	for row in scan["rows"]:
 		# Skip non-component noise (defensive; scan already filters FG-only rows).
 		if flt(row.get("issued")) <= 1e-9 and flt(row.get("consumed")) <= 1e-9:
 			continue
 		key = (row["item_code"], row.get("batch_no") or "")
-		# Explicit approved zero-net batch offset: remaining may stay non-zero per batch.
+		# Explicit approved batch offset (full or partial): remaining may stay non-zero per batch.
+		if key in partial_keys:
+			row["repair_status"] = "APPROVED_PARTIAL_BATCH_OFFSET"
+			continue
 		if key in offset_keys:
 			row["repair_status"] = "APPROVED_BATCH_OFFSET"
 			continue
@@ -635,6 +678,15 @@ def _write_audit(payload: dict) -> str | None:
 						"merge_material_issues": payload.get("merge_material_issues"),
 						"batch_offset_approvals": payload.get("batch_offset_approvals"),
 						"approved_batch_offsets": payload.get("approved_batch_offsets"),
+						"partial_batch_offset_approvals": payload.get(
+							"partial_batch_offset_approvals"
+						),
+						"manufacture_batch_replace_approvals": payload.get(
+							"manufacture_batch_replace_approvals"
+						),
+						"approved_manufacture_batch_replacements": payload.get(
+							"approved_manufacture_batch_replacements"
+						),
 					},
 					default=str,
 				),
@@ -700,6 +752,10 @@ def run_repair(
 		stamp_mode=plan_input.get("stamp_mode"),
 		merge_material_issues=plan_input.get("merge_material_issues"),
 		batch_offset_approvals=plan_input.get("batch_offset_approvals"),
+		partial_batch_offset_approvals=plan_input.get("partial_batch_offset_approvals"),
+		manufacture_batch_replace_approvals=plan_input.get(
+			"manufacture_batch_replace_approvals"
+		),
 	)
 	timer.end("T01")
 	client_fp = plan_input.get("fingerprint")
@@ -749,6 +805,18 @@ def run_repair(
 		"approved_batch_offsets": plan.get("approved_batch_offsets"),
 		"approved_batch_offset_keys": plan.get("approved_batch_offset_keys"),
 		"batch_offset_preview": plan.get("batch_offset_preview"),
+		"partial_batch_offset_approvals": plan.get("partial_batch_offset_approvals"),
+		"approved_partial_batch_offsets": plan.get("approved_partial_batch_offsets"),
+		"partial_batch_offset_preview": plan.get("partial_batch_offset_preview"),
+		"manufacture_batch_replace_approvals": plan.get(
+			"manufacture_batch_replace_approvals"
+		),
+		"approved_manufacture_batch_replacements": plan.get(
+			"approved_manufacture_batch_replacements"
+		),
+		"manufacture_batch_replace_preview": plan.get(
+			"manufacture_batch_replace_preview"
+		),
 		"exception_only": bool(plan.get("exception_only")),
 		"blockers": [],
 		"cancelled": [],
@@ -757,7 +825,7 @@ def run_repair(
 		"before_snapshot": before,
 	}
 
-	# Exception-only: validate + audit APPROVED_BATCH_OFFSET with zero stock mutation.
+	# Exception-only: validate + audit approved offset with zero stock mutation.
 	if plan.get("exception_only"):
 		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule import (
 			scan_golden_rule,
@@ -765,13 +833,24 @@ def run_repair(
 
 		_progress("T10")
 		scan = scan_golden_rule(job_card)
+		partial_status_keys = set()
+		for g in plan.get("approved_partial_batch_offsets") or []:
+			partial_status_keys.add((g["item_code"], g.get("positive_batch") or ""))
+			partial_status_keys.add((g["item_code"], g.get("negative_batch") or ""))
 		for row in scan.get("rows") or []:
 			key = (row["item_code"], row.get("batch_no") or "")
-			if key in {
+			if key in partial_status_keys:
+				row["repair_status"] = "APPROVED_PARTIAL_BATCH_OFFSET"
+			elif key in {
 				(k.get("item_code"), k.get("batch_no") or "")
 				for k in (plan.get("approved_batch_offset_keys") or [])
 			}:
 				row["repair_status"] = "APPROVED_BATCH_OFFSET"
+		exc_status = (
+			"APPROVED_PARTIAL_BATCH_OFFSET"
+			if plan.get("approved_partial_batch_offsets")
+			else "APPROVED_BATCH_OFFSET"
+		)
 		result.update(
 			{
 				"ok": True,
@@ -783,7 +862,10 @@ def run_repair(
 					"errors": [],
 					"scan": scan,
 					"approved_batch_offsets": plan.get("approved_batch_offsets"),
-					"exception_status": "APPROVED_BATCH_OFFSET",
+					"approved_partial_batch_offsets": plan.get(
+						"approved_partial_batch_offsets"
+					),
+					"exception_status": exc_status,
 				},
 				"after_snapshot": before,
 			}
@@ -830,6 +912,12 @@ def run_repair(
 			stamp_mode=plan_input.get("stamp_mode"),
 			merge_material_issues=plan_input.get("merge_material_issues"),
 			batch_offset_approvals=plan_input.get("batch_offset_approvals"),
+			partial_batch_offset_approvals=plan_input.get(
+				"partial_batch_offset_approvals"
+			),
+			manufacture_batch_replace_approvals=plan_input.get(
+				"manufacture_batch_replace_approvals"
+			),
 		)
 		if fresh["fingerprint"] != plan["fingerprint"]:
 			raise RuntimeError("STALE PLAN after lock")
@@ -953,6 +1041,14 @@ def run_repair(
 			# 3) Cancel manufactures
 			timer.start("T10")
 			_progress("T10")
+			# Snapshot historical residual BEFORE cancel (live SA GL).
+			if merge_docs and not fresh.get("historical_manufacture_residual"):
+				fresh["historical_manufacture_residual"] = (
+					snapshot_historical_manufacture_residual(merge_docs[0])
+				)
+				result["historical_manufacture_residual"] = fresh.get(
+					"historical_manufacture_residual"
+				)
 			for name in merge_docs:
 				_cancel_se(name)
 				result["cancelled"].append(name)

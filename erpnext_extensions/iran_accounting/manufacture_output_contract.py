@@ -486,6 +486,129 @@ def _manual_economics_coherent(fg_rows, allocatable: float, currency: str) -> bo
 	return abs(total - round_currency(allocatable, currency)) == 0
 
 
+def historical_repair_residual_evidence(doc) -> dict[str, Any] | None:
+	"""Narrow Job Card Manufacture repair evidence for preserving historical residual.
+
+	Only active when:
+	- ``HISTORICAL_REPAIR_FLAG`` is set
+	- ``doc.flags.jc_manufacture_repair`` is set
+	- ``doc.flags.jc_repair_historical_mfg`` names the superseded Manufacture
+	  (or ``doc.flags.jc_repair_historical_residual`` already carries a snapshot)
+
+	Returns fingerprintable evidence or None. Never invents residual.
+	"""
+	from erpnext_extensions.iran_accounting.historical_stock import HISTORICAL_REPAIR_FLAG
+
+	if not frappe.flags.get(HISTORICAL_REPAIR_FLAG):
+		return None
+	if not getattr(doc.flags, "jc_manufacture_repair", False):
+		return None
+	# Prefer pre-cancel snapshot captured by atomic repair.
+	cached = getattr(doc.flags, "jc_repair_historical_residual", None)
+	if isinstance(cached, dict) and cached.get("fingerprint") and cached.get("historical_mfg"):
+		return cached
+	hist_name = getattr(doc.flags, "jc_repair_historical_mfg", None)
+	if not hist_name:
+		return None
+	se = frappe.db.get_value(
+		"Stock Entry",
+		hist_name,
+		[
+			"name",
+			"purpose",
+			"docstatus",
+			"total_outgoing_value",
+			"total_incoming_value",
+			"value_difference",
+			"total_additional_costs",
+			"company",
+		],
+		as_dict=1,
+	)
+	# Historical may already be cancelled in the atomic repair transaction.
+	if not se or se.purpose != "Manufacture" or cint(se.docstatus) not in (1, 2):
+		return None
+	residual = round_currency(flt(se.value_difference), get_company_currency(se.company))
+	# Confirm residual was posted to Stock Adjustment (credit or debit).
+	adj_account = frappe.db.get_value("Company", se.company, "stock_adjustment_account")
+	sa_net = 0.0
+	if adj_account:
+		# Prefer live (non-cancelled) SA rows — available before cancel.
+		sa_net = flt(
+			frappe.db.sql(
+				"""
+				select ifnull(sum(credit),0) - ifnull(sum(debit),0)
+				from `tabGL Entry`
+				where voucher_type='Stock Entry' and voucher_no=%s
+				  and account=%s and ifnull(is_cancelled,0)=0
+				""",
+				(hist_name, adj_account),
+			)[0][0]
+		)
+		if abs(sa_net) <= 0 and abs(residual) > 0 and cint(se.docstatus) == 2:
+			# Cancelled: header value_difference remains the authoritative residual.
+			sa_net = residual
+	payload = {
+		"historical_mfg": hist_name,
+		"outgoing": flt(se.total_outgoing_value),
+		"incoming": flt(se.total_incoming_value),
+		"value_difference": residual,
+		"sa_net_credit": sa_net,
+		"additional_costs": flt(se.total_additional_costs),
+	}
+	import hashlib
+	import json
+
+	payload["fingerprint"] = hashlib.sha256(
+		json.dumps(
+			{
+				"historical_mfg": hist_name,
+				"outgoing": payload["outgoing"],
+				"incoming": payload["incoming"],
+				"value_difference": payload["value_difference"],
+				"sa_net_credit": payload["sa_net_credit"],
+			},
+			sort_keys=True,
+			default=str,
+		).encode()
+	).hexdigest()
+	return payload
+
+
+def _preserve_historical_multi_fg_residual(
+	doc, plan: AllocationPlan, fg_rows: list, currency: str
+) -> bool:
+	"""Preserve historical FG amounts when repair is value-neutral and residual matches.
+
+	Fail-closed: returns False unless every gate is proven.
+	"""
+	hist = historical_repair_residual_evidence(doc)
+	if not hist:
+		return False
+	# Value-neutral source correction: outgoing material pool must match historical.
+	if abs(flt(plan.outgoing_material) - flt(hist["outgoing"])) > 0:
+		return False
+	fg_mat = round_currency(sum(flt(r.get("basic_amount")) for r in fg_rows), currency)
+	gap = round_currency(fg_mat - plan.allocatable_material_pool, currency)
+	# Historical value_difference = incoming − outgoing = FG_mat + independent − outgoing
+	# = FG_mat − allocatable  (since allocatable = outgoing − independent)
+	if abs(gap - flt(hist["value_difference"])) > 0:
+		return False
+	# Residual must have been posted as SA on the historical document.
+	if abs(flt(hist["sa_net_credit"]) - flt(hist["value_difference"])) > 0:
+		return False
+	if abs(flt(hist["value_difference"])) <= 0:
+		return False
+	plan.preserved_manual = True
+	plan.residual_class = R3_LEGITIMATE_BUSINESS_RESIDUAL
+	plan.economic_residual = flt(hist["value_difference"])
+	plan.notes.append(
+		f"preserved_historical_manufacture_residual:{hist['historical_mfg']}:"
+		f"{hist['fingerprint'][:12]}"
+	)
+	return True
+
+
 # ---------------------------------------------------------------------------
 # SAME_ITEM_MULTI_FG allocator
 # ---------------------------------------------------------------------------
@@ -521,11 +644,17 @@ def build_same_item_multi_fg_plan(doc) -> AllocationPlan:
 	)
 
 	all_manual = all(_row_manual(r) for r in fg_rows)
-	if all_manual and _manual_economics_coherent(
-		fg_rows, plan.allocatable_material_pool, currency
+	preserve_hist = _preserve_historical_multi_fg_residual(doc, plan, fg_rows, currency)
+	if (
+		all_manual
+		and (
+			_manual_economics_coherent(fg_rows, plan.allocatable_material_pool, currency)
+			or preserve_hist
+		)
 	):
-		plan.preserved_manual = True
-		plan.notes.append("preserved_healthy_manual_shared_rate")
+		if not preserve_hist:
+			plan.preserved_manual = True
+			plan.notes.append("preserved_healthy_manual_shared_rate")
 		for row in fg_rows:
 			qty = _row_qty(row)
 			mat = round_currency(flt(row.get("basic_amount")), currency)
@@ -614,18 +743,23 @@ def build_same_item_multi_fg_plan(doc) -> AllocationPlan:
 		plan.outgoing_material + plan.operating_pool + plan.lcv_pool, currency
 	)
 	# Independent passthrough + FG should absorb full outgoing+OH; residual class later.
-	fg_mat = round_currency(sum(r.material_amount for r in fg_only), currency)
-	if abs(fg_mat - plan.allocatable_material_pool) > 0:
-		plan.residual_class = R1_ECONOMIC_ALLOCATION_GAP
-		plan.economic_residual = round_currency(plan.allocatable_material_pool - fg_mat, currency)
-	else:
-		# R2 representation residuals only — not Stock Adjustment.
-		r2 = sum(
-			abs(flt(r.basic_rate_amount_residual)) + abs(flt(r.valuation_rate_amount_residual))
-			for r in fg_only
-		)
-		plan.economic_residual = 0.0
-		plan.residual_class = R2_IRR_RATE_REPRESENTATION if r2 else None
+	# Do not overwrite a proven historical R3 residual from Job Card Manufacture repair.
+	if plan.residual_class != R3_LEGITIMATE_BUSINESS_RESIDUAL:
+		fg_mat = round_currency(sum(r.material_amount for r in fg_only), currency)
+		if abs(fg_mat - plan.allocatable_material_pool) > 0:
+			plan.residual_class = R1_ECONOMIC_ALLOCATION_GAP
+			plan.economic_residual = round_currency(
+				plan.allocatable_material_pool - fg_mat, currency
+			)
+		else:
+			# R2 representation residuals only — not Stock Adjustment.
+			r2 = sum(
+				abs(flt(r.basic_rate_amount_residual))
+				+ abs(flt(r.valuation_rate_amount_residual))
+				for r in fg_only
+			)
+			plan.economic_residual = 0.0
+			plan.residual_class = R2_IRR_RATE_REPRESENTATION if r2 else None
 	return plan
 
 
@@ -705,12 +839,16 @@ def verify_allocation_plan(doc, plan: AllocationPlan | None = None, *, ledger: b
 		plan.closed = True
 
 	fg_rows = [r for r in plan.rows if r.classification == CLASS_MAIN_FG]
+	# Proven Job Card historical residual (R3): allow SA = historical value_difference only.
+	historical_r3 = plan.residual_class == R3_LEGITIMATE_BUSINESS_RESIDUAL and any(
+		"preserved_historical_manufacture_residual:" in (n or "") for n in (plan.notes or [])
+	)
 	if plan.strategy_id == STRATEGY_SAME_ITEM_MULTI_FG:
 		# Authoritative SED amounts (not only in-memory plan snapshots).
 		fg_mat = round_currency(
 			sum(flt(r.row_ref.get("basic_amount")) for r in fg_rows), currency
 		)
-		if abs(fg_mat - plan.allocatable_material_pool) != 0:
+		if abs(fg_mat - plan.allocatable_material_pool) != 0 and not historical_r3:
 			frappe.throw(
 				_(
 					"R1 ECONOMIC_ALLOCATION_GAP: MAIN_FG material Σ {0} ≠ allocatable pool {1}. "
@@ -768,6 +906,8 @@ def verify_allocation_plan(doc, plan: AllocationPlan | None = None, *, ledger: b
 
 		# No Stock Adjustment for R1/R2: value_difference should equal OH+LCV economic
 		# identity: incoming − outgoing ≈ operating + LCV (material closed).
+		# Historical R3: material_gap must equal −historical residual (incoming exceeds
+		# outgoing by the proven SA amount).
 		outgoing = plan.outgoing_material
 		incoming_basic = round_currency(
 			sum(flt(r.get("basic_amount")) for r in (doc.get("items") or []) if _is_incoming(r)),
@@ -775,13 +915,17 @@ def verify_allocation_plan(doc, plan: AllocationPlan | None = None, *, ledger: b
 		)
 		material_gap = round_currency(outgoing - incoming_basic, currency)
 		if abs(material_gap) != 0:
-			frappe.throw(
-				_(
-					"R4 CORRUPTION_UNEXPLAINED: material pool not closed (outgoing basic {0} − "
-					"incoming basic {1} = {2}). Refusing Stock Adjustment plug."
-				).format(outgoing, incoming_basic, material_gap),
-				frappe.ValidationError,
-			)
+			if not (
+				historical_r3
+				and abs(material_gap + flt(plan.economic_residual)) == 0
+			):
+				frappe.throw(
+					_(
+						"R4 CORRUPTION_UNEXPLAINED: material pool not closed (outgoing basic {0} − "
+						"incoming basic {1} = {2}). Refusing Stock Adjustment plug."
+					).format(outgoing, incoming_basic, material_gap),
+					frappe.ValidationError,
+				)
 
 		# Double-pool smoke: FG material must not approach 2× allocatable.
 		if plan.allocatable_material_pool and fg_mat > plan.allocatable_material_pool * 1.5:
