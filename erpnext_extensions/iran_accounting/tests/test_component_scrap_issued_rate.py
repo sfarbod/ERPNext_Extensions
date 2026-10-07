@@ -87,19 +87,58 @@ def _output(item_code, qty, is_fg=0, rate=0.0, secondary_item_type=None, batch_n
 
 @contextmanager
 def _irr(main_item_codes=None):
+	"""IRR contract test env.
+
+	v5.5.19 ``apply_iran_manufacture_output_contract`` also enters
+	``manufacture_output_contract`` (eligibility / fail-closed). Mocks must
+	cover that module's ``is_irr_company`` so tests do not hit live
+	``get_cached_value("Company", …)`` through the shared ``frappe.db.get_value``
+	patch. Real SED rows never use this mock; Frappe Document rows expose
+	``.get`` / field access natively.
+	"""
+	from contextlib import ExitStack
+
 	lookup = main_item_codes or {}
 
-	def _get_value(doctype, name, field):
+	def _get_value(doctype, name, field=None, *args, **kwargs):
+		# Frappe may pass as_dict= / other kwargs; ignore — Item lookups only.
+		_ = args, kwargs
 		if doctype == "Item" and field == "custom_main_item_code":
 			return lookup.get(name)
 		return None
 
-	with (
-		mock.patch(f"{MODULE}.is_irr_company", return_value=True),
-		mock.patch(f"{MODULE}.get_company_currency", return_value="IRR"),
-		mock.patch(f"{MODULE}.get_currency_precision", return_value=0),
-		mock.patch(f"{MODULE}.frappe.db.get_value", side_effect=_get_value),
-	):
+	with ExitStack() as stack:
+		for target, kwargs in (
+			(f"{MODULE}.is_irr_company", {"return_value": True}),
+			(f"{MODULE}.get_company_currency", {"return_value": "IRR"}),
+			(f"{MODULE}.get_currency_precision", {"return_value": 0}),
+			(f"{MODULE}.frappe.db.get_value", {"side_effect": _get_value}),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_output_contract.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_output_contract.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_stage_costing.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_stage_costing.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+				{"return_value": "IRR"},
+			),
+		):
+			stack.enter_context(mock.patch(target, **kwargs))
 		yield
 
 
@@ -265,14 +304,25 @@ class TestComponentScrapIssuedRateContract(unittest.TestCase):
 			self.assertTrue(_component_scrap_matches_issued_rate(doc))
 
 	def test_fg_residual_balanced(self):
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			STRATEGY_SAME_ITEM_MULTI_FG,
+			get_allocation_owner,
+		)
+
 		doc = self._doc_zero_scrap()
 		with _irr():
 			apply_iran_manufacture_output_contract(doc)
+			classified = classify_manufacture_outputs(doc)
 		outgoing = sum(flt(r.basic_amount) for r in doc.items if r.get("s_warehouse"))
 		incoming = sum(flt(r.basic_amount) for r in doc.items if r.get("t_warehouse"))
 		self.assertEqual(incoming, outgoing)
 		self.assertEqual(flt(doc.items[3].basic_amount), 247079)
 		self.assertEqual(flt(doc.items[2].basic_amount), outgoing - 247079)
+		# Component Scrap: issued-rate, OH 0, deducted from material pool; not Multi-FG.
+		self.assertEqual(len(classified[CLASS_COMPONENT_SCRAP]), 1)
+		self.assertEqual(flt(doc.items[3].additional_cost), 0)
+		self.assertEqual(flt(doc.items[3].basic_rate), 35297)
+		self.assertNotEqual(get_allocation_owner(doc), STRATEGY_SAME_ITEM_MULTI_FG)
 
 	def test_no_consume_match_raises(self):
 		doc = _Doc(

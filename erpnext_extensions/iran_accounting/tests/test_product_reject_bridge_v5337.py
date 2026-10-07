@@ -129,7 +129,9 @@ def _env(main_item_codes=None, irr=True, contract=True):
 
 	lookup = main_item_codes or {}
 
-	def _get_value(doctype, name, field):
+	def _get_value(doctype, name, field=None, *args, **kwargs):
+		# Shared frappe.db.get_value mock: real Document load may pass as_dict=.
+		_ = args, kwargs
 		if doctype == "Item" and field == "custom_main_item_code":
 			return lookup.get(name)
 		return None
@@ -139,6 +141,43 @@ def _env(main_item_codes=None, irr=True, contract=True):
 		stack.enter_context(mock.patch(f"{MODULE}.get_company_currency", return_value="IRR"))
 		stack.enter_context(mock.patch(f"{MODULE}.get_currency_precision", return_value=0))
 		stack.enter_context(mock.patch(f"{MODULE}.frappe.db.get_value", side_effect=_get_value))
+		# v5.5.19 contract spine / stage ownership probes (not present in 5.5.18).
+		stack.enter_context(
+			mock.patch(
+				"erpnext_extensions.iran_accounting.manufacture_output_contract.is_irr_company",
+				return_value=irr,
+			)
+		)
+		stack.enter_context(
+			mock.patch(
+				"erpnext_extensions.iran_accounting.manufacture_output_contract.get_company_currency",
+				return_value="IRR",
+			)
+		)
+		stack.enter_context(
+			mock.patch(
+				"erpnext_extensions.iran_accounting.manufacture_stage_costing.is_irr_company",
+				return_value=irr,
+			)
+		)
+		stack.enter_context(
+			mock.patch(
+				"erpnext_extensions.iran_accounting.manufacture_stage_costing.get_company_currency",
+				return_value="IRR",
+			)
+		)
+		stack.enter_context(
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+				return_value=irr,
+			)
+		)
+		stack.enter_context(
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+				return_value="IRR",
+			)
+		)
 		if contract:
 			stack.enter_context(
 				mock.patch(
@@ -323,6 +362,13 @@ class TestProductRejectBridgeLifecycle(unittest.TestCase):
 		self.assertIn("not classified as MAIN_PRODUCT_REJECT", str(ctx.exception))
 
 	def test_full_contract_prices_and_clears_allow_zero(self):
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			STRATEGY_PRODUCT_REJECT,
+			STRATEGY_SAME_ITEM_MULTI_FG,
+			get_allocation_owner,
+			is_allocation_closed,
+		)
+
 		doc = _canary_doc()
 		with _env():
 			permit_product_reject_zero_valuation(doc)
@@ -340,6 +386,13 @@ class TestProductRejectBridgeLifecycle(unittest.TestCase):
 		)
 		classified = classify_manufacture_outputs(doc)
 		self.assertIn(scrap, classified[CLASS_MAIN_PRODUCT_REJECT])
+		# v5.5.19: Product Reject owns closed plan; Multi-FG must not steal.
+		self.assertEqual(get_allocation_owner(doc), STRATEGY_PRODUCT_REJECT)
+		self.assertTrue(is_allocation_closed(doc))
+		self.assertNotEqual(get_allocation_owner(doc), STRATEGY_SAME_ITEM_MULTI_FG)
+		out = sum(flt(r.basic_amount) for r in doc.items if r.get("s_warehouse"))
+		inc = sum(flt(r.basic_amount) for r in doc.items if r.get("t_warehouse"))
+		self.assertEqual(inc, out)
 
 
 class TestDestinationIndependence(unittest.TestCase):
