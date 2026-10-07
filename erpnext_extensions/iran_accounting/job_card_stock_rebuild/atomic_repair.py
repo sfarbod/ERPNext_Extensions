@@ -562,12 +562,19 @@ def _verify(plan: dict, canonical_name: str) -> dict:
 		(k.get("item_code"), k.get("batch_no") or "")
 		for k in (plan.get("approved_batch_offset_keys") or [])
 	}
+	partial_keys = set()
+	for g in plan.get("approved_partial_batch_offsets") or []:
+		partial_keys.add((g["item_code"], g.get("positive_batch") or ""))
+		partial_keys.add((g["item_code"], g.get("negative_batch") or ""))
 	for row in scan["rows"]:
 		# Skip non-component noise (defensive; scan already filters FG-only rows).
 		if flt(row.get("issued")) <= 1e-9 and flt(row.get("consumed")) <= 1e-9:
 			continue
 		key = (row["item_code"], row.get("batch_no") or "")
-		# Explicit approved zero-net batch offset: remaining may stay non-zero per batch.
+		# Explicit approved batch offset (full or partial): remaining may stay non-zero per batch.
+		if key in partial_keys:
+			row["repair_status"] = "APPROVED_PARTIAL_BATCH_OFFSET"
+			continue
 		if key in offset_keys:
 			row["repair_status"] = "APPROVED_BATCH_OFFSET"
 			continue
@@ -700,6 +707,7 @@ def run_repair(
 		stamp_mode=plan_input.get("stamp_mode"),
 		merge_material_issues=plan_input.get("merge_material_issues"),
 		batch_offset_approvals=plan_input.get("batch_offset_approvals"),
+		partial_batch_offset_approvals=plan_input.get("partial_batch_offset_approvals"),
 	)
 	timer.end("T01")
 	client_fp = plan_input.get("fingerprint")
@@ -749,6 +757,9 @@ def run_repair(
 		"approved_batch_offsets": plan.get("approved_batch_offsets"),
 		"approved_batch_offset_keys": plan.get("approved_batch_offset_keys"),
 		"batch_offset_preview": plan.get("batch_offset_preview"),
+		"partial_batch_offset_approvals": plan.get("partial_batch_offset_approvals"),
+		"approved_partial_batch_offsets": plan.get("approved_partial_batch_offsets"),
+		"partial_batch_offset_preview": plan.get("partial_batch_offset_preview"),
 		"exception_only": bool(plan.get("exception_only")),
 		"blockers": [],
 		"cancelled": [],
@@ -757,7 +768,7 @@ def run_repair(
 		"before_snapshot": before,
 	}
 
-	# Exception-only: validate + audit APPROVED_BATCH_OFFSET with zero stock mutation.
+	# Exception-only: validate + audit approved offset with zero stock mutation.
 	if plan.get("exception_only"):
 		from erpnext_extensions.iran_accounting.job_card_stock_rebuild.golden_rule import (
 			scan_golden_rule,
@@ -765,13 +776,24 @@ def run_repair(
 
 		_progress("T10")
 		scan = scan_golden_rule(job_card)
+		partial_status_keys = set()
+		for g in plan.get("approved_partial_batch_offsets") or []:
+			partial_status_keys.add((g["item_code"], g.get("positive_batch") or ""))
+			partial_status_keys.add((g["item_code"], g.get("negative_batch") or ""))
 		for row in scan.get("rows") or []:
 			key = (row["item_code"], row.get("batch_no") or "")
-			if key in {
+			if key in partial_status_keys:
+				row["repair_status"] = "APPROVED_PARTIAL_BATCH_OFFSET"
+			elif key in {
 				(k.get("item_code"), k.get("batch_no") or "")
 				for k in (plan.get("approved_batch_offset_keys") or [])
 			}:
 				row["repair_status"] = "APPROVED_BATCH_OFFSET"
+		exc_status = (
+			"APPROVED_PARTIAL_BATCH_OFFSET"
+			if plan.get("approved_partial_batch_offsets")
+			else "APPROVED_BATCH_OFFSET"
+		)
 		result.update(
 			{
 				"ok": True,
@@ -783,7 +805,10 @@ def run_repair(
 					"errors": [],
 					"scan": scan,
 					"approved_batch_offsets": plan.get("approved_batch_offsets"),
-					"exception_status": "APPROVED_BATCH_OFFSET",
+					"approved_partial_batch_offsets": plan.get(
+						"approved_partial_batch_offsets"
+					),
+					"exception_status": exc_status,
 				},
 				"after_snapshot": before,
 			}
@@ -830,6 +855,9 @@ def run_repair(
 			stamp_mode=plan_input.get("stamp_mode"),
 			merge_material_issues=plan_input.get("merge_material_issues"),
 			batch_offset_approvals=plan_input.get("batch_offset_approvals"),
+			partial_batch_offset_approvals=plan_input.get(
+				"partial_batch_offset_approvals"
+			),
 		)
 		if fresh["fingerprint"] != plan["fingerprint"]:
 			raise RuntimeError("STALE PLAN after lock")

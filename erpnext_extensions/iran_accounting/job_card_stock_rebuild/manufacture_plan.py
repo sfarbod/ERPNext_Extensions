@@ -712,12 +712,16 @@ def build_manufacture_plan(
 	stamp_mode: str | None = None,
 	merge_material_issues: list[str] | None = None,
 	batch_offset_approvals: list[dict] | None = None,
+	partial_batch_offset_approvals: list[dict] | None = None,
 ) -> dict[str, Any]:
 	"""Authoritative repair plan from server evidence + user choices."""
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.batch_offset import (
 		STATUS_APPROVED,
+		STATUS_APPROVED_PARTIAL,
 		detect_batch_offset_candidates,
+		detect_partial_batch_offset_candidates,
 		resolve_batch_offset_approvals,
+		resolve_partial_batch_offset_approvals,
 	)
 	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.mi_ownership import (
 		ACTION_BLOCKED,
@@ -732,12 +736,33 @@ def build_manufacture_plan(
 	offset_res = resolve_batch_offset_approvals(
 		job_card, scan["rows"], batch_offset_approvals, candidates=offset_candidates
 	)
+	partial_candidates = detect_partial_batch_offset_candidates(
+		job_card, scan["rows"], full_candidates=offset_candidates
+	)
+	partial_res = resolve_partial_batch_offset_approvals(
+		job_card,
+		scan["rows"],
+		partial_batch_offset_approvals,
+		candidates=partial_candidates,
+	)
+	exempt_keys = set(offset_res["exempt_keys"] or set()) | set(
+		partial_res["exempt_keys"] or set()
+	)
 	ok, errors, normalized = validate_dispositions(
 		scan["rows"],
 		dispositions or [],
-		offset_exempt_keys=offset_res["exempt_keys"],
+		offset_exempt_keys=exempt_keys,
 	)
-	errors = list(errors) + list(offset_res.get("blockers") or [])
+	# Distinguish partial-approved disposition labels for audit/UI.
+	partial_keys = set(partial_res.get("exempt_keys") or set())
+	for d in normalized:
+		key = (d.get("item_code"), d.get("batch_no") or "")
+		if key in partial_keys:
+			d["disposition"] = STATUS_APPROVED_PARTIAL
+			d["repair_status"] = STATUS_APPROVED_PARTIAL
+	errors = list(errors) + list(offset_res.get("blockers") or []) + list(
+		partial_res.get("blockers") or []
+	)
 	mfgs = scan["manufactures"]
 	mfg_names = [m.name for m in mfgs]
 	client_merge = merge_documents
@@ -944,6 +969,7 @@ def build_manufacture_plan(
 
 	approved_offset_items = sorted(
 		{g["item_code"] for g in (offset_res.get("approved_groups") or [])}
+		| {g["item_code"] for g in (partial_res.get("approved_groups") or [])}
 	)
 	plan_fp = hashlib.sha256(
 		json.dumps(
@@ -963,6 +989,24 @@ def build_manufacture_plan(
 					for g in sorted(
 						offset_res.get("approved_groups") or [],
 						key=lambda x: x["item_code"],
+					)
+				],
+				"partial_batch_offset_approvals": [
+					{
+						"item_code": g["item_code"],
+						"positive_batch": g.get("positive_batch"),
+						"negative_batch": g.get("negative_batch"),
+						"evidence_fingerprint": g.get("evidence_fingerprint"),
+						"decision": g.get("decision"),
+						"value_delta": g.get("value_delta"),
+					}
+					for g in sorted(
+						partial_res.get("approved_groups") or [],
+						key=lambda x: (
+							x["item_code"],
+							x.get("positive_batch") or "",
+							x.get("negative_batch") or "",
+						),
 					)
 				],
 				"logistics": [x.name for x in downstream["logistics"]],
@@ -1081,13 +1125,18 @@ def build_manufacture_plan(
 
 	stock_repair_needed = (
 		any(flt(d.get("proposed_consumed")) > 0 for d in normalized)
+		or any(flt(d.get("proposed_scrap")) > 0 for d in normalized)
+		or any(flt(d.get("proposed_return")) > 0 for d in normalized)
 		or len(merge_documents) > 1
 		or bool(merge_material_issues)
 	)
-	exception_only = bool(offset_res.get("approved_groups")) and not stock_repair_needed
-	needs_repair = stock_repair_needed or bool(offset_res.get("approved_groups"))
+	has_offset_approval = bool(offset_res.get("approved_groups")) or bool(
+		partial_res.get("approved_groups")
+	)
+	exception_only = has_offset_approval and not stock_repair_needed
+	needs_repair = stock_repair_needed or has_offset_approval
 	apply_allowed = not blockers and bool(merge_documents) and needs_repair
-	# Exception-only path records APPROVED_BATCH_OFFSET without stock mutation.
+	# Exception-only path records approved offset without stock mutation.
 	if exception_only and not blockers and bool(merge_documents):
 		apply_allowed = True
 	if not needs_repair and not blockers:
@@ -1097,10 +1146,14 @@ def build_manufacture_plan(
 		apply_allowed = False
 
 	# Annotate scan rows for UI / audit when offset approved
-	approved_keys = offset_res.get("exempt_keys") or set()
+	approved_keys = exempt_keys
+	full_keys = set(offset_res.get("exempt_keys") or set())
 	for r in scan.get("rows") or []:
 		key = (r["item_code"], r.get("batch_no") or "")
-		if key in approved_keys:
+		if key in partial_keys:
+			r["repair_status"] = STATUS_APPROVED_PARTIAL
+			r["batch_offset_status"] = STATUS_APPROVED_PARTIAL
+		elif key in full_keys:
 			r["repair_status"] = STATUS_APPROVED
 			r["batch_offset_status"] = STATUS_APPROVED
 
@@ -1117,6 +1170,25 @@ def build_manufacture_plan(
 				"net": 0.0,
 				"action": "NO_STOCK_DOCUMENT_CHANGE",
 				"status": STATUS_APPROVED,
+			}
+		)
+	partial_batch_offset_preview = []
+	for g in partial_res.get("approved_groups") or []:
+		partial_batch_offset_preview.append(
+			{
+				"exception": "PARTIAL_BATCH_OFFSET_EXCEPTION",
+				"item_code": g["item_code"],
+				"positive_batch": g.get("positive_batch"),
+				"negative_batch": g.get("negative_batch"),
+				"pair_qty": g.get("pair_qty"),
+				"positive_rate": g.get("positive_rate"),
+				"negative_rate": g.get("negative_rate"),
+				"value_delta": g.get("value_delta"),
+				"classification": g.get("classification"),
+				"repack_document": g.get("repack_document"),
+				"unresolved_after_pair": g.get("unresolved_after_pair") or [],
+				"action": "NO_STOCK_DOCUMENT_CHANGE",
+				"status": STATUS_APPROVED_PARTIAL,
 			}
 		)
 
@@ -1162,6 +1234,10 @@ def build_manufacture_plan(
 			{"item_code": k[0], "batch_no": k[1]} for k in sorted(approved_keys)
 		],
 		"batch_offset_preview": batch_offset_preview,
+		"partial_batch_offset_candidates": partial_candidates,
+		"partial_batch_offset_approvals": partial_res.get("audit") or [],
+		"approved_partial_batch_offsets": partial_res.get("approved_groups") or [],
+		"partial_batch_offset_preview": partial_batch_offset_preview,
 		"stock_repair_needed": stock_repair_needed,
 		"exception_only": exception_only,
 		"approved_offset_items": approved_offset_items,

@@ -914,11 +914,26 @@ class JobCardStockRebuildPage {
 				});
 			}
 		});
+		const partial_batch_offset_approvals = [];
+		Object.keys(this.partialBatchOffsetApprovals || {}).forEach((key) => {
+			const a = this.partialBatchOffsetApprovals[key];
+			if (a && a.accepted) {
+				partial_batch_offset_approvals.push({
+					item_code: a.item_code,
+					positive_batch: a.positive_batch,
+					negative_batch: a.negative_batch,
+					evidence_fingerprint: a.evidence_fingerprint,
+					accepted: 1,
+					decision: "ACCEPT_PARTIAL_BATCH_OFFSET_NO_REPAIR",
+				});
+			}
+		});
 		return {
 			dispositions,
 			merge_documents,
 			merge_material_issues,
 			batch_offset_approvals,
+			partial_batch_offset_approvals,
 			stamp_mode: "HISTORICAL",
 			fingerprint: this.mfgFingerprint,
 		};
@@ -944,9 +959,14 @@ class JobCardStockRebuildPage {
 				// NEW SCAN: reinitialize editable decisions from backend suggestions.
 				this.init_mfg_decisions_from_scan((data.scan && data.scan.rows) || []);
 				this.batchOffsetApprovals = {};
+				this.partialBatchOffsetApprovals = {};
 				this.batchOffsetCandidates =
 					data.batch_offset_candidates ||
 					(data.plan && data.plan.batch_offset_candidates) ||
+					[];
+				this.partialBatchOffsetCandidates =
+					data.partial_batch_offset_candidates ||
+					(data.plan && data.plan.partial_batch_offset_candidates) ||
 					[];
 				this.render_mfg();
 				this.btn_mfg_dry.prop("disabled", false);
@@ -1393,6 +1413,114 @@ class JobCardStockRebuildPage {
 		});
 	}
 
+	_partial_offset_key(c) {
+		return [c.item_code, c.positive_batch || "", c.negative_batch || ""].join("||");
+	}
+
+	render_partial_batch_offset_panel(candidates) {
+		const self = this;
+		const eligible = (candidates || []).filter((c) => c && c.eligible);
+		const ambiguous = (candidates || []).filter(
+			(c) => c && c.classification === "AMBIGUOUS_PAIR"
+		);
+		if (!eligible.length && !ambiguous.length) return;
+		$("<h4 class='jcsr-section-title'>")
+			.text(__("Partial Batch Offset"))
+			.appendTo(this.$mfg);
+		ambiguous.forEach((c) => {
+			this.$mfg.append(`
+				<div class="jcsr-alert" style="border:1px solid #e2a06a;padding:10px;margin:8px 0">
+					<strong>${__("Item")}: ${frappe.utils.escape_html(c.item_code)}</strong>
+					· ${__("AMBIGUOUS_PAIR")} — ${__("select counterpart explicitly")}<br>
+					${__("Positive")}: <code>${frappe.utils.escape_html(c.positive_batch || "")}</code>
+					+${flt(c.positive_remaining)}
+				</div>
+			`);
+		});
+		eligible.forEach((c) => {
+			const key = self._partial_offset_key(c);
+			const checked = !!(
+				this.partialBatchOffsetApprovals[key] &&
+				this.partialBatchOffsetApprovals[key].accepted
+			);
+			const unresolved = (c.unresolved_after_pair || [])
+				.map(
+					(u) =>
+						`<div class="text-muted">${__("Still unresolved")}:
+						<code>${frappe.utils.escape_html(u.batch_no || "")}</code>
+						${flt(u.remaining_wip) >= 0 ? "+" : ""}${flt(u.remaining_wip)}
+						· ${frappe.utils.escape_html(u.status || "")}</div>`
+				)
+				.join("");
+			const repack = c.repack_link_found
+				? `<div class="text-muted">${__("Repack evidence")}:
+					<code>${frappe.utils.escape_html(c.repack_document || "")}</code></div>`
+				: "";
+			const $box = $(`
+				<div class="jcsr-alert" data-partial-offset-key="${frappe.utils.escape_html(key)}"
+				     style="border:1px solid #c8c8c8;padding:10px;margin:8px 0">
+					<div><strong>${__("Item")}: ${frappe.utils.escape_html(c.item_code)}</strong>
+					· ${__("Classification")}: ${frappe.utils.escape_html(c.classification || "")}
+					</div>
+					<div style="margin:6px 0">
+						${__("Positive Batch")}: <code>${frappe.utils.escape_html(c.positive_batch || "")}</code>
+						+${flt(c.positive_remaining)}
+						· ${__("Rate")}: ${flt(c.positive_rate)}
+						· ${__("Value")}: ${flt(c.positive_value)}<br>
+						${__("Negative Batch")}: <code>${frappe.utils.escape_html(c.negative_batch || "")}</code>
+						${flt(c.negative_remaining)}
+						· ${__("Rate")}: ${flt(c.negative_rate)}
+						· ${__("Value")}: ${flt(c.negative_value)}<br>
+						${__("Pair Qty")}: ${flt(c.pair_qty)}
+						· ${__("Value Difference")}: ${flt(c.value_delta)} IRR
+					</div>
+					${repack}
+					${unresolved}
+					<div class="text-muted" style="margin:6px 0">
+						${frappe.utils.escape_html(
+							c.explanation ||
+								__(
+									"Exact quantity pair. Approving accepts quantity attribution only — no stock/GL repair for the pair."
+								)
+						)}
+					</div>
+					<label>
+						<input type="checkbox" data-partial-offset-accept="${frappe.utils.escape_html(key)}"
+						       ${checked ? "checked" : ""}>
+						${__("Accept Partial Batch Offset — No Stock/GL Repair")}
+						<span class="text-muted"> — ${__("پذیرش مغایرت بچ به‌صورت جفت مقداری — بدون اصلاح موجودی/حسابداری")}</span>
+					</label>
+				</div>
+			`);
+			$box.find("input[data-partial-offset-accept]").on("change", function () {
+				const on = $(this).is(":checked");
+				if (on) {
+					self.partialBatchOffsetApprovals[key] = {
+						item_code: c.item_code,
+						positive_batch: c.positive_batch,
+						negative_batch: c.negative_batch,
+						evidence_fingerprint: c.evidence_fingerprint,
+						accepted: true,
+					};
+					[c.positive_batch, c.negative_batch].forEach((b) => {
+						const rk = self.mfg_row_key(c.item_code, b || "");
+						self.mfgDecisions[rk] = {
+							consumed: 0,
+							scrap: 0,
+							return: 0,
+							still: 0,
+						};
+					});
+				} else {
+					delete self.partialBatchOffsetApprovals[key];
+				}
+				self.mfgFingerprint = null;
+				self.render_mfg();
+			});
+			this.$mfg.append($box);
+		});
+	}
+
 	render_mfg() {
 		this.$mfg.empty();
 		const scan = this.mfgScan || {};
@@ -1463,6 +1591,10 @@ class JobCardStockRebuildPage {
 			this.batchOffsetCandidates ||
 				(plan.batch_offset_candidates || [])
 		);
+		this.render_partial_batch_offset_panel(
+			this.partialBatchOffsetCandidates ||
+				(plan.partial_batch_offset_candidates || [])
+		);
 
 		const previewOffsets = plan.batch_offset_preview || [];
 		if (previewOffsets.length) {
@@ -1483,6 +1615,24 @@ class JobCardStockRebuildPage {
 						<strong>${__("Item")}: ${frappe.utils.escape_html(p.item_code)}</strong><br>
 						${batches}<br>
 						${__("Net")}: ${flt(p.net)} · ${__("Action")}:
+						<code>${frappe.utils.escape_html(p.action || "NO_STOCK_DOCUMENT_CHANGE")}</code>
+					</div>
+				`);
+			});
+		}
+		const previewPartials = plan.partial_batch_offset_preview || [];
+		if (previewPartials.length) {
+			$("<h4 class='jcsr-section-title'>")
+				.text(__("PARTIAL BATCH OFFSET EXCEPTION"))
+				.appendTo(this.$mfg);
+			previewPartials.forEach((p) => {
+				this.$mfg.append(`
+					<div class="jcsr-alert ok">
+						<strong>${__("Item")}: ${frappe.utils.escape_html(p.item_code)}</strong><br>
+						${frappe.utils.escape_html(p.positive_batch || "")}: +${flt(p.pair_qty)}
+						↔ ${frappe.utils.escape_html(p.negative_batch || "")}: -${flt(p.pair_qty)}<br>
+						${__("Value Difference")}: ${flt(p.value_delta)} IRR
+						· ${__("Action")}:
 						<code>${frappe.utils.escape_html(p.action || "NO_STOCK_DOCUMENT_CHANGE")}</code>
 					</div>
 				`);
