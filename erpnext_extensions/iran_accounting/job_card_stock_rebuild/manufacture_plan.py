@@ -705,6 +705,114 @@ def discover_downstream(job_card: str, mfg_names: list[str]) -> dict:
 	}
 
 
+def _noop_manufacture_plan(
+	*,
+	job_card: str,
+	scan: dict[str, Any],
+	normalized: list[dict],
+	merge_documents: list[str],
+	merge_material_issues: list[str],
+	mi_docs: list[dict],
+	client_merge,
+	stamp_mode: str | None,
+	blockers: list[str],
+	offset_candidates: list,
+	offset_res: dict,
+	partial_candidates: list,
+	partial_res: dict,
+	replace_candidates: list,
+	replace_res: dict,
+	replace_keys: set,
+) -> dict[str, Any]:
+	"""Balanced / no-action plan: no logistics cancel probe, no bridge, no rebuild."""
+	noop_blockers = list(blockers)
+	if not any("Nothing to repair" in str(b) for b in noop_blockers):
+		noop_blockers.append("Nothing to repair")
+	plan_fp = hashlib.sha256(
+		json.dumps(
+			{
+				"scan_fp": scan.get("fingerprint"),
+				"dispositions": normalized,
+				"merge_documents": merge_documents,
+				"merge_material_issues": merge_material_issues,
+				"stamp_mode": stamp_mode or "HISTORICAL",
+				"noop": True,
+			},
+			default=str,
+			sort_keys=True,
+		).encode()
+	).hexdigest()
+	documents = []
+	for m in scan.get("manufactures") or []:
+		documents.append(
+			{
+				"name": m.name,
+				"purpose": "Manufacture",
+				"role": "KEEP",
+				"ownership": "MANUFACTURE",
+				"fg_completed_qty": flt(m.fg_completed_qty),
+				"stamp": m.stamp,
+				"posting_date": str(m.posting_date),
+			}
+		)
+	return {
+		"job_card": job_card,
+		"work_order": scan.get("work_order"),
+		"scan": scan,
+		"dispositions": normalized,
+		"merge_documents": merge_documents,
+		"merge_material_issues": merge_material_issues,
+		"material_issues": mi_docs,
+		"documents": documents,
+		"downstream_logistics": [],
+		"downstream_logistics_audit": [],
+		"downstream_blocked": [],
+		"minimal_cancel_set": [],
+		"temporary_bridge": {"required": False, "shortages": []},
+		"canonical_manufacture": {
+			"purpose": "Manufacture",
+			"job_card": job_card,
+			"work_order": scan.get("work_order"),
+			"posting_date": None,
+			"posting_time": None,
+			"fg_completed_qty": 0.0,
+			"historical_stamp": scan.get("historical_stamp"),
+			"stamp_mode": stamp_mode or "HISTORICAL",
+			"rows": [],
+			"supersedes": [],
+			"noop": True,
+		},
+		"tracking_repair": {"components": [], "blockers": []},
+		"jci_resolution": {},
+		"returns_needed": [],
+		"blockers": noop_blockers,
+		"apply_allowed": False,
+		"fingerprint": plan_fp,
+		"scan_fingerprint": scan.get("fingerprint"),
+		"client_merge_provided": client_merge is not None,
+		"batch_offset_candidates": offset_candidates,
+		"batch_offset_approvals": offset_res.get("audit") or [],
+		"approved_batch_offsets": offset_res.get("approved_groups") or [],
+		"approved_batch_offset_keys": [],
+		"batch_offset_preview": [],
+		"partial_batch_offset_candidates": partial_candidates,
+		"partial_batch_offset_approvals": partial_res.get("audit") or [],
+		"approved_partial_batch_offsets": partial_res.get("approved_groups") or [],
+		"partial_batch_offset_preview": [],
+		"manufacture_batch_replace_candidates": replace_candidates,
+		"manufacture_batch_replace_approvals": replace_res.get("audit") or [],
+		"approved_manufacture_batch_replacements": replace_res.get("approved_groups") or [],
+		"approved_manufacture_batch_replace_keys": [
+			{"item_code": k[0], "batch_no": k[1]} for k in sorted(replace_keys)
+		],
+		"manufacture_batch_replace_preview": [],
+		"stock_repair_needed": False,
+		"exception_only": False,
+		"approved_offset_items": [],
+		"repair_required": False,
+	}
+
+
 def build_manufacture_plan(
 	job_card: str,
 	dispositions: list[dict] | None = None,
@@ -831,6 +939,43 @@ def build_manufacture_plan(
 	for r in scan["rows"]:
 		if r["status"] == "SCRAP MISMATCH":
 			blockers.append(f"SCRAP MISMATCH {r['item_code']} / {r['batch_no']}")
+
+	# Early NO-OP gate (v5.5.22 UX): when no disposition / approval requires a
+	# stock repair, do NOT discover downstream logistics, cancel-probe, or plan
+	# a temporary bridge. A balanced Job Card must not build a hypothetical
+	# destructive repair plan or emit SHARED_BLOCKED / Insufficient Stock noise.
+	has_replace_approval_early = bool(replace_res.get("approved_groups"))
+	has_offset_approval_early = bool(offset_res.get("approved_groups")) or bool(
+		partial_res.get("approved_groups")
+	)
+	early_stock_repair = (
+		any(flt(d.get("proposed_consumed")) > 0 for d in normalized)
+		or any(flt(d.get("proposed_scrap")) > 0 for d in normalized)
+		or any(flt(d.get("proposed_return")) > 0 for d in normalized)
+		or len(merge_documents) > 1
+		or bool(merge_material_issues)
+		or has_replace_approval_early
+	)
+	early_needs_repair = early_stock_repair or has_offset_approval_early
+	if not early_needs_repair:
+		return _noop_manufacture_plan(
+			job_card=job_card,
+			scan=scan,
+			normalized=normalized,
+			merge_documents=merge_documents,
+			merge_material_issues=merge_material_issues,
+			mi_docs=mi_docs,
+			client_merge=client_merge,
+			stamp_mode=stamp_mode,
+			blockers=blockers,
+			offset_candidates=offset_candidates,
+			offset_res=offset_res,
+			partial_candidates=partial_candidates,
+			partial_res=partial_res,
+			replace_candidates=replace_candidates,
+			replace_res=replace_res,
+			replace_keys=replace_keys,
+		)
 
 	downstream = discover_downstream(job_card, merge_documents or mfg_names)
 	for b in downstream.get("blocked") or []:
@@ -1348,4 +1493,5 @@ def build_manufacture_plan(
 		"stock_repair_needed": stock_repair_needed,
 		"exception_only": exception_only,
 		"approved_offset_items": approved_offset_items,
+		"repair_required": bool(needs_repair),
 	}

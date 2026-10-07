@@ -148,6 +148,50 @@ def scan_manufacture_reconciliation(job_card: str):
 
 
 @frappe.whitelist()
+def rebuild_manufacture_preview(job_card: str, plan=None):
+	"""v5.5.22 — authoritative Final Manufacture Preview from the same planner as Dry/Apply.
+
+	ONE PLANNER: UI must not invent canonical rows in JavaScript.
+	"""
+	_guard()
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan import (
+		build_manufacture_plan,
+	)
+
+	parsed = _parse_plan(plan)
+	# Empty merge list from UI means "use server default manufactures", not
+	# "select none" (which would incorrectly block a rebuild).
+	merge_documents = parsed.get("merge_documents")
+	if merge_documents is not None and len(merge_documents) == 0:
+		merge_documents = None
+	merge_material_issues = parsed.get("merge_material_issues")
+	built = build_manufacture_plan(
+		job_card,
+		dispositions=parsed.get("dispositions"),
+		merge_documents=merge_documents,
+		stamp_mode=parsed.get("stamp_mode") or "HISTORICAL",
+		merge_material_issues=merge_material_issues,
+		batch_offset_approvals=parsed.get("batch_offset_approvals"),
+		partial_batch_offset_approvals=parsed.get("partial_batch_offset_approvals"),
+		manufacture_batch_replace_approvals=parsed.get(
+			"manufacture_batch_replace_approvals"
+		),
+	)
+	return {
+		"ok": True,
+		"plan": built,
+		"fingerprint": built.get("fingerprint"),
+		"repair_required": bool(built.get("repair_required")),
+		"canonical_manufacture": built.get("canonical_manufacture"),
+		"manufacture_batch_replace_preview": built.get(
+			"manufacture_batch_replace_preview"
+		)
+		or [],
+		"blockers": built.get("blockers") or [],
+	}
+
+
+@frappe.whitelist()
 def dry_run_manufacture_repair(job_card: str, plan=None):
 	"""Legacy synchronous Dry Run (kept for direct/engine tests).
 

@@ -295,6 +295,62 @@ class JobCardStockRebuildPage {
 				return: flt($tr.find('[data-f="return"]').val()),
 				still: flt($tr.find('[data-f="still"]').val()),
 			};
+			self.mark_mfg_preview_dirty();
+		});
+	}
+
+	mark_mfg_preview_dirty() {
+		this.mfgPreviewDirty = true;
+		this.mfgFingerprint = null;
+		this.btn_mfg_dry.prop("disabled", true);
+		this.btn_mfg_apply.prop("disabled", true);
+		this.schedule_mfg_preview_rebuild();
+	}
+
+	schedule_mfg_preview_rebuild() {
+		const self = this;
+		if (this._mfgPreviewRebuildTimer) {
+			clearTimeout(this._mfgPreviewRebuildTimer);
+		}
+		this._mfgPreviewRebuildTimer = setTimeout(() => {
+			self._mfgPreviewRebuildTimer = null;
+			self.rebuild_mfg_preview();
+		}, 350);
+	}
+
+	rebuild_mfg_preview() {
+		const jc = this.jc.get_value();
+		if (!jc || !this.mfgScan) return;
+		const plan = this.collect_mfg_plan();
+		// Avoid sending empty merge as "select none".
+		if (!(plan.merge_documents || []).length) {
+			delete plan.merge_documents;
+		}
+		this._mfgPreviewRebuildSeq = (this._mfgPreviewRebuildSeq || 0) + 1;
+		const seq = this._mfgPreviewRebuildSeq;
+		frappe.call({
+			method: this.api + ".rebuild_manufacture_preview",
+			args: { job_card: jc, plan: plan },
+			freeze: false,
+			callback: (r) => {
+				if (seq !== this._mfgPreviewRebuildSeq) return;
+				const msg = r.message || {};
+				if (!msg.plan) {
+					frappe.msgprint(__("Failed to rebuild Manufacture Preview"));
+					return;
+				}
+				this.mfgPlan = msg.plan;
+				this.mfgFingerprint = msg.fingerprint || (msg.plan || {}).fingerprint;
+				this.mfgPreviewDirty = false;
+				this.mfgDry = null;
+				this.render_mfg();
+			},
+			error: () => {
+				if (seq !== this._mfgPreviewRebuildSeq) return;
+				this.mfgPreviewDirty = true;
+				this.btn_mfg_dry.prop("disabled", true);
+				this.btn_mfg_apply.prop("disabled", true);
+			},
 		});
 	}
 
@@ -989,8 +1045,8 @@ class JobCardStockRebuildPage {
 					data.manufacture_batch_replace_candidates ||
 					(data.plan && data.plan.manufacture_batch_replace_candidates) ||
 					[];
+				this.mfgPreviewDirty = false;
 				this.render_mfg();
-				this.btn_mfg_dry.prop("disabled", false);
 				this.btn_mfg_apply.prop("disabled", true);
 				this._resume_mfg_dry_if_active(jc);
 			},
@@ -1426,8 +1482,7 @@ class JobCardStockRebuildPage {
 				} else {
 					delete self.batchOffsetApprovals[item];
 				}
-				// Plan fingerprint includes approvals — force rebuild on next Dry Run.
-				self.mfgFingerprint = null;
+				self.mark_mfg_preview_dirty();
 				self.render_mfg();
 			});
 			this.$mfg.append($box);
@@ -1545,7 +1600,7 @@ class JobCardStockRebuildPage {
 				} else {
 					delete self.manufactureBatchReplaceApprovals[key];
 				}
-				self.mfgFingerprint = null;
+				self.mark_mfg_preview_dirty();
 				self.render_mfg();
 			});
 			this.$mfg.append($box);
@@ -1649,7 +1704,7 @@ class JobCardStockRebuildPage {
 				} else {
 					delete self.partialBatchOffsetApprovals[key];
 				}
-				self.mfgFingerprint = null;
+				self.mark_mfg_preview_dirty();
 				self.render_mfg();
 			});
 			this.$mfg.append($box);
@@ -1661,11 +1716,33 @@ class JobCardStockRebuildPage {
 		const scan = this.mfgScan || {};
 		const plan = this.mfgPlan || {};
 		const rows = scan.rows || [];
+		const isNoop =
+			plan.repair_required === false ||
+			!!(plan.canonical_manufacture && plan.canonical_manufacture.noop);
 		$("<h4 class='jcsr-section-title'>").text(__("Golden Rule")).appendTo(this.$mfg);
-		if (plan.blockers && plan.blockers.length) {
+		if (isNoop) {
+			this.$mfg.append(
+				`<div class="jcsr-alert ok" data-role="mfg-noop">
+					<strong>${__("No repair required")}</strong>
+					— ${__("Golden Rule is balanced. No Manufacture repair plan will be built.")}
+				</div>`
+			);
+		}
+		if (this.mfgPreviewDirty) {
+			this.$mfg.append(
+				`<div class="jcsr-alert" data-role="mfg-preview-dirty" style="border:1px solid #e2a06a">
+					<strong>${__("Preview is outdated — rebuilding…")}</strong>
+					— ${__("Final Manufacture Preview will refresh from the server planner.")}
+				</div>`
+			);
+		}
+		const hardBlockers = (plan.blockers || []).filter(
+			(b) => !String(b).includes("Nothing to repair")
+		);
+		if (hardBlockers.length) {
 			this.$mfg.append(
 				`<div class="jcsr-alert blocker">${frappe.utils.escape_html(
-					plan.blockers.join("; ")
+					hardBlockers.join("; ")
 				)}</div>`
 			);
 		}
@@ -1946,41 +2023,65 @@ class JobCardStockRebuildPage {
 		this.$mfg.append($trk);
 
 		$("<h4 class='jcsr-section-title'>").text(__("Final Manufacture Preview")).appendTo(this.$mfg);
-		const canon = plan.canonical_manufacture || {};
-		this.$mfg.append(
-			`<div class="jcsr-meta">Stamp: <code>${frappe.utils.escape_html(
-				canon.historical_stamp || ""
-			)}</code> · FG qty ${flt(canon.fg_completed_qty)} · supersedes ${(
-				canon.supersedes || []
-			)
-				.map((x) => frappe.utils.escape_html(x))
-				.join(", ")}</div>`
-		);
-		const $ct = $(
-			`<table class="jcsr-table"><thead><tr>
-				<th>${__("Type")}</th><th>${__("Item")}</th><th>${__("Batch")}</th>
-				<th>${__("Qty")}</th><th>${__("Job Card Item")}</th>
-				<th>${__("S / T")}</th><th>${__("Rate source")}</th>
-				<th>${__("Source")}</th>
-			</tr></thead><tbody></tbody></table>`
-		);
-		(canon.rows || []).forEach((row) => {
-			$ct.find("tbody").append(`
-				<tr>
-					<td>${frappe.utils.escape_html(row.type || "")}</td>
-					<td>${frappe.utils.escape_html(row.item_code || "")}</td>
-					<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
-					<td>${flt(row.qty)}</td>
-					<td><code>${frappe.utils.escape_html(row.job_card_item || "")}</code></td>
-					<td>${frappe.utils.escape_html(row.s_warehouse || "")} → ${frappe.utils.escape_html(
-						row.t_warehouse || ""
-					)}</td>
-					<td>${frappe.utils.escape_html(row.rate_source || "")}</td>
-					<td>${frappe.utils.escape_html(row.source_lineage || row.source_voucher || "")}</td>
-				</tr>
-			`);
-		});
-		this.$mfg.append($ct);
+		if (this.mfgPreviewDirty) {
+			this.$mfg.append(
+				`<div class="jcsr-alert" data-role="mfg-final-preview-stale">
+					${__("Stale preview hidden — waiting for authoritative server rebuild.")}
+				</div>`
+			);
+		} else if (isNoop) {
+			this.$mfg.append(
+				`<div class="jcsr-meta" data-role="mfg-final-preview-noop">
+					${__("No canonical Manufacture rebuild is planned.")}
+				</div>`
+			);
+		} else {
+			const canon = plan.canonical_manufacture || {};
+			this.$mfg.append(
+				`<div class="jcsr-meta">Stamp: <code>${frappe.utils.escape_html(
+					canon.historical_stamp || ""
+				)}</code> · FG qty ${flt(canon.fg_completed_qty)} · supersedes ${(
+					canon.supersedes || []
+				)
+					.map((x) => frappe.utils.escape_html(x))
+					.join(", ")}</div>`
+			);
+			const $ct = $(
+				`<table class="jcsr-table" data-role="mfg-final-preview"><thead><tr>
+					<th>${__("Type")}</th><th>${__("Item")}</th><th>${__("Batch")}</th>
+					<th>${__("Qty")}</th><th>${__("Job Card Item")}</th>
+					<th>${__("S / T")}</th><th>${__("Rate source")}</th>
+					<th>${__("Source")}</th>
+				</tr></thead><tbody></tbody></table>`
+			);
+			(canon.rows || []).forEach((row) => {
+				$ct.find("tbody").append(`
+					<tr>
+						<td>${frappe.utils.escape_html(row.type || "")}</td>
+						<td>${frappe.utils.escape_html(row.item_code || "")}</td>
+						<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
+						<td>${flt(row.qty)}</td>
+						<td><code>${frappe.utils.escape_html(row.job_card_item || "")}</code></td>
+						<td>${frappe.utils.escape_html(row.s_warehouse || "")} → ${frappe.utils.escape_html(
+							row.t_warehouse || ""
+						)}</td>
+						<td>${frappe.utils.escape_html(row.rate_source || "")}</td>
+						<td>${frappe.utils.escape_html(row.source_lineage || row.source_voucher || "")}</td>
+					</tr>
+				`);
+			});
+			this.$mfg.append($ct);
+		}
+		// Manufacture Dry/Apply only when an authoritative, non-noop plan is ready.
+		const canDry =
+			!this.mfgPreviewDirty &&
+			!isNoop &&
+			!!this.mfgFingerprint &&
+			!(hardBlockers && hardBlockers.length);
+		this.btn_mfg_dry.prop("disabled", !canDry);
+		if (!canDry) {
+			this.btn_mfg_apply.prop("disabled", true);
+		}
 	}
 
 	render_mfg_dry() {
