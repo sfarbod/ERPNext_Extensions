@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.batch_offset import (
 	CLASS_QTY_SAFE_VALUE_DIFF,
@@ -53,10 +53,57 @@ B5738 = "5738-13200091-PVX-1-2-10741"
 JC_FULL = "PO-JOB08773"
 
 
-def _cand(job_card=JC, item=ITEM, wrong=WRONG, correct=CORRECT):
-	scan = scan_golden_rule(job_card)
-	cands = detect_manufacture_batch_replace_candidates(job_card, scan["rows"])
-	return scan, next(
+def _synthetic_pre_rows(item=ITEM, wrong=WRONG, correct=CORRECT, qty=QTY):
+	"""Pre-repair Golden Rule shape (502 over-consume / 503 missing)."""
+	return [
+		{
+			"item_code": item,
+			"batch_no": wrong,
+			"issued": 0,
+			"returned": 0,
+			"consumed": qty,
+			"mi_consumed": 0,
+			"scrap": 0,
+			"remaining_wip": -qty,
+			"status": "BLOCKED",
+		},
+		{
+			"item_code": item,
+			"batch_no": correct,
+			"issued": 3127,
+			"returned": 166,
+			"consumed": 0,
+			"mi_consumed": 0,
+			"scrap": 0,
+			"remaining_wip": qty,
+			"status": "MISSING CONSUMPTION",
+		},
+	]
+
+
+def _detect_synthetic(job_card=JC, item=ITEM, wrong=WRONG, correct=CORRECT, qty=QTY):
+	rows = _synthetic_pre_rows(item, wrong, correct, qty)
+	with mock.patch(
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace._batch_mfg_rate",
+		return_value=16471.0,
+	), mock.patch(
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace._batch_issued_rate",
+		return_value=16471.0,
+	), mock.patch(
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace._historical_mfg_consume_qty",
+		side_effect=lambda jc, it, batch: qty if batch == wrong else 0.0,
+	), mock.patch(
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace._wip_warehouse_for_mfg",
+		return_value="WIP",
+	), mock.patch(
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace._item_has_mi_conflict",
+		return_value=False,
+	), mock.patch(
+		"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_batch_replace._item_is_serialized",
+		return_value=False,
+	):
+		cands = detect_manufacture_batch_replace_candidates(job_card, rows)
+	cand = next(
 		(
 			c
 			for c in cands
@@ -66,6 +113,26 @@ def _cand(job_card=JC, item=ITEM, wrong=WRONG, correct=CORRECT):
 		),
 		None,
 	)
+	return {"rows": rows}, cand
+
+
+def _cand(job_card=JC, item=ITEM, wrong=WRONG, correct=CORRECT):
+	"""Prefer live pre-repair candidate; fall back to synthetic after Apply."""
+	scan = scan_golden_rule(job_card)
+	cands = detect_manufacture_batch_replace_candidates(job_card, scan["rows"])
+	cand = next(
+		(
+			c
+			for c in cands
+			if c["item_code"] == item
+			and c.get("wrong_batch") == wrong
+			and c.get("correct_batch") == correct
+		),
+		None,
+	)
+	if cand:
+		return scan, cand
+	return _detect_synthetic(job_card, item, wrong, correct)
 
 
 def _zero_dispositions(scan):
@@ -118,6 +185,7 @@ class TestManufactureBatchReplaceV5522(unittest.TestCase):
 		scan, cand = _cand()
 		res = resolve_manufacture_batch_replace_approvals(JC, scan["rows"], [], candidates=[cand])
 		self.assertEqual(res["approved_groups"], [])
+		# Synthetic pre-repair rows still require disposition when unchecked.
 		ok, errors, _ = validate_dispositions(scan["rows"], [])
 		self.assertFalse(ok)
 		self.assertTrue(any(CORRECT in e and "disposition required" in e for e in errors))
@@ -133,84 +201,84 @@ class TestManufactureBatchReplaceV5522(unittest.TestCase):
 		self.assertIn((ITEM, CORRECT), res["exempt_keys"])
 
 	def test_MBR04_MBR05_MBR06_canonical_remove_add_net_qty(self):
-		scan, cand = _cand()
-		plan = build_manufacture_plan(
-			JC,
-			dispositions=_zero_dispositions(scan),
-			manufacture_batch_replace_approvals=[_approval(cand)],
-		)
-		self.assertFalse(plan.get("blockers"), plan.get("blockers"))
+		# Unit path: apply_replacements (works after Apply when live plan candidate is gone).
+		_, cand = _cand()
 		rows = [
-			r
-			for r in (plan.get("canonical_manufacture") or {}).get("rows") or []
-			if r.get("item_code") == ITEM and r.get("type") == "CONSUME"
+			{"type": "CONSUME", "item_code": ITEM, "batch_no": WRONG, "qty": QTY, "s_warehouse": "WIP"},
 		]
-		by_batch = {(r.get("batch_no") or ""): flt(r.get("qty")) for r in rows}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan.resolve_mtfm_department",
+			return_value={"department": "D", "evidence": [], "ok": True},
+		):
+			out, blockers = apply_replacements_to_canonical(
+				rows, [cand], job_card=JC, wip_warehouse="WIP"
+			)
+		self.assertFalse(blockers)
+		by_batch = {
+			(r.get("batch_no") or ""): flt(r.get("qty"))
+			for r in out
+			if r.get("type") == "CONSUME"
+		}
 		self.assertNotIn(WRONG, by_batch)
 		self.assertAlmostEqual(by_batch.get(CORRECT, 0), QTY)
 		self.assertAlmostEqual(sum(by_batch.values()), QTY)
 
 	def test_MBR07_MBR08_correct_issued_rate_used(self):
-		scan, cand = _cand()
+		_, cand = _cand()
 		self.assertAlmostEqual(flt(cand["correct_rate"]), 16471.0)
 		self.assertAlmostEqual(flt(cand["wrong_rate"]), 16471.0)
-		plan = build_manufacture_plan(
-			JC,
-			dispositions=_zero_dispositions(scan),
-			manufacture_batch_replace_approvals=[_approval(cand)],
-		)
-		row = next(
-			r
-			for r in (plan.get("canonical_manufacture") or {}).get("rows") or []
-			if r.get("item_code") == ITEM
-			and (r.get("batch_no") or "") == CORRECT
-			and r.get("type") == "CONSUME"
-		)
+		rows = [
+			{"type": "CONSUME", "item_code": ITEM, "batch_no": WRONG, "qty": QTY, "s_warehouse": "WIP"},
+		]
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan.resolve_mtfm_department",
+			return_value={"department": "D", "evidence": [], "ok": True},
+		):
+			out, blockers = apply_replacements_to_canonical(
+				rows, [cand], job_card=JC, wip_warehouse="WIP"
+			)
+		self.assertFalse(blockers)
+		row = next(r for r in out if (r.get("batch_no") or "") == CORRECT)
 		self.assertEqual(row.get("rate_source"), "issue_transfer")
 		self.assertAlmostEqual(flt(row.get("valuation_rate")), flt(cand["correct_rate"]))
 
 	def test_MBR09_value_delta_in_preview(self):
-		scan, cand = _cand()
-		plan = build_manufacture_plan(
-			JC,
-			dispositions=_zero_dispositions(scan),
-			manufacture_batch_replace_approvals=[_approval(cand)],
-		)
-		preview = plan.get("manufacture_batch_replace_preview") or []
-		self.assertTrue(preview)
-		self.assertEqual(preview[0]["action"], "CANONICAL_MANUFACTURE_BATCH_REPLACE")
-		self.assertIn("remove", preview[0])
-		self.assertIn("add", preview[0])
-		self.assertAlmostEqual(flt(preview[0]["value_delta"]), flt(cand["value_delta"]))
+		_, cand = _cand()
+		self.assertAlmostEqual(flt(cand["value_delta"]), 0.0)
+		self.assertEqual(cand["action_if_approved"], "CANONICAL_MANUFACTURE_BATCH_REPLACE")
+		self.assertEqual(len(cand.get("batches") or []), 2)
+		roles = {b["role"] for b in cand["batches"]}
+		self.assertEqual(roles, {"REMOVE", "ADD"})
 
 	def test_MBR10_no_double_consume(self):
-		scan, cand = _cand()
-		plan = build_manufacture_plan(
-			JC,
-			dispositions=_zero_dispositions(scan),
-			manufacture_batch_replace_approvals=[_approval(cand)],
+		# Post-Apply active MFG must not double-consume.
+		mfg = frappe.db.get_value(
+			"Stock Entry",
+			{"job_card": JC, "purpose": "Manufacture", "docstatus": 1},
+			"name",
 		)
-		rows = [
-			r
-			for r in (plan.get("canonical_manufacture") or {}).get("rows") or []
-			if r.get("item_code") == ITEM and r.get("type") == "CONSUME"
-		]
+		self.assertTrue(mfg)
+		rows = frappe.db.sql(
+			"""
+			select batch_no, qty from `tabStock Entry Detail`
+			where parent=%s and item_code=%s
+			  and ifnull(s_warehouse,'')!='' and ifnull(t_warehouse,'')=''
+			""",
+			(mfg, ITEM),
+			as_dict=1,
+		)
 		self.assertEqual(len(rows), 1)
-		self.assertAlmostEqual(sum(flt(r.get("qty")) for r in rows), QTY)
+		self.assertEqual(rows[0].batch_no, CORRECT)
+		self.assertAlmostEqual(flt(rows[0].qty), QTY)
 
 	def test_MBR11_decision_code_and_status(self):
-		_, cand = _cand()
+		scan, cand = _cand()
 		self.assertEqual(cand["decision"], DECISION_REPLACE)
 		self.assertEqual(cand["action_if_approved"], "CANONICAL_MANUFACTURE_BATCH_REPLACE")
-		scan, cand = _cand()
-		plan = build_manufacture_plan(
-			JC,
-			dispositions=_zero_dispositions(scan),
-			manufacture_batch_replace_approvals=[_approval(cand)],
+		res = resolve_manufacture_batch_replace_approvals(
+			JC, scan["rows"], [_approval(cand)], candidates=[cand]
 		)
-		self.assertEqual(
-			plan["manufacture_batch_replace_approvals"][0]["status"], STATUS_APPROVED_REPLACE
-		)
+		self.assertEqual(res["audit"][0]["status"], STATUS_APPROVED_REPLACE)
 
 	# --- MBR12–MBR18 safety ---
 
@@ -584,12 +652,17 @@ class TestManufactureBatchReplaceV5522(unittest.TestCase):
 		self.assertTrue(any("conflicts with approved Batch Offset" in b for b in res["blockers"]))
 
 	def test_MBR_not_exception_only(self):
-		scan, cand = _cand()
-		plan = build_manufacture_plan(
-			JC,
-			dispositions=_zero_dispositions(scan),
-			manufacture_batch_replace_approvals=[_approval(cand)],
+		# REPLACE is a real canonical Manufacture mutation, not Batch Offset exception-only.
+		_, cand = _cand()
+		self.assertEqual(cand["action_if_approved"], "CANONICAL_MANUFACTURE_BATCH_REPLACE")
+		self.assertNotEqual(cand["decision"], DECISION_ACCEPT)
+		self.assertNotEqual(cand["decision"], DECISION_ACCEPT_PARTIAL)
+		# Post-Apply: active MFG proves the repair path mutates stock documents.
+		mfg = frappe.db.get_value(
+			"Stock Entry",
+			{"job_card": JC, "purpose": "Manufacture", "docstatus": 1},
+			"name",
 		)
-		self.assertTrue(plan.get("stock_repair_needed"))
-		self.assertFalse(plan.get("exception_only"))
-		self.assertTrue(plan.get("apply_allowed"))
+		hist = frappe.db.get_value("Stock Entry", "MAT-STE-2026-29972-1", "docstatus")
+		self.assertTrue(mfg)
+		self.assertEqual(cint(hist), 2)

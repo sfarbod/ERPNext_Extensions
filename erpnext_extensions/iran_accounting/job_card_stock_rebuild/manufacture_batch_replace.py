@@ -1,12 +1,13 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""User-approved Manufacture Batch Replacement (v5.5.22).
+"""User-approved canonical Manufacture consumption corrections (v5.5.22).
 
-REAL canonical Manufacture correction: REMOVE wrong-Batch source consumption
-and ADD the same quantity on the correct Batch. Distinct from
-ACCEPT_*_BATCH_OFFSET_NO_REPAIR (attribution exception / no stock change).
+Supports REMOVE / REDUCE / ADD / INCREASE of Manufacture source consumption
+via target quantities on the repaired canonical document. Paired wrong→correct
+Batch replacement (REPLACE_MANUFACTURE_BATCH) remains the primary detector for
+over-consumed + missing-consumption pairs.
 
-Never auto-applied. Removal is only allowed when paired with an equal-qty
-replacement on the same Job Card × Item × WIP warehouse.
+Distinct from ACCEPT_*_BATCH_OFFSET_NO_REPAIR (attribution exception / no stock
+change). Never auto-applied; explicit approval + fingerprint required.
 """
 
 from __future__ import annotations
@@ -422,9 +423,11 @@ def resolve_manufacture_batch_replace_approvals(
 		item_code = raw.get("item_code")
 		wrong_b = raw.get("wrong_batch") or raw.get("from_batch") or ""
 		correct_b = raw.get("correct_batch") or raw.get("to_batch") or ""
-		accepted = cint(raw.get("accepted") or raw.get("approved") or 0) or (
-			str(raw.get("decision") or "") == DECISION_REPLACE
-		)
+		# Explicit accepted/approved=0 must win over decision string alone.
+		if "accepted" in raw or "approved" in raw:
+			accepted = cint(raw.get("accepted") if "accepted" in raw else raw.get("approved"))
+		else:
+			accepted = cint(str(raw.get("decision") or "") == DECISION_REPLACE)
 		if not accepted:
 			continue
 		if not item_code or not wrong_b or not correct_b:
@@ -505,6 +508,81 @@ def resolve_manufacture_batch_replace_approvals(
 	}
 
 
+def apply_consumption_targets_to_canonical(
+	canonical_rows: list[dict],
+	targets: list[dict],
+	*,
+	job_card: str,
+	wip_warehouse: str | None = None,
+) -> tuple[list[dict], list[str]]:
+	"""Apply target CONSUME qtys: target<0 block, target==0 omit, target>0 set/add.
+
+	Each target dict: item_code, batch_no, target_qty, rate (optional),
+	rate_source (optional), source_lineage (optional).
+	"""
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan import (
+		resolve_mtfm_department,
+	)
+
+	rows = [dict(r) for r in (canonical_rows or [])]
+	blockers: list[str] = []
+	for t in targets or []:
+		item = t.get("item_code")
+		batch = t.get("batch_no") or ""
+		target = flt(t.get("target_qty"))
+		if not item:
+			blockers.append("MANUFACTURE_CONSUMPTION_CORRECTION: item_code required")
+			continue
+		if target < -_QTY_TOLERANCE:
+			blockers.append(
+				f"MANUFACTURE_CONSUMPTION_CORRECTION: {item}/{batch} target {target} < 0"
+			)
+			continue
+		# Remove existing CONSUME for this key
+		rows = [
+			r
+			for r in rows
+			if not (
+				r.get("type") == "CONSUME"
+				and r.get("item_code") == item
+				and (r.get("batch_no") or "") == batch
+			)
+		]
+		if target <= _QTY_TOLERANCE:
+			continue  # omit row
+		rate = flt(t.get("rate") or t.get("correct_rate") or t.get("valuation_rate"))
+		if rate <= 1e-9:
+			blockers.append(
+				f"ZERO_RATE: {item}/{batch} — authoritative rate required for target consume"
+			)
+			continue
+		wh = (t.get("s_warehouse") or wip_warehouse or "").strip()
+		dept_info = resolve_mtfm_department(job_card, item, batch)
+		rows.append(
+			{
+				"type": "CONSUME",
+				"item_code": item,
+				"batch_no": batch,
+				"qty": target,
+				"s_warehouse": wh,
+				"t_warehouse": None,
+				"valuation_rate": rate,
+				"basic_rate": rate,
+				"custom_output_class": None,
+				"secondary_item_type": None,
+				"is_finished_item": 0,
+				"rate_source": t.get("rate_source") or "issue_transfer",
+				"source_lineage": t.get("source_lineage")
+				or "MANUFACTURE_CONSUMPTION_CORRECTION",
+				"department": dept_info.get("department"),
+				"department_evidence": dept_info.get("evidence") or [],
+				"_department_ambiguous": bool(dept_info.get("ambiguous")),
+				"_dept_candidates": dept_info.get("candidates") or [],
+			}
+		)
+	return rows, blockers
+
+
 def apply_replacements_to_canonical(
 	canonical_rows: list[dict],
 	approved_groups: list[dict],
@@ -512,16 +590,13 @@ def apply_replacements_to_canonical(
 	job_card: str,
 	wip_warehouse: str | None = None,
 ) -> tuple[list[dict], list[str]]:
-	"""REMOVE wrong-batch CONSUME qty and ADD correct-batch CONSUME (issued rate)."""
-	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan import (
-		resolve_mtfm_department,
-	)
-
+	"""REMOVE/REDUCE wrong-batch + ADD/INCREASE correct-batch via target qtys."""
 	rows = [dict(r) for r in (canonical_rows or [])]
 	blockers: list[str] = []
 	if not approved_groups:
 		return rows, blockers
 
+	targets: list[dict] = []
 	for g in approved_groups:
 		item = g["item_code"]
 		wrong = g.get("wrong_batch") or ""
@@ -531,91 +606,53 @@ def apply_replacements_to_canonical(
 			blockers.append(f"MANUFACTURE_BATCH_REPLACE: {item} qty must be positive")
 			continue
 
-		# REMOVE wrong
-		removed = 0.0
-		for r in rows:
-			if r.get("type") != "CONSUME":
-				continue
-			if r.get("item_code") != item or (r.get("batch_no") or "") != wrong:
-				continue
-			have = flt(r.get("qty"))
-			take = min(have, qty - removed)
-			r["qty"] = have - take
-			removed += take
-			if removed + _QTY_TOLERANCE >= qty:
-				break
-		if removed + _QTY_TOLERANCE < qty:
-			blockers.append(
-				f"MANUFACTURE_BATCH_REPLACE: cannot remove {qty} of {item}/{wrong} "
-				f"(found {removed} on canonical)"
-			)
-			continue
-
-		# Drop emptied consume rows
-		rows = [
-			r
+		# Current wrong consume on canonical
+		wrong_have = sum(
+			flt(r.get("qty"))
 			for r in rows
-			if not (
-				r.get("type") == "CONSUME"
-				and r.get("item_code") == item
-				and (r.get("batch_no") or "") == wrong
-				and flt(r.get("qty")) <= _QTY_TOLERANCE
-			)
-		]
-
-		# ADD correct
-		correct_rate = flt(g.get("correct_rate"))
-		if correct_rate <= 1e-9:
+			if r.get("type") == "CONSUME"
+			and r.get("item_code") == item
+			and (r.get("batch_no") or "") == wrong
+		)
+		if wrong_have + _QTY_TOLERANCE < qty:
 			blockers.append(
-				f"ZERO_RATE: {item}/{correct} — correct Batch issued rate required"
+				f"MANUFACTURE_BATCH_REPLACE: cannot reduce {qty} of {item}/{wrong} "
+				f"(found {wrong_have} on canonical)"
 			)
 			continue
-		wh = (g.get("s_warehouse") or wip_warehouse or "").strip()
-		dept_info = resolve_mtfm_department(job_card, item, correct)
-		merged = False
-		for r in rows:
-			if r.get("type") != "CONSUME":
-				continue
-			if r.get("item_code") != item or (r.get("batch_no") or "") != correct:
-				continue
-			r["qty"] = flt(r.get("qty")) + qty
-			r["valuation_rate"] = correct_rate
-			r["basic_rate"] = correct_rate
-			r["rate_source"] = "issue_transfer"
-			r["source_lineage"] = (
-				(r.get("source_lineage") or "")
-				+ f"; REPLACE_MANUFACTURE_BATCH from {wrong}"
-			).strip("; ")
-			if dept_info.get("department") and not r.get("department"):
-				r["department"] = dept_info["department"]
-				r["department_evidence"] = dept_info.get("evidence") or []
-			merged = True
-			break
-		if not merged:
-			rows.append(
-				{
-					"type": "CONSUME",
-					"item_code": item,
-					"batch_no": correct,
-					"qty": qty,
-					"s_warehouse": wh,
-					"t_warehouse": None,
-					"valuation_rate": correct_rate,
-					"basic_rate": correct_rate,
-					"custom_output_class": None,
-					"secondary_item_type": None,
-					"is_finished_item": 0,
-					"rate_source": "issue_transfer",
-					"source_lineage": f"REPLACE_MANUFACTURE_BATCH from {wrong}",
-					"department": dept_info.get("department"),
-					"department_evidence": dept_info.get("evidence") or [],
-					"_department_ambiguous": bool(dept_info.get("ambiguous")),
-					"_dept_candidates": dept_info.get("candidates") or [],
-				}
-			)
+		wrong_target = wrong_have - qty  # full removal → 0; partial → keep remainder
+		correct_have = sum(
+			flt(r.get("qty"))
+			for r in rows
+			if r.get("type") == "CONSUME"
+			and r.get("item_code") == item
+			and (r.get("batch_no") or "") == correct
+		)
+		correct_rate = flt(g.get("correct_rate"))
+		targets.append(
+			{
+				"item_code": item,
+				"batch_no": wrong,
+				"target_qty": wrong_target,
+				"rate": flt(g.get("wrong_rate")) or 1.0,  # unused when target 0
+				"rate_source": "historical_mfg",
+				"source_lineage": f"REPLACE_MANUFACTURE_BATCH reduce {qty}",
+				"s_warehouse": g.get("s_warehouse") or wip_warehouse,
+			}
+		)
+		targets.append(
+			{
+				"item_code": item,
+				"batch_no": correct,
+				"target_qty": correct_have + qty,
+				"rate": correct_rate,
+				"rate_source": "issue_transfer",
+				"source_lineage": f"REPLACE_MANUFACTURE_BATCH from {wrong}",
+				"s_warehouse": g.get("s_warehouse") or wip_warehouse,
+			}
+		)
 
-		# Net Item CONSUME qty must remain unchanged for this replacement.
-		# (Verified by caller via preview / tests; local sanity:)
-		# already enforced by remove==add qty.
-
-	return rows, blockers
+	out, apply_blockers = apply_consumption_targets_to_canonical(
+		rows, targets, job_card=job_card, wip_warehouse=wip_warehouse
+	)
+	return out, blockers + apply_blockers

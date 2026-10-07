@@ -22,20 +22,24 @@ _ORIG_ITEM = None
 _ORIG_SE_USL = None
 _ORIG_VALIDATE_NEG_BATCH = None
 _ORIG_THROW_NEG_BATCH = None
+_ORIG_THROW_NEG_BATCH_QTY = None
 
 
 def ensure_repair_negative_stock_patches() -> None:
 	"""Idempotent flag-gated patches for Job Card Stock Rebuild repair."""
 	global _PATCHED, _ORIG_BATCH, _ORIG_ITEM, _ORIG_SE_USL
-	global _ORIG_VALIDATE_NEG_BATCH, _ORIG_THROW_NEG_BATCH
-	if _PATCHED:
+	global _ORIG_VALIDATE_NEG_BATCH, _ORIG_THROW_NEG_BATCH, _ORIG_THROW_NEG_BATCH_QTY
+	# Re-apply when Batch.batch_qty guard is missing (upgrade from older patch set).
+	if _PATCHED and _ORIG_THROW_NEG_BATCH_QTY is not None:
 		return
+	_PATCHED = False
 
 	from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
 		SerialandBatchBundle,
 		allow_negative_stock_for_batch,
 	)
 	from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
+	from erpnext.stock.serial_batch_bundle import throw_negative_batch_validation
 	from erpnext.stock.stock_ledger import is_negative_stock_allowed
 
 	_ORIG_BATCH = allow_negative_stock_for_batch
@@ -43,6 +47,7 @@ def ensure_repair_negative_stock_patches() -> None:
 	_ORIG_SE_USL = StockEntry.update_stock_ledger
 	_ORIG_VALIDATE_NEG_BATCH = SerialandBatchBundle.validate_negative_batch
 	_ORIG_THROW_NEG_BATCH = SerialandBatchBundle.throw_negative_batch
+	_ORIG_THROW_NEG_BATCH_QTY = throw_negative_batch_validation
 
 	def _batch(batch_no):
 		if frappe.flags.get(HISTORICAL_REPAIR_FLAG):
@@ -75,7 +80,14 @@ def ensure_repair_negative_stock_patches() -> None:
 			self, batch_no, available_qty, precision, posting_datetime=posting_datetime
 		)
 
+	def _throw_neg_batch_qty(batch_no, qty):
+		# Batch.batch_qty update path (serial_batch_bundle.update_batch_qty).
+		if frappe.flags.get(HISTORICAL_REPAIR_FLAG):
+			return
+		return _ORIG_THROW_NEG_BATCH_QTY(batch_no, qty)
+
 	import erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle as sabb_mod
+	import erpnext.stock.serial_batch_bundle as sbb_mod
 	import erpnext.stock.stock_ledger as sle_mod
 
 	sabb_mod.allow_negative_stock_for_batch = _batch
@@ -83,4 +95,5 @@ def ensure_repair_negative_stock_patches() -> None:
 	StockEntry.update_stock_ledger = _usl
 	SerialandBatchBundle.validate_negative_batch = _validate_neg
 	SerialandBatchBundle.throw_negative_batch = _throw_neg
+	sbb_mod.throw_negative_batch_validation = _throw_neg_batch_qty
 	_PATCHED = True

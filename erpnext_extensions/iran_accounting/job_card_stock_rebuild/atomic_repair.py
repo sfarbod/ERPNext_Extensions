@@ -309,6 +309,17 @@ def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
 		row.valuation_rate = rate
 		row.set_basic_rate_manually = 1
 		row.allow_zero_valuation_rate = 0
+		# MAIN_FG / finished incoming: do NOT force amount = qty×rate.
+		# Historical Manufacture may carry a legitimate integer-rate residual
+		# (e.g. 898 IRR) vs the allocatable material pool; recomposing amount
+		# from the snapshot rate recreates that residual and then fails R1
+		# after the output contract has (or should have) handled it.
+		# Source CONSUME and Component Scrap keep issued-rate amount identity.
+		is_main_fg = cint(row.is_finished_item) or (
+			(getattr(row, "custom_output_class", None) or "") == "MAIN_FG"
+		)
+		if is_main_fg:
+			continue
 		row.basic_amount = qty * rate
 		row.amount = qty * rate
 
@@ -395,6 +406,23 @@ def _prepare_se_for_repair_submit(doc, batch_snapshot: list[dict] | None = None)
 		if flt(row.basic_rate) > 0:
 			row.set_basic_rate_manually = 1
 			row.allow_zero_valuation_rate = 0
+
+def snapshot_historical_manufacture_residual(mfg_name: str) -> dict | None:
+	"""Capture value_difference + SA evidence BEFORE cancel (GL still live)."""
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		historical_repair_residual_evidence,
+	)
+
+	# Temporary probe doc flags — read live submitted residual.
+	probe = frappe._dict(
+		flags=frappe._dict(
+			jc_manufacture_repair=True,
+			jc_repair_historical_mfg=mfg_name,
+		)
+	)
+	# Force HISTORICAL_REPAIR_FLAG already set by run_repair.
+	return historical_repair_residual_evidence(probe)
+
 
 def _build_canonical_se(plan: dict) -> str:
 	canon = plan["canonical_manufacture"]
@@ -504,6 +532,11 @@ def _build_canonical_se(plan: dict) -> str:
 	doc.flags.ignore_permissions = True
 	# Site Server Script "Custom 9" bumps Manufacture after MTfM; skip via doc.flags.
 	doc.flags.jc_manufacture_repair = True
+	# Fingerprint the superseded historical Manufacture for residual preservation.
+	doc.flags.jc_repair_historical_mfg = template_name
+	# Pre-cancel residual snapshot (preferred — SA GL still live at capture time).
+	if plan.get("historical_manufacture_residual"):
+		doc.flags.jc_repair_historical_residual = plan.get("historical_manufacture_residual")
 	# Historical repair must keep the original Manufacture chronology; PPO would
 	# otherwise bump posting after remaining WIP Issues / other dependents.
 	if hasattr(doc, "set_posting_time"):
@@ -521,6 +554,9 @@ def _build_canonical_se(plan: dict) -> str:
 	if hasattr(doc, "set_posting_time"):
 		doc.set_posting_time = 1
 	doc.flags.jc_manufacture_repair = True
+	doc.flags.jc_repair_historical_mfg = template_name
+	if plan.get("historical_manufacture_residual"):
+		doc.flags.jc_repair_historical_residual = plan.get("historical_manufacture_residual")
 	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
 	doc.save()
 	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
@@ -1005,6 +1041,14 @@ def run_repair(
 			# 3) Cancel manufactures
 			timer.start("T10")
 			_progress("T10")
+			# Snapshot historical residual BEFORE cancel (live SA GL).
+			if merge_docs and not fresh.get("historical_manufacture_residual"):
+				fresh["historical_manufacture_residual"] = (
+					snapshot_historical_manufacture_residual(merge_docs[0])
+				)
+				result["historical_manufacture_residual"] = fresh.get(
+					"historical_manufacture_residual"
+				)
 			for name in merge_docs:
 				_cancel_se(name)
 				result["cancelled"].append(name)
