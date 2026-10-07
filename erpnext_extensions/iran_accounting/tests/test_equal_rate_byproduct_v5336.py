@@ -7,6 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from frappe.utils import flt
+
 from erpnext_extensions.iran_accounting.historical_stock.manufacture_equal_rate_byproduct import (
 	STRATEGY,
 	cint_safe,
@@ -71,14 +73,35 @@ class TestEqualRateByproductHelpers(unittest.TestCase):
 		found = find_zero_rate_stage_byproducts(doc)
 		self.assertEqual(len(found), 1)
 		self.assertEqual(found[0].item_code, "BP")
+		# Finance-excluded VR By-Product: valuation source + zero economics preserved.
+		self.assertEqual(found[0].valuation_type, "Valuation Rate")
+		self.assertEqual(flt(found[0].basic_amount), 0)
+		self.assertEqual(flt(getattr(found[0], "additional_cost", 0) or 0), 0)
 
 	def test_clear_vr_only_under_historical_flag_when_rate_zero(self):
+		"""Historical flag + stage secondary + zero VR → clear; bare rows stay closed.
+
+		Production (pre-5.5.19) refuses to stage-bridge on the historical flag
+		alone when the row is not a stage secondary / already-classified
+		CO_PRODUCT. The bare-row case must remain False so Scrap cannot be
+		stolen into STAGE_EQUIV_BRIDGE_FLAG.
+		"""
 		doc = _Doc(_iran_historical_stage_repair=True, company="X")
+		bare = _Row(
+			valuation_type="Valuation Rate",
+			basic_rate=0,
+			set_basic_rate_manually=0,
+			allow_zero_valuation_rate=0,
+		)
+		self.assertFalse(clear_core_vr_auto_default_for_zero_byproduct(doc, bare))
+		self.assertEqual(bare.valuation_type, "Valuation Rate")
+
 		row = _Row(
 			valuation_type="Valuation Rate",
 			basic_rate=0,
 			set_basic_rate_manually=0,
 			allow_zero_valuation_rate=0,
+			secondary_item_type="By-Product",
 		)
 		self.assertTrue(clear_core_vr_auto_default_for_zero_byproduct(doc, row))
 		self.assertFalse(row.valuation_type)

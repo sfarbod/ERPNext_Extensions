@@ -927,10 +927,17 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	if not is_irr_company(doc.company):
 		return False
 
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		apply_same_item_multi_fg,
+		assert_multi_fg_fail_closed,
+		claim_product_reject_ownership,
+		claim_stage_co_ownership,
+	)
 	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
 		allocate_stage_output_cost,
 		assert_bridged_stage_outputs_priced,
 		clear_core_auto_valuation_for_stage_bridge,
+		has_stage_participating_co_product,
 		snapshot_equivalent_factors_from_sources,
 		stamp_contract_version,
 		uses_v533_contract,
@@ -945,16 +952,34 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	clear_core_auto_valuation_for_product_reject_bridge(doc)
 	validate_job_card_secondary_match(doc)
 	snapshot_equivalent_factors_from_sources(doc)
+
 	component_applied = apply_component_scrap_issued_rates(doc)
+	# Priority 1: STAGE_CO (existing equivalent-factor allocator).
 	if allocate_stage_output_cost(doc):
+		# Only claim when participating Co-Products actually own the pool.
+		# (allocate_stage_output_cost may also restore FG for finance-excluded By.)
+		if has_stage_participating_co_product(doc):
+			claim_stage_co_ownership(doc)
 		assert_bridged_stage_outputs_priced(doc)
 		assert_bridged_product_reject_priced(doc)
 		return True
 	assert_bridged_stage_outputs_priced(doc)
+	# Priority 2: Product Reject (existing absorbed-cost path).
 	if _has_product_reject(doc):
+		# Multi-FG + Product Reject is unsupported — fail closed before inventing economics.
+		assert_multi_fg_fail_closed(doc)
 		applied = allocate_scrap_absorbed_cost(doc, method) or component_applied
+		if applied:
+			claim_product_reject_ownership(doc)
 		assert_bridged_product_reject_priced(doc)
 		return applied
+	# Priority 3: SAME_ITEM_MULTI_FG (unified contract Phase 1).
+	if apply_same_item_multi_fg(doc):
+		assert_bridged_product_reject_priced(doc)
+		return True
+	# Ambiguous Multi-FG that no strategy claimed → BLOCK.
+	assert_multi_fg_fail_closed(doc)
+	# Priority 4: existing single-FG / component-scrap residual paths.
 	if component_applied:
 		good_rows = [
 			row

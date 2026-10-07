@@ -199,11 +199,24 @@ def align_stock_entry_item_amounts(doc) -> None:
 	   (never force amount := valuation_rate × qty)
 
 	additional_cost and landed_cost_voucher_amount are preserved (rounded to IRR).
+
+	Closed Manufacture allocation plans (unified contract): owned rows keep
+	economic amounts authoritative — rate×qty must not reopen strategy economics.
 	"""
 	if not rounding.is_irr_company(doc.company):
 		return
 	currency = rounding.get_company_currency(doc.company)
+
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		polish_closed_plan_after_align,
+		protect_closed_row_amounts,
+	)
+
 	for row in doc.get("items") or []:
+		# Closed-plan owned rows: amount-first polish; skip rate-first rewrite.
+		if protect_closed_row_amounts(doc, row, currency):
+			continue
+
 		transfer_qty = flt(
 			row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
 		)
@@ -236,6 +249,8 @@ def align_stock_entry_item_amounts(doc) -> None:
 			)
 		elif row.get("valuation_rate") is not None:
 			row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, currency)
+
+	polish_closed_plan_after_align(doc)
 
 
 def _row_has_distributed_discount(row) -> bool:

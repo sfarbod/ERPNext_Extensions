@@ -97,31 +97,53 @@ def _output(item_code, qty, is_fg=0, rate=0.0, secondary_item_type=None, **extra
 
 @contextmanager
 def _irr(main_item_codes=None):
+	"""IRR contract test env — covers v5.5.19 manufacture_output_contract call sites."""
+	from contextlib import ExitStack
+
 	lookup = main_item_codes or {}
 
-	def _get_value(doctype, name, field):
+	def _get_value(doctype, name, field=None, *args, **kwargs):
+		_ = args, kwargs
 		if doctype == "Item" and field == "custom_main_item_code":
 			return lookup.get(name)
 		return None
 
-	with (
-		mock.patch(f"{MODULE}.is_irr_company", return_value=True),
-		mock.patch(f"{MODULE}.get_company_currency", return_value="IRR"),
-		mock.patch(f"{MODULE}.get_currency_precision", return_value=0),
-		mock.patch(f"{MODULE}.frappe.db.get_value", side_effect=_get_value),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.manufacture_stage_costing.is_irr_company",
-			return_value=True,
-		),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.manufacture_stage_costing.get_company_currency",
-			return_value="IRR",
-		),
-		mock.patch(
-			"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual._persisted_docstatus",
-			return_value=0,
-		),
-	):
+	with ExitStack() as stack:
+		for target, kwargs in (
+			(f"{MODULE}.is_irr_company", {"return_value": True}),
+			(f"{MODULE}.get_company_currency", {"return_value": "IRR"}),
+			(f"{MODULE}.get_currency_precision", {"return_value": 0}),
+			(f"{MODULE}.frappe.db.get_value", {"side_effect": _get_value}),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_stage_costing.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_stage_costing.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_output_contract.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.manufacture_output_contract.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+				{"return_value": True},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+				{"return_value": "IRR"},
+			),
+			(
+				"erpnext_extensions.iran_accounting.domain.manufacture_irr_residual._persisted_docstatus",
+				{"return_value": 0},
+			),
+		):
+			stack.enter_context(mock.patch(target, **kwargs))
 		yield
 
 
@@ -218,13 +240,24 @@ class TestBulkScrapZeroContract(unittest.TestCase):
 		self.assertNotEqual(doc.items[2].custom_output_class, "STAGE_EQUIVALENT")
 
 	def test_iran_contract_preserves_zero_and_qty(self):
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			STRATEGY_SAME_ITEM_MULTI_FG,
+			get_allocation_owner,
+		)
+
 		doc = _bulk_doc()
 		qty_before = [(r.item_code, flt(r.qty)) for r in doc.items]
 		with _irr():
 			apply_iran_manufacture_output_contract(doc)
 		self.assertEqual([(r.item_code, flt(r.qty)) for r in doc.items], qty_before)
 		self.assertEqual(flt(doc.items[2].basic_rate), 0)
+		self.assertEqual(flt(doc.items[2].basic_amount), 0)
 		self.assertEqual(doc.items[2].custom_output_class, CLASS_BULK_SCRAP)
+		# Bulk Scrap: intentional zero; not Multi-FG; material pool closes (SA 0).
+		self.assertNotEqual(get_allocation_owner(doc), STRATEGY_SAME_ITEM_MULTI_FG)
+		out = sum(flt(r.basic_amount) for r in doc.items if r.get("s_warehouse"))
+		inc = sum(flt(r.basic_amount) for r in doc.items if r.get("t_warehouse"))
+		self.assertEqual(inc, out)
 
 
 class TestBulkScrapHistoricalStamps(unittest.TestCase):

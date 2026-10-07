@@ -95,8 +95,13 @@ def apply_irr_manufacture_economic_finalize(doc) -> None:
 
 def validate_stock_entry(doc, method=None):
 	from erpnext_extensions.iran_accounting.e2e_bootstrap import apply_stock_entry_site_defaults
+	from erpnext_extensions.iran_accounting.manufacturing_dimension.guard import (
+		validate_manufacturing_dimension_uniformity,
+	)
 
 	apply_stock_entry_site_defaults(doc)
+	# Early UX warning; before_submit remains authoritative.
+	validate_manufacturing_dimension_uniformity(doc)
 	if not is_irr_company(doc.company):
 		return
 	# Totals polish sits between rate-first align and Manufacture residual restore
@@ -122,9 +127,15 @@ def validate_stock_entry(doc, method=None):
 
 
 def before_submit_stock_entry(doc, method=None):
+	from erpnext_extensions.iran_accounting.manufacturing_dimension.guard import (
+		validate_manufacturing_dimension_uniformity,
+	)
 	from erpnext_extensions.iran_accounting.stock_posting_order.prevention import (
 		apply_production_posting_order,
 	)
+
+	# Authoritative manufacturing Department/Cost Center uniformity (MTfM / Manufacture).
+	validate_manufacturing_dimension_uniformity(doc)
 
 	# Re-check immediately before write so concurrent dependents cannot share T+1.
 	apply_production_posting_order(doc)

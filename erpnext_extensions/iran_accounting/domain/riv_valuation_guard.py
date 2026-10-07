@@ -587,9 +587,29 @@ def assert_sle_valuation_integrity_after_sync(sle, engine=None) -> bool:
 
 
 def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
-	"""Canonical post-calculate Iran contract for IRR Stock Entries (submit + RIV)."""
+	"""Canonical post-calculate Iran contract for IRR Stock Entries (submit + RIV).
+
+	Order (Manufacture / closed-plan safe):
+	  Core calculate → Iran classify/select/allocate/finalize →
+	  legacy aligners that MUST NOT reopen closed economics →
+	  SAME_ITEM_MULTI_FG last-writer re-assert (RIV-safe) →
+	  common verifier polish → SLE/GL.
+
+	Closed-plan ownership stamps are in-memory only and do not survive
+	``get_lazy_doc`` reload during RIV. A final SAME_ITEM_MULTI_FG re-assert
+	after aligners prevents Core double-pool economics from being persisted
+	when an earlier apply was skipped or stamps were lost. STAGE_CO /
+	Product Reject / By-Product paths are unchanged (re-assert is eligibility
+	gated).
+	"""
 	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
 		align_stock_entry_item_amounts,
+	)
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		apply_same_item_multi_fg,
+		detect_same_item_multi_fg_eligibility,
+		is_allocation_closed,
+		polish_closed_plan_after_align,
 	)
 	from erpnext_extensions.iran_accounting.manufacture_rounding import (
 		align_manufacture_finished_good_residual,
@@ -609,6 +629,13 @@ def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
 	align_stock_entry_item_amounts(doc)
 	if doc.purpose == "Manufacture":
 		align_manufacture_finished_good_residual(doc)
+	# Last writer: Multi-FG must win after aligners on submit and RIV recalculate.
+	if doc.purpose == "Manufacture":
+		eligible, _reason = detect_same_item_multi_fg_eligibility(doc)
+		if eligible:
+			apply_same_item_multi_fg(doc)
+	if is_allocation_closed(doc):
+		polish_closed_plan_after_align(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
 	engine = getattr(frappe.local, "iran_riv_update_entries_after", None)

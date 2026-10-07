@@ -617,6 +617,37 @@ def _operating_pool(doc, stage_rows, excluded_rows) -> float:
 	return sum(flt(row.get("additional_cost")) for row in stage_rows)
 
 
+def stage_participating_co_product_rows(doc) -> list:
+	"""CO_PRODUCT / CO_PRODUCT_REJECT rows that join the equivalent-unit stage pool.
+
+	Finance-excluded independent secondaries (Valuation Rate / Manual / %) are
+	omitted — they never share the stage material or operating-cost pool.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return []
+	if not is_irr_company(doc.company):
+		return []
+	if not uses_v533_contract(doc):
+		return []
+	classified = snapshot_output_classification(doc)
+	finance_excluded = {
+		id(row)
+		for row in classified[CLASS_CO_PRODUCT] + classified[CLASS_CO_PRODUCT_REJECT]
+		if _is_finance_excluded(row)
+	}
+	participating = [
+		row
+		for row in classified[CLASS_CO_PRODUCT] + classified[CLASS_CO_PRODUCT_REJECT]
+		if id(row) not in finance_excluded
+	]
+	return participating
+
+
+def has_stage_participating_co_product(doc) -> bool:
+	"""True when stage-equivalent allocation owns at least one Co-Product row."""
+	return bool(stage_participating_co_product_rows(doc))
+
+
 def allocate_stage_output_cost(doc) -> bool:
 	"""Allocate material + operating cost across equivalent stage outputs."""
 	classified = snapshot_output_classification(doc)
