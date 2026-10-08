@@ -527,10 +527,69 @@ def replay_downstream_after_patient_zero(item, warehouse, root_voucher) -> dict:
 	return {"ok": True, "replayed": True, "from_voucher": row.voucher_no, "from_sle": row.name}
 
 
+def warehouse_can_host_leftover_ma_receipt(warehouse) -> tuple[bool, str]:
+	"""True when the warehouse itself is not manufacture-flow / Paykar / scrap.
+
+	Uses the shared receipt-eligibility contract with Purchase Receipt as the
+	most permissive voucher type: only warehouse tokens / scrap-reject names
+	can fail. Callers still must filter each patient-zero voucher by purpose.
+	"""
+	return leftover_ma_receipt_eligible(
+		voucher_type="Purchase Receipt",
+		warehouse=warehouse,
+	)
+
+
+def filter_eligible_leftover_ma_patient_zeros(item, warehouse, rows=None) -> dict:
+	"""Apply leftover-MA receipt eligibility to patient-zero candidates.
+
+	Returns ``{"eligible": [...], "skipped": [{"voucher", "reason"}, ...]}``.
+	Does not stamp or replay.
+	"""
+	if rows is None:
+		rows = find_leftover_ma_patient_zeros(item, warehouse)
+	eligible = []
+	skipped = []
+	for row in rows or []:
+		blocked = leftover_ma_blocked_by_manufacture_flow(row.voucher_no, item, warehouse)
+		if blocked:
+			skipped.append({"voucher": row.voucher_no, "reason": blocked})
+			continue
+		eligible.append(row)
+	return {"eligible": eligible, "skipped": skipped}
+
+
 def restore_leftover_ma_after_riv(item=None, warehouse=None) -> dict:
-	"""Re-stamp leftover MA after a vanilla RIV that zeroed patient-zero VR."""
+	"""Re-stamp leftover MA after a vanilla RIV that zeroed patient-zero VR.
+
+	Only receipt-like patient zeros on non-manufacture warehouses are eligible
+	(``leftover_ma_receipt_eligible`` / ``leftover_ma_blocked_by_manufacture_flow``).
+	Manufacture-flow / Paykar / MTfM rows must not trigger downstream
+	``update_entries_after`` replays after a normal RIV Completes.
+	"""
+	if not item or not warehouse:
+		return {
+			"ok": True,
+			"stamped": 0,
+			"vouchers": [],
+			"skipped": "missing item/warehouse",
+			"skipped_rows": [],
+		}
+
+	# Fast path: Paykar / scrap-reject warehouses never host leftover-MA receipts.
+	ok_wh, reason_wh = warehouse_can_host_leftover_ma_receipt(warehouse)
+	if not ok_wh:
+		return {
+			"ok": True,
+			"stamped": 0,
+			"vouchers": [],
+			"skipped": reason_wh,
+			"skipped_rows": [],
+		}
+
+	classified = filter_eligible_leftover_ma_patient_zeros(item, warehouse)
 	stamped = []
-	for row in find_leftover_ma_patient_zeros(item, warehouse):
+	for row in classified["eligible"]:
 		r = stamp_patient_zero_valuation_rate(item, warehouse, row.voucher_no)
 		if not r.get("stamped"):
 			continue
@@ -539,7 +598,12 @@ def restore_leftover_ma_after_riv(item=None, warehouse=None) -> dict:
 		stamp_patient_zero_valuation_rate(item, warehouse, row.voucher_no)
 	if stamped:
 		invalidate_stock_ledger_prepared_reports(item)
-	return {"ok": True, "stamped": len(stamped), "vouchers": stamped}
+	return {
+		"ok": True,
+		"stamped": len(stamped),
+		"vouchers": stamped,
+		"skipped_rows": classified["skipped"],
+	}
 
 
 def on_repost_item_valuation_update(doc, method=None):
