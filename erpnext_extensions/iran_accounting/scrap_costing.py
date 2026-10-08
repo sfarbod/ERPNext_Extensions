@@ -61,6 +61,7 @@ from frappe.utils import cint, flt
 from erpnext_extensions.iran_accounting.domain.currency import (
 	integer_valuation_rate_from_amount,
 	round_monetary_rate,
+	round_row_amount,
 )
 from erpnext_extensions.iran_accounting.rounding import (
 	get_company_currency,
@@ -675,6 +676,65 @@ def _restore_finished_good_as_residual(doc, fg_row) -> bool:
 	if flt(fg_row.amount):
 		fg_row.allow_zero_valuation_rate = 0
 	return True
+
+
+def row_is_component_scrap_fg_pool_residual(doc, row) -> bool:
+	"""True when this row already holds the single-FG component-scrap pool.
+
+	The Manufacture contract (``_restore_finished_good_as_residual``) writes
+	``basic_amount`` as the indivisible material pool and ``basic_rate`` as
+	``ROUND_HALF_UP(pool / qty)``. Those two are allowed to differ. A later
+	rate-first align must not replace ``basic_amount`` with ``qty × rate``.
+
+	Every condition is required. Purpose alone is not enough:
+
+	- Stock Entry, purpose Manufacture, IRR company, v5.3.3+ contract
+	  (drafts, or submitted documents that carry the stamp)
+	- this row is the only finished-good incoming row
+	- at least one Component Scrap row, priced at the issued rate
+	- ``basic_amount`` equals ``round(outgoing basic − other incoming basic)``
+	- ``basic_rate`` equals ``round(pool / qty)``
+	- ``round(qty × that rate)`` differs from the pool
+	"""
+	if not doc or getattr(doc, "doctype", None) != "Stock Entry" or doc.purpose != "Manufacture":
+		return False
+	if not is_irr_company(getattr(doc, "company", None)):
+		return False
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import uses_v533_contract
+
+	if not uses_v533_contract(doc):
+		return False
+	if not (row.get("is_finished_item") and row.get("t_warehouse")):
+		return False
+	good_rows = [
+		item
+		for item in (doc.get("items") or [])
+		if item.get("is_finished_item") and item.get("t_warehouse")
+	]
+	if len(good_rows) != 1 or good_rows[0] is not row:
+		return False
+	scrap_rows = classify_manufacture_outputs(doc).get(CLASS_COMPONENT_SCRAP) or []
+	if not scrap_rows or not _component_scrap_matches_issued_rate(doc):
+		return False
+	currency_code = get_company_currency(doc.company)
+	outgoing_basic = sum(
+		flt(item.get("basic_amount")) for item in (doc.get("items") or []) if item.get("s_warehouse")
+	)
+	other_incoming_basic = sum(
+		flt(item.get("basic_amount"))
+		for item in (doc.get("items") or [])
+		if _is_incoming(item) and item is not row
+	)
+	material = round_currency(outgoing_basic - other_incoming_basic, currency_code)
+	qty = _row_qty(row)
+	if material < 0 or qty <= 0:
+		return False
+	if flt(round_currency(flt(row.get("basic_amount")), currency_code)) != flt(material):
+		return False
+	integer_rate = round_monetary_rate(flt(material) / flt(qty), currency_code)
+	if flt(round_monetary_rate(flt(row.get("basic_rate")), currency_code)) != flt(integer_rate):
+		return False
+	return flt(round_row_amount(qty, integer_rate, currency_code)) != flt(material)
 
 
 def _spread_operating_cost(

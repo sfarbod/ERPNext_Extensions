@@ -589,18 +589,23 @@ def assert_sle_valuation_integrity_after_sync(sle, engine=None) -> bool:
 def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
 	"""Canonical post-calculate Iran contract for IRR Stock Entries (submit + RIV).
 
-	Order (Manufacture / closed-plan safe):
-	  Core calculate → Iran classify/select/allocate/finalize →
-	  legacy aligners that MUST NOT reopen closed economics →
-	  SAME_ITEM_MULTI_FG last-writer re-assert (RIV-safe) →
-	  common verifier polish → SLE/GL.
+	Order:
+	  Core calculate → exploded-scrap correction → rate-first align →
+	  Iran Manufacture contract (last writer of a legitimate FG pool) →
+	  TYPE C / capitalization residual polish →
+	  SAME_ITEM_MULTI_FG last-writer re-assert →
+	  closed-plan polish → SLE/GL.
+
+	Rate-first must not run after the Manufacture contract. Recomposing
+	``basic_amount = qty × integer basic_rate`` drops an indivisible FG pool
+	(25333: 157725 → 157720) and the in-submit repost then posts that
+	truncated amount to the SLE while Stock Adjustment absorbs the difference.
 
 	Closed-plan ownership stamps are in-memory only and do not survive
 	``get_lazy_doc`` reload during RIV. A final SAME_ITEM_MULTI_FG re-assert
-	after aligners prevents Core double-pool economics from being persisted
-	when an earlier apply was skipped or stamps were lost. STAGE_CO /
-	Product Reject / By-Product paths are unchanged (re-assert is eligibility
-	gated).
+	after the contract prevents Core double-pool economics from being
+	persisted when an earlier apply was skipped or stamps were lost.
+	STAGE_CO / Product Reject / By-Product paths stay eligibility gated.
 	"""
 	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
 		align_stock_entry_item_amounts,
@@ -621,12 +626,14 @@ def apply_irr_stock_entry_contract_after_calculate(doc) -> None:
 
 	if not doc or not is_irr_company(doc.company):
 		return
-	apply_iran_manufacture_output_contract(doc)
 	if doc.purpose == "Manufacture":
 		# Warehouse-MA scrap from calculate_rate_and_amount can explode
-		# same-item scrap and make FG negative before residual alignment.
+		# same-item scrap before the contract reprices it at the issued rate.
 		correct_exploded_same_item_scrap_for_riv(doc)
+	# Rate-first first. The Manufacture contract below is the last writer of
+	# a legitimate single-FG component-scrap pool. Do not align again after it.
 	align_stock_entry_item_amounts(doc)
+	apply_iran_manufacture_output_contract(doc)
 	if doc.purpose == "Manufacture":
 		align_manufacture_finished_good_residual(doc)
 	# Last writer: Multi-FG must win after aligners on submit and RIV recalculate.
