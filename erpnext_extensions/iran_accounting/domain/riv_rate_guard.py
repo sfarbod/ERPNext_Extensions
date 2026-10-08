@@ -4,7 +4,16 @@
 Stock Entry Detail remains the accounting source of truth. This module:
 1. Fingerprints the vanilla ERPNext method (signature + normalized AST/source).
 2. Fail-closes if ERPNext/Frappe is not on the explicit allow-list.
-3. Provides the IRR wrapper that skips ONLY basic_rate ← outgoing_rate.
+3. Provides the IRR wrapper that, by default, skips basic_rate ← outgoing_rate
+   (rate-first preserve on submit and on idempotent RIV).
+4. During RIV, when Core MA legitimately diverges from the document on
+   transfer / manufacture / repack dependants, accepts an IRR-rounded
+   outgoing_rate, forces recalculate, and applies the Iran manufacture
+   contract so sync_irr mirrors UPDATED document economics (v5.5.24 FIX B).
+5. FIX B2: that recalculation is atomic. Snapshot complete SE economics,
+   mutate, validate (I2/I5 without soft-skip), restore the full snapshot
+   on failure so soft-skip never leaves new-consume + negative-FG SE +
+   old FG SLE.
 
 No second rounding engine — after ERPNext recalculate, call align_stock_entry_item_amounts.
 """
@@ -32,6 +41,23 @@ VALUED_SOURCE_ZERO_OUTGOING_PURPOSES = frozenset(
 	}
 )
 
+# Purposes where Core RIV dependant/MA propagation may legitimately move
+# document economics. Rate-first still owns submit-time behavior; during RIV
+# these may accept a rounded Core outgoing_rate and recalculate amounts.
+RIV_PROPAGATED_RATE_PURPOSES = frozenset(
+	{
+		"Material Transfer",
+		"Material Transfer for Manufacture",
+		"Send to Subcontractor",
+		"Manufacture",
+		"Material Consumption for Manufacture",
+		"Repack",
+	}
+)
+
+# IRR quantum: document and Core rates that round to the same integer are equal.
+_IRR_RATE_EPS = 0.5
+
 
 def is_valued_source_zero_outgoing(*, actual_qty, basic_rate, allow_zero_valuation_rate, outgoing_rate, purpose) -> bool:
 	"""True when a Manufacture consume has a corrupt document-zero rate but vanilla MA is valued.
@@ -49,6 +75,248 @@ def is_valued_source_zero_outgoing(*, actual_qty, basic_rate, allow_zero_valuati
 	if abs(flt(basic_rate)) > 1e-6:
 		return False
 	return abs(flt(outgoing_rate)) > 1e-6
+
+
+def is_through_repost_item_valuation() -> bool:
+	"""True while ERPNext ``repost()`` sets ``through_repost_item_valuation``."""
+	try:
+		return bool(frappe.flags.get("through_repost_item_valuation"))
+	except Exception:
+		return False
+
+
+def should_accept_riv_propagated_outgoing_rate(
+	*,
+	purpose,
+	actual_qty,
+	basic_rate,
+	outgoing_rate,
+	through_riv: bool | None = None,
+) -> bool:
+	"""True when Core RIV MA must update IRR Stock Entry document economics.
+
+	Normal submit / non-RIV paths stay rate-first (document wins).
+	Idempotent RIV where Core rate already matches the document stays preserve.
+	VALUED_SOURCE_ZERO_OUTGOING is handled separately and must not use this path
+	to invent rates onto leftover-MA receipt purposes.
+	"""
+	if through_riv is None:
+		through_riv = is_through_repost_item_valuation()
+	if not through_riv:
+		return False
+	if flt(actual_qty) >= 0:
+		return False
+	if str(purpose or "") not in RIV_PROPAGATED_RATE_PURPOSES:
+		return False
+	doc_rate = flt(basic_rate)
+	core_rate = flt(outgoing_rate)
+	# Compare IRR integers: ignore sub-rial MA noise that must not rewrite docs.
+	if abs(round(doc_rate) - round(core_rate)) < 1:
+		return False
+	if abs(doc_rate - core_rate) <= _IRR_RATE_EPS:
+		return False
+	return True
+
+
+def irr_round_outgoing_rate(outgoing_rate) -> float:
+	"""Deterministic IRR integer rate for RIV-propagated document writes."""
+	return float(round(flt(outgoing_rate)))
+
+
+# Complete economic fields rewritten by calculate_rate_and_amount / Iran contract.
+# Detail list mirrors persist_irr_contract_after_recalculate + Iran scrap/residual
+# writers. Header includes totals that stock_entry.db_update() persists during
+# recalculate_amounts_in_stock_entry (not only the three value_* fields).
+_SE_DETAIL_ECONOMIC_FIELDS = (
+	"basic_rate",
+	"basic_amount",
+	"amount",
+	"valuation_rate",
+	"additional_cost",
+	"landed_cost_voucher_amount",
+	# Classification stamps that Iran contract may rewrite during recalculate
+	# and that stock_entry Detail.db_update() would otherwise leave behind.
+	"valuation_type",
+	"custom_output_class",
+)
+_SE_HEADER_ECONOMIC_FIELDS = (
+	"total_incoming_value",
+	"total_outgoing_value",
+	"value_difference",
+	"total_additional_costs",
+	"total_amount",
+)
+
+# Result tokens for RIV-propagated document economics (FIX B2).
+RESULT_ACCEPTED_PROPAGATED_RATE = "ACCEPTED_PROPAGATED_RATE"
+RESULT_INVALID_PROPAGATED_ECONOMICS = "INVALID_PROPAGATED_ECONOMICS"
+
+
+def snapshot_stock_entry_economics(voucher_no: str) -> dict[str, Any]:
+	"""Capture complete SE economic state before RIV-propagated recalculation."""
+	header = frappe.db.get_value(
+		"Stock Entry",
+		voucher_no,
+		["name", *_SE_HEADER_ECONOMIC_FIELDS],
+		as_dict=True,
+	)
+	if not header:
+		frappe.throw(
+			_("IRR RIV rate guard: Stock Entry {0} missing for economic snapshot").format(voucher_no),
+			title=_("IRR Rate Guard"),
+		)
+	rows = frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": voucher_no},
+		fields=["name", "idx", "item_code", *_SE_DETAIL_ECONOMIC_FIELDS],
+		order_by="idx",
+	)
+	return {
+		"voucher_no": voucher_no,
+		"header": {k: header.get(k) for k in ("name", *_SE_HEADER_ECONOMIC_FIELDS)},
+		"items": [
+			{k: row.get(k) for k in ("name", "idx", "item_code", *_SE_DETAIL_ECONOMIC_FIELDS)}
+			for row in rows
+		],
+	}
+
+
+def restore_stock_entry_economics(snapshot: dict[str, Any]) -> None:
+	"""Restore complete SE economic snapshot after rejected RIV propagation."""
+	if not snapshot:
+		return
+	for row in snapshot.get("items") or []:
+		payload = {
+			field: row[field]
+			for field in _SE_DETAIL_ECONOMIC_FIELDS
+			if field in row
+		}
+		if payload:
+			frappe.db.set_value(
+				"Stock Entry Detail",
+				row["name"],
+				payload,
+				update_modified=False,
+			)
+	header = snapshot.get("header") or {}
+	header_payload = {
+		field: header[field]
+		for field in _SE_HEADER_ECONOMIC_FIELDS
+		if field in header
+	}
+	if header_payload:
+		frappe.db.set_value(
+			"Stock Entry",
+			snapshot["voucher_no"],
+			header_payload,
+			update_modified=False,
+		)
+
+
+def validate_propagated_stock_entry_economics(voucher_no: str) -> tuple[bool, str]:
+	"""Fail-closed voucher validation after RIV-propagated recalculation.
+
+	Uses Manufacture/Repack I2 + I5 asserts WITHOUT out-of-scope soft-skip.
+	A negative FG amount must reject the whole voucher mutation, not only the
+	later SLE soft-skip.
+	"""
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ValuationIntegrityError,
+		assert_manufacture_repack_incoming_amounts,
+		assert_manufacture_value_pool,
+	)
+
+	doc = frappe.get_doc("Stock Entry", voucher_no)
+	try:
+		assert_manufacture_repack_incoming_amounts(doc)
+		assert_manufacture_value_pool(doc)
+		for row in doc.get("items") or []:
+			if flt(row.get("amount")) < 0:
+				return False, f"I2 negative amount on {row.name} item={row.item_code}"
+			if row.get("t_warehouse") and flt(row.get("valuation_rate")) < 0:
+				return False, f"I1 negative valuation_rate on {row.name}"
+		return True, ""
+	except ValuationIntegrityError as exc:
+		return False, str(exc)
+
+
+def record_riv_deferred_voucher(voucher_no: str, reason: str) -> None:
+	"""Track vouchers whose propagated economics were restored (not silently completed)."""
+	try:
+		bucket = frappe.flags.setdefault("iran_riv_deferred_vouchers", [])
+	except Exception:
+		return
+	bucket.append(
+		{
+			"voucher_no": voucher_no,
+			"result": RESULT_INVALID_PROPAGATED_ECONOMICS,
+			"reason": (reason or "")[:500],
+		}
+	)
+
+
+def mark_force_sle_restore_after_rejected_propagation() -> None:
+	"""Ask the process_sle wrapper to soft-skip-restore this SLE + wh_data.
+
+	SE snapshot restore alone is not enough: Core already mutated ``wh_data``
+	with the rejected rate. Mirroring the restored SE onto the SLE would leave
+	warehouse running state on the new economics. Force the existing out-of-scope
+	SLE restore path so document + SLE + wh_data stay on the pre-propagation
+	historical island together.
+	"""
+	try:
+		frappe.flags.iran_riv_force_sle_restore = True
+	except Exception:
+		pass
+
+
+def consume_force_sle_restore_flag() -> bool:
+	"""Return and clear the one-shot FIX B2 SLE restore signal."""
+	try:
+		if frappe.flags.get("iran_riv_force_sle_restore"):
+			frappe.flags.iran_riv_force_sle_restore = False
+			return True
+	except Exception:
+		return False
+	return False
+
+
+def apply_riv_rate_and_recalculate_atomically(
+	engine,
+	sle,
+	outgoing_rate,
+	*,
+	original,
+	force_recalculate_when_dependant: bool,
+) -> str:
+	"""Mutate SE economics under snapshot/validate/restore (FIX B2).
+
+	Returns ``ACCEPTED_PROPAGATED_RATE`` or ``INVALID_PROPAGATED_ECONOMICS``.
+	On rejection the complete SE snapshot is restored and the process_sle
+	wrapper is signaled to restore this SLE + ``wh_data`` (soft-skip path),
+	so we never leave new-consume / negative-FG SE / old-FG-SLE.
+	"""
+	voucher_no = sle.voucher_no
+	snapshot = snapshot_stock_entry_economics(voucher_no)
+	try:
+		original(engine, sle, outgoing_rate)
+		if force_recalculate_when_dependant:
+			if sle.dependant_sle_voucher_detail_no and not engine.is_manufacture_entry_with_sabb(sle):
+				engine.recalculate_amounts_in_stock_entry(voucher_no, sle.voucher_detail_no)
+		elif not sle.dependant_sle_voucher_detail_no or engine.is_manufacture_entry_with_sabb(sle):
+			# original() already recalculated when no dependant; still ensure Iran persist
+			pass
+		persist_irr_contract_after_recalculate(voucher_no)
+		ok, reason = validate_propagated_stock_entry_economics(voucher_no)
+		if not ok:
+			restore_stock_entry_economics(snapshot)
+			record_riv_deferred_voucher(voucher_no, reason)
+			mark_force_sle_restore_after_rejected_propagation()
+			return RESULT_INVALID_PROPAGATED_ECONOMICS
+		return RESULT_ACCEPTED_PROPAGATED_RATE
+	except Exception:
+		restore_stock_entry_economics(snapshot)
+		raise
 
 # ---------------------------------------------------------------------------
 # Explicit support allow-list (major.minor). Unknown versions → BLOCK.
@@ -399,6 +667,10 @@ def make_update_rate_on_stock_entry_wrapper(original):
 		# but vanilla already priced the consume from a valued warehouse layer.
 		# Document zero is corrupt, not a free receipt. Authority is this
 		# SLE's vanilla outgoing_rate, not a nearby rate.
+		force_dependant_recalc = bool(
+			sle.dependant_sle_voucher_detail_no and not self.is_manufacture_entry_with_sabb(sle)
+		)
+
 		if is_valued_source_zero_outgoing(
 			actual_qty=getattr(sle, "actual_qty", 0),
 			basic_rate=row.basic_rate,
@@ -406,16 +678,42 @@ def make_update_rate_on_stock_entry_wrapper(original):
 			outgoing_rate=outgoing_rate,
 			purpose=purpose,
 		):
-			original(self, sle, outgoing_rate)
-			if sle.dependant_sle_voucher_detail_no and not self.is_manufacture_entry_with_sabb(sle):
-				self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
-			persist_irr_contract_after_recalculate(sle.voucher_no)
-			if hasattr(sle, "outgoing_rate"):
+			result = apply_riv_rate_and_recalculate_atomically(
+				self,
+				sle,
+				outgoing_rate,
+				original=original,
+				force_recalculate_when_dependant=force_dependant_recalc,
+			)
+			if result == RESULT_ACCEPTED_PROPAGATED_RATE and hasattr(sle, "outgoing_rate"):
 				sle.outgoing_rate = flt(outgoing_rate)
+			return
+
+		# RIV dependant propagation: Core MA moved because upstream valuation
+		# changed. Convert that rate into IRR document economics atomically
+		# (FIX B2 snapshot/validate/restore), then let process_sle sync use the
+		# accepted-or-restored Stock Entry row.
+		if should_accept_riv_propagated_outgoing_rate(
+			purpose=purpose,
+			actual_qty=getattr(sle, "actual_qty", 0),
+			basic_rate=row.basic_rate,
+			outgoing_rate=outgoing_rate,
+		):
+			irr_rate = irr_round_outgoing_rate(outgoing_rate)
+			result = apply_riv_rate_and_recalculate_atomically(
+				self,
+				sle,
+				irr_rate,
+				original=original,
+				force_recalculate_when_dependant=force_dependant_recalc,
+			)
+			if result == RESULT_ACCEPTED_PROPAGATED_RATE and hasattr(sle, "outgoing_rate"):
+				sle.outgoing_rate = irr_rate
 			return
 
 		# SKIP vanilla: frappe.db.set_value(..., "basic_rate", outgoing_rate)
 		# Keep submitted / contract basic_rate (already integer for IRR).
+		# Non-RIV submit paths and idempotent RIV (rates already match) stay here.
 
 		if not sle.dependant_sle_voucher_detail_no or self.is_manufacture_entry_with_sabb(sle):
 			self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)

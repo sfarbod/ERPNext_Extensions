@@ -1081,6 +1081,17 @@ def _patch_stock_ledger_engine():
 					restore_vanilla_zero_qty_terminal_stock_value(
 						sle, vanilla_stock_value, vanilla_qty_after
 					)
+					from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+						consume_force_sle_restore_flag,
+					)
+
+					# FIX B2: rejected Manufacture/Repack propagation restored the
+					# SE snapshot; also restore this SLE + wh_data so the engine
+					# does not keep the rejected rate in warehouse running state.
+					if consume_force_sle_restore_flag():
+						restore_out_of_scope_sle_ledger_state(self, sle, pre)
+						persist_processed_sle_if_possible(sle)
+						return
 					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
 						# Vanilla already wrote; restore pre-RIV economics so target
 						# RIV does not create new I1 on unrelated FG cascades.
