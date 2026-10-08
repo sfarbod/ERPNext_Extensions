@@ -218,33 +218,13 @@ def _patch_repost_compatibility():
 		riv_mod._iran_patched_repost = True
 
 	# Skip scheduler/worker dual-execution when Historical Repair holds sync/GL locks.
-	if riv_mod and not getattr(riv_mod, "_iran_patched_execute_reposting_entry_lock", None):
-		_orig_execute_reposting_entry = riv_mod.execute_reposting_entry
+	# Module-level wrapper (RQ/pickle-safe) — see riv_execute_guard.py / v5.5.23.
+	if riv_mod:
+		from erpnext_extensions.iran_accounting.integration.riv_execute_guard import (
+			install_execute_reposting_entry_guard,
+		)
 
-		def execute_reposting_entry(name, continue_reposting=False):
-			try:
-				from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
-					company_gl_lock_held,
-					riv_exec_lock_held,
-				)
-
-				owner = getattr(frappe.local, "iran_hr_riv_exec_owner", None)
-				if riv_exec_lock_held(name) and owner != name:
-					# Sync campaign owns this RIV — do not start a second executor.
-					return
-				# Serialize company GL: while a sync identity holds the company GL
-				# lock, defer all other RIV executors (they stay Queued/In Progress).
-				if owner is None:
-					company = frappe.db.get_value("Repost Item Valuation", name, "company")
-					if company and company_gl_lock_held(company):
-						return
-			except Exception:
-				pass
-			return _orig_execute_reposting_entry(name, continue_reposting=continue_reposting)
-
-		riv_mod.execute_reposting_entry = execute_reposting_entry
-		riv_mod._iran_patched_execute_reposting_entry_lock = True
-		riv_mod._iran_original_execute_reposting_entry = _orig_execute_reposting_entry
+		install_execute_reposting_entry_guard(riv_mod)
 
 	try:
 		import erpnext.accounts.doctype.repost_accounting_ledger.repost_accounting_ledger as ral_mod
