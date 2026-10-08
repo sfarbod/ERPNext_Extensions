@@ -202,6 +202,11 @@ def align_stock_entry_item_amounts(doc) -> None:
 
 	Closed Manufacture allocation plans (unified contract): owned rows keep
 	economic amounts authoritative — rate×qty must not reopen strategy economics.
+
+	A single finished good that already holds the component-scrap material
+	pool (``row_is_component_scrap_fg_pool_residual``) also keeps that
+	``basic_amount``. Only that contract residual may differ from
+	``qty × integer basic_rate``.
 	"""
 	if not rounding.is_irr_company(doc.company):
 		return
@@ -210,6 +215,9 @@ def align_stock_entry_item_amounts(doc) -> None:
 	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
 		polish_closed_plan_after_align,
 		protect_closed_row_amounts,
+	)
+	from erpnext_extensions.iran_accounting.scrap_costing import (
+		row_is_component_scrap_fg_pool_residual,
 	)
 
 	for row in doc.get("items") or []:
@@ -220,6 +228,10 @@ def align_stock_entry_item_amounts(doc) -> None:
 		transfer_qty = flt(
 			row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
 		)
+		# Single-FG component-scrap pool: amount stays authoritative when it
+		# does not divide by qty. Source, scrap, Repack, and every other row
+		# still use qty × integer rate below.
+		preserve_fg_pool = row_is_component_scrap_fg_pool_residual(doc, row)
 
 		if row.get("additional_cost") not in (None, ""):
 			row.additional_cost = rounding.round_currency(row.additional_cost, currency)
@@ -230,7 +242,7 @@ def align_stock_entry_item_amounts(doc) -> None:
 
 		if row.get("basic_rate") is not None:
 			row.basic_rate = rounding.round_monetary_rate(row.basic_rate, currency)
-			if transfer_qty:
+			if transfer_qty and not preserve_fg_pool:
 				row.basic_amount = rounding.round_row_amount(transfer_qty, row.basic_rate, currency)
 			else:
 				row.basic_amount = rounding.round_currency(flt(row.get("basic_amount")), currency)
