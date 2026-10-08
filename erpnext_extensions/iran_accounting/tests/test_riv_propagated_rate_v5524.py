@@ -17,9 +17,15 @@ import frappe
 from frappe.utils import cint, flt, nowdate
 
 from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+	RESULT_ACCEPTED_PROPAGATED_RATE,
+	RESULT_INVALID_PROPAGATED_ECONOMICS,
+	apply_riv_rate_and_recalculate_atomically,
+	consume_force_sle_restore_flag,
 	is_valued_source_zero_outgoing,
 	irr_round_outgoing_rate,
 	make_update_rate_on_stock_entry_wrapper,
+	mark_force_sle_restore_after_rejected_propagation,
+	restore_stock_entry_economics,
 	should_accept_riv_propagated_outgoing_rate,
 )
 from erpnext_extensions.iran_accounting.e2e_bootstrap import (
@@ -157,8 +163,9 @@ class TestRivPropagatedRateUnit(unittest.TestCase):
 			),
 			mock.patch("frappe.db.get_value", side_effect=_gv),
 			mock.patch(
-				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.persist_irr_contract_after_recalculate"
-			) as persist,
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.apply_riv_rate_and_recalculate_atomically",
+				return_value=RESULT_ACCEPTED_PROPAGATED_RATE,
+			) as atomic,
 			mock.patch(
 				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.is_through_repost_item_valuation",
 				return_value=True,
@@ -166,10 +173,10 @@ class TestRivPropagatedRateUnit(unittest.TestCase):
 		):
 			wrapped = make_update_rate_on_stock_entry_wrapper(original)
 			wrapped(engine, sle, 250.4)
-			self.assertEqual(calls, [250.0])
-			engine.recalculate_amounts_in_stock_entry.assert_called_once()
-			persist.assert_called_once()
+			atomic.assert_called_once()
+			self.assertEqual(atomic.call_args.args[2], 250.0)
 			self.assertEqual(sle.outgoing_rate, 250.0)
+			self.assertEqual(calls, [])  # original invoked inside atomic helper, not wrapper
 
 	def test_wrapper_still_skips_without_riv_flag(self):
 		calls = []
@@ -528,3 +535,357 @@ class TestRivPropagatedRateChain(unittest.TestCase):
 			)
 			self.assertIsNotNone(sle)
 			self.assertAlmostEqual(abs(flt(sle.stock_value_difference)), abs(flt(detail.amount)), places=0)
+
+
+class TestRivPropagatedAtomicityUnit(unittest.TestCase):
+	"""FIX B2 — snapshot/validate/restore without leaving partial SE mutations."""
+
+	def test_force_sle_restore_flag_is_one_shot(self):
+		frappe.flags.iran_riv_force_sle_restore = False
+		mark_force_sle_restore_after_rejected_propagation()
+		self.assertTrue(consume_force_sle_restore_flag())
+		self.assertFalse(consume_force_sle_restore_flag())
+
+	def test_atomic_helper_restores_on_invalid_validation(self):
+		engine = mock.Mock()
+		engine.is_manufacture_entry_with_sabb = mock.Mock(return_value=False)
+		engine.recalculate_amounts_in_stock_entry = mock.Mock()
+		sle = mock.Mock()
+		sle.voucher_no = "STE-ATOMIC"
+		sle.voucher_detail_no = "row-src"
+		sle.dependant_sle_voucher_detail_no = "dep"
+
+		snapshot = {
+			"voucher_no": "STE-ATOMIC",
+			"header": {
+				"name": "STE-ATOMIC",
+				"total_incoming_value": 1000,
+				"total_outgoing_value": 1000,
+				"value_difference": 0,
+			},
+			"items": [
+				{
+					"name": "row-src",
+					"idx": 1,
+					"item_code": "RM",
+					"basic_rate": 100,
+					"basic_amount": 1000,
+					"amount": 1000,
+					"valuation_rate": 100,
+					"additional_cost": 0,
+					"landed_cost_voucher_amount": 0,
+				},
+				{
+					"name": "row-fg",
+					"idx": 2,
+					"item_code": "FG",
+					"basic_rate": 100,
+					"basic_amount": 1000,
+					"amount": 1000,
+					"valuation_rate": 100,
+					"additional_cost": 0,
+					"landed_cost_voucher_amount": 0,
+				},
+			],
+		}
+
+		def original(self, sle, outgoing_rate):
+			pass
+
+		with (
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.snapshot_stock_entry_economics",
+				return_value=snapshot,
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.persist_irr_contract_after_recalculate"
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.validate_propagated_stock_entry_economics",
+				return_value=(False, "I2 negative amount on row-fg"),
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.restore_stock_entry_economics"
+			) as restore,
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.record_riv_deferred_voucher"
+			) as deferred,
+		):
+			frappe.flags.iran_riv_force_sle_restore = False
+			result = apply_riv_rate_and_recalculate_atomically(
+				engine,
+				sle,
+				50.0,
+				original=original,
+				force_recalculate_when_dependant=True,
+			)
+			self.assertEqual(result, RESULT_INVALID_PROPAGATED_ECONOMICS)
+			restore.assert_called_once_with(snapshot)
+			deferred.assert_called_once()
+			self.assertTrue(consume_force_sle_restore_flag())
+			engine.recalculate_amounts_in_stock_entry.assert_called_once()
+
+	def test_atomic_helper_accepts_valid_economics(self):
+		engine = mock.Mock()
+		engine.is_manufacture_entry_with_sabb = mock.Mock(return_value=False)
+		engine.recalculate_amounts_in_stock_entry = mock.Mock()
+		sle = mock.Mock()
+		sle.voucher_no = "STE-OK"
+		sle.voucher_detail_no = "row-src"
+		sle.dependant_sle_voucher_detail_no = "dep"
+
+		with (
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.snapshot_stock_entry_economics",
+				return_value={"voucher_no": "STE-OK", "header": {}, "items": []},
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.persist_irr_contract_after_recalculate"
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.validate_propagated_stock_entry_economics",
+				return_value=(True, ""),
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.restore_stock_entry_economics"
+			) as restore,
+		):
+			frappe.flags.iran_riv_force_sle_restore = False
+			result = apply_riv_rate_and_recalculate_atomically(
+				engine,
+				sle,
+				250.0,
+				original=lambda *a, **k: None,
+				force_recalculate_when_dependant=True,
+			)
+			self.assertEqual(result, RESULT_ACCEPTED_PROPAGATED_RATE)
+			restore.assert_not_called()
+			self.assertFalse(consume_force_sle_restore_flag())
+
+
+class TestRivPropagatedAtomicityChain(unittest.TestCase):
+	"""FIX B2 integration: scrap@VR Manufacture must not leave negative FG SE."""
+
+	@classmethod
+	def setUpClass(cls):
+		from erpnext_extensions.iran_accounting.integration.bootstrap import apply
+
+		apply()
+		frappe.set_user("Administrator")
+		cls.company = get_irr_company("ESPAD")
+		enable_perpetual_inventory(cls.company)
+		cls.wh = get_warehouse(cls.company)
+		cls.wh2 = get_second_warehouse(cls.company, cls.wh)
+
+	def _finalize_se(self, se, posting_time):
+		se.posting_date = nowdate()
+		se.posting_time = posting_time
+		se.set_posting_time = 1
+		frappe.flags.iran_gate_defaults = True
+		apply_stock_entry_site_defaults(se)
+		se.insert(ignore_permissions=True)
+		se.submit()
+		frappe.db.commit()
+		return se
+
+	def _submit_receipt_at(self, item, qty, rate, warehouse, posting_time):
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+
+		se = make_stock_entry(
+			item_code=item,
+			qty=float(qty),
+			rate=float(rate),
+			target=warehouse,
+			company=self.company,
+			purpose="Material Receipt",
+			do_not_save=True,
+			do_not_submit=True,
+		)
+		return self._finalize_se(se, posting_time)
+
+	def test_corrupted_manufacture_byproduct_vr_restores_atomic_on_riv(self):
+		"""Upstream rate collapse + By-Product@VR would make FG negative — restore all rows.
+
+		Modeled on MAT-STE-2026-36697: secondary Valuation Rate allocation stays
+		expensive while consume collapses, so Iran recalc would write I2 on FG.
+		FIX B2 must restore the complete voucher economics (not leave negative FG SE).
+		"""
+		rm = ensure_test_item(f"B2-RM-{frappe.generate_hash(length=6)}", self.company)
+		fg = ensure_test_item(f"B2-FG-{frappe.generate_hash(length=6)}", self.company)
+		byprod = ensure_test_item(f"B2-BY-{frappe.generate_hash(length=6)}", self.company)
+
+		# Seed By-Product warehouse MA high so Valuation Rate stays expensive.
+		self._submit_receipt_at(byprod, 100, 40000000, self.wh2, "08:00:00")
+		rec = self._submit_receipt_at(rm, 10, 40000000, self.wh, "09:00:00")
+		rec_name = rec.name
+
+		cc = _cost_center(self.company)
+		se = frappe.new_doc("Stock Entry")
+		se.company = self.company
+		se.stock_entry_type = "Manufacture"
+		se.purpose = "Manufacture"
+		se.append(
+			"items",
+			{
+				"item_code": rm,
+				"qty": 10,
+				"transfer_qty": 10,
+				"conversion_factor": 1,
+				"uom": _uom(rm),
+				"s_warehouse": self.wh,
+				"basic_rate": 40000000,
+				"cost_center": cc,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": byprod,
+				"qty": 1,
+				"transfer_qty": 1,
+				"conversion_factor": 1,
+				"uom": _uom(byprod),
+				"t_warehouse": self.wh2,
+				"is_finished_item": 0,
+				"secondary_item_type": "By-Product",
+				"valuation_type": "Valuation Rate",
+				"basic_rate": 40000000,
+				"cost_center": cc,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": fg,
+				"qty": 9,
+				"transfer_qty": 9,
+				"conversion_factor": 1,
+				"uom": _uom(fg),
+				"t_warehouse": self.wh2,
+				"is_finished_item": 1,
+				"cost_center": cc,
+			},
+		)
+		mfg = self._finalize_se(se, "10:00:00")
+		mfg.reload()
+		pre_rows = {
+			r.name: {
+				"basic_rate": flt(r.basic_rate),
+				"amount": flt(r.amount),
+				"item_code": r.item_code,
+				"is_finished_item": cint(r.is_finished_item),
+			}
+			for r in mfg.items
+		}
+		fg_pre = next(v for v in pre_rows.values() if v["is_finished_item"])
+		self.assertGreater(fg_pre["amount"], 0)
+
+		# Collapse upstream receipt so new consume cannot fund By-Product@VR.
+		for d in frappe.get_doc("Stock Entry", rec_name).items:
+			frappe.db.set_value(
+				"Stock Entry Detail",
+				d.name,
+				{
+					"basic_rate": 1000000,
+					"valuation_rate": 1000000,
+					"basic_amount": 10000000,
+					"amount": 10000000,
+				},
+				update_modified=False,
+			)
+		sle_name = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{"voucher_no": rec_name, "item_code": rm, "is_cancelled": 0},
+			"name",
+		)
+		frappe.db.set_value(
+			"Stock Ledger Entry",
+			sle_name,
+			{
+				"incoming_rate": 1000000,
+				"valuation_rate": 1000000,
+				"stock_value": 10000000,
+				"stock_value_difference": 10000000,
+			},
+			update_modified=False,
+		)
+		posting_date = frappe.db.get_value("Stock Entry", rec_name, "posting_date")
+		frappe.db.commit()
+
+		riv = _run_item_warehouse_riv(self.company, rm, self.wh, posting_date)
+		self.assertIn(riv.status, ("Completed", "Failed", "Queued"))
+
+		mfg.reload()
+		for row in mfg.items:
+			pre = pre_rows[row.name]
+			self.assertEqual(flt(row.basic_rate), pre["basic_rate"])
+			self.assertEqual(flt(row.amount), pre["amount"])
+			self.assertGreaterEqual(flt(row.amount), 0)
+
+		fg_row = next(r for r in mfg.items if cint(r.is_finished_item))
+		self.assertGreater(flt(fg_row.amount), 0)
+
+		fg_sle = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{"voucher_no": mfg.name, "item_code": fg, "is_cancelled": 0},
+			["valuation_rate", "stock_value_difference"],
+			as_dict=True,
+		)
+		self.assertIsNotNone(fg_sle)
+		self.assertGreater(flt(fg_sle.stock_value_difference), 0)
+		self.assertAlmostEqual(
+			abs(flt(fg_sle.stock_value_difference)),
+			abs(flt(fg_row.amount)),
+			places=0,
+		)
+
+	def test_multi_source_restore_keeps_all_rows_together(self):
+		"""Unit-level: restore writes every detail row from the snapshot."""
+		calls = []
+
+		def _set_value(doctype, name, values, update_modified=False):
+			calls.append((doctype, name, dict(values)))
+
+		snapshot = {
+			"voucher_no": "STE-MULTI",
+			"header": {
+				"total_incoming_value": 500,
+				"total_outgoing_value": 500,
+				"value_difference": 0,
+			},
+			"items": [
+				{
+					"name": "r1",
+					"basic_rate": 10,
+					"basic_amount": 100,
+					"amount": 100,
+					"valuation_rate": 10,
+					"additional_cost": 0,
+					"landed_cost_voucher_amount": 0,
+				},
+				{
+					"name": "r2",
+					"basic_rate": 20,
+					"basic_amount": 200,
+					"amount": 200,
+					"valuation_rate": 20,
+					"additional_cost": 0,
+					"landed_cost_voucher_amount": 0,
+				},
+				{
+					"name": "r3",
+					"basic_rate": 30,
+					"basic_amount": 200,
+					"amount": 200,
+					"valuation_rate": 30,
+					"additional_cost": 0,
+					"landed_cost_voucher_amount": 0,
+				},
+			],
+		}
+		with mock.patch("frappe.db.set_value", side_effect=_set_value):
+			restore_stock_entry_economics(snapshot)
+		detail_names = [c[1] for c in calls if c[0] == "Stock Entry Detail"]
+		self.assertEqual(detail_names, ["r1", "r2", "r3"])
+		header = next(c for c in calls if c[0] == "Stock Entry")
+		self.assertEqual(header[1], "STE-MULTI")

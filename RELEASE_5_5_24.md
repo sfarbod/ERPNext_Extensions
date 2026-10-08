@@ -26,13 +26,23 @@ RIV, when Core `outgoing_rate` legitimately diverges from Stock Entry
 4. Applies the existing Iran manufacture / residual contract
 5. Lets `sync_irr_sle_from_stock_entry_row` mirror the **updated** document
 
+**FIX B2 — atomic Manufacture / Repack voucher economics**
+
+Propagated recalculation is snapshot → mutate → validate (I2/I5 without
+soft-skip) → accept **or** restore the complete Stock Entry economic
+snapshot (detail rates/amounts/costs plus `valuation_type` /
+`custom_output_class`, and header value + total fields) and force
+SLE/`wh_data` restore. Soft-skip alone must never leave new consume +
+negative FG document + old FG SLE.
+
 Soft-skip (5.3.9), VALUED_SOURCE_ZERO_OUTGOING, Document Rebuild, and the
-5.5.23 pickle-safe RIV guard are unchanged.
+5.5.23 pickle-safe RIV guard are unchanged. Rebuild is never auto-invoked.
 
 ### Local acceptance
 
 - Controlled receipt 100→250 → MTfM / Manufacture / FG 500 / GL 2500 with Iran on
-- `oua59fnjrf` completion-only (~0.4s) and full re-walk (~107s, 9013 SLE) Completed
+- Corrupted Manufacture (scrap@VR pool overflow) restores all SE rows; no negative FG persists
+- `oua59fnjrf` completion-only and full re-walk leave SE/SLE/GL consistent on deferred vouchers
 - leftover-MA replay count 0 for Paykar / MTfM
 - Document Rebuild not invoked
 

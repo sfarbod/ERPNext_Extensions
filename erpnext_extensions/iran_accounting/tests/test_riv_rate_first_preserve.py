@@ -19,6 +19,7 @@ import frappe
 from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+	RESULT_ACCEPTED_PROPAGATED_RATE,
 	_FN_FINGERPRINTS,
 	assert_erpnext_riv_rate_patch_supported,
 	collect_fingerprint_report,
@@ -221,10 +222,7 @@ class TestRivRateGuardUnit(unittest.TestCase):
 			self.assertEqual(calls, [])
 
 	def test_wrapper_valued_source_zero_outgoing_uses_vanilla_svd_rate(self):
-		calls = []
-
-		def original(self, sle, outgoing_rate):
-			calls.append(outgoing_rate)
+		"""VALUED_SOURCE_ZERO_OUTGOING still accepts vanilla MA via FIX B2 atomic path."""
 
 		engine = mock.Mock()
 		engine.company = "IRR-CO"
@@ -258,14 +256,15 @@ class TestRivRateGuardUnit(unittest.TestCase):
 			),
 			mock.patch("frappe.db.get_value", side_effect=_gv),
 			mock.patch(
-				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.persist_irr_contract_after_recalculate"
-			) as persist,
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.apply_riv_rate_and_recalculate_atomically",
+				return_value=RESULT_ACCEPTED_PROPAGATED_RATE,
+			) as atomic,
 		):
-			wrapped = make_update_rate_on_stock_entry_wrapper(original)
+			wrapped = make_update_rate_on_stock_entry_wrapper(lambda *a, **k: None)
 			wrapped(engine, sle, 354657.0)
-			self.assertEqual(calls, [354657.0])
-			engine.recalculate_amounts_in_stock_entry.assert_called_once()
-			persist.assert_called_once()
+			atomic.assert_called_once()
+			self.assertEqual(atomic.call_args.args[2], 354657.0)
+			self.assertTrue(atomic.call_args.kwargs.get("force_recalculate_when_dependant"))
 			self.assertEqual(sle.outgoing_rate, 354657.0)
 
 	def test_wrapper_valued_source_skips_leftover_ma_material_transfer(self):
