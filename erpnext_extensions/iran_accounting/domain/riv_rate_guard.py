@@ -4,7 +4,12 @@
 Stock Entry Detail remains the accounting source of truth. This module:
 1. Fingerprints the vanilla ERPNext method (signature + normalized AST/source).
 2. Fail-closes if ERPNext/Frappe is not on the explicit allow-list.
-3. Provides the IRR wrapper that skips ONLY basic_rate ← outgoing_rate.
+3. Provides the IRR wrapper that, by default, skips basic_rate ← outgoing_rate
+   (rate-first preserve on submit and on idempotent RIV).
+4. During RIV, when Core MA legitimately diverges from the document on
+   transfer / manufacture / repack dependants, accepts an IRR-rounded
+   outgoing_rate, forces recalculate, and applies the Iran manufacture
+   contract so sync_irr mirrors UPDATED document economics (v5.5.24 FIX B).
 
 No second rounding engine — after ERPNext recalculate, call align_stock_entry_item_amounts.
 """
@@ -32,6 +37,23 @@ VALUED_SOURCE_ZERO_OUTGOING_PURPOSES = frozenset(
 	}
 )
 
+# Purposes where Core RIV dependant/MA propagation may legitimately move
+# document economics. Rate-first still owns submit-time behavior; during RIV
+# these may accept a rounded Core outgoing_rate and recalculate amounts.
+RIV_PROPAGATED_RATE_PURPOSES = frozenset(
+	{
+		"Material Transfer",
+		"Material Transfer for Manufacture",
+		"Send to Subcontractor",
+		"Manufacture",
+		"Material Consumption for Manufacture",
+		"Repack",
+	}
+)
+
+# IRR quantum: document and Core rates that round to the same integer are equal.
+_IRR_RATE_EPS = 0.5
+
 
 def is_valued_source_zero_outgoing(*, actual_qty, basic_rate, allow_zero_valuation_rate, outgoing_rate, purpose) -> bool:
 	"""True when a Manufacture consume has a corrupt document-zero rate but vanilla MA is valued.
@@ -49,6 +71,52 @@ def is_valued_source_zero_outgoing(*, actual_qty, basic_rate, allow_zero_valuati
 	if abs(flt(basic_rate)) > 1e-6:
 		return False
 	return abs(flt(outgoing_rate)) > 1e-6
+
+
+def is_through_repost_item_valuation() -> bool:
+	"""True while ERPNext ``repost()`` sets ``through_repost_item_valuation``."""
+	try:
+		return bool(frappe.flags.get("through_repost_item_valuation"))
+	except Exception:
+		return False
+
+
+def should_accept_riv_propagated_outgoing_rate(
+	*,
+	purpose,
+	actual_qty,
+	basic_rate,
+	outgoing_rate,
+	through_riv: bool | None = None,
+) -> bool:
+	"""True when Core RIV MA must update IRR Stock Entry document economics.
+
+	Normal submit / non-RIV paths stay rate-first (document wins).
+	Idempotent RIV where Core rate already matches the document stays preserve.
+	VALUED_SOURCE_ZERO_OUTGOING is handled separately and must not use this path
+	to invent rates onto leftover-MA receipt purposes.
+	"""
+	if through_riv is None:
+		through_riv = is_through_repost_item_valuation()
+	if not through_riv:
+		return False
+	if flt(actual_qty) >= 0:
+		return False
+	if str(purpose or "") not in RIV_PROPAGATED_RATE_PURPOSES:
+		return False
+	doc_rate = flt(basic_rate)
+	core_rate = flt(outgoing_rate)
+	# Compare IRR integers: ignore sub-rial MA noise that must not rewrite docs.
+	if abs(round(doc_rate) - round(core_rate)) < 1:
+		return False
+	if abs(doc_rate - core_rate) <= _IRR_RATE_EPS:
+		return False
+	return True
+
+
+def irr_round_outgoing_rate(outgoing_rate) -> float:
+	"""Deterministic IRR integer rate for RIV-propagated document writes."""
+	return float(round(flt(outgoing_rate)))
 
 # ---------------------------------------------------------------------------
 # Explicit support allow-list (major.minor). Unknown versions → BLOCK.
@@ -414,8 +482,31 @@ def make_update_rate_on_stock_entry_wrapper(original):
 				sle.outgoing_rate = flt(outgoing_rate)
 			return
 
+		# RIV dependant propagation: Core MA moved because upstream valuation
+		# changed. Convert that rate into IRR document economics, recalculate
+		# Manufacture/Repack/transfer amounts, then let process_sle sync use the
+		# UPDATED Stock Entry row (never stale amount overwrite).
+		if should_accept_riv_propagated_outgoing_rate(
+			purpose=purpose,
+			actual_qty=getattr(sle, "actual_qty", 0),
+			basic_rate=row.basic_rate,
+			outgoing_rate=outgoing_rate,
+		):
+			irr_rate = irr_round_outgoing_rate(outgoing_rate)
+			original(self, sle, irr_rate)
+			# Vanilla skips recalculate when dependant_sle_voucher_detail_no is set
+			# (MTfM / Manufacture consume). Force Iran-wrapped recalculate so FG /
+			# transfer amounts follow the new IRR rate before SLE sync.
+			if sle.dependant_sle_voucher_detail_no and not self.is_manufacture_entry_with_sabb(sle):
+				self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
+			persist_irr_contract_after_recalculate(sle.voucher_no)
+			if hasattr(sle, "outgoing_rate"):
+				sle.outgoing_rate = irr_rate
+			return
+
 		# SKIP vanilla: frappe.db.set_value(..., "basic_rate", outgoing_rate)
 		# Keep submitted / contract basic_rate (already integer for IRR).
+		# Non-RIV submit paths and idempotent RIV (rates already match) stay here.
 
 		if not sle.dependant_sle_voucher_detail_no or self.is_manufacture_entry_with_sabb(sle):
 			self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
