@@ -201,11 +201,16 @@ class TestNarrowRivAtomicContractV5347(unittest.TestCase):
 		import inspect
 
 		from erpnext_extensions.iran_accounting.integration import monkey_patches as mp
+		from erpnext_extensions.iran_accounting.integration import riv_execute_guard as guard
 
+		# v5.5.23: lock guard lives in module-level riv_execute_guard (RQ/pickle-safe).
 		src = inspect.getsource(mp._patch_repost_compatibility)
-		self.assertIn("riv_exec_lock_held", src)
-		self.assertIn("company_gl_lock_held", src)
-		self.assertIn("iran_hr_riv_exec_owner", src)
+		self.assertIn("install_execute_reposting_entry_guard", src)
+		guard_src = inspect.getsource(guard.execute_reposting_entry)
+		self.assertIn("riv_exec_lock_held", guard_src)
+		self.assertIn("company_gl_lock_held", guard_src)
+		self.assertIn("iran_hr_riv_exec_owner", guard_src)
+		self.assertNotIn("<locals>", guard.execute_reposting_entry.__qualname__)
 
 	def test_l6_sync_default(self):
 		from erpnext_extensions.iran_accounting.historical_stock._validation import (
