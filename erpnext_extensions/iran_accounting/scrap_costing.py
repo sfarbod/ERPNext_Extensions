@@ -989,9 +989,11 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 
 	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
 		apply_same_item_multi_fg,
+		apply_same_item_output_family,
 		assert_multi_fg_fail_closed,
 		claim_product_reject_ownership,
 		claim_stage_co_ownership,
+		same_item_output_family_supported,
 	)
 	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
 		allocate_stage_output_cost,
@@ -1024,6 +1026,11 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 		assert_bridged_product_reject_priced(doc)
 		return True
 	assert_bridged_stage_outputs_priced(doc)
+	# Priority 2a: same-item multi-FG + same-item product reject (retain sample stays FG).
+	if same_item_output_family_supported(doc):
+		applied = apply_same_item_output_family(doc) or component_applied
+		assert_bridged_product_reject_priced(doc)
+		return applied
 	# Priority 2: Product Reject (existing absorbed-cost path).
 	if _has_product_reject(doc):
 		# Multi-FG + Product Reject is unsupported — fail closed before inventing economics.

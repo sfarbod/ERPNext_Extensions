@@ -52,6 +52,7 @@ from erpnext_extensions.iran_accounting.scrap_costing import (
 STRATEGY_STAGE_CO = "STAGE_CO"
 STRATEGY_PRODUCT_REJECT = "PRODUCT_REJECT"
 STRATEGY_SAME_ITEM_MULTI_FG = "SAME_ITEM_MULTI_FG"
+STRATEGY_SAME_ITEM_OUTPUT_FAMILY = "SAME_ITEM_OUTPUT_FAMILY"
 STRATEGY_PLAIN_SINGLE_FG = "PLAIN_SINGLE_FG"
 STRATEGY_INDEPENDENT_BY = "INDEPENDENT_BY"
 STRATEGY_COMPONENT_SCRAP = "COMPONENT_SCRAP"
@@ -327,6 +328,10 @@ def detect_same_item_multi_fg_eligibility(doc) -> tuple[bool, str]:
 		return False, "lt_2_main_fg"
 
 	if classified[CLASS_MAIN_PRODUCT_REJECT]:
+		ok, _reason = same_item_output_family_topology(doc, classified)
+		if ok:
+			# Dedicated family strategy owns this shape. Do not steal or fail-close.
+			return False, "output_family_owns"
 		return False, "product_reject_unsupported"
 
 	# Unsupported reject combination with Multi-FG.
@@ -385,14 +390,18 @@ def assert_multi_fg_fail_closed(doc) -> None:
 	if len(fg_rows) < 2:
 		return
 
-	# Multi-FG + Product Reject
+	# Multi-FG + Product Reject. A proven same-item family is allocated elsewhere.
 	if classified[CLASS_MAIN_PRODUCT_REJECT]:
+		ok, reason = same_item_output_family_topology(doc, classified)
+		if ok:
+			return
 		frappe.throw(
 			_(
-				"Same-item Multi-MAIN_FG Manufacture with Product Reject is not supported in "
-				"this contract phase. Detected {0} MAIN_FG rows and {1} MAIN_PRODUCT_REJECT "
-				"row(s). Remove the reject combination or use a supported single-FG reject path."
-			).format(len(fg_rows), len(classified[CLASS_MAIN_PRODUCT_REJECT])),
+				"Same-item Multi-MAIN_FG Manufacture with Product Reject is not supported ({0}). "
+				"Detected {1} MAIN_FG rows and {2} MAIN_PRODUCT_REJECT row(s). "
+				"A supported family requires one finished item, finished-good rows outside "
+				"rejected warehouses, and the product reject in a rejected warehouse."
+			).format(reason, len(fg_rows), len(classified[CLASS_MAIN_PRODUCT_REJECT])),
 			frappe.ValidationError,
 		)
 
@@ -433,6 +442,130 @@ def assert_multi_fg_fail_closed(doc) -> None:
 			),
 			frappe.ValidationError,
 		)
+
+
+def warehouse_is_rejected(warehouse: str | None) -> bool | None:
+	"""True/False from Warehouse.is_rejected_warehouse. None when unproven."""
+	if not warehouse:
+		return None
+	value = frappe.db.get_value("Warehouse", warehouse, "is_rejected_warehouse")
+	if value is None:
+		return None
+	return bool(cint(value))
+
+
+def same_item_output_family_topology(doc, classified: dict | None = None) -> tuple[bool, str]:
+	"""Same-item multi MAIN_FG plus same-item product reject, or why not.
+
+	Supported only when every finished-good row is outside a rejected warehouse
+	and every product-reject row is in a rejected warehouse. Classes are not
+	rewritten: retain sample stays MAIN_FG and the reject stays MAIN_PRODUCT_REJECT.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False, "not_manufacture"
+	if not is_irr_company(doc.company):
+		return False, "not_irr"
+
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		has_stage_participating_co_product,
+		uses_v533_contract,
+	)
+
+	if not uses_v533_contract(doc):
+		return False, "contract_not_applicable"
+	if is_allocation_closed(doc) and get_allocation_owner(doc) not in (
+		None,
+		"",
+		STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+	):
+		return False, f"owned_by_{get_allocation_owner(doc)}"
+	if has_stage_participating_co_product(doc):
+		return False, "stage_co_participating"
+
+	classified = classified or classify_manufacture_outputs(doc)
+	fg_rows = _main_fg_rows(classified)
+	reject_rows = list(classified.get(CLASS_MAIN_PRODUCT_REJECT) or [])
+	if len(fg_rows) < 2:
+		return False, "lt_2_main_fg"
+	if not reject_rows:
+		return False, "no_product_reject"
+	if classified.get(CLASS_CO_PRODUCT_REJECT):
+		return False, "co_product_reject_without_stage"
+
+	item_codes = {r.get("item_code") for r in fg_rows}
+	if None in item_codes or "" in item_codes or len(item_codes) != 1:
+		return False, "different_main_fg_items"
+	finished_item = next(iter(item_codes))
+	reject_items = {r.get("item_code") for r in reject_rows}
+	if reject_items != {finished_item}:
+		return False, "reject_item_mismatch"
+
+	family = list(fg_rows) + reject_rows
+	uoms = {(r.get("stock_uom") or "").strip() or None for r in family}
+	uoms.discard(None)
+	if len(uoms) > 1:
+		return False, "incompatible_uom"
+	for row in family:
+		if _row_qty(row) <= 0:
+			return False, "invalid_qty_basis"
+
+	for row in fg_rows:
+		warehouse = (row.get("t_warehouse") or "").strip()
+		if not warehouse:
+			return False, "missing_destination_warehouse"
+		rejected = warehouse_is_rejected(warehouse)
+		if rejected is None:
+			return False, "fg_warehouse_unproven"
+		if rejected:
+			return False, "main_fg_in_rejected_warehouse"
+	for row in reject_rows:
+		warehouse = (row.get("t_warehouse") or "").strip()
+		if not warehouse:
+			return False, "missing_reject_warehouse"
+		rejected = warehouse_is_rejected(warehouse)
+		if rejected is None:
+			return False, "reject_warehouse_unproven"
+		if not rejected:
+			return False, "reject_warehouse_not_rejected"
+
+	manual_flags = [_row_manual(r) for r in family]
+	if any(manual_flags) and not all(manual_flags):
+		return False, "mixed_manual_automatic"
+	return True, "eligible"
+
+
+def same_item_output_family_supported(doc) -> bool:
+	ok, _reason = same_item_output_family_topology(doc)
+	return ok
+
+
+def compose_shared_integer_rate_family(
+	pool: float, rows: list, currency: str
+) -> tuple[float, list[float], float] | None:
+	"""One ROUND_HALF_UP rate for the whole family.
+
+	Returns ``(rate, amounts, leftover)`` where ``leftover = pool − Σ(rate × qty)``.
+	The leftover is the integer-rate composition itself, not a tolerance band.
+	None when the rate is not positive or the identity does not close.
+	"""
+	if not rows:
+		return None
+	pool = round_currency(pool, currency)
+	qtys = [_row_qty(r) for r in rows]
+	total_qty = sum(qtys)
+	if total_qty <= 0:
+		return None
+	rate = round_monetary_rate(pool / total_qty, currency)
+	if flt(rate) <= 0:
+		return None
+	amounts = [round_currency(flt(rate) * qty, currency) for qty in qtys]
+	composed = round_currency(sum(amounts), currency)
+	leftover = round_currency(pool - composed, currency)
+	if round_currency(composed + leftover, currency) != pool:
+		return None
+	if abs(leftover) > r2_representation_bound(total_qty) + 1e-9:
+		return None
+	return float(rate), amounts, float(leftover)
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +896,117 @@ def build_same_item_multi_fg_plan(doc) -> AllocationPlan:
 	return plan
 
 
+def build_same_item_output_family_plan(doc) -> AllocationPlan:
+	"""One material rate across MAIN_FG and same-item MAIN_PRODUCT_REJECT.
+
+	Component scrap stays at issued rate and is outside the family pool.
+	The integer-rate leftover is the document value difference, not an R1 gap.
+	"""
+	classified = classify_manufacture_outputs(doc)
+	ok, reason = same_item_output_family_topology(doc, classified)
+	if not ok:
+		frappe.throw(
+			_("SAME_ITEM_OUTPUT_FAMILY is not eligible ({0}).").format(reason),
+			frappe.ValidationError,
+		)
+	pools = build_economic_pools(doc, classified)
+	currency = get_company_currency(doc.company)
+	fg_rows = _main_fg_rows(classified)
+	reject_rows = list(classified[CLASS_MAIN_PRODUCT_REJECT])
+	family = list(fg_rows) + reject_rows
+	if pools["allocatable_material_pool"] < 0:
+		frappe.throw(
+			_(
+				"SAME_ITEM_OUTPUT_FAMILY material pool is negative ({0}) after independent "
+				"outputs. Outgoing material={1}, independent={2}."
+			).format(
+				pools["allocatable_material_pool"],
+				pools["outgoing_material"],
+				pools["independent_output_value"],
+			),
+			frappe.ValidationError,
+		)
+	composed = compose_shared_integer_rate_family(
+		pools["allocatable_material_pool"], family, currency
+	)
+	if composed is None:
+		frappe.throw(
+			_(
+				"SAME_ITEM_OUTPUT_FAMILY cannot represent pool {0} as one integer rate "
+				"across the finished-good and product-reject rows."
+			).format(pools["allocatable_material_pool"]),
+			frappe.ValidationError,
+		)
+	rate, mat_shares, leftover = composed
+	oh_shares = allocate_amount_by_qty(pools["operating_pool"], family, currency)
+	plan = AllocationPlan(
+		strategy_id=STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+		outgoing_material=pools["outgoing_material"],
+		independent_output_value=pools["independent_output_value"],
+		allocatable_material_pool=pools["allocatable_material_pool"],
+		operating_pool=pools["operating_pool"],
+		lcv_pool=pools["lcv_pool"],
+	)
+	# leftover = pool − composed. Incoming exceeds the pool when the shared rate rounds up.
+	plan.economic_residual = round_currency(-leftover, currency)
+	plan.residual_class = (
+		R3_LEGITIMATE_BUSINESS_RESIDUAL if plan.economic_residual else None
+	)
+	if plan.economic_residual:
+		plan.notes.append(
+			f"shared_integer_rate_family_residual:rate={rate}:leftover={plan.economic_residual}"
+		)
+	classes = [CLASS_MAIN_FG] * len(fg_rows) + [CLASS_MAIN_PRODUCT_REJECT] * len(reject_rows)
+	for row, cls, mat, oh in zip(family, classes, mat_shares, oh_shares, strict=True):
+		qty = _row_qty(row)
+		lcv = round_currency(flt(row.get("landed_cost_voucher_amount")), currency)
+		final = round_currency(mat + oh + lcv, currency)
+		br = round_monetary_rate(mat / qty, currency) if qty else 0
+		vr = integer_valuation_rate_from_amount(final, qty, currency) if qty else 0
+		plan.rows.append(
+			NormalizedOutputRow(
+				row_ref=row,
+				classification=cls,
+				allocation_basis=qty,
+				allocation_owner=STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+				qty=qty,
+				material_amount=mat,
+				operating_amount=oh,
+				lcv_amount=lcv,
+				final_amount=final,
+				basic_rate=br,
+				valuation_rate=vr,
+				basic_rate_amount_residual=amount_rate_qty_residual(mat, qty, br, currency),
+				valuation_rate_amount_residual=amount_rate_qty_residual(final, qty, vr, currency),
+				flags={"shared_integer_rate": rate},
+			)
+		)
+	for cls in (CLASS_COMPONENT_SCRAP, CLASS_BULK_SCRAP, CLASS_CO_PRODUCT):
+		for row in classified.get(cls) or []:
+			qty = _row_qty(row)
+			mat = round_currency(flt(row.get("basic_amount")), currency)
+			oh = round_currency(flt(row.get("additional_cost")), currency)
+			lcv = round_currency(flt(row.get("landed_cost_voucher_amount")), currency)
+			final = round_currency(mat + oh + lcv, currency)
+			plan.rows.append(
+				NormalizedOutputRow(
+					row_ref=row,
+					classification=cls,
+					allocation_basis=qty,
+					allocation_owner=STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+					qty=qty,
+					material_amount=mat,
+					operating_amount=oh,
+					lcv_amount=lcv,
+					final_amount=final,
+					basic_rate=round_monetary_rate(mat / qty, currency) if qty else 0,
+					valuation_rate=integer_valuation_rate_from_amount(final, qty, currency) if qty else 0,
+					flags={"passthrough": True},
+				)
+			)
+	return plan
+
+
 def finalize_allocation_plan(doc, plan: AllocationPlan) -> AllocationPlan:
 	"""Common finalizer: write strategy-owned SED fields; refresh header totals."""
 	currency = get_company_currency(doc.company)
@@ -817,6 +1061,86 @@ def _refresh_header_totals(doc) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _verify_same_item_output_family(doc, plan: AllocationPlan, currency: str) -> None:
+	"""Family material + proven integer-rate leftover equals the allocatable pool."""
+	family = [
+		r
+		for r in plan.rows
+		if r.classification in (CLASS_MAIN_FG, CLASS_MAIN_PRODUCT_REJECT)
+	]
+	fg_rows = [r.row_ref for r in family if r.classification == CLASS_MAIN_FG]
+	reject_rows = [r.row_ref for r in family if r.classification == CLASS_MAIN_PRODUCT_REJECT]
+	ordered = fg_rows + reject_rows
+	composed = compose_shared_integer_rate_family(
+		plan.allocatable_material_pool, ordered, currency
+	)
+	if composed is None:
+		frappe.throw(
+			_(
+				"R1 ECONOMIC_ALLOCATION_GAP: output family cannot be proven as one integer "
+				"rate on pool {0}."
+			).format(plan.allocatable_material_pool),
+			frappe.ValidationError,
+		)
+	rate, amounts, leftover = composed
+	actual = [round_currency(flt(row.get("basic_amount")), currency) for row in ordered]
+	if actual != [round_currency(a, currency) for a in amounts]:
+		frappe.throw(
+			_(
+				"R1 ECONOMIC_ALLOCATION_GAP: output-family amounts {0} ≠ shared rate {1} "
+				"composition {2}."
+			).format(actual, rate, amounts),
+			frappe.ValidationError,
+		)
+	if any(flt(row.get("basic_rate")) != flt(rate) for row in ordered):
+		frappe.throw(
+			_("R1 ECONOMIC_ALLOCATION_GAP: output family does not share rate {0}.").format(rate),
+			frappe.ValidationError,
+		)
+	family_oh = round_currency(
+		sum(flt(row.get("additional_cost")) for row in ordered), currency
+	)
+	if family_oh != round_currency(plan.operating_pool, currency):
+		frappe.throw(
+			_(
+				"R1 ECONOMIC_ALLOCATION_GAP: output-family operating Σ {0} ≠ operating pool {1}."
+			).format(family_oh, plan.operating_pool),
+			frappe.ValidationError,
+		)
+	incoming_basic = round_currency(
+		sum(flt(r.get("basic_amount")) for r in (doc.get("items") or []) if _is_incoming(r)),
+		currency,
+	)
+	material_gap = round_currency(plan.outgoing_material - incoming_basic, currency)
+	if material_gap != round_currency(leftover, currency):
+		frappe.throw(
+			_(
+				"R4 CORRUPTION_UNEXPLAINED: material gap {0} ≠ shared-rate leftover {1}."
+			).format(material_gap, leftover),
+			frappe.ValidationError,
+		)
+	for nrow in family:
+		row = nrow.row_ref
+		expected = round_currency(
+			flt(row.get("basic_amount"))
+			+ flt(row.get("additional_cost"))
+			+ flt(row.get("landed_cost_voucher_amount")),
+			currency,
+		)
+		if abs(flt(row.get("amount")) - expected) != 0:
+			frappe.throw(
+				_(
+					"Post-finalization SED mismatch on row {0}: amount {1} ≠ composition {2}."
+				).format(row.get("idx"), row.get("amount"), expected),
+				frappe.ValidationError,
+			)
+		if flt(row.get("basic_amount")) < 0 or flt(row.get("amount")) < 0:
+			frappe.throw(
+				_("Negative output amount on row {0}.").format(row.get("idx")),
+				frappe.ValidationError,
+			)
+
+
 def verify_allocation_plan(doc, plan: AllocationPlan | None = None, *, ledger: bool = False) -> list[str]:
 	"""Validate closed-plan invariants. Raises on R1/R4; returns soft notes."""
 	plan = plan or get_allocation_plan(doc)
@@ -843,7 +1167,9 @@ def verify_allocation_plan(doc, plan: AllocationPlan | None = None, *, ledger: b
 	historical_r3 = plan.residual_class == R3_LEGITIMATE_BUSINESS_RESIDUAL and any(
 		"preserved_historical_manufacture_residual:" in (n or "") for n in (plan.notes or [])
 	)
-	if plan.strategy_id == STRATEGY_SAME_ITEM_MULTI_FG:
+	if plan.strategy_id == STRATEGY_SAME_ITEM_OUTPUT_FAMILY:
+		_verify_same_item_output_family(doc, plan, currency)
+	elif plan.strategy_id == STRATEGY_SAME_ITEM_MULTI_FG:
 		# Authoritative SED amounts (not only in-memory plan snapshots).
 		fg_mat = round_currency(
 			sum(flt(r.row_ref.get("basic_amount")) for r in fg_rows), currency
@@ -1006,6 +1332,22 @@ def reject_r4_double_pool(fg_material_sum: float, allocatable_pool: float) -> No
 # ---------------------------------------------------------------------------
 
 
+def apply_same_item_output_family(doc) -> bool:
+	"""Allocate the supported same-item FG + product-reject family. Returns True when applied."""
+	if not same_item_output_family_supported(doc):
+		return False
+	plan = build_same_item_output_family_plan(doc)
+	finalize_allocation_plan(doc, plan)
+	owned = [
+		r.row_ref
+		for r in plan.rows
+		if r.classification in (CLASS_MAIN_FG, CLASS_MAIN_PRODUCT_REJECT)
+	]
+	mark_allocation_closed(doc, STRATEGY_SAME_ITEM_OUTPUT_FAMILY, plan=plan, owned_rows=owned)
+	verify_allocation_plan(doc, plan)
+	return True
+
+
 def apply_same_item_multi_fg(doc) -> bool:
 	"""Allocate + finalize + verify + close. Returns True when strategy applied."""
 	eligible, reason = detect_same_item_multi_fg_eligibility(doc)
@@ -1086,11 +1428,17 @@ def polish_closed_plan_after_align(doc) -> None:
 		return
 	_refresh_header_totals(doc)
 	plan = get_allocation_plan(doc)
-	if plan and plan.strategy_id == STRATEGY_SAME_ITEM_MULTI_FG:
+	if plan and plan.strategy_id in (
+		STRATEGY_SAME_ITEM_MULTI_FG,
+		STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+	):
 		# Refresh row snapshots from SED after any non-destructive polish.
 		currency = get_company_currency(doc.company)
 		for nrow in plan.rows:
-			if nrow.classification != CLASS_MAIN_FG:
+			if plan.strategy_id == STRATEGY_SAME_ITEM_OUTPUT_FAMILY:
+				if nrow.classification not in (CLASS_MAIN_FG, CLASS_MAIN_PRODUCT_REJECT):
+					continue
+			elif nrow.classification != CLASS_MAIN_FG:
 				continue
 			row = nrow.row_ref
 			nrow.material_amount = round_currency(flt(row.get("basic_amount")), currency)
