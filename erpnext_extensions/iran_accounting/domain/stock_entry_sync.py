@@ -177,6 +177,8 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	sle.stock_value = round_currency(value_before + movement, ccy)
 
 	# Integer IRR rates — amount remains source of truth for stock_value_difference.
+	# valuation_rate here is the movement rate. The next moving-average step
+	# reloads the carried stock value; it must not multiply qty by a stale rate.
 	sle.valuation_rate = rate
 	if flt(sle.actual_qty) > 0:
 		sle.incoming_rate = rate
