@@ -22,3 +22,4 @@ erpnext_extensions/cheque_management/release_reports/PDC_PARTY_POLLUTION_RECOVER
 erpnext_extensions/cheque_management/release_reports/PDC_PARTY_POLLUTION_RECOVERY_ANALYSIS.md
 # Local Historical Repair campaign / recovery artifacts (never publish)
 .local-backups/
+.pilot_artifacts_5526/
