@@ -14,11 +14,17 @@ Purchase Receipt (3.8.7): authoritative stock amount follows ERPNext's
 BuyingController.update_valuation_rate numerator (base_net_amount + item_tax_amount
 + landed_cost_voucher_amount + …) and the same stock-UOM qty divisor. Never
 amount/base_amount ÷ qty.
+
+Purchase Receipt (5.5.28): historical UVR float ``valuation_rate = auth/stock_qty``
+(pre-Iran integerization, DECIMAL(30,9) or IEEE float) is amount-authoritative
+Class A after coercion to ``integer_valuation_rate_from_amount`` — not Class B.
+True non-integer rates that are not exact auth÷qty reconstructions remain Class B.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import ROUND_DOWN, ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from typing import Any
 
 import frappe
@@ -34,6 +40,9 @@ from erpnext_extensions.iran_accounting.domain.currency import (
 	round_monetary_rate,
 	round_row_amount,
 )
+
+# Purchase Receipt Item.valuation_rate is DECIMAL(30,9) in MariaDB / Frappe.
+_PR_VALUATION_RATE_QUANTUM = Decimal("0.000000001")
 
 STATUS_BYPASS = "bypass"
 STATUS_READY = "ready"
@@ -90,6 +99,55 @@ def _path_derived_bound(qty) -> float:
 	"""Secondary bound after provenance: integer amount÷qty remainder is < |qty|."""
 	q = abs(flt(qty))
 	return max(1.0, q) if q else 1.0
+
+
+def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate, currency: str) -> bool:
+	"""True when VR is the historical UVR float ``amount / stock_qty`` (pre-Iran integerization).
+
+	Exact reconstruction only (no abs-diff tolerance):
+
+	1. Rate is non-integer under the IRR monetary-rate contract.
+	2. ``ROUND_HALF_UP(rate)`` equals ``integer_valuation_rate_from_amount(auth, qty)``.
+	3. Rate equals one of:
+	   - ``flt(auth / qty)`` (ERPNext UVR float division), or
+	   - ``(auth / qty)`` quantized to DECIMAL(30,9) via ROUND_HALF_UP / ROUND_DOWN /
+	     ROUND_HALF_EVEN (MariaDB persistence of the same rational).
+
+	Economically amount-authoritative: the float is storage shape, not a second price.
+	"""
+	if valuation_rate in (None, "") or authoritative_amount in (None, ""):
+		return False
+	qty_f = flt(qty)
+	auth_f = flt(authoritative_amount)
+	rate_f = flt(valuation_rate)
+	if not qty_f or not auth_f:
+		return False
+
+	rounded_rate = flt(round_monetary_rate(rate_f, currency))
+	if rounded_rate == rate_f:
+		return False
+
+	int_from_amount = flt(integer_valuation_rate_from_amount(auth_f, qty_f, currency))
+	if rounded_rate != int_from_amount:
+		return False
+
+	# Path 1: IEEE float reconstruction used by BuyingController.update_valuation_rate
+	if rate_f == flt(auth_f / qty_f):
+		return True
+
+	# Path 2: DECIMAL(30,9) persistence of the exact rational amount/qty
+	try:
+		d_auth = Decimal(str(auth_f))
+		d_qty = Decimal(str(qty_f))
+		d_rate = Decimal(str(rate_f)).quantize(_PR_VALUATION_RATE_QUANTUM, rounding=ROUND_HALF_UP)
+		quot = d_auth / d_qty
+	except Exception:
+		return False
+
+	for mode in (ROUND_HALF_UP, ROUND_DOWN, ROUND_HALF_EVEN):
+		if quot.quantize(_PR_VALUATION_RATE_QUANTUM, rounding=mode) == d_rate:
+			return True
+	return False
 
 
 def classify_amount_rate_residual(
@@ -152,15 +210,24 @@ def classify_amount_rate_residual(
 		}
 
 	rounded_rate = flt(round_monetary_rate(rate_f, currency))
+	legacy_uvr_float = False
 	if rounded_rate != rate_f:
-		return {
-			**diag,
-			"class": "B",
-			"reason": "non_integer_rate_under_irr_contract",
-			"residual": amount_rate_qty_residual(auth, qty, rate_f, currency),
-			"expected_valuation_rate": rounded_rate,
-			"expected_amount": round_row_amount(qty, rounded_rate, currency),
-		}
+		# Historical Purchase Receipt UVR stores flt(amount/stock_qty) before Iran
+		# integerization. Coerce to amount-authoritative integer VR — do not mutate
+		# the document; classification only.
+		if auth and is_legacy_uvr_float_valuation_rate(auth, qty, rate_f, currency):
+			legacy_uvr_float = True
+			diag["legacy_uvr_float_valuation_rate"] = rate_f
+			rate_f = flt(integer_valuation_rate_from_amount(auth, qty, currency))
+		else:
+			return {
+				**diag,
+				"class": "B",
+				"reason": "non_integer_rate_under_irr_contract",
+				"residual": amount_rate_qty_residual(auth, qty, rate_f, currency),
+				"expected_valuation_rate": rounded_rate,
+				"expected_amount": round_row_amount(qty, rounded_rate, currency),
+			}
 
 	derived = flt(round_row_amount(qty, rate_f, currency))
 	residual = flt(amount_rate_qty_residual(auth, qty, rate_f, currency))
@@ -179,6 +246,7 @@ def classify_amount_rate_residual(
 		return {**diag, "class": "skip", "reason": "zero_residual"}
 
 	# Provenance: amount-authoritative integer VR pipeline (SE compose / SR amount auth)
+	# Also covers legacy UVR float rates coerced above to integer_from_amount.
 	if rate_from_amount is not None and rate_f == rate_from_amount:
 		bound = _path_derived_bound(qty)
 		if abs(residual) >= bound:
@@ -188,10 +256,15 @@ def classify_amount_rate_residual(
 				"reason": "provenance_matched_but_exceeds_path_derived_bound",
 				"path_derived_bound": bound,
 			}
+		reason = (
+			"amount_authoritative_legacy_uvr_float_rate"
+			if legacy_uvr_float
+			else "amount_authoritative_integer_valuation_rate"
+		)
 		return {
 			**diag,
 			"class": "A",
-			"reason": "amount_authoritative_integer_valuation_rate",
+			"reason": reason,
 			"path_derived_bound": bound,
 		}
 
