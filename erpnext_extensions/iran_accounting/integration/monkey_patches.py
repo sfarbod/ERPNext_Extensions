@@ -1016,6 +1016,11 @@ def _patch_stock_ledger_engine():
 					return
 			except Exception:
 				pass
+			from erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic import (
+				carry_stock_value_into_moving_average,
+			)
+
+			carry_stock_value_into_moving_average(self, sle)
 			return _orig_ma(self, sle)
 
 		sl.update_entries_after.get_moving_average_values = get_moving_average_values
@@ -1049,6 +1054,11 @@ def _patch_stock_ledger_engine():
 					)
 
 					align_pending_pi_sle_incoming_to_document_zero(sle)
+					from erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic import (
+						apply_authoritative_acquisition_incoming_rate,
+					)
+
+					apply_authoritative_acquisition_incoming_rate(sle, company)
 					# Out-of-scope soft-skip: do not rewrite unrelated historical SLE.
 					# Still advance wh_data from the existing SLE so chronology continues.
 					if assert_sle_valuation_integrity_before_vanilla(self, sle) is False:
@@ -1078,6 +1088,11 @@ def _patch_stock_ledger_engine():
 					)
 
 					apply_pending_pi_post_vanilla_economics(sle, engine=self)
+					from erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic import (
+						align_authoritative_acquisition_movement,
+					)
+
+					align_authoritative_acquisition_movement(sle, company, engine=self)
 					restore_vanilla_zero_qty_terminal_stock_value(
 						sle, vanilla_stock_value, vanilla_qty_after
 					)

@@ -443,6 +443,72 @@ def classify_manufacture_irr_residual(doc) -> ManufactureIrrResidualResult:
 			evidence=evidence,
 		)
 
+	# Same-item multi-FG + same-item product reject: one shared integer rate.
+	# Ordinary multi-FG without that topology keeps the unsupported reason.
+	if len(fg_rows) >= 2 and reject_rows:
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			compose_shared_integer_rate_family,
+			same_item_output_family_topology,
+		)
+
+		ok, topo_reason = same_item_output_family_topology(doc, classified)
+		evidence["output_family_topology"] = topo_reason
+		if ok:
+			product_rows = list(fg_rows) + list(reject_rows)
+			qtys = [_row_qty(r) for r in product_rows]
+			proof = compose_shared_integer_rate_family(economic_pool, product_rows, currency)
+			evidence["output_quantities"] = qtys
+			if proof is None:
+				return ManufactureIrrResidualResult(
+					CLASS_INVALID,
+					reason="shared_integer_rate_not_proven",
+					evidence=evidence,
+					economic_pool=economic_pool,
+					output_quantities=qtys,
+				)
+			rate, _amounts, leftover = proof
+			for row in product_rows:
+				if abs(flt(row.get("basic_rate")) - flt(rate)) > 1e-9:
+					return ManufactureIrrResidualResult(
+						CLASS_INVALID,
+						reason="shared_integer_rate_not_proven",
+						evidence=evidence,
+						economic_pool=economic_pool,
+						output_quantities=qtys,
+					)
+				if abs(flt(row.get("basic_amount")) - round_currency(flt(rate) * _row_qty(row), currency)) > 0:
+					return ManufactureIrrResidualResult(
+						CLASS_INVALID,
+						reason="basic_amount_not_qty_times_rate",
+						evidence=evidence,
+						economic_pool=economic_pool,
+						output_quantities=qtys,
+					)
+			composed = round_currency(economic_pool - leftover, currency)
+			residual = round_currency(leftover, currency)
+			evidence["composed_output_value"] = composed
+			evidence["residual"] = residual
+			evidence["shared_rate"] = rate
+			if residual == 0:
+				return ManufactureIrrResidualResult(
+					CLASS_NONE if not (header_add or lcv_total) else CLASS_TYPE_A,
+					economic_pool=economic_pool,
+					composed_output_value=composed,
+					residual=0.0,
+					output_quantities=qtys,
+					reason="exact_shared_integer_rate_family",
+					evidence=evidence,
+				)
+			return ManufactureIrrResidualResult(
+				CLASS_TYPE_C,
+				economic_pool=economic_pool,
+				composed_output_value=composed,
+				residual=residual,
+				output_quantities=qtys,
+				reason="proven_shared_integer_rate_family_residual",
+				evidence=evidence,
+			)
+
 	# Multi-FG / co-product / missing FG without a composition proof.
 	# Reachable only when len(fg_rows) != 1: both single-FG arms above return on every path.
 	return ManufactureIrrResidualResult(
