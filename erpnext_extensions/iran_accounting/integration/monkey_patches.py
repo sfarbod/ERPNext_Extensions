@@ -189,6 +189,13 @@ def _patch_repost_compatibility():
 		_orig_repost = riv_mod.repost
 
 		def repost(doc):
+			# Defense in depth: RIV body must never run without Iran GL/rate patches,
+			# even when a caller reached ``repost`` without ``before_job`` bootstrap.
+			from erpnext_extensions.iran_accounting.integration.riv_execute_guard import (
+				_ensure_iran_runtime_for_riv,
+			)
+
+			_ensure_iran_runtime_for_riv()
 			voucher_type = getattr(doc, "voucher_type", None)
 			voucher_no = getattr(doc, "voucher_no", None)
 			company = getattr(doc, "company", None)
@@ -196,23 +203,21 @@ def _patch_repost_compatibility():
 				return _orig_repost(doc)
 			finally:
 				frappe.flags.through_repost_item_valuation = False
-				if not (voucher_type and voucher_no and company and is_irr_company(company)):
-					return
-				status = frappe.db.get_value("Repost Item Valuation", doc.name, "status")
-				if status != "Completed":
-					return
-				try:
-					doc = frappe.get_doc(voucher_type, voucher_no)
-					from erpnext_extensions.iran_accounting.domain.repost_determinism import (
-						run_post_repost_deterministic_pipeline,
-					)
+				if voucher_type and voucher_no and company and is_irr_company(company):
+					status = frappe.db.get_value("Repost Item Valuation", doc.name, "status")
+					if status == "Completed":
+						try:
+							src_doc = frappe.get_doc(voucher_type, voucher_no)
+							from erpnext_extensions.iran_accounting.domain.repost_determinism import (
+								run_post_repost_deterministic_pipeline,
+							)
 
-					run_post_repost_deterministic_pipeline(doc, raise_on_fail=False)
-				except Exception:
-					frappe.log_error(
-						title="IRR repost reconcile failed",
-						message=frappe.get_traceback(),
-					)
+							run_post_repost_deterministic_pipeline(src_doc, raise_on_fail=False)
+						except Exception:
+							frappe.log_error(
+								title="IRR repost reconcile failed",
+								message=frappe.get_traceback(),
+							)
 
 		riv_mod.repost = repost
 		riv_mod._iran_patched_repost = True
