@@ -305,7 +305,9 @@ def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
 		rate = flt((snap or {}).get("basic_rate") or (snap or {}).get("valuation_rate"))
 		if rate <= 0:
 			rate = flt(row.basic_rate) or flt(row.valuation_rate)
-		if rate <= 0:
+		# Dynamic unlock: legitimate zero SLE rates are allowed (historical RIV
+		# may temporarily price consumption at zero). Locked path still fails closed.
+		if rate <= 0 and not unlock_fg:
 			frappe.throw(
 				frappe._("Repair recreate missing rate for {0} / {1} on {2}").format(
 					row.item_code, row.batch_no, doc.name or doc.doctype
@@ -318,11 +320,20 @@ def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
 		if unlock_fg and is_main_fg:
 			# Leave rate/amount to Core calculate_rate_and_amount + Iran contract.
 			row.set_basic_rate_manually = 0
+			# Zero FG rates are legitimate while upstream RIV is still pending.
+			row.allow_zero_valuation_rate = 1
 			continue
 		row.basic_rate = rate
 		row.valuation_rate = rate
-		row.set_basic_rate_manually = 1
-		row.allow_zero_valuation_rate = 0
+		# Dynamic Manufacture valuation: when FG is unlocked, do not freeze
+		# CONSUME either — seed snapshot rates for submit, leave unlocked so
+		# native RIV can rewrite from authoritative SLE (including legitimate zeros).
+		if unlock_fg:
+			row.set_basic_rate_manually = 0
+			row.allow_zero_valuation_rate = 1
+		else:
+			row.set_basic_rate_manually = 1
+			row.allow_zero_valuation_rate = 0
 		# MAIN_FG / finished incoming: do NOT force amount = qty×rate when
 		# preserving historical value-neutral residuals.
 		# Source CONSUME and Component Scrap keep issued-rate amount identity.
@@ -532,7 +543,7 @@ def _build_canonical_se(plan: dict) -> str:
 		is_main_fg = cint(row.get("is_finished_item")) or (
 			(row.get("custom_output_class") or row.get("type") or "") == "MAIN_FG"
 		)
-		if is_source and rate <= 1e-9:
+		if is_source and rate <= 1e-9 and not unlock_main_fg:
 			frappe.throw(
 				frappe._(
 					"ZERO_RATE: canonical CONSUME {0} / {1} has no authoritative rate "
@@ -556,11 +567,12 @@ def _build_canonical_se(plan: dict) -> str:
 		}
 		if row.get("department"):
 			child["department"] = row["department"]
-		# CONSUME / scrap: keep authoritative issued rates.
-		# MAIN_FG: unlock when material economics changed so Core+Iran reallocate.
-		if unlock_main_fg and is_main_fg:
+		# Dynamic valuation: unlock CONSUME + MAIN_FG so native RIV may rewrite
+		# from authoritative SLE (including legitimate zero rates). Locked path
+		# preserves issued CONSUME rates for value-neutral repairs.
+		if unlock_main_fg:
 			child["set_basic_rate_manually"] = 0
-			# Seed rate is informational; Core recalculates from material pool.
+			child["allow_zero_valuation_rate"] = 1
 		elif rate > 0:
 			child["set_basic_rate_manually"] = 1
 			child["allow_zero_valuation_rate"] = 0
@@ -1255,15 +1267,10 @@ def run_repair(
 			result["mutated"] = True
 			result["committed"] = True
 			# PHASE 3 — native auto RIV after durable Commit (outside suppress_auto_riv).
-			# In-txn sync_valuation already closed Manufacture base SLE; native RIV
-			# covers remaining/future Item×Warehouse chronology and GL propagation.
-			#
-			# Unlocked Multi-FG: keep Manufacture out of native RIV enqueue.
-			# Phase-2 evidence (PO-JOB08604): Iran wrapper prevents Core double-pool
-			# on Manufacture RIV, but Core/RIV still rewrote authoritative CONSUME
-			# snapshot rates (e.g. batch 5738 → 0), changing the closed pool.
-			# In-txn sync_valuation owns Manufacture SLE; native RIV is downstream.
-			# Wrapper must still be active before any RIV enqueue (fail-closed).
+			# Business policy: consumption and FG rates are dynamic. Native RIV must
+			# recalculate the corrected Manufacture itself and propagate downstream.
+			# Iran recalculate wrapper is mandatory (fail closed); zero SLE rates are
+			# legitimate during historical upstream reposting.
 			timer.start("T25_NATIVE_RIV")
 			_progress("T25_NATIVE_RIV")
 			from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
@@ -1284,36 +1291,42 @@ def run_repair(
 				]
 				wrapper_ok = False
 			result["iran_riv_wrapper_active"] = wrapper_ok
-			if result.get("unlock_main_fg"):
-				riv_vouchers = logistics_only
-				result["riv_scope_policy"] = (
-					"DOWNSTREAM_ONLY_UNLOCKED_FG"
-					if wrapper_ok
-					else "DOWNSTREAM_ONLY_WRAPPER_INACTIVE"
-				)
-			else:
-				riv_vouchers = [result.get("canonical_name")] + logistics_only
-				result["riv_scope_policy"] = "MANUFACTURE_PLUS_DOWNSTREAM"
-			result["riv_scope"] = [v for v in riv_vouchers if v]
-			# Durable recovery evidence (survives worker crash after Commit).
+			canon = result.get("canonical_name")
 			result["structural_committed"] = True
-			result["valuation_status"] = "VALUATION_PENDING"
-			try:
-				riv = enqueue_native_riv_for_vouchers(result["riv_scope"])
-				result["native_riv"] = riv
-				if riv.get("ok"):
-					result["valuation_status"] = "VALUATION_PENDING"
-				else:
+			if not wrapper_ok:
+				# Fail closed: do not enqueue Core-only Manufacture RIV.
+				riv_vouchers = []
+				result["riv_scope_policy"] = "BLOCKED_WRAPPER_INACTIVE"
+				result["riv_scope"] = []
+				result["native_riv"] = {
+					"ok": False,
+					"riv_names": [],
+					"count": 0,
+					"errors": ["IRAN_RIV_WRAPPER_INACTIVE"],
+					"wrapper_active": False,
+				}
+				result["valuation_status"] = "VALUATION_FAILED"
+			else:
+				riv_vouchers = [canon] + logistics_only
+				result["riv_scope_policy"] = "MANUFACTURE_PLUS_DOWNSTREAM"
+				result["riv_scope"] = [v for v in riv_vouchers if v]
+				result["valuation_status"] = "VALUATION_PENDING"
+				try:
+					riv = enqueue_native_riv_for_vouchers(result["riv_scope"])
+					result["native_riv"] = riv
+					if riv.get("ok"):
+						result["valuation_status"] = "VALUATION_PENDING"
+					else:
+						result["valuation_status"] = "VALUATION_FAILED"
+						result["warnings"] = list(result.get("warnings") or []) + [
+							"NATIVE_RIV_ENQUEUE_FAILED: " + "; ".join(riv.get("errors") or [])
+						]
+				except Exception as riv_exc:
+					result["native_riv"] = {"ok": False, "errors": [str(riv_exc)]}
 					result["valuation_status"] = "VALUATION_FAILED"
 					result["warnings"] = list(result.get("warnings") or []) + [
-						"NATIVE_RIV_ENQUEUE_FAILED: " + "; ".join(riv.get("errors") or [])
+						f"NATIVE_RIV_ENQUEUE_EXCEPTION: {riv_exc}"
 					]
-			except Exception as riv_exc:
-				result["native_riv"] = {"ok": False, "errors": [str(riv_exc)]}
-				result["valuation_status"] = "VALUATION_FAILED"
-				result["warnings"] = list(result.get("warnings") or []) + [
-					f"NATIVE_RIV_ENQUEUE_EXCEPTION: {riv_exc}"
-				]
 			timer.end("T25_NATIVE_RIV", riv_count=(result.get("native_riv") or {}).get("count"))
 			# Structural Apply succeeded even if RIV enqueue needs operator recovery.
 			if result.get("valuation_status") == "VALUATION_PENDING":

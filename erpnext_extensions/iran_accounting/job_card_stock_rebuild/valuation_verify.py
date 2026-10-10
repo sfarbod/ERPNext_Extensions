@@ -70,7 +70,13 @@ def snapshot_manufacture_economics(voucher_no: str) -> dict[str, Any]:
 
 
 def assert_multi_fg_pool_closed(snap: dict, *, tol: float = 0.0) -> list[str]:
-	"""Return error strings when Multi-FG material pool is not closed once."""
+	"""Return error strings when Multi-FG material pool is not closed once.
+
+	Zero CONSUME / FG rates are not treated as corruption — they may be
+	legitimate or temporarily zero while upstream historical RIV is pending.
+	Integrity requires pool closure, no double-pool, whole-IRR FG rates when
+	nonzero, and balanced GL.
+	"""
 	errors: list[str] = []
 	mat = flt(snap.get("material_sum"))
 	fg = flt(snap.get("fg_sum"))
@@ -78,10 +84,10 @@ def assert_multi_fg_pool_closed(snap: dict, *, tol: float = 0.0) -> list[str]:
 		errors.append(f"FG material Σ {fg} ≠ material pool {mat}")
 	if mat and fg > mat * 1.5:
 		errors.append(f"FG material Σ {fg} looks like double-pool vs {mat}")
-	# Integer IRR rates on FG
+	# Integer IRR rates on FG when nonzero (zero is allowed).
 	for row in snap.get("fg") or []:
 		rate = flt(row.get("basic_rate"))
-		if abs(rate - round(rate)) > 1e-9:
+		if rate and abs(rate - round(rate)) > 1e-9:
 			errors.append(
 				f"FG row {row.get('idx')} non-integer basic_rate {rate}"
 			)
