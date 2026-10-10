@@ -56,6 +56,126 @@ def _is_incoming_output(row) -> bool:
 	return bool(row.get("t_warehouse")) and not row.get("s_warehouse")
 
 
+def _normalize_row_filter(
+	stock_entry: str | None,
+	row_name: str | None,
+	item_code: str | None,
+) -> tuple[str | None, str | None]:
+	"""Validate selective unlock arguments. Never expands an invalid filter.
+
+	``item_code`` without ``row_name`` is rejected: one item can appear on more
+	than one row, and a partial filter must not fall through to every eligible row.
+	"""
+	row_name = (row_name or "").strip() or None
+	item_code = (item_code or "").strip() or None
+	if item_code and not row_name:
+		raise UnlockManufactureError(
+			"item_code requires row_name. Item-only selection is ambiguous and "
+			"will not unlock every matching row."
+		)
+	if row_name and not (stock_entry or "").strip():
+		raise UnlockManufactureError("row_name requires stock_entry.")
+	return row_name, item_code
+
+
+def _assert_selected_row(doc, row_name: str, item_code: str | None):
+	"""The named row must be one incoming output on this Manufacture document."""
+	matches = [row for row in (doc.get("items") or []) if row.name == row_name]
+	if not matches:
+		raise UnlockManufactureError(
+			f"{doc.name}: row {row_name!r} does not belong to this Stock Entry. "
+			"Refusing to unlock any row."
+		)
+	if len(matches) != 1:
+		raise UnlockManufactureError(
+			f"{doc.name}: row {row_name!r} matched {len(matches)} times. "
+			"Refusing to unlock any row."
+		)
+	row = matches[0]
+	actual_item = row.item_code
+	if item_code and actual_item != item_code:
+		raise UnlockManufactureError(
+			f"{doc.name} row {row_name}: item_code {actual_item!r} does not match "
+			f"{item_code!r}. Refusing to unlock any row."
+		)
+	if not _is_incoming_output(row):
+		raise UnlockManufactureError(
+			f"{doc.name} row {row_name} ({actual_item}) is not an incoming Manufacture "
+			"output. Refusing to unlock any row."
+		)
+	return row
+
+
+def _restrict_to_selected_row(
+	plans: list[dict[str, Any]], row_name: str
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+	"""Keep the selected plan. Other unlock plans become excluded and are not applied."""
+	selected = [plan for plan in plans if plan.get("row_name") == row_name]
+	if len(selected) != 1:
+		raise UnlockManufactureError(
+			f"Selective unlock found {len(selected)} plans for row {row_name!r}. "
+			"Refusing to unlock any row."
+		)
+	excluded: list[dict[str, Any]] = []
+	filtered: list[dict[str, Any]] = []
+	selected_plan: dict[str, Any] | None = None
+	for plan in plans:
+		if plan.get("row_name") == row_name:
+			selected_plan = {**plan, "selected": True}
+			filtered.append(selected_plan)
+			continue
+		if plan.get("action") == "unlock":
+			excluded_plan = {
+				**plan,
+				"action": "excluded",
+				"reason": "selective_filter",
+				"selected": False,
+			}
+			excluded.append(excluded_plan)
+			filtered.append(excluded_plan)
+		else:
+			filtered.append({**plan, "selected": False})
+	if selected_plan is None:
+		raise UnlockManufactureError(
+			f"Selective unlock lost row {row_name!r} while filtering. Refusing to unlock any row."
+		)
+	return filtered, selected_plan, excluded
+
+
+def _revalidate_unlock_plan(plan: dict[str, Any], doc) -> dict[str, Any]:
+	"""Re-read the selected row and refuse a stale or non-unlock plan."""
+	_assert_selected_row(doc, plan["row_name"], plan.get("item_code"))
+	live_plans = _collect_doc_plans(doc)
+	live = next((candidate for candidate in live_plans if candidate.get("row_name") == plan["row_name"]), None)
+	if not live or live.get("action") != "unlock":
+		raise UnlockManufactureError(
+			f"{doc.name} row {plan['row_name']}: unlock plan is stale or no longer eligible "
+			f"(action={None if not live else live.get('action')!r}). No row was updated."
+		)
+	if live.get("item_code") != plan.get("item_code"):
+		raise UnlockManufactureError(
+			f"{doc.name} row {plan['row_name']}: item changed from {plan.get('item_code')!r} "
+			f"to {live.get('item_code')!r}. No row was updated."
+		)
+	if cint(live.get("set_basic_rate_manually_before")) != cint(plan.get("set_basic_rate_manually_before")):
+		raise UnlockManufactureError(
+			f"{doc.name} row {plan['row_name']}: manual flag changed before apply. No row was updated."
+		)
+	if (live.get("valuation_type_before") or "") != (plan.get("valuation_type_before") or ""):
+		raise UnlockManufactureError(
+			f"{doc.name} row {plan['row_name']}: valuation type changed before apply. No row was updated."
+		)
+	if flt(live.get("basic_rate_before")) != flt(plan.get("basic_rate_before")):
+		raise UnlockManufactureError(
+			f"{doc.name} row {plan['row_name']}: basic_rate changed before apply. No row was updated."
+		)
+	if flt(live.get("basic_amount_before")) != flt(plan.get("basic_amount_before")):
+		raise UnlockManufactureError(
+			f"{doc.name} row {plan['row_name']}: basic_amount changed before apply. No row was updated."
+		)
+	return live
+
+
 def _list_manufacture_names(stock_entry: str | None) -> list[str]:
 	if stock_entry:
 		purpose, docstatus = frappe.db.get_value(
@@ -350,7 +470,33 @@ def _apply_plan(plan: dict[str, Any]) -> None:
 	)
 
 
-def _summarize(plans: list[dict[str, Any]], *, dry_run: bool, scanned_docs: int) -> dict[str, Any]:
+def _expected_write(plan: dict[str, Any]) -> dict[str, Any]:
+	"""Metadata fields this unlock would write. Rates and quantities are not included."""
+	return {
+		"doctype": "Stock Entry Detail",
+		"row_name": plan.get("row_name"),
+		"item_code": plan.get("item_code"),
+		"output_class": plan.get("output_class"),
+		"set_basic_rate_manually_before": plan.get("set_basic_rate_manually_before"),
+		"set_basic_rate_manually_after": plan.get("set_basic_rate_manually_after", 0),
+		"valuation_type_before": plan.get("valuation_type_before") or "",
+		"valuation_type_after": plan.get("valuation_type_after", plan.get("valuation_type_before") or ""),
+		"basic_rate_unchanged": plan.get("basic_rate_before"),
+		"basic_amount_unchanged": plan.get("basic_amount_before"),
+		"writes": ["set_basic_rate_manually"]
+		+ (["valuation_type"] if plan.get("clear_valuation_type") else []),
+	}
+
+
+def _summarize(
+	plans: list[dict[str, Any]],
+	*,
+	dry_run: bool,
+	scanned_docs: int,
+	row_name: str | None = None,
+	item_code: str | None = None,
+	excluded: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
 	by_action: dict[str, int] = {}
 	by_class: dict[str, int] = {}
 	audit: list[dict[str, Any]] = []
@@ -361,7 +507,7 @@ def _summarize(plans: list[dict[str, Any]], *, dry_run: bool, scanned_docs: int)
 		if action in ("unlock", "preserve", "blocked"):
 			key = f"{action}:{cls}"
 			by_class[key] = by_class.get(key, 0) + 1
-		if action in ("unlock", "preserve", "blocked"):
+		if action in ("unlock", "preserve", "blocked", "excluded"):
 			audit.append(
 				{
 					"parent": p.get("parent"),
@@ -379,15 +525,50 @@ def _summarize(plans: list[dict[str, Any]], *, dry_run: bool, scanned_docs: int)
 				}
 			)
 
+	excluded = excluded or []
+	selected_plans = [plan for plan in plans if plan.get("selected")]
+	selected_plan = selected_plans[0] if len(selected_plans) == 1 else None
+	unlock_plans = [plan for plan in plans if plan.get("action") == "unlock"]
 	return {
 		"ok": True,
 		"dry_run": bool(dry_run),
 		"scanned_documents": scanned_docs,
 		"planned_rows": len(plans),
 		"unlock_count": by_action.get("unlock", 0),
+		"selected_unlock_count": by_action.get("unlock", 0),
+		"excluded_unlock_count": len(excluded),
 		"preserve_bulk_scrap_count": by_action.get("preserve", 0),
 		"blocked_count": by_action.get("blocked", 0),
 		"already_dynamic_count": by_action.get("skip", 0),
+		"row_filter": {"row_name": row_name, "item_code": item_code},
+		"selected_row": (
+			{
+				"row_name": selected_plan.get("row_name"),
+				"item_code": selected_plan.get("item_code"),
+				"output_class": selected_plan.get("output_class"),
+				"action": selected_plan.get("action"),
+				"reason": selected_plan.get("reason"),
+				"set_basic_rate_manually_before": selected_plan.get("set_basic_rate_manually_before"),
+				"set_basic_rate_manually_after": selected_plan.get("set_basic_rate_manually_after"),
+				"valuation_type_before": selected_plan.get("valuation_type_before"),
+				"valuation_type_after": selected_plan.get("valuation_type_after"),
+			}
+			if selected_plan
+			else None
+		),
+		"excluded_rows": [
+			{
+				"row_name": plan.get("row_name"),
+				"item_code": plan.get("item_code"),
+				"output_class": plan.get("output_class"),
+				"reason": plan.get("reason"),
+				"set_basic_rate_manually_before": plan.get("set_basic_rate_manually_before"),
+				"valuation_type_before": plan.get("valuation_type_before"),
+				"basic_rate_before": plan.get("basic_rate_before"),
+			}
+			for plan in excluded
+		],
+		"expected_writes": [_expected_write(plan) for plan in unlock_plans],
 		"by_action": by_action,
 		"by_class_action": by_class,
 		"audit": audit,
@@ -400,6 +581,8 @@ def unlock_manufacture_manual_rates(
 	dry_run: bool = True,
 	batch_size: int | None = None,
 	adopt_contract_version: str | None = None,
+	row_name: str | None = None,
+	item_code: str | None = None,
 ) -> dict[str, Any]:
 	"""Unlock Manufacture output manual-rate flags (except Bulk Scrap).
 
@@ -414,10 +597,16 @@ def unlock_manufacture_manual_rates(
 	                ``custom_manufacturing_costing_contract_version`` on scanned
 	                docs before planning so Manual CO_PRODUCT can enter the
 	                existing stage-equivalent engine. Job Cards are not modified.
+	        row_name: Optional Stock Entry Detail name. Requires ``stock_entry``.
+	                Only that incoming output row can be unlocked.
+	        item_code: Optional confirmation of the selected row's item. Requires
+	                ``row_name``. A mismatch rejects the call and unlocks nothing.
 	"""
 	size = _normalize_batch_size(batch_size)
+	row_name, item_code = _normalize_row_filter(stock_entry, row_name, item_code)
 	names = _list_manufacture_names(stock_entry)
 	all_plans: list[dict[str, Any]] = []
+	excluded_plans: list[dict[str, Any]] = []
 	parents_touched: set[str] = set()
 	applied = 0
 	pending_commit = 0
@@ -433,7 +622,12 @@ def unlock_manufacture_manual_rates(
 				stamped.append(name)
 
 		doc = frappe.get_doc("Stock Entry", name)
+		if row_name:
+			_assert_selected_row(doc, row_name, item_code)
 		plans = _collect_doc_plans(doc)
+		if row_name:
+			plans, _selected, excluded = _restrict_to_selected_row(plans, row_name)
+			excluded_plans.extend(excluded)
 		all_plans.extend(plans)
 
 		if dry_run:
@@ -442,7 +636,13 @@ def unlock_manufacture_manual_rates(
 		for plan in plans:
 			if plan.get("action") != "unlock":
 				continue
-			_apply_plan(plan)
+			if row_name and plan.get("row_name") != row_name:
+				raise UnlockManufactureError(
+					f"{name}: refused to unlock non-selected row {plan.get('row_name')!r}."
+				)
+			live_doc = frappe.get_doc("Stock Entry", name)
+			live_plan = _revalidate_unlock_plan(plan, live_doc)
+			_apply_plan(live_plan)
 			applied += 1
 			pending_commit += 1
 			parents_touched.add(name)
@@ -456,7 +656,14 @@ def unlock_manufacture_manual_rates(
 	for parent in parents_touched:
 		frappe.clear_document_cache("Stock Entry", parent)
 
-	out = _summarize(all_plans, dry_run=dry_run, scanned_docs=len(names))
+	out = _summarize(
+		all_plans,
+		dry_run=dry_run,
+		scanned_docs=len(names),
+		row_name=row_name,
+		item_code=item_code,
+		excluded=excluded_plans,
+	)
 	out["stock_entry"] = stock_entry
 	out["applied_count"] = 0 if dry_run else applied
 	out["batch_size"] = size
