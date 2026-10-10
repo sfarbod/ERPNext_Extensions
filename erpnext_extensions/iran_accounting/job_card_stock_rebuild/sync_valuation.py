@@ -407,14 +407,24 @@ def enqueue_native_riv_for_vouchers(voucher_names: Iterable[str]) -> dict:
 	must not remain only in the post-Apply session buffer).
 	"""
 	from erpnext.controllers.stock_controller import future_sle_exists
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ensure_iran_riv_recalculate_wrapper_active,
+		is_iran_riv_recalculate_wrapper_active,
+	)
 
-	# Ensure Iran RIV recalculate wrapper is installed before Core creates/runs RIV.
+	# Fail closed: do not create RIV that workers would execute on Core-only economics.
 	try:
-		from erpnext_extensions.iran_accounting.integration.bootstrap import apply as bootstrap_apply
-
-		bootstrap_apply()
-	except Exception:
+		ensure_iran_riv_recalculate_wrapper_active(bootstrap=True)
+	except Exception as boot_exc:
 		frappe.log_error("jc_repair_native_riv_bootstrap")
+		return {
+			"ok": False,
+			"riv_names": [],
+			"count": 0,
+			"skipped": [],
+			"errors": [f"IRAN_RIV_WRAPPER_INACTIVE: {boot_exc}"],
+			"wrapper_active": False,
+		}
 
 	created: list[str] = []
 	skipped: list[dict] = []
@@ -466,4 +476,5 @@ def enqueue_native_riv_for_vouchers(voucher_names: Iterable[str]) -> dict:
 		"count": len(unique),
 		"skipped": skipped,
 		"errors": errors,
+		"wrapper_active": is_iran_riv_recalculate_wrapper_active(),
 	}

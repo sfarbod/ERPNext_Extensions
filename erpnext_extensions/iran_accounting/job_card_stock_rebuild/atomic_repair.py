@@ -1258,22 +1258,46 @@ def run_repair(
 			# In-txn sync_valuation already closed Manufacture base SLE; native RIV
 			# covers remaining/future Item×Warehouse chronology and GL propagation.
 			#
-			# When MAIN_FG was unlocked, Core RIV recalculate can re-introduce the
-			# per-row full-pool double-count unless the Iran recalculate wrapper is
-			# active. Prefer downstream logistics RIV; keep Manufacture out of the
-			# auto enqueue scope until VALUATION_VERIFIED proves safe on-site.
+			# Unlocked Multi-FG: keep Manufacture out of native RIV enqueue.
+			# Phase-2 evidence (PO-JOB08604): Iran wrapper prevents Core double-pool
+			# on Manufacture RIV, but Core/RIV still rewrote authoritative CONSUME
+			# snapshot rates (e.g. batch 5738 → 0), changing the closed pool.
+			# In-txn sync_valuation owns Manufacture SLE; native RIV is downstream.
+			# Wrapper must still be active before any RIV enqueue (fail-closed).
 			timer.start("T25_NATIVE_RIV")
 			_progress("T25_NATIVE_RIV")
+			from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+				ensure_iran_riv_recalculate_wrapper_active,
+				is_iran_riv_recalculate_wrapper_active,
+			)
+
 			logistics_only = [
 				x.get("to") for x in (result.get("recreated_logistics") or []) if x.get("to")
 			]
+			wrapper_ok = False
+			try:
+				ensure_iran_riv_recalculate_wrapper_active(bootstrap=True)
+				wrapper_ok = is_iran_riv_recalculate_wrapper_active()
+			except Exception as wrap_exc:
+				result["warnings"] = list(result.get("warnings") or []) + [
+					f"IRAN_RIV_WRAPPER_INACTIVE: {wrap_exc}"
+				]
+				wrapper_ok = False
+			result["iran_riv_wrapper_active"] = wrapper_ok
 			if result.get("unlock_main_fg"):
 				riv_vouchers = logistics_only
-				result["riv_scope_policy"] = "DOWNSTREAM_ONLY_UNLOCKED_FG"
+				result["riv_scope_policy"] = (
+					"DOWNSTREAM_ONLY_UNLOCKED_FG"
+					if wrapper_ok
+					else "DOWNSTREAM_ONLY_WRAPPER_INACTIVE"
+				)
 			else:
 				riv_vouchers = [result.get("canonical_name")] + logistics_only
 				result["riv_scope_policy"] = "MANUFACTURE_PLUS_DOWNSTREAM"
 			result["riv_scope"] = [v for v in riv_vouchers if v]
+			# Durable recovery evidence (survives worker crash after Commit).
+			result["structural_committed"] = True
+			result["valuation_status"] = "VALUATION_PENDING"
 			try:
 				riv = enqueue_native_riv_for_vouchers(result["riv_scope"])
 				result["native_riv"] = riv
@@ -1294,6 +1318,8 @@ def run_repair(
 			# Structural Apply succeeded even if RIV enqueue needs operator recovery.
 			if result.get("valuation_status") == "VALUATION_PENDING":
 				result["status"] = "APPLY_PASS_VALUATION_PENDING"
+			elif result.get("valuation_status") == "VALUATION_FAILED":
+				result["status"] = "APPLY_PASS_VALUATION_FAILED"
 		result["phase_timings"] = timer.as_dict()
 		return result
 	except Exception as exc:

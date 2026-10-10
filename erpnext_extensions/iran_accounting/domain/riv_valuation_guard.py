@@ -663,6 +663,46 @@ def persist_stock_entry_after_recalculate(stock_entry, voucher_detail_no) -> Non
 			row.db_update()
 
 
+def is_iran_riv_recalculate_wrapper_active() -> bool:
+	"""True when stock_ledger.update_entries_after recalculate is Iran-wrapped."""
+	try:
+		from erpnext.stock import stock_ledger as sl
+
+		fn = sl.update_entries_after.recalculate_amounts_in_stock_entry
+		return bool(getattr(fn, "_iran_riv_recalculate_wrapper", False))
+	except Exception:
+		return False
+
+
+def ensure_iran_riv_recalculate_wrapper_active(*, bootstrap: bool = True) -> None:
+	"""Fail closed: IRR Manufacture RIV must not run on Core-only recalculate.
+
+	``before_request`` / ``before_job`` normally install the wrapper via
+	``integration.bootstrap.apply``. Ad-hoc ``bench execute``, console, and
+	direct ``from erpnext... import execute_reposting_entry`` callers can skip
+	those hooks. After optional bootstrap, refuse to continue if the wrapper
+	is still absent — silent Core Multi-FG double-pool is not allowed.
+	"""
+	if bootstrap:
+		from erpnext_extensions.iran_accounting.integration.bootstrap import (
+			apply as bootstrap_apply,
+		)
+
+		bootstrap_apply()
+	if is_iran_riv_recalculate_wrapper_active():
+		return
+	frappe.throw(
+		frappe._(
+			"IRAN_RIV_WRAPPER_INACTIVE: Iran recalculate_amounts_in_stock_entry "
+			"wrapper is not installed. Refusing Manufacture / Stock Entry RIV "
+			"recalculation to prevent Core-only Multi-FG double-pool corruption. "
+			"Call erpnext_extensions.iran_accounting.integration.bootstrap.apply "
+			"or run via RQ before_job / before_request."
+		),
+		title=frappe._("Iran RIV Wrapper Required"),
+	)
+
+
 def make_recalculate_amounts_wrapper(original):
 	"""L1: apply Iran contract + integrity asserts before any SE row db_update."""
 
