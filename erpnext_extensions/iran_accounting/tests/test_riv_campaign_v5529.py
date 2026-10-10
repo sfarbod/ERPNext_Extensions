@@ -74,6 +74,26 @@ class TestManifestOrdering(unittest.TestCase):
 		rows2[0] = dict(rows[0], name="A2")
 		self.assertNotEqual(a, rc.manifest_checksum(rows2))
 
+	def test_stock_entry_purpose_filter_manufacture_only(self):
+		se = [
+			_row("Stock Entry", "SE-MFG-1", "2026-01-01", "09:00:00", "2026-01-01 09:00:00"),
+			_row("Stock Entry", "SE-MFG-2", "2026-01-02", "10:00:00", "2026-01-02 10:00:00"),
+		]
+
+		def fake_get_all(doctype, **kwargs):
+			self.assertEqual(doctype, "Stock Entry")
+			self.assertEqual(kwargs.get("filters"), {"docstatus": 1, "purpose": "Manufacture"})
+			return se
+
+		with mock.patch.object(rc.frappe, "get_all", side_effect=fake_get_all):
+			rows = rc.build_source_manifest(stock_entry_purpose="Manufacture")
+
+		self.assertEqual(
+			[(r["doctype"], r["name"]) for r in rows],
+			[("Stock Entry", "SE-MFG-1"), ("Stock Entry", "SE-MFG-2")],
+		)
+		self.assertTrue(all(r["doctype"] == "Stock Entry" for r in rows))
+
 
 class TestBatchSize(unittest.TestCase):
 	def test_default_and_max(self):
