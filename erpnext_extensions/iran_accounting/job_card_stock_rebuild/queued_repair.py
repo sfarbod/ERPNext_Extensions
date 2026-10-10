@@ -660,13 +660,18 @@ def _map_final_status(result: dict, mode: str) -> str:
 		return "BLOCKED"
 	if mode == MODE_DRY_RUN and result.get("ok") and status_raw == "DRY_RUN_PASS":
 		return "PASS"
-	if mode == MODE_APPLY and result.get("ok") and result.get("committed") and status_raw == "APPLY_PASS":
-		return "COMMITTED"
+	# Structural Apply committed; native RIV still pending — not a full COMPLETED success.
+	if mode == MODE_APPLY and result.get("ok") and result.get("committed"):
+		if status_raw == "APPLY_PASS_VALUATION_PENDING":
+			return "COMMITTED_VALUATION_PENDING"
+		if status_raw == "APPLY_PASS_VALUATION_FAILED":
+			return "COMMITTED_VALUATION_FAILED"
+		if status_raw == "APPLY_PASS":
+			return "COMMITTED"
 	if mode == MODE_APPLY and result.get("ok") and status_raw == "APPLY_PASS":
 		# Should not happen — Apply PASS without commit
 		return "FAILED"
 	return "FAILED"
-
 
 def _instrument_commits(result: dict):
 	"""Count frappe.db.commit calls during engine execution."""

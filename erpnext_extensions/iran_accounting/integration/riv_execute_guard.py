@@ -54,13 +54,15 @@ def _ensure_iran_runtime_for_riv() -> None:
 	``before_job`` / ``before_request`` normally call bootstrap. Direct callers
 	(``_execute_reposting_entry``, bench console, campaign drivers) can skip
 	those hooks. Without patches, vanilla RIV writes float ``basic_rate =
-	|SVD|/qty`` and Stock Entry GL fails with Debit/Credit Difference ±1 IRR
-	(allowance 0.5) instead of absorbing the one-quantum stock-valuation
-	residual into Company.stock_adjustment_account.
+	|SVD|/qty`` and Core Multi-FG can double-count the material pool on
+	Manufacture recalculate. Fail closed if the recalculate wrapper is still
+	inactive after bootstrap.
 	"""
-	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as bootstrap_apply
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ensure_iran_riv_recalculate_wrapper_active,
+	)
 
-	bootstrap_apply()
+	ensure_iran_riv_recalculate_wrapper_active(bootstrap=True)
 
 
 def execute_reposting_entry(name, continue_reposting=False):
