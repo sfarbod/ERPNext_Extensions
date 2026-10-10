@@ -1,0 +1,229 @@
+{
+ "actions": [],
+ "allow_copy": 0,
+ "allow_rename": 0,
+ "creation": "2026-10-10 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_campaign",
+  "campaign_id",
+  "manifest_checksum",
+  "source_total",
+  "generation_started",
+  "generation_completed",
+  "column_break_counts",
+  "count_purchase_receipt",
+  "count_stock_entry",
+  "count_delivery_note",
+  "count_stock_reconciliation",
+  "section_bounds",
+  "first_doctype",
+  "first_name",
+  "first_posting_date",
+  "first_posting_time",
+  "column_break_last",
+  "last_doctype",
+  "last_name",
+  "last_posting_date",
+  "last_posting_time",
+  "section_checkpoint",
+  "last_successful_ordinal",
+  "last_successful_doctype",
+  "last_successful_voucher",
+  "column_break_progress",
+  "campaign_created_riv",
+  "error_state"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_campaign",
+   "fieldtype": "Section Break",
+   "label": "Campaign"
+  },
+  {
+   "fieldname": "campaign_id",
+   "fieldtype": "Data",
+   "label": "Campaign Id",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manifest_checksum",
+   "fieldtype": "Data",
+   "label": "Manifest Checksum",
+   "read_only": 1,
+   "length": 64
+  },
+  {
+   "default": "0",
+   "fieldname": "source_total",
+   "fieldtype": "Int",
+   "label": "Source Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "generation_started",
+   "fieldtype": "Datetime",
+   "label": "Generation Started",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "generation_completed",
+   "fieldtype": "Check",
+   "label": "Generation Completed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_counts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "count_purchase_receipt",
+   "fieldtype": "Int",
+   "label": "Purchase Receipt Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "count_stock_entry",
+   "fieldtype": "Int",
+   "label": "Stock Entry Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "count_delivery_note",
+   "fieldtype": "Int",
+   "label": "Delivery Note Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "count_stock_reconciliation",
+   "fieldtype": "Int",
+   "label": "Stock Reconciliation Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_bounds",
+   "fieldtype": "Section Break",
+   "label": "Manifest Bounds"
+  },
+  {
+   "fieldname": "first_doctype",
+   "fieldtype": "Data",
+   "label": "First Doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "first_name",
+   "fieldtype": "Data",
+   "label": "First Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "first_posting_date",
+   "fieldtype": "Date",
+   "label": "First Posting Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "first_posting_time",
+   "fieldtype": "Data",
+   "label": "First Posting Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_last",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_doctype",
+   "fieldtype": "Data",
+   "label": "Last Doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_name",
+   "fieldtype": "Data",
+   "label": "Last Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_posting_date",
+   "fieldtype": "Date",
+   "label": "Last Posting Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_posting_time",
+   "fieldtype": "Data",
+   "label": "Last Posting Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_checkpoint",
+   "fieldtype": "Section Break",
+   "label": "Checkpoint"
+  },
+  {
+   "default": "0",
+   "fieldname": "last_successful_ordinal",
+   "fieldtype": "Int",
+   "label": "Last Successful Ordinal",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_successful_doctype",
+   "fieldtype": "Data",
+   "label": "Last Successful Doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_successful_voucher",
+   "fieldtype": "Data",
+   "label": "Last Successful Voucher",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_progress",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "campaign_created_riv",
+   "fieldtype": "Int",
+   "label": "Campaign Created RIV",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_state",
+   "fieldtype": "Small Text",
+   "label": "Error State",
+   "read_only": 1
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "RIV Campaign State",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "read_only": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
