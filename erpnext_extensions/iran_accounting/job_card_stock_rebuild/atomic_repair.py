@@ -17,6 +17,7 @@ from erpnext_extensions.iran_accounting.job_card_stock_rebuild.manufacture_plan 
 	build_manufacture_plan,
 )
 from erpnext_extensions.iran_accounting.job_card_stock_rebuild.sync_valuation import (
+	enqueue_native_riv_for_vouchers,
 	suppress_auto_riv,
 	sync_valuation_for_vouchers,
 )
@@ -253,7 +254,13 @@ def _rate_snapshot_identity(row: dict | Any) -> tuple:
 
 
 def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
-	"""Force snapshot rates (Core set_rate_for_outgoing_items overwrites mid-repair)."""
+	"""Force snapshot rates (Core set_rate_for_outgoing_items overwrites mid-repair).
+
+	When ``doc.flags.jc_repair_unlock_fg`` is set, MAIN_FG / finished rows are
+	skipped so Core + Iran can reallocate finished-good economics from the
+	corrected material pool (experiment/jc-repair-native-riv).
+	"""
+	unlock_fg = bool(getattr(doc.flags, "jc_repair_unlock_fg", False))
 	snaps = batch_snapshot or []
 	by_idx = {cint(r["idx"]): r for r in snaps if r.get("idx") is not None}
 	# Prefer idx; then unique rich identity; then unique item×batch.
@@ -305,32 +312,81 @@ def _reapply_snapshot_rates(doc, batch_snapshot: list[dict] | None = None):
 				)
 			)
 		qty = flt(row.transfer_qty) or flt(row.qty)
+		is_main_fg = cint(row.is_finished_item) or (
+			(getattr(row, "custom_output_class", None) or "") == "MAIN_FG"
+		)
+		if unlock_fg and is_main_fg:
+			# Leave rate/amount to Core calculate_rate_and_amount + Iran contract.
+			row.set_basic_rate_manually = 0
+			continue
 		row.basic_rate = rate
 		row.valuation_rate = rate
 		row.set_basic_rate_manually = 1
 		row.allow_zero_valuation_rate = 0
-		# MAIN_FG / finished incoming: do NOT force amount = qty×rate.
-		# Historical Manufacture may carry a legitimate integer-rate residual
-		# (e.g. 898 IRR) vs the allocatable material pool; recomposing amount
-		# from the snapshot rate recreates that residual and then fails R1
-		# after the output contract has (or should have) handled it.
+		# MAIN_FG / finished incoming: do NOT force amount = qty×rate when
+		# preserving historical value-neutral residuals.
 		# Source CONSUME and Component Scrap keep issued-rate amount identity.
-		is_main_fg = cint(row.is_finished_item) or (
-			(getattr(row, "custom_output_class", None) or "") == "MAIN_FG"
-		)
 		if is_main_fg:
 			continue
 		row.basic_amount = qty * rate
 		row.amount = qty * rate
 
 
+def _clear_in_memory_allocation_closed(doc) -> None:
+	"""Drop closed-plan stamps so Core mid-calculate polish cannot re-verify.
+
+	On unlocked Multi-FG repair, insert/save already closed SAME_ITEM_MULTI_FG.
+	The next ``calculate_rate_and_amount`` lets Core rewrite each MAIN_FG row to
+	the full material pool (double-pool). Patched ``set_total_incoming_outgoing_value``
+	then hits ``polish_closed_plan_after_align`` → ``verify_allocation_plan`` and
+	throws R1 before Iran can re-allocate. Clearing stamps confines verification
+	to after ``apply_irr_stock_entry_contract_after_calculate`` re-closes the plan.
+	"""
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		ALLOCATION_CLOSED_ATTR,
+		ALLOCATION_OWNER_ATTR,
+		ALLOCATION_PLAN_ATTR,
+		OWNED_ROW_IDS_ATTR,
+	)
+
+	for attr in (
+		ALLOCATION_CLOSED_ATTR,
+		ALLOCATION_OWNER_ATTR,
+		ALLOCATION_PLAN_ATTR,
+		OWNED_ROW_IDS_ATTR,
+	):
+		if hasattr(doc, attr):
+			try:
+				delattr(doc, attr)
+			except Exception:
+				setattr(doc, attr, None)
+
+
 def _bind_preserve_rates(doc, batch_snapshot: list[dict] | None = None):
-	"""Core validate recalculates outgoing rates from live stock — preserve snapshot."""
+	"""Core validate recalculates outgoing rates from live stock — preserve snapshot.
+
+	When ``jc_repair_unlock_fg`` is set, Core ``get_basic_rate_for_manufactured_item``
+	divides the full material pool by each FG row qty (not total FG qty), producing
+	a double-pool on multi-row MAIN_FG. Re-apply the Iran Manufacture contract after
+	each calculate so Multi-FG / output-family allocation closes the pool once.
+
+	Also clear in-memory closed-plan stamps before Core recalculate so a prior
+	Multi-FG close cannot fail R1 mid-Core against the transient double-pool.
+	"""
 	original = doc.calculate_rate_and_amount
 
 	def _calc(reset_outgoing_rate=True, raise_error_if_no_rate=True):
+		unlock_fg = bool(getattr(doc.flags, "jc_repair_unlock_fg", False))
+		if unlock_fg:
+			_clear_in_memory_allocation_closed(doc)
 		original(reset_outgoing_rate=False, raise_error_if_no_rate=False)
 		_reapply_snapshot_rates(doc, batch_snapshot=batch_snapshot)
+		if unlock_fg:
+			from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+				apply_irr_stock_entry_contract_after_calculate,
+			)
+
+			apply_irr_stock_entry_contract_after_calculate(doc)
 		if hasattr(doc, "set_total_incoming_outgoing_value"):
 			doc.set_total_incoming_outgoing_value()
 		if hasattr(doc, "set_total_amount"):
@@ -461,6 +517,9 @@ def _build_canonical_se(plan: dict) -> str:
 			default_cc = tr.cost_center
 			break
 
+	unlock_main_fg = bool(plan.get("unlock_main_fg"))
+	preserve_hist_residual = bool(plan.get("preserve_historical_residual")) and not unlock_main_fg
+
 	doc.items = []
 	rate_snapshot: list[dict] = []
 	for idx, row in enumerate(canon.get("rows") or [], start=1):
@@ -469,6 +528,9 @@ def _build_canonical_se(plan: dict) -> str:
 			row.get("s_warehouse")
 			and not row.get("t_warehouse")
 			and not cint(row.get("is_finished_item"))
+		)
+		is_main_fg = cint(row.get("is_finished_item")) or (
+			(row.get("custom_output_class") or row.get("type") or "") == "MAIN_FG"
 		)
 		if is_source and rate <= 1e-9:
 			frappe.throw(
@@ -494,7 +556,12 @@ def _build_canonical_se(plan: dict) -> str:
 		}
 		if row.get("department"):
 			child["department"] = row["department"]
-		if rate > 0:
+		# CONSUME / scrap: keep authoritative issued rates.
+		# MAIN_FG: unlock when material economics changed so Core+Iran reallocate.
+		if unlock_main_fg and is_main_fg:
+			child["set_basic_rate_manually"] = 0
+			# Seed rate is informational; Core recalculates from material pool.
+		elif rate > 0:
 			child["set_basic_rate_manually"] = 1
 			child["allow_zero_valuation_rate"] = 0
 		if row.get("custom_output_class"):
@@ -520,6 +587,7 @@ def _build_canonical_se(plan: dict) -> str:
 				"job_card_item": row.get("job_card_item"),
 				"basic_rate": rate,
 				"valuation_rate": flt(row.get("valuation_rate") or rate),
+				"unlock_fg": bool(unlock_main_fg and is_main_fg),
 			}
 		)
 
@@ -532,17 +600,17 @@ def _build_canonical_se(plan: dict) -> str:
 	doc.flags.ignore_permissions = True
 	# Site Server Script "Custom 9" bumps Manufacture after MTfM; skip via doc.flags.
 	doc.flags.jc_manufacture_repair = True
+	doc.flags.jc_repair_unlock_fg = unlock_main_fg
 	# Fingerprint the superseded historical Manufacture for residual preservation.
 	doc.flags.jc_repair_historical_mfg = template_name
-	# Pre-cancel residual snapshot (preferred — SA GL still live at capture time).
-	if plan.get("historical_manufacture_residual"):
+	# Pre-cancel residual snapshot only when value-neutral (preservable R3).
+	if preserve_hist_residual and plan.get("historical_manufacture_residual"):
 		doc.flags.jc_repair_historical_residual = plan.get("historical_manufacture_residual")
 	# Historical repair must keep the original Manufacture chronology; PPO would
 	# otherwise bump posting after remaining WIP Issues / other dependents.
 	if hasattr(doc, "set_posting_time"):
 		doc.set_posting_time = 1
-	# Preserve plan rates through Core validate (same pattern as logistics recreate).
-	# Do NOT depend on live get_incoming_rate at backdated Manufacture posting.
+	# Preserve CONSUME rates; unlock MAIN_FG when jc_repair_unlock_fg is set.
 	_bind_preserve_rates(doc, batch_snapshot=rate_snapshot)
 	doc.insert()
 	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
@@ -554,8 +622,9 @@ def _build_canonical_se(plan: dict) -> str:
 	if hasattr(doc, "set_posting_time"):
 		doc.set_posting_time = 1
 	doc.flags.jc_manufacture_repair = True
+	doc.flags.jc_repair_unlock_fg = unlock_main_fg
 	doc.flags.jc_repair_historical_mfg = template_name
-	if plan.get("historical_manufacture_residual"):
+	if preserve_hist_residual and plan.get("historical_manufacture_residual"):
 		doc.flags.jc_repair_historical_residual = plan.get("historical_manufacture_residual")
 	_reapply_snapshot_rates(doc, batch_snapshot=rate_snapshot)
 	doc.save()
@@ -797,6 +866,9 @@ def run_repair(
 		"mode": "DRY_RUN" if dry_run else "APPLY",
 		"dry_run": dry_run,
 		"fingerprint": plan["fingerprint"],
+		"economic_preflight": plan.get("economic_preflight"),
+		"unlock_main_fg": bool(plan.get("unlock_main_fg")),
+		"valuation_mode": (plan.get("economic_preflight") or {}).get("valuation_mode"),
 		"dispositions": plan.get("dispositions"),
 		"merge_documents": merge_docs,
 		"merge_material_issues": merge_mis,
@@ -1182,6 +1254,46 @@ def run_repair(
 			frappe.db.commit()
 			result["mutated"] = True
 			result["committed"] = True
+			# PHASE 3 — native auto RIV after durable Commit (outside suppress_auto_riv).
+			# In-txn sync_valuation already closed Manufacture base SLE; native RIV
+			# covers remaining/future Item×Warehouse chronology and GL propagation.
+			#
+			# When MAIN_FG was unlocked, Core RIV recalculate can re-introduce the
+			# per-row full-pool double-count unless the Iran recalculate wrapper is
+			# active. Prefer downstream logistics RIV; keep Manufacture out of the
+			# auto enqueue scope until VALUATION_VERIFIED proves safe on-site.
+			timer.start("T25_NATIVE_RIV")
+			_progress("T25_NATIVE_RIV")
+			logistics_only = [
+				x.get("to") for x in (result.get("recreated_logistics") or []) if x.get("to")
+			]
+			if result.get("unlock_main_fg"):
+				riv_vouchers = logistics_only
+				result["riv_scope_policy"] = "DOWNSTREAM_ONLY_UNLOCKED_FG"
+			else:
+				riv_vouchers = [result.get("canonical_name")] + logistics_only
+				result["riv_scope_policy"] = "MANUFACTURE_PLUS_DOWNSTREAM"
+			result["riv_scope"] = [v for v in riv_vouchers if v]
+			try:
+				riv = enqueue_native_riv_for_vouchers(result["riv_scope"])
+				result["native_riv"] = riv
+				if riv.get("ok"):
+					result["valuation_status"] = "VALUATION_PENDING"
+				else:
+					result["valuation_status"] = "VALUATION_FAILED"
+					result["warnings"] = list(result.get("warnings") or []) + [
+						"NATIVE_RIV_ENQUEUE_FAILED: " + "; ".join(riv.get("errors") or [])
+					]
+			except Exception as riv_exc:
+				result["native_riv"] = {"ok": False, "errors": [str(riv_exc)]}
+				result["valuation_status"] = "VALUATION_FAILED"
+				result["warnings"] = list(result.get("warnings") or []) + [
+					f"NATIVE_RIV_ENQUEUE_EXCEPTION: {riv_exc}"
+				]
+			timer.end("T25_NATIVE_RIV", riv_count=(result.get("native_riv") or {}).get("count"))
+			# Structural Apply succeeded even if RIV enqueue needs operator recovery.
+			if result.get("valuation_status") == "VALUATION_PENDING":
+				result["status"] = "APPLY_PASS_VALUATION_PENDING"
 		result["phase_timings"] = timer.as_dict()
 		return result
 	except Exception as exc:

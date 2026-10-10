@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import Iterable
 
 import frappe
+from frappe.utils import cint
 
 
 @contextmanager
@@ -344,4 +345,125 @@ def sync_valuation_for_vouchers(
 		"future_sle_total": future_total,
 		"pair_timings": pair_timings,
 		"dependant_scope_pairs": len(allowed_pairs),
+	}
+
+
+def _riv_names_for_voucher_scope(voucher_name: str) -> set[str]:
+	"""Active RIV names covering a voucher — transaction-based or item-based.
+
+	With ``item_based_reposting=1``, Core creates Item×Warehouse RIVs whose
+	``voucher_no`` is null. Discover them via the voucher's live SLE pairs.
+	"""
+	names: set[str] = set()
+	for row in frappe.db.sql(
+		"""
+		select name from `tabRepost Item Valuation`
+		where voucher_no=%s and docstatus=1
+		  and status in ('Queued', 'In Progress', 'Completed')
+		""",
+		voucher_name,
+		as_dict=1,
+	):
+		names.add(row.name)
+	pairs = frappe.db.sql(
+		"""
+		select distinct item_code, warehouse, posting_date, posting_time
+		from `tabStock Ledger Entry`
+		where voucher_type='Stock Entry' and voucher_no=%s and is_cancelled=0
+		""",
+		voucher_name,
+		as_dict=1,
+	)
+	for p in pairs:
+		for row in frappe.db.sql(
+			"""
+			select name from `tabRepost Item Valuation`
+			where docstatus=1
+			  and status in ('Queued', 'In Progress', 'Completed')
+			  and item_code=%s and warehouse=%s
+			  and posting_date <= %s
+			order by creation desc
+			limit 5
+			""",
+			(p.item_code, p.warehouse, p.posting_date),
+			as_dict=1,
+		):
+			names.add(row.name)
+	return names
+
+
+def enqueue_native_riv_for_vouchers(voucher_names: Iterable[str]) -> dict:
+	"""After structural Apply Commit: create native RIV for submitted vouchers.
+
+	Must run OUTSIDE the repair transaction (RIV submit is durable).
+	Uses Core ``StockController.repost_future_sle_and_gle`` which respects
+	site ``item_based_reposting`` and creates Item×Warehouse RIV docs.
+
+	Idempotent enough for Core: duplicate overlapping Item×Warehouse RIVs are
+	deduplicated by Core ``deduplicate_similar_repost`` where applicable.
+	Does not re-run structural repair.
+
+	Commits after each voucher so RIV rows survive process exit (RIV creation
+	must not remain only in the post-Apply session buffer).
+	"""
+	from erpnext.controllers.stock_controller import future_sle_exists
+
+	# Ensure Iran RIV recalculate wrapper is installed before Core creates/runs RIV.
+	try:
+		from erpnext_extensions.iran_accounting.integration.bootstrap import apply as bootstrap_apply
+
+		bootstrap_apply()
+	except Exception:
+		frappe.log_error("jc_repair_native_riv_bootstrap")
+
+	created: list[str] = []
+	skipped: list[dict] = []
+	errors: list[str] = []
+	for name in [n for n in voucher_names if n]:
+		if not frappe.db.exists("Stock Entry", name):
+			skipped.append({"voucher": name, "reason": "missing"})
+			continue
+		doc = frappe.get_doc("Stock Entry", name)
+		if cint(doc.docstatus) != 1:
+			skipped.append({"voucher": name, "reason": f"docstatus={doc.docstatus}"})
+			continue
+		args = frappe._dict(
+			{
+				"posting_date": doc.posting_date,
+				"posting_time": doc.posting_time,
+				"voucher_type": "Stock Entry",
+				"voucher_no": doc.name,
+				"company": doc.company,
+			}
+		)
+		try:
+			# Force=True: cancel/recreate often needs repost even when future_sle
+			# probe is ambiguous after repair chronology.
+			before = _riv_names_for_voucher_scope(name)
+			doc.flags.ignore_permissions = True
+			doc.repost_future_sle_and_gle(force=True)
+			# Durable evidence: item-based RIV has null voucher_no.
+			frappe.db.commit()
+			after = _riv_names_for_voucher_scope(name)
+			new_names = sorted(after - before)
+			created.extend(new_names if new_names else sorted(after))
+			if not before and not after and not future_sle_exists(args):
+				skipped.append({"voucher": name, "reason": "no_future_sle"})
+		except Exception as exc:
+			frappe.db.rollback()
+			errors.append(f"{name}: {exc}")
+			frappe.log_error(f"jc_repair_native_riv_enqueue:{name}")
+	# Unique preserve order
+	seen = set()
+	unique = []
+	for n in created:
+		if n not in seen:
+			seen.add(n)
+			unique.append(n)
+	return {
+		"ok": not errors,
+		"riv_names": unique,
+		"count": len(unique),
+		"skipped": skipped,
+		"errors": errors,
 	}
