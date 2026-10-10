@@ -171,7 +171,8 @@ def _expected_iran_class_for_type(
 	if suggested_type == TYPE_CO:
 		return CLASS_CO_PRODUCT
 	if suggested_type == TYPE_BY:
-		return CLASS_BY_PRODUCT
+		# Iran stage engine maps By-Product into the CO_PRODUCT bucket.
+		return CLASS_CO_PRODUCT
 	if suggested_type == TYPE_AFG:
 		return CLASS_ADDITIONAL_FINISHED_GOOD
 	if suggested_type == TYPE_SCRAP:
@@ -183,6 +184,35 @@ def _expected_iran_class_for_type(
 			return CLASS_COMPONENT_SCRAP
 		return CLASS_ORDINARY_SCRAP
 	return CLASS_UNKNOWN
+
+
+def _manufacture_se_stage_evidence(job_card: str, item_code: str) -> dict | None:
+	"""Submitted Manufacture incoming row for JC×item carrying stage Co/By evidence."""
+	if not job_card or not item_code:
+		return None
+	rows = frappe.db.sql(
+		"""
+		select sed.name, sed.parent, sed.secondary_item_type, sed.custom_output_class,
+		       sed.custom_output_equivalent_factor, sed.qty, sed.t_warehouse
+		from `tabStock Entry` se
+		join `tabStock Entry Detail` sed on sed.parent = se.name
+		where se.job_card = %s
+		  and se.purpose = 'Manufacture'
+		  and se.docstatus = 1
+		  and sed.item_code = %s
+		  and ifnull(sed.t_warehouse, '') != ''
+		  and ifnull(sed.s_warehouse, '') = ''
+		order by se.posting_date desc, se.posting_time desc, sed.idx
+		""",
+		(job_card, item_code),
+		as_dict=1,
+	)
+	for row in rows:
+		sit = (row.get("secondary_item_type") or "").strip()
+		out_class = (row.get("custom_output_class") or "").strip()
+		if sit in (TYPE_BY, TYPE_CO) or out_class in (CLASS_CO_PRODUCT, "CO_PRODUCT", CLASS_BY_PRODUCT):
+			return row
+	return None
 
 
 def suggest_secondary_type_changes(job_card: str) -> dict:
@@ -237,8 +267,88 @@ def suggest_secondary_type_changes(job_card: str) -> dict:
 			)
 			continue
 
-		# --- Already Scrap component pattern → no type change ---
+		# --- Scrap → By/Co-Product when submitted Manufacture already carries stage evidence ---
 		if current_type == TYPE_SCRAP:
+			se_ev = _manufacture_se_stage_evidence(job_card, item_code)
+			bom_type = _bom_secondary_type(row.get("bom_secondary_item"), bom_no, item_code)
+			if se_ev:
+				se_sit = (se_ev.get("secondary_item_type") or "").strip()
+				suggested_type = se_sit if se_sit in (TYPE_BY, TYPE_CO) else TYPE_BY
+				suggested_class = _expected_iran_class_for_type(
+					job_card, item_code, suggested_type, fg
+				)
+				confidence = CONF_PROVEN
+				action = "TYPE_CHANGE_SUGGESTED"
+				approval_enabled = True
+				evidence.append(
+					f"Submitted Manufacture {se_ev.parent} row {se_ev.name} already "
+					f"secondary_item_type={se_sit or '(blank)'} "
+					f"custom_output_class={se_ev.custom_output_class or '(blank)'}"
+				)
+				evidence.append(
+					"JC Scrap lags Manufacture stage classification — approve to sync Job Card"
+				)
+				suggestions.append(
+					{
+						**ident,
+						"idx": row.get("idx"),
+						"item_name": row.get("item_name"),
+						"qty": flt(row.get("stock_qty")),
+						"uom": row.get("stock_uom"),
+						"current_type": current_type,
+						"suggested_type": suggested_type,
+						"current_iran_class": current_class,
+						"suggested_iran_class": suggested_class,
+						"confidence": confidence,
+						"evidence": evidence,
+						"approval_required": True,
+						"approval_enabled": approval_enabled,
+						"action": action,
+						"downstream_impact": (
+							f"If approved: JC {current_type}→{suggested_type}; "
+							f"Iran class expected {current_class}→{suggested_class}. "
+							"Manufacture SE stage fields are synced without cancel/recreate; "
+							"qty and stock movements are preserved. Native RIV is not auto-started."
+						),
+						"manufacture_se": se_ev.parent,
+						"manufacture_se_detail": se_ev.name,
+					}
+				)
+				continue
+			if bom_type in (TYPE_BY, TYPE_CO):
+				suggested_type = bom_type
+				suggested_class = _expected_iran_class_for_type(
+					job_card, item_code, suggested_type, fg
+				)
+				confidence = CONF_HIGH
+				action = "TYPE_CHANGE_SUGGESTED"
+				approval_enabled = True
+				evidence.append(f"BOM Secondary declares {bom_type} while JC says Scrap")
+				suggestions.append(
+					{
+						**ident,
+						"idx": row.get("idx"),
+						"item_name": row.get("item_name"),
+						"qty": flt(row.get("stock_qty")),
+						"uom": row.get("stock_uom"),
+						"current_type": current_type,
+						"suggested_type": suggested_type,
+						"current_iran_class": current_class,
+						"suggested_iran_class": suggested_class,
+						"confidence": confidence,
+						"evidence": evidence,
+						"approval_required": True,
+						"approval_enabled": approval_enabled,
+						"action": action,
+						"downstream_impact": (
+							f"If approved: JC Scrap→{suggested_type}; sync matching Manufacture "
+							"SE secondary_item_type + CO_PRODUCT stamp without cancel/recreate."
+						),
+					}
+				)
+				continue
+
+			# Default Scrap: keep NO CHANGE (component / ordinary scrap)
 			exp = _expected_iran_class_for_type(job_card, item_code, TYPE_SCRAP, fg)
 			evidence.append(f"Already Scrap; expected Iran class {exp}")
 			suggestions.append(
@@ -269,6 +379,7 @@ def suggest_secondary_type_changes(job_card: str) -> dict:
 			hist = _historical_component_scrap(item_code, fg)
 			bom_type = _bom_secondary_type(row.get("bom_secondary_item"), bom_no, item_code)
 			stage_meta = _has_stage_metadata(row)
+			se_ev = _manufacture_se_stage_evidence(job_card, item_code)
 
 			if jc_item:
 				evidence.append(
@@ -282,10 +393,15 @@ def suggest_secondary_type_changes(job_card: str) -> dict:
 				evidence.append(f"BOM Secondary type={bom_type}")
 			if stage_meta:
 				evidence.append("Explicit stage/equivalence metadata present on row")
+			if se_ev:
+				evidence.append(
+					f"Submitted Manufacture {se_ev.parent} confirms stage "
+					f"{(se_ev.secondary_item_type or se_ev.custom_output_class)}"
+				)
 
-			# Legitimate stage output protection
-			if bom_type in (TYPE_CO, TYPE_BY, TYPE_AFG) and stage_meta:
-				evidence.append("Legitimate Co/By-Product protected by BOM + stage metadata")
+			# Legitimate stage output protection (BOM+JC meta, or live Manufacture stamp)
+			if (bom_type in (TYPE_CO, TYPE_BY, TYPE_AFG) and stage_meta) or se_ev:
+				evidence.append("Legitimate Co/By-Product protected by stage evidence")
 				suggestions.append(
 					{
 						**ident,
@@ -520,8 +636,76 @@ def validate_type_approvals(job_card: str, approvals: list[dict], suggestions: l
 	return {"ok": not errors, "normalized": normalized, "errors": errors}
 
 
+def _sync_manufacture_se_secondary_type(job_card: str, item_code: str, approved_type: str) -> list[dict]:
+	"""Align submitted Manufacture SE rows for JC×item without cancel/recreate.
+
+	Writes business type + Iran CO_PRODUCT stamp when approving By/Co-Product.
+	Does not change qty, warehouses, rates, SLE, or GL. Does not start RIV.
+	"""
+	if approved_type not in (TYPE_BY, TYPE_CO):
+		return []
+	rows = frappe.db.sql(
+		"""
+		select sed.name, sed.parent, sed.secondary_item_type, sed.custom_output_class,
+		       sed.custom_output_equivalent_factor
+		from `tabStock Entry` se
+		join `tabStock Entry Detail` sed on sed.parent = se.name
+		where se.job_card = %s
+		  and se.purpose = 'Manufacture'
+		  and se.docstatus = 1
+		  and sed.item_code = %s
+		  and ifnull(sed.t_warehouse, '') != ''
+		  and ifnull(sed.s_warehouse, '') = ''
+		""",
+		(job_card, item_code),
+		as_dict=1,
+	)
+	synced = []
+	for row in rows:
+		updates: dict[str, Any] = {}
+		if (row.get("secondary_item_type") or "").strip() != approved_type:
+			updates["secondary_item_type"] = approved_type
+		if (row.get("custom_output_class") or "").strip() != CLASS_CO_PRODUCT:
+			updates["custom_output_class"] = CLASS_CO_PRODUCT
+		# Preserve positive snapshotted factors; stamp 1.0 only when unset/zero.
+		if flt(row.get("custom_output_equivalent_factor")) <= 0:
+			updates["custom_output_equivalent_factor"] = 1.0
+		if not updates:
+			synced.append(
+				{
+					"type": "sed_secondary_type_noop",
+					"detail_name": row.name,
+					"stock_entry": row.parent,
+					"item_code": item_code,
+					"approved_type": approved_type,
+				}
+			)
+			continue
+		frappe.db.set_value(
+			"Stock Entry Detail",
+			row.name,
+			updates,
+			update_modified=False,
+		)
+		frappe.clear_document_cache("Stock Entry", row.parent)
+		synced.append(
+			{
+				"type": "sed_secondary_type",
+				"detail_name": row.name,
+				"stock_entry": row.parent,
+				"item_code": item_code,
+				"approved_type": approved_type,
+				"updates": updates,
+			}
+		)
+	return synced
+
+
 def apply_type_approvals(approvals: list[dict]) -> list[dict]:
-	"""Persist approved secondary_item_type only. Does not write Iran class."""
+	"""Persist approved JC secondary_item_type and sync matching Manufacture SE rows.
+
+	Does not invent rates, cancel vouchers, or start RIV.
+	"""
 	applied = []
 	for a in approvals:
 		frappe.db.set_value(
@@ -532,6 +716,13 @@ def apply_type_approvals(approvals: list[dict]) -> list[dict]:
 			update_modified=False,
 		)
 		applied.append({**a, "type": "secondary_item_type"})
+		applied.extend(
+			_sync_manufacture_se_secondary_type(
+				a.get("job_card") or "",
+				a.get("item_code") or "",
+				a.get("approved_type") or "",
+			)
+		)
 	return applied
 
 
@@ -546,4 +737,6 @@ __all__ = [
 	"suggest_secondary_type_changes",
 	"validate_type_approvals",
 	"apply_type_approvals",
+	"_manufacture_se_stage_evidence",
+	"_sync_manufacture_se_secondary_type",
 ]
