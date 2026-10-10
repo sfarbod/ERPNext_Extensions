@@ -66,6 +66,18 @@ def currency_precision_quantum(precision: int) -> float:
 	return 1.0 / (10**int(precision)) if int(precision) else 1.0
 
 
+def _quantize_money(value, precision: int | None) -> float:
+	"""Signed currency quantize that never collapses negatives to 0.
+
+	``frappe.utils.flt(x, precision)`` can return 0 for negative values when
+	System Settings rounding is unavailable (early bootstrap / unit tests).
+	"""
+	num = float(value or 0.0)
+	if precision is None:
+		return num
+	return float(round(num, int(precision)))
+
+
 def is_stock_valuation_voucher_type(voucher_type: str | None) -> bool:
 	return cstr(voucher_type) in STOCK_VALUATION_VOUCHER_TYPES
 
@@ -87,7 +99,7 @@ def absorb_stock_valuation_precision_residual(
 	if not gl_map:
 		return False
 	quantum = currency_precision_quantum(precision)
-	diff = flt(debit_credit_diff, precision)
+	diff = _quantize_money(debit_credit_diff, precision)
 	if not diff or abs(diff) > quantum + 1e-9:
 		return False
 
@@ -158,7 +170,7 @@ def absorb_stock_valuation_precision_residual(
 		gl_map.append(target)
 
 	# debit_credit_diff > 0 ⇒ excess debit ⇒ add credit on Stock Adjustment.
-	trx = flt(trx_cur_debit_credit_diff, precision)
+	trx = _quantize_money(trx_cur_debit_credit_diff, precision)
 	if diff > 0:
 		_s(target, "credit", float(round_currency(flt(_g(target, "credit")) + diff, currency)))
 		_s(
@@ -191,7 +203,7 @@ def absorb_stock_valuation_precision_residual(
 	gl_map[:] = [
 		e
 		for e in gl_map
-		if flt(_g(e, "debit"), precision) or flt(_g(e, "credit"), precision)
+		if _quantize_money(_g(e, "debit"), precision) or _quantize_money(_g(e, "credit"), precision)
 	]
 	return True
 
@@ -219,10 +231,10 @@ def align_irr_gl_map_to_currency_precision(doc, gl_map: list | None) -> list | N
 	gl_map[:] = [
 		e
 		for e in gl_map
-		if flt(e.get("debit"), precision) or flt(e.get("credit"), precision)
+		if _quantize_money(e.get("debit"), precision) or _quantize_money(e.get("credit"), precision)
 	]
 
-	net = flt(_net_debit(gl_map), precision)
+	net = _quantize_money(_net_debit(gl_map), precision)
 	if not net:
 		return gl_map
 
