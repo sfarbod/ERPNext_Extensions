@@ -305,17 +305,20 @@ def _assert_manifest_unchanged(state, rows: list[dict[str, Any]], checksum: str)
 def _result_shell(state, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
 	counts = riv_status_counts()
 	remaining = max(0, cint(state.source_total) - cint(state.last_successful_ordinal))
+	total = cint(state.source_total)
+	progress = round(100.0 * cint(state.last_successful_ordinal) / total, 4) if total else 0.0
 	return {
 		"ok": True,
 		"campaign_id": state.campaign_id,
 		"manifest_checksum": state.manifest_checksum,
-		"source_total": cint(state.source_total),
+		"source_total": total,
 		"last_successful_ordinal": cint(state.last_successful_ordinal),
 		"last_successful_doctype": state.last_successful_doctype,
 		"last_successful_voucher": state.last_successful_voucher,
 		"campaign_created_riv": cint(state.campaign_created_riv),
 		"generation_completed": cint(state.generation_completed),
 		"remaining": remaining,
+		"progress_percent": progress,
 		"riv_total": counts["total"],
 		"riv_queued": counts["queued"],
 		"riv_skipped": counts["skipped"],
@@ -325,13 +328,8 @@ def _result_shell(state, rows: list[dict[str, Any]] | None = None) -> dict[str, 
 	}
 
 
-def generate_full_riv_campaign(batch_size: int | None = None) -> dict[str, Any]:
-	"""Generate the next batch of Item-and-Warehouse RIVs. Bench-only. Not whitelisted.
-
-	Calls create_item_wise_repost_entries(doctype, name) only. Commits once per
-	successful source voucher together with the checkpoint advance.
-	"""
-	size = _normalize_batch_size(batch_size)
+def _ensure_campaign_ready() -> tuple[Any, list[dict[str, Any]], str]:
+	"""Load/init campaign and return (state, rows, checksum). Raises on guard failure."""
 	state = _get_state()
 	rows = build_source_manifest()
 	checksum = manifest_checksum(rows)
@@ -343,14 +341,34 @@ def generate_full_riv_campaign(batch_size: int | None = None) -> dict[str, Any]:
 		assert_schedulers_stopped()
 		assert_continuation_riv_safe()
 		_assert_manifest_unchanged(state, rows, checksum)
-		if cint(state.generation_completed):
-			out = _result_shell(state, rows)
-			out["batch_start_ordinal"] = None
-			out["batch_end_ordinal"] = None
-			out["batch_processed"] = 0
-			out["batch_created_riv"] = 0
-			out["message"] = "generation already completed"
-			return out
+
+	return state, rows, checksum
+
+
+def _recheck_continuation_safety(state, rows: list[dict[str, Any]], checksum: str) -> None:
+	"""Full safety recheck used at the start of every internal run_all batch."""
+	assert_schedulers_stopped()
+	assert_continuation_riv_safe()
+	_assert_manifest_unchanged(state, rows, checksum)
+
+
+def _process_one_batch(
+	*,
+	state,
+	rows: list[dict[str, Any]],
+	size: int,
+	internal_batch_number: int = 1,
+) -> dict[str, Any]:
+	"""Process one observation batch. Commits once per successful voucher."""
+	if cint(state.generation_completed):
+		out = _result_shell(state, rows)
+		out["batch_start_ordinal"] = None
+		out["batch_end_ordinal"] = None
+		out["batch_processed"] = 0
+		out["batch_created_riv"] = 0
+		out["internal_batch_number"] = internal_batch_number
+		out["message"] = "generation already completed"
+		return out
 
 	start = cint(state.last_successful_ordinal) + 1
 	if start > cint(state.source_total):
@@ -361,12 +379,12 @@ def generate_full_riv_campaign(batch_size: int | None = None) -> dict[str, Any]:
 		out = _result_shell(state, rows)
 		out["batch_processed"] = 0
 		out["batch_created_riv"] = 0
+		out["internal_batch_number"] = internal_batch_number
 		return out
 
 	end = min(cint(state.last_successful_ordinal) + size, cint(state.source_total))
 	batch_created = 0
 	batch_processed = 0
-	error_info = None
 
 	# Clear prior error when continuing successfully into a new batch attempt
 	if state.error_state:
@@ -406,6 +424,8 @@ def generate_full_riv_campaign(batch_size: int | None = None) -> dict[str, Any]:
 				"ordinal": ordinal,
 				"doctype": row["doctype"],
 				"voucher": row["name"],
+				"posting_date": str(row.get("posting_date")),
+				"posting_time": _posting_time_key(row.get("posting_time")),
 				"exception_class": type(exc).__name__,
 				"message": str(exc)[:500],
 			}
@@ -424,18 +444,151 @@ def generate_full_riv_campaign(batch_size: int | None = None) -> dict[str, Any]:
 			out["batch_end_ordinal"] = end
 			out["batch_processed"] = batch_processed
 			out["batch_created_riv"] = batch_created
+			out["internal_batch_number"] = internal_batch_number
 			out["error"] = error_info
 			return out
 
 	state = _get_state()
 	if cint(state.generation_completed):
 		assert_continuation_riv_safe()
+		assert_schedulers_stopped()
 
 	out = _result_shell(state, rows)
 	out["batch_start_ordinal"] = start
 	out["batch_end_ordinal"] = cint(state.last_successful_ordinal)
 	out["batch_processed"] = batch_processed
 	out["batch_created_riv"] = batch_created
+	out["internal_batch_number"] = internal_batch_number
+	return out
+
+
+def _print_batch_progress(out: dict[str, Any]) -> None:
+	"""Compact progress line for long run_all sessions."""
+	print(
+		json.dumps(
+			{
+				"progress": True,
+				"campaign_id": out.get("campaign_id"),
+				"manifest_checksum": out.get("manifest_checksum"),
+				"source_total": out.get("source_total"),
+				"internal_batch_number": out.get("internal_batch_number"),
+				"batch_start_ordinal": out.get("batch_start_ordinal"),
+				"batch_end_ordinal": out.get("batch_end_ordinal"),
+				"batch_processed": out.get("batch_processed"),
+				"last_successful_ordinal": out.get("last_successful_ordinal"),
+				"last_successful_doctype": out.get("last_successful_doctype"),
+				"last_successful_voucher": out.get("last_successful_voucher"),
+				"remaining": out.get("remaining"),
+				"batch_created_riv": out.get("batch_created_riv"),
+				"campaign_created_riv": out.get("campaign_created_riv"),
+				"riv_total": out.get("riv_total"),
+				"riv_queued": out.get("riv_queued"),
+				"riv_skipped": out.get("riv_skipped"),
+				"riv_in_progress": out.get("riv_in_progress"),
+				"riv_completed": out.get("riv_completed"),
+				"riv_failed": out.get("riv_failed"),
+				"generation_completed": out.get("generation_completed"),
+				"ok": out.get("ok"),
+			},
+			default=str,
+		),
+		flush=True,
+	)
+
+
+def generate_full_riv_campaign(
+	batch_size: int | None = None,
+	run_all: bool = False,
+	max_batches: int | None = None,
+) -> dict[str, Any]:
+	"""Generate Item-and-Warehouse RIVs. Bench-only. Not whitelisted.
+
+	``run_all=False`` (default): process one observation batch and return.
+	``run_all=True``: iterate remaining batches until complete or a guard/error stops.
+
+	``max_batches`` optionally caps internal iterations (testing / controlled proof).
+	Omit it for full remaining history.
+
+	Calls create_item_wise_repost_entries(doctype, name) only. Commits once per
+	successful source voucher together with the checkpoint advance.
+	"""
+	size = _normalize_batch_size(batch_size)
+	if max_batches is not None:
+		max_batches = cint(max_batches)
+		if max_batches <= 0:
+			raise RivCampaignError(f"max_batches must be positive, got {max_batches!r}.")
+
+	state, rows, checksum = _ensure_campaign_ready()
+
+	if not run_all:
+		return _process_one_batch(state=state, rows=rows, size=size, internal_batch_number=1)
+
+	# run_all: iterative loop — never recurse into generate_full_riv_campaign
+	batch_summaries: list[dict[str, Any]] = []
+	internal_batch = 0
+	last_out: dict[str, Any] | None = None
+	campaign_created_at_start = cint(state.campaign_created_riv)
+
+	while True:
+		state = _get_state()
+		if cint(state.generation_completed):
+			break
+		if cint(state.last_successful_ordinal) >= cint(state.source_total):
+			break
+		if max_batches is not None and internal_batch >= max_batches:
+			break
+
+		# Rebuild + recheck between every internal batch (including the first)
+		rows = build_source_manifest()
+		checksum = manifest_checksum(rows)
+		state = _get_state()
+		_recheck_continuation_safety(state, rows, checksum)
+
+		internal_batch += 1
+		last_out = _process_one_batch(
+			state=state,
+			rows=rows,
+			size=size,
+			internal_batch_number=internal_batch,
+		)
+		_print_batch_progress(last_out)
+		batch_summaries.append(
+			{
+				"internal_batch_number": internal_batch,
+				"batch_start_ordinal": last_out.get("batch_start_ordinal"),
+				"batch_end_ordinal": last_out.get("batch_end_ordinal"),
+				"batch_processed": last_out.get("batch_processed"),
+				"batch_created_riv": last_out.get("batch_created_riv"),
+				"ok": last_out.get("ok"),
+			}
+		)
+
+		if not last_out.get("ok", True):
+			last_out["run_all"] = True
+			last_out["internal_batches_completed"] = internal_batch
+			last_out["batch_summaries"] = batch_summaries
+			last_out["run_all_created_riv"] = (
+				cint(last_out.get("campaign_created_riv")) - campaign_created_at_start
+			)
+			return last_out
+
+		if cint(last_out.get("generation_completed")):
+			break
+		if not cint(last_out.get("batch_processed")):
+			# No progress — avoid infinite loop
+			break
+
+	state = _get_state()
+	out = last_out or _result_shell(state, rows)
+	out["run_all"] = True
+	out["internal_batches_completed"] = internal_batch
+	out["batch_summaries"] = batch_summaries
+	out["run_all_created_riv"] = cint(state.campaign_created_riv) - campaign_created_at_start
+	out["stopped_by_max_batches"] = bool(
+		max_batches is not None
+		and internal_batch >= max_batches
+		and not cint(state.generation_completed)
+	)
 	return out
 
 
@@ -444,10 +597,12 @@ def get_full_riv_campaign_status() -> dict[str, Any]:
 	state = _get_state()
 	counts = riv_status_counts()
 	remaining = max(0, cint(state.source_total) - cint(state.last_successful_ordinal))
+	total = cint(state.source_total)
+	progress = round(100.0 * cint(state.last_successful_ordinal) / total, 4) if total else 0.0
 	return {
 		"campaign_id": state.campaign_id,
 		"manifest_checksum": state.manifest_checksum,
-		"source_total": cint(state.source_total),
+		"source_total": total,
 		"last_successful_ordinal": cint(state.last_successful_ordinal),
 		"last_successful_doctype": state.last_successful_doctype,
 		"last_successful_voucher": state.last_successful_voucher,
@@ -455,6 +610,8 @@ def get_full_riv_campaign_status() -> dict[str, Any]:
 		"generation_completed": cint(state.generation_completed),
 		"generation_started": str(state.generation_started) if state.generation_started else None,
 		"remaining": remaining,
+		"progress_percent": progress,
+		"run_all_supported": True,
 		"error_state": state.error_state,
 		"counts_by_doctype": {
 			"Purchase Receipt": cint(state.count_purchase_receipt),

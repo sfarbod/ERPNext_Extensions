@@ -471,5 +471,318 @@ class TestAtomicCommitOrder(unittest.TestCase):
 		self.assertEqual(order[2], ("commit", 1))
 
 
+class TestRunAll(unittest.TestCase):
+	def _rows(self, n=5):
+		rows = []
+		for i in range(1, n + 1):
+			rows.append(
+				{
+					"ordinal": i,
+					"doctype": "Stock Entry",
+					"name": f"SE-{i}",
+					"company": "C",
+					"posting_date": f"2026-01-{i:02d}",
+					"posting_time": f"{i:02d}:00:00",
+					"creation": f"2026-01-{i:02d} {i:02d}:00:00",
+				}
+			)
+		return rows
+
+	def _state(self, rows, **kw):
+		defaults = dict(
+			campaign_id="RIV-GEN-TEST",
+			manifest_checksum=rc.manifest_checksum(rows),
+			source_total=len(rows),
+			count_purchase_receipt=0,
+			count_stock_entry=len(rows),
+			count_delivery_note=0,
+			count_stock_reconciliation=0,
+			first_doctype=rows[0]["doctype"],
+			first_name=rows[0]["name"],
+			first_posting_date=rows[0]["posting_date"],
+			first_posting_time=rows[0]["posting_time"],
+			last_doctype=rows[-1]["doctype"],
+			last_name=rows[-1]["name"],
+			last_posting_date=rows[-1]["posting_date"],
+			last_posting_time=rows[-1]["posting_time"],
+			last_successful_ordinal=0,
+			last_successful_doctype=None,
+			last_successful_voucher=None,
+			campaign_created_riv=0,
+			generation_started="2026-01-01",
+			generation_completed=0,
+			error_state=None,
+			flags=frappe._dict(),
+		)
+		defaults.update(kw)
+		st = mock.Mock()
+		for k, v in defaults.items():
+			setattr(st, k, v)
+		st.save = lambda **kwargs: st
+		return st
+
+	def test_run_all_false_preserves_one_batch(self):
+		rows = self._rows(5)
+		state = self._state(rows)
+		calls = []
+
+		def create(vt, vn, **kw):
+			calls.append(vn)
+			return [mock.Mock()]
+
+		with (
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "assert_schedulers_stopped"),
+			mock.patch.object(rc, "assert_continuation_riv_safe"),
+			mock.patch.object(rc, "create_item_wise_repost_entries", side_effect=create),
+			mock.patch.object(rc.frappe.db, "commit"),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 2, "queued": 2, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+		):
+			out = rc.generate_full_riv_campaign(batch_size=2, run_all=False)
+
+		self.assertEqual(calls, ["SE-1", "SE-2"])
+		self.assertEqual(out["batch_processed"], 2)
+		self.assertNotIn("run_all", out)
+		self.assertEqual(state.last_successful_ordinal, 2)
+
+	def test_run_all_multiple_internal_batches(self):
+		rows = self._rows(5)
+		state = self._state(rows)
+		calls = []
+		commits = []
+		rechecks = []
+
+		def create(vt, vn, **kw):
+			calls.append(vn)
+			return [mock.Mock()]
+
+		def recheck(*a, **k):
+			rechecks.append(1)
+
+		with (
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "_ensure_campaign_ready", return_value=(state, rows, state.manifest_checksum)),
+			mock.patch.object(rc, "_recheck_continuation_safety", side_effect=recheck),
+			mock.patch.object(rc, "assert_schedulers_stopped"),
+			mock.patch.object(rc, "assert_continuation_riv_safe"),
+			mock.patch.object(rc, "create_item_wise_repost_entries", side_effect=create),
+			mock.patch.object(rc.frappe.db, "commit", side_effect=lambda: commits.append(state.last_successful_ordinal)),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 5, "queued": 5, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "_print_batch_progress"),
+		):
+			out = rc.generate_full_riv_campaign(batch_size=2, run_all=True)
+
+		self.assertTrue(out["ok"])
+		self.assertTrue(out["run_all"])
+		self.assertEqual(calls, ["SE-1", "SE-2", "SE-3", "SE-4", "SE-5"])
+		self.assertEqual(out["internal_batches_completed"], 3)  # 2+2+1
+		self.assertEqual(state.last_successful_ordinal, 5)
+		self.assertEqual(state.generation_completed, 1)
+		self.assertEqual(len(commits), 5)  # per-voucher
+		self.assertEqual(len(rechecks), 3)  # once per internal batch
+
+	def test_run_all_respects_max_batches(self):
+		rows = self._rows(5)
+		state = self._state(rows)
+		calls = []
+
+		with (
+			mock.patch.object(rc, "_ensure_campaign_ready", return_value=(state, rows, state.manifest_checksum)),
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "_recheck_continuation_safety"),
+			mock.patch.object(
+				rc, "create_item_wise_repost_entries", side_effect=lambda vt, vn, **k: calls.append(vn) or [mock.Mock()]
+			),
+			mock.patch.object(rc.frappe.db, "commit"),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 2, "queued": 2, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "_print_batch_progress"),
+		):
+			out = rc.generate_full_riv_campaign(batch_size=2, run_all=True, max_batches=1)
+
+		self.assertEqual(calls, ["SE-1", "SE-2"])
+		self.assertTrue(out["stopped_by_max_batches"])
+		self.assertEqual(state.last_successful_ordinal, 2)
+		self.assertEqual(state.generation_completed, 0)
+
+	def test_run_all_stops_on_voucher_failure_without_advance(self):
+		rows = self._rows(4)
+		state = self._state(rows, last_successful_ordinal=1, campaign_created_riv=1)
+		calls = []
+
+		def create(vt, vn, **kw):
+			calls.append(vn)
+			if vn == "SE-3":
+				raise RuntimeError("boom")
+			return [mock.Mock()]
+
+		with (
+			mock.patch.object(rc, "_ensure_campaign_ready", return_value=(state, rows, state.manifest_checksum)),
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "_recheck_continuation_safety"),
+			mock.patch.object(rc, "create_item_wise_repost_entries", side_effect=create),
+			mock.patch.object(rc.frappe.db, "commit"),
+			mock.patch.object(rc.frappe.db, "rollback"),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 2, "queued": 2, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "_print_batch_progress"),
+		):
+			out = rc.generate_full_riv_campaign(batch_size=2, run_all=True)
+
+		self.assertFalse(out["ok"])
+		self.assertEqual(out["error"]["voucher"], "SE-3")
+		self.assertEqual(out["error"]["ordinal"], 3)
+		self.assertIn("posting_date", out["error"])
+		# SE-2 succeeded in first batch; SE-3 failed — ordinal stays 2
+		self.assertEqual(state.last_successful_ordinal, 2)
+		self.assertEqual(calls, ["SE-2", "SE-3"])
+
+	def test_run_all_resume_does_not_regenerate_committed(self):
+		rows = self._rows(4)
+		state = self._state(rows, last_successful_ordinal=2, campaign_created_riv=2)
+		calls = []
+
+		with (
+			mock.patch.object(rc, "_ensure_campaign_ready", return_value=(state, rows, state.manifest_checksum)),
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "_recheck_continuation_safety"),
+			mock.patch.object(rc, "assert_schedulers_stopped"),
+			mock.patch.object(rc, "assert_continuation_riv_safe"),
+			mock.patch.object(
+				rc, "create_item_wise_repost_entries", side_effect=lambda vt, vn, **k: calls.append(vn) or [mock.Mock()]
+			),
+			mock.patch.object(rc.frappe.db, "commit"),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 4, "queued": 4, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "_print_batch_progress"),
+		):
+			out = rc.generate_full_riv_campaign(batch_size=2, run_all=True)
+
+		self.assertEqual(calls, ["SE-3", "SE-4"])
+		self.assertEqual(out["generation_completed"], 1)
+		self.assertNotIn("SE-1", calls)
+		self.assertNotIn("SE-2", calls)
+
+	def test_run_all_stops_when_in_progress_between_batches(self):
+		rows = self._rows(4)
+		state = self._state(rows)
+		calls = []
+		recheck_n = {"n": 0}
+
+		def recheck(*a, **k):
+			recheck_n["n"] += 1
+			if recheck_n["n"] > 1:
+				raise rc.RivCampaignError("RIV In Progress=1; refuse continuation.")
+
+		with (
+			mock.patch.object(rc, "_ensure_campaign_ready", return_value=(state, rows, state.manifest_checksum)),
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "_recheck_continuation_safety", side_effect=recheck),
+			mock.patch.object(
+				rc, "create_item_wise_repost_entries", side_effect=lambda vt, vn, **k: calls.append(vn) or [mock.Mock()]
+			),
+			mock.patch.object(rc.frappe.db, "commit"),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 2, "queued": 2, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "_print_batch_progress"),
+		):
+			with self.assertRaises(rc.RivCampaignError) as ctx:
+				rc.generate_full_riv_campaign(batch_size=2, run_all=True)
+
+		self.assertIn("In Progress", str(ctx.exception))
+		self.assertEqual(calls, ["SE-1", "SE-2"])
+		self.assertEqual(state.last_successful_ordinal, 2)
+
+	def test_run_all_stops_on_manifest_change_between_batches(self):
+		rows = self._rows(4)
+		state = self._state(rows)
+		calls = []
+		recheck_n = {"n": 0}
+
+		def recheck(st, rs, checksum):
+			recheck_n["n"] += 1
+			if recheck_n["n"] > 1:
+				raise rc.RivCampaignError("Source manifest checksum changed")
+
+		with (
+			mock.patch.object(rc, "_ensure_campaign_ready", return_value=(state, rows, state.manifest_checksum)),
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "build_source_manifest", return_value=rows),
+			mock.patch.object(rc, "_recheck_continuation_safety", side_effect=recheck),
+			mock.patch.object(
+				rc, "create_item_wise_repost_entries", side_effect=lambda vt, vn, **k: calls.append(vn) or [mock.Mock()]
+			),
+			mock.patch.object(rc.frappe.db, "commit"),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 2, "queued": 2, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "_print_batch_progress"),
+		):
+			with self.assertRaises(rc.RivCampaignError) as ctx:
+				rc.generate_full_riv_campaign(batch_size=2, run_all=True)
+
+		self.assertIn("checksum", str(ctx.exception))
+		self.assertEqual(state.last_successful_ordinal, 2)
+
+	def test_run_all_never_recurses(self):
+		src = open(rc.__file__).read()
+		body = src.split("def generate_full_riv_campaign", 1)[1]
+		body = body.split("def get_full_riv_campaign_status", 1)[0]
+		# signature line may mention the name; strip the def header
+		body = body.split("\n", 1)[1]
+		self.assertNotIn("generate_full_riv_campaign(", body)
+		self.assertIn("_process_one_batch(", body)
+
+	def test_status_exposes_run_all_supported(self):
+		state = mock.Mock(
+			campaign_id="X",
+			manifest_checksum="c",
+			source_total=10,
+			last_successful_ordinal=3,
+			last_successful_doctype="Stock Entry",
+			last_successful_voucher="SE-3",
+			campaign_created_riv=7,
+			generation_completed=0,
+			generation_started=None,
+			error_state=None,
+			count_purchase_receipt=1,
+			count_stock_entry=9,
+			count_delivery_note=0,
+			count_stock_reconciliation=0,
+			first_doctype="Stock Entry",
+			first_name="SE-1",
+			first_posting_date="2026-01-01",
+			first_posting_time="01:00:00",
+			last_doctype="Stock Entry",
+			last_name="SE-9",
+			last_posting_date="2026-01-09",
+			last_posting_time="09:00:00",
+		)
+		with (
+			mock.patch.object(rc, "_get_state", return_value=state),
+			mock.patch.object(rc, "riv_status_counts", return_value={
+				"total": 7, "queued": 7, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0
+			}),
+			mock.patch.object(rc, "scheduler_guard_states", return_value={}),
+		):
+			out = rc.get_full_riv_campaign_status()
+		self.assertTrue(out["run_all_supported"])
+		self.assertEqual(out["progress_percent"], 30.0)
+
+
 if __name__ == "__main__":
 	unittest.main()

@@ -32,14 +32,26 @@ scheduler state.
 
 ### Bench entry points (not whitelisted)
 
+`bench execute --kwargs` is evaluated as **Python**, not JSON.
+Use `True` / `False`, not `true` / `false`.
+
 ```bash
+# One observation batch (default)
 bench --site <site> execute \
   erpnext_extensions.iran_accounting.riv_campaign.generate_full_riv_campaign \
-  --kwargs '{"batch_size":500}'
+  --kwargs '{"batch_size": 500}'
+
+# Remaining history in one process (internal batches of batch_size)
+bench --site <site> execute \
+  erpnext_extensions.iran_accounting.riv_campaign.generate_full_riv_campaign \
+  --kwargs '{"run_all": True, "batch_size": 500}'
 
 bench --site <site> execute \
   erpnext_extensions.iran_accounting.riv_campaign.get_full_riv_campaign_status
 ```
+
+`run_all=True` keeps **per-voucher** commits and rechecks scheduler / RIV /
+manifest between every internal batch. It does not execute RIVs.
 
 ### Production
 
