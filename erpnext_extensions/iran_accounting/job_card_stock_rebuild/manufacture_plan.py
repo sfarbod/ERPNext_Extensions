@@ -1437,7 +1437,7 @@ def build_manufacture_plan(
 			}
 		)
 
-	return {
+	plan = {
 		"job_card": job_card,
 		"work_order": scan["work_order"],
 		"scan": scan,
@@ -1495,3 +1495,8 @@ def build_manufacture_plan(
 		"approved_offset_items": approved_offset_items,
 		"repair_required": bool(needs_repair),
 	}
+	from erpnext_extensions.iran_accounting.job_card_stock_rebuild.economic_preflight import (
+		attach_economic_preflight,
+	)
+
+	return attach_economic_preflight(plan)

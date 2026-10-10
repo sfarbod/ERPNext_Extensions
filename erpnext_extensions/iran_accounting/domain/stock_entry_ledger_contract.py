@@ -150,13 +150,64 @@ def _single_manufacture_fg_row(doc, row) -> bool:
 	return fg_count == 1
 
 
+def _manufacture_fg_amount_authoritative(doc, row, company: str) -> bool:
+	"""True when Manufacture FG basic_amount may carry an R2 rate residual.
+
+	Single-FG absorbs the pool residual into basic_amount. SAME_ITEM_MULTI_FG
+	does the same per owned share (amount authoritative; integer basic_rate is
+	representational). Closed-plan stamps are in-memory only and do not survive
+	``get_doc`` reload in ``enforce_stock_entry_ledger_contract``, so Multi-FG
+	is also recognized by durable topology + R2 bound.
+	"""
+	if _single_manufacture_fg_row(doc, row):
+		return True
+	if getattr(doc, "purpose", None) != "Manufacture":
+		return False
+	if not row.get("is_finished_item") or not row.get("t_warehouse"):
+		return False
+
+	from erpnext_extensions.iran_accounting.domain.currency import amount_rate_qty_residual
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		r2_representation_bound,
+		row_is_allocation_owned,
+	)
+
+	if row_is_allocation_owned(doc, row):
+		return True
+
+	fg_rows = [
+		r
+		for r in (doc.get("items") or [])
+		if r.get("is_finished_item") and r.get("t_warehouse")
+	]
+	if len(fg_rows) < 2:
+		return False
+	item_codes = {(r.get("item_code") or "") for r in fg_rows}
+	if len(item_codes) != 1 or "" in item_codes:
+		return False
+	warehouses = {(r.get("t_warehouse") or "").strip() for r in fg_rows}
+	if len(warehouses) < 2 or "" in warehouses:
+		return False
+
+	ccy = get_company_currency(company)
+	transfer_qty = flt(
+		row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
+	)
+	if transfer_qty <= 0 or row.get("basic_rate") is None:
+		return False
+	residual = amount_rate_qty_residual(
+		flt(row.basic_amount), transfer_qty, flt(row.basic_rate), ccy
+	)
+	return abs(flt(residual)) <= r2_representation_bound(transfer_qty) + 1e-9
+
+
 def _assert_row_composition(doc, company: str) -> list[str]:
 	"""Verify rate-first IRR composition (verifier, not calculator).
 
 	- basic_rate / valuation_rate must be integer (IRR)
 	- basic_amount == ROUND_HALF_UP(transfer_qty × integer basic_rate)
-	  except single-FG Manufacture rows, which may absorb a valid Manufacture
-	  pool residual into basic_amount (amount remains authoritative for SLE)
+	  except Manufacture FG rows that own an amount-authoritative pool share
+	  (single-FG residual or SAME_ITEM_MULTI_FG R2 representation residual)
 	- amount == basic_amount + additional_cost + LCV
 	- valuation_rate == ROUND_HALF_UP(amount / transfer_qty); amount remains authoritative
 	"""
@@ -184,7 +235,9 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 		if row.get("basic_rate") is not None and transfer_qty:
 			exp_basic = round_row_amount_financial(transfer_qty, row.basic_rate, ccy)
-			if abs(flt(row.basic_amount) - exp_basic) > tol and not _single_manufacture_fg_row(doc, row):
+			if abs(flt(row.basic_amount) - exp_basic) > tol and not _manufacture_fg_amount_authoritative(
+				doc, row, company
+			):
 				failures.append(
 					_fail(
 						doc,
