@@ -67,6 +67,192 @@ def _snapshot_jc(job_card: str) -> dict:
 	}
 
 
+SCOPE_SECONDARY_TYPE_ONLY = "SECONDARY_TYPE_ONLY"
+_AUDIT_KEYS = {"modified", "modified_by", "creation", "owner"}
+
+
+def _normalize_apply_scope(apply_scope) -> str | None:
+	"""Opt-in scope. Omitted or blank keeps the historical full Apply."""
+	if apply_scope is None:
+		return None
+	scope = str(apply_scope).strip()
+	if not scope or scope.lower() in {"none", "null"}:
+		return None
+	if scope != SCOPE_SECONDARY_TYPE_ONLY:
+		frappe.throw(frappe._("Unknown apply_scope {0}.").format(scope))
+	return scope
+
+
+def _scrub_audit(value):
+	if isinstance(value, dict):
+		return {
+			key: _scrub_audit(item)
+			for key, item in value.items()
+			if key not in _AUDIT_KEYS and not str(key).startswith("_")
+		}
+	if isinstance(value, list):
+		return [_scrub_audit(item) for item in value]
+	return value
+
+
+def _job_card_business_snapshot(job_card: str) -> dict:
+	frappe.clear_document_cache("Job Card", job_card)
+	return _scrub_audit(frappe.get_doc("Job Card", job_card).as_dict())
+
+
+def _ledger_snapshot(voucher_nos: list[str]) -> dict:
+	if not voucher_nos:
+		return {"sle": [], "gl": []}
+	sle = frappe.get_all(
+		"Stock Ledger Entry",
+		filters={"voucher_type": "Stock Entry", "voucher_no": ["in", voucher_nos]},
+		fields=[
+			"name",
+			"item_code",
+			"warehouse",
+			"actual_qty",
+			"qty_after_transaction",
+			"incoming_rate",
+			"valuation_rate",
+			"stock_value",
+			"stock_value_difference",
+			"batch_no",
+			"is_cancelled",
+		],
+		order_by="name",
+		limit_page_length=0,
+	)
+	gl = frappe.get_all(
+		"GL Entry",
+		filters={"voucher_type": "Stock Entry", "voucher_no": ["in", voucher_nos]},
+		fields=["name", "account", "debit", "credit", "against", "is_cancelled"],
+		order_by="name",
+		limit_page_length=0,
+	)
+	return {
+		"sle": [_scrub_audit(dict(row)) for row in sle],
+		"gl": [_scrub_audit(dict(row)) for row in gl],
+	}
+
+
+def _stock_business_snapshot(job_card: str) -> dict:
+	names = frappe.get_all(
+		"Stock Entry", filters={"job_card": job_card}, pluck="name", order_by="name"
+	)
+	documents = []
+	for name in names:
+		frappe.clear_document_cache("Stock Entry", name)
+		documents.append(_scrub_audit(frappe.get_doc("Stock Entry", name).as_dict()))
+	return {
+		"stock_entries": documents,
+		"riv_count": frappe.db.count("Repost Item Valuation"),
+		**_ledger_snapshot(names),
+	}
+
+
+def _is_number(value) -> bool:
+	return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _values_equal(left, right) -> bool:
+	if _is_number(left) and _is_number(right):
+		return abs(float(left) - float(right)) <= 1e-6
+	return left == right
+
+
+def _flatten_business(value, prefix=""):
+	if isinstance(value, dict):
+		rows = []
+		for key in sorted(value):
+			path = f"{prefix}.{key}" if prefix else str(key)
+			rows.extend(_flatten_business(value[key], path))
+		return rows
+	if isinstance(value, list):
+		if value and all(isinstance(item, dict) and item.get("name") for item in value):
+			rows = []
+			for item in sorted(value, key=lambda row: str(row.get("name"))):
+				rows.extend(_flatten_business(item, f"{prefix}.{item['name']}"))
+			return rows
+		rows = []
+		for index, item in enumerate(value):
+			rows.extend(_flatten_business(item, f"{prefix}[{index}]"))
+		return rows
+	return [(prefix, value)]
+
+
+def _business_diffs(before, after) -> list[dict]:
+	before_map = dict(_flatten_business(before))
+	after_map = dict(_flatten_business(after))
+	diffs = []
+	for path in sorted(set(before_map) | set(after_map)):
+		old = before_map.get(path)
+		new = after_map.get(path)
+		if path not in before_map or path not in after_map or not _values_equal(old, new):
+			diffs.append({"path": path, "before": old, "after": new})
+	return diffs
+
+
+def _unexpected_job_card_diffs(diffs: list[dict], approvals: list[dict]) -> list[dict]:
+	allowed = {
+		f"secondary_items.{row['secondary_row']}.secondary_item_type": row["approved_type"]
+		for row in approvals
+	}
+	unexpected = []
+	for diff in diffs:
+		approved = allowed.get(diff["path"])
+		if approved is not None and diff["after"] == approved and diff["before"] != diff["after"]:
+			continue
+		unexpected.append(diff)
+	return unexpected
+
+
+def _format_diffs(diffs: list[dict], limit: int = 12) -> str:
+	parts = []
+	for diff in diffs[:limit]:
+		parts.append(f"{diff['path']}: {diff['before']} -> {diff['after']}")
+	if len(diffs) > limit:
+		parts.append(f"... {len(diffs) - limit} more")
+	return "; ".join(parts)
+
+
+def _apply_secondary_types_via_document(job_card: str, approvals: list[dict]) -> list[dict]:
+	"""Persist approved secondary types through Job Card.save().
+
+	Tracking writes and Stock Entry sync are not part of this path. Any business
+	field other than the approved secondary_item_type fails the transaction.
+	"""
+	before_job_card = _job_card_business_snapshot(job_card)
+	before_stock = _stock_business_snapshot(job_card)
+	doc = frappe.get_doc("Job Card", job_card)
+	rows = {row.name: row for row in doc.secondary_items}
+	for approval in approvals:
+		row = rows.get(approval["secondary_row"])
+		if row is None:
+			raise RuntimeError(f"Secondary row {approval['secondary_row']} is not on {job_card}")
+		current = (row.secondary_item_type or "").strip()
+		if current != approval["current_type"]:
+			raise RuntimeError(
+				f"STALE_PREVIEW — {approval['secondary_row']} is {current}, "
+				f"approval expected {approval['current_type']}"
+			)
+		row.secondary_item_type = approval["approved_type"]
+	doc.save()
+	job_card_diffs = _unexpected_job_card_diffs(
+		_business_diffs(before_job_card, _job_card_business_snapshot(job_card)),
+		approvals,
+	)
+	stock_diffs = _business_diffs(before_stock, _stock_business_snapshot(job_card))
+	if job_card_diffs or stock_diffs:
+		raise RuntimeError(
+			"Unexpected mutation blocked: "
+			+ _format_diffs(job_card_diffs + stock_diffs)
+		)
+	return [
+		{**approval, "type": "secondary_item_type", "persisted_via": "document_save"}
+		for approval in approvals
+	]
+
+
 def _jc_hard_blockers(statuses: list[str], material_rows: list[dict], type_suggestions: dict) -> list[str]:
 	"""Escalate only JC-unsafe conditions (dependency-aware)."""
 	hard = []
@@ -447,11 +633,14 @@ def dry_run_rebuild(
 	item_filter: str | None = None,
 	batch_filter: str | None = None,
 	secondary_type_approvals=None,
+	apply_scope: str | None = None,
 ) -> dict:
 	"""DRY RUN — apply tracking + optional approved type changes inside savepoint, then rollback."""
+	scope = _normalize_apply_scope(apply_scope)
 	approvals_in = _parse_approvals(secondary_type_approvals)
 	plan = _build_plan(job_card, item_filter, batch_filter)
 	plan["mode"] = "DRY_RUN"
+	plan["apply_scope"] = scope
 	plan["secondary_type_approvals"] = approvals_in
 
 	if fingerprint and fingerprint != plan["fingerprint"]:
@@ -472,7 +661,19 @@ def dry_run_rebuild(
 		return plan
 	normalized = v["normalized"]
 
+	if scope == SCOPE_SECONDARY_TYPE_ONLY and not normalized:
+		plan["dry_run_status"] = "DRY_RUN_FAIL"
+		plan["error"] = "SECONDARY_TYPE_ONLY requires an explicit secondary type approval"
+		plan["mutated"] = False
+		return plan
+
 	if plan.get("blockers") and not normalized and not plan.get("writes"):
+		plan["dry_run_status"] = "DRY_RUN_FAIL"
+		plan["error"] = "Blocked: " + ", ".join(plan["blockers"])
+		plan["mutated"] = False
+		return plan
+
+	if scope == SCOPE_SECONDARY_TYPE_ONLY and plan.get("blockers"):
 		plan["dry_run_status"] = "DRY_RUN_FAIL"
 		plan["error"] = "Blocked: " + ", ".join(plan["blockers"])
 		plan["mutated"] = False
@@ -483,10 +684,19 @@ def dry_run_rebuild(
 	frappe.db.savepoint(sp)
 	try:
 		frappe.db.sql("select name from `tabJob Card` where name=%s for update", job_card)
-		applied = _apply_writes(plan["writes"])
-		applied_types = apply_type_approvals(normalized) if normalized else []
-		applied.extend(applied_types)
-		verification = _verify_tracking(job_card, plan) if plan["writes"] else {"ok": True, "mismatches": []}
+		if scope == SCOPE_SECONDARY_TYPE_ONLY:
+			applied = _apply_secondary_types_via_document(job_card, normalized)
+			verification = {
+				"ok": True,
+				"mismatches": [],
+				"scope": scope,
+				"tracking_writes_skipped": len(plan.get("writes") or []),
+			}
+		else:
+			applied = _apply_writes(plan["writes"])
+			applied_types = apply_type_approvals(normalized) if normalized else []
+			applied.extend(applied_types)
+			verification = _verify_tracking(job_card, plan) if plan["writes"] else {"ok": True, "mismatches": []}
 		if not verification["ok"]:
 			raise RuntimeError(f"Post-write verification failed: {verification['mismatches']}")
 
@@ -548,14 +758,21 @@ def apply_rebuild(
 	item_filter: str | None = None,
 	batch_filter: str | None = None,
 	secondary_type_approvals=None,
+	apply_scope: str | None = None,
 ) -> dict:
-	"""APPLY — atomic tracking + explicitly approved Secondary type changes."""
+	"""APPLY — atomic tracking + explicitly approved Secondary type changes.
+
+	``apply_scope="SECONDARY_TYPE_ONLY"`` saves the approved Job Card secondary
+	types and does not write tracking quantities or Stock Entry rows.
+	"""
 	if not cint_truthy(confirm):
 		frappe.throw(frappe._("Confirmation required before Apply."))
 
+	scope = _normalize_apply_scope(apply_scope)
 	approvals_in = _parse_approvals(secondary_type_approvals)
 	plan = _build_plan(job_card, item_filter, batch_filter)
 	plan["mode"] = "APPLY"
+	plan["apply_scope"] = scope
 	plan["secondary_type_approvals"] = approvals_in
 
 	if fingerprint != plan["fingerprint"]:
@@ -575,8 +792,14 @@ def apply_rebuild(
 		return plan
 	normalized = v["normalized"]
 
+	if scope == SCOPE_SECONDARY_TYPE_ONLY and not normalized:
+		plan["error"] = "SECONDARY_TYPE_ONLY requires an explicit secondary type approval"
+		plan["mutated"] = False
+		_write_audit(plan)
+		return plan
+
 	has_mutations = bool(plan.get("writes")) or bool(normalized)
-	if not has_mutations:
+	if scope != SCOPE_SECONDARY_TYPE_ONLY and not has_mutations:
 		plan["status"] = S.NO_CHANGE
 		plan["overall_status"] = S.BALANCED
 		plan["note"] = "BALANCED / NO REBUILD REQUIRED"
@@ -601,11 +824,14 @@ def apply_rebuild(
 		if fresh_fp != fingerprint:
 			raise RuntimeError(S.STALE_PREVIEW)
 
-		applied = _apply_writes(plan["writes"])
-		applied_types = apply_type_approvals(normalized) if normalized else []
-		applied.extend(applied_types)
-
-		verification = _verify_tracking(job_card, plan) if plan["writes"] else {"ok": True}
+		if scope == SCOPE_SECONDARY_TYPE_ONLY:
+			applied = _apply_secondary_types_via_document(job_card, normalized)
+			verification = {"ok": True, "scope": scope, "tracking_writes_skipped": len(plan.get("writes") or [])}
+		else:
+			applied = _apply_writes(plan["writes"])
+			applied_types = apply_type_approvals(normalized) if normalized else []
+			applied.extend(applied_types)
+			verification = _verify_tracking(job_card, plan) if plan["writes"] else {"ok": True}
 		if not verification.get("ok"):
 			raise RuntimeError(f"Verification failed: {verification.get('mismatches')}")
 

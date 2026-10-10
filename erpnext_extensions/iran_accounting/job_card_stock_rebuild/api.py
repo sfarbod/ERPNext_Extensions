@@ -47,6 +47,7 @@ def dry_run(
 	item: str | None = None,
 	batch: str | None = None,
 	secondary_type_approvals=None,
+	apply_scope: str | None = None,
 ):
 	_guard()
 	return dry_run_rebuild(
@@ -55,6 +56,7 @@ def dry_run(
 		item_filter=item or None,
 		batch_filter=batch or None,
 		secondary_type_approvals=_approvals(secondary_type_approvals),
+		apply_scope=apply_scope or None,
 	)
 
 
@@ -66,6 +68,7 @@ def apply(
 	item: str | None = None,
 	batch: str | None = None,
 	secondary_type_approvals=None,
+	apply_scope: str | None = None,
 ):
 	_guard()
 	return apply_rebuild(
@@ -75,6 +78,7 @@ def apply(
 		item_filter=item or None,
 		batch_filter=batch or None,
 		secondary_type_approvals=_approvals(secondary_type_approvals),
+		apply_scope=apply_scope or None,
 	)
 
 
