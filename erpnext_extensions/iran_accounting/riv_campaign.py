@@ -66,13 +66,33 @@ def _row_identity(row: dict) -> str:
 	)
 
 
-def build_source_manifest() -> list[dict[str, Any]]:
-	"""All submitted stock-affecting sources in global chronological order."""
+def _normalize_stock_entry_purpose(stock_entry_purpose: str | None) -> str | None:
+	"""Optional Stock Entry.purpose filter. None preserves the full multi-doctype universe."""
+	if stock_entry_purpose in (None, ""):
+		return None
+	purpose = str(stock_entry_purpose).strip()
+	if not purpose:
+		return None
+	return purpose
+
+
+def build_source_manifest(stock_entry_purpose: str | None = None) -> list[dict[str, Any]]:
+	"""Submitted stock-affecting sources in global chronological order.
+
+	When ``stock_entry_purpose`` is omitted, behavior is unchanged: all submitted
+	rows from ``SOURCE_DOCTYPES``.
+
+	When set (e.g. ``\"Manufacture\"``), the manifest contains only submitted
+	Stock Entries with that purpose — other voucher DocTypes are excluded for
+	that campaign universe. Manufacture is a Stock Entry purpose, not a DocType.
+	"""
+	purpose = _normalize_stock_entry_purpose(stock_entry_purpose)
 	rows: list[dict[str, Any]] = []
-	for doctype in SOURCE_DOCTYPES:
+
+	if purpose:
 		found = frappe.get_all(
-			doctype,
-			filters={"docstatus": 1},
+			"Stock Entry",
+			filters={"docstatus": 1, "purpose": purpose},
 			fields=["name", "company", "posting_date", "posting_time", "creation"],
 			order_by="posting_date asc, posting_time asc, creation asc, name asc",
 			limit_page_length=0,
@@ -80,7 +100,7 @@ def build_source_manifest() -> list[dict[str, Any]]:
 		for r in found:
 			rows.append(
 				{
-					"doctype": doctype,
+					"doctype": "Stock Entry",
 					"name": r.name,
 					"company": r.company,
 					"posting_date": r.posting_date,
@@ -88,6 +108,26 @@ def build_source_manifest() -> list[dict[str, Any]]:
 					"creation": r.creation,
 				}
 			)
+	else:
+		for doctype in SOURCE_DOCTYPES:
+			found = frappe.get_all(
+				doctype,
+				filters={"docstatus": 1},
+				fields=["name", "company", "posting_date", "posting_time", "creation"],
+				order_by="posting_date asc, posting_time asc, creation asc, name asc",
+				limit_page_length=0,
+			)
+			for r in found:
+				rows.append(
+					{
+						"doctype": doctype,
+						"name": r.name,
+						"company": r.company,
+						"posting_date": r.posting_date,
+						"posting_time": r.posting_time,
+						"creation": r.creation,
+					}
+				)
 
 	rows.sort(
 		key=lambda r: (
@@ -328,10 +368,12 @@ def _result_shell(state, rows: list[dict[str, Any]] | None = None) -> dict[str, 
 	}
 
 
-def _ensure_campaign_ready() -> tuple[Any, list[dict[str, Any]], str]:
+def _ensure_campaign_ready(
+	stock_entry_purpose: str | None = None,
+) -> tuple[Any, list[dict[str, Any]], str]:
 	"""Load/init campaign and return (state, rows, checksum). Raises on guard failure."""
 	state = _get_state()
-	rows = build_source_manifest()
+	rows = build_source_manifest(stock_entry_purpose=stock_entry_purpose)
 	checksum = manifest_checksum(rows)
 
 	if not _campaign_initialized(state):
@@ -500,6 +542,7 @@ def generate_full_riv_campaign(
 	batch_size: int | None = None,
 	run_all: bool = False,
 	max_batches: int | None = None,
+	stock_entry_purpose: str | None = None,
 ) -> dict[str, Any]:
 	"""Generate Item-and-Warehouse RIVs. Bench-only. Not whitelisted.
 
@@ -509,19 +552,35 @@ def generate_full_riv_campaign(
 	``max_batches`` optionally caps internal iterations (testing / controlled proof).
 	Omit it for full remaining history.
 
+	``stock_entry_purpose`` optionally restricts the source universe to submitted
+	Stock Entries with that purpose (e.g. ``\"Manufacture\"``). When omitted,
+	behavior is unchanged (all ``SOURCE_DOCTYPES``). Pass the same purpose on
+	every continuation call so the manifest checksum matches.
+
 	Calls create_item_wise_repost_entries(doctype, name) only. Commits once per
 	successful source voucher together with the checkpoint advance.
+
+	Volume note: native ``create_item_wise_repost_entries`` emits one Item-and-
+	Warehouse RIV per distinct SLE pair on each source voucher. Across a full
+	Manufacture history the same item/warehouse therefore appears many times;
+	ERPNext ``deduplicate_similar_repost`` marks later Queued duplicates
+	``Skipped`` when an earlier RIV for that pair Completes. That redundancy is
+	intentional native coverage, not a campaign bug — do not thin the universe
+	by skipping create calls.
 	"""
 	size = _normalize_batch_size(batch_size)
+	purpose = _normalize_stock_entry_purpose(stock_entry_purpose)
 	if max_batches is not None:
 		max_batches = cint(max_batches)
 		if max_batches <= 0:
 			raise RivCampaignError(f"max_batches must be positive, got {max_batches!r}.")
 
-	state, rows, checksum = _ensure_campaign_ready()
+	state, rows, checksum = _ensure_campaign_ready(stock_entry_purpose=purpose)
 
 	if not run_all:
-		return _process_one_batch(state=state, rows=rows, size=size, internal_batch_number=1)
+		out = _process_one_batch(state=state, rows=rows, size=size, internal_batch_number=1)
+		out["stock_entry_purpose"] = purpose
+		return out
 
 	# run_all: iterative loop — never recurse into generate_full_riv_campaign
 	batch_summaries: list[dict[str, Any]] = []
@@ -539,7 +598,7 @@ def generate_full_riv_campaign(
 			break
 
 		# Rebuild + recheck between every internal batch (including the first)
-		rows = build_source_manifest()
+		rows = build_source_manifest(stock_entry_purpose=purpose)
 		checksum = manifest_checksum(rows)
 		state = _get_state()
 		_recheck_continuation_safety(state, rows, checksum)
@@ -565,6 +624,7 @@ def generate_full_riv_campaign(
 
 		if not last_out.get("ok", True):
 			last_out["run_all"] = True
+			last_out["stock_entry_purpose"] = purpose
 			last_out["internal_batches_completed"] = internal_batch
 			last_out["batch_summaries"] = batch_summaries
 			last_out["run_all_created_riv"] = (
@@ -581,6 +641,7 @@ def generate_full_riv_campaign(
 	state = _get_state()
 	out = last_out or _result_shell(state, rows)
 	out["run_all"] = True
+	out["stock_entry_purpose"] = purpose
 	out["internal_batches_completed"] = internal_batch
 	out["batch_summaries"] = batch_summaries
 	out["run_all_created_riv"] = cint(state.campaign_created_riv) - campaign_created_at_start
