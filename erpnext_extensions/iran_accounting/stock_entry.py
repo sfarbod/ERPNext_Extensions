@@ -95,13 +95,10 @@ def apply_irr_manufacture_economic_finalize(doc) -> None:
 
 def validate_stock_entry(doc, method=None):
 	from erpnext_extensions.iran_accounting.e2e_bootstrap import apply_stock_entry_site_defaults
-	from erpnext_extensions.iran_accounting.manufacturing_dimension.guard import (
-		validate_manufacturing_dimension_uniformity,
-	)
 
 	apply_stock_entry_site_defaults(doc)
-	# Early UX warning; before_submit remains authoritative.
-	validate_manufacturing_dimension_uniformity(doc)
+	# Manufacturing Dimension Uniformity is enforced only in before_submit_stock_entry
+	# so Manufacture / MTfM Draft Save can persist for manual dimension correction.
 	if not is_irr_company(doc.company):
 		return
 	# Totals polish sits between rate-first align and Manufacture residual restore
