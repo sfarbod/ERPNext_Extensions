@@ -3415,7 +3415,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._sync_store_context({ emit: true });
 		this.schedule_workspace_url_update({ push: true });
 		if (this.document_scope.from_date && this.document_scope.to_date) {
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "axis_switch" });
 		}
 	}
 

@@ -14,11 +14,15 @@ Account Explorer no longer reuses Completed Prepared Result artifacts across use
 | User action | Behavior |
 |-------------|----------|
 | Run / Apply / Refresh | New `execution_id` → fresh GL calculation |
-| Filter / axis change | New `execution_id` → fresh calculation |
+| Filter / axis change (`switch_axis`) | New `execution_id` → fresh calculation |
 | Pagination / sort / page size | Same `execution_id` → present existing artifact |
 | Preparing poll | Same `execution_id` → poll same job |
 
 Prior Completed rows for the same query fingerprint are **ignored** unless their `execution_id` matches the current request.
+
+## Gate follow-up (same release)
+Desk `switch_axis` now forces `new_execution` so axis tab changes never reuse a prior execution (sort fields reset per axis as before).
+
 
 ## Execution-scoped prepared lifecycle
 
