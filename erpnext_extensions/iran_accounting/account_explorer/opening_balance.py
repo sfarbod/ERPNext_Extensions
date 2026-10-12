@@ -69,11 +69,14 @@ def _get_account_wise_measures_e1(
 	spec: AccountExplorerQuerySpec, account_names: list[str] | None = None
 ) -> dict[str, dict]:
 	"""E1 — TB baseline + pre-period opening-flagged delta."""
+	restrict_accounts = e1_gl_scope.resolve_narrowed_gl_accounts(spec)
+	if _e1_single_pass_supported(spec):
+		return _get_account_wise_measures_e1_single_pass(spec, account_names, restrict_accounts)
+
 	filters = spec_to_trial_balance_filters(spec)
 	policy = policy_from_spec(spec)
 	ignore_is_opening = site_ignore_is_opening()
 	# v4.6.1: drill/filter scope → narrow TB + policy-aux GL SQL; root stays company-wide.
-	restrict_accounts = e1_gl_scope.resolve_narrowed_gl_accounts(spec)
 	opening_balances = _get_opening_balances_for_e1(filters, ignore_is_opening, restrict_accounts)
 	aux_pre, aux_in = aggregate_opening_flagged_pre_in_by_account(spec)
 
@@ -119,6 +122,123 @@ def _get_account_wise_measures_e1(
 			opening_debit, opening_credit, period_debit, period_credit
 		)
 	return result
+
+
+def _e1_single_pass_supported(spec: AccountExplorerQuerySpec) -> bool:
+	"""True when one GL scan can replace TB opening + flagged aux + period.
+
+	Falls back when Account Closing Balance / mid-year PCV paths apply, or when
+	document-scope dimensions/vouchers would diverge from the shared predicate.
+	"""
+	from erpnext_extensions.iran_accounting.account_explorer.opening_entry_policy import (
+		acb_applicable,
+	)
+
+	if acb_applicable(spec):
+		return False
+	if spec.include_cancelled_entries:
+		return False
+	document = spec.document_scope
+	if document.voucher.voucher_type or document.voucher.voucher_no:
+		return False
+	if document.voucher.against_voucher_type or document.voucher.against_voucher_no:
+		return False
+	if document.voucher.reference_no:
+		return False
+	if document.accounting.account or document.accounting.party_type or document.accounting.party:
+		return False
+	if document.currency and document.currency.currency:
+		return False
+	for value in (document.accounting_dimensions or {}).values():
+		if value not in (None, "", [], ()):
+			return False
+	# P&L mid-year closed-FY filter is not expressed in the single-pass CASE.
+	filters = spec_to_trial_balance_filters(spec)
+	if not filters.get("show_unclosed_fy_pl_balances"):
+		return False
+	return True
+
+
+def _get_account_wise_measures_e1_single_pass(
+	spec: AccountExplorerQuerySpec,
+	account_names: list[str] | None,
+	restrict_accounts: list[str] | None,
+) -> dict[str, dict]:
+	"""One company-scoped GL scan producing TB opening, flagged aux, and period.
+
+	Applies the same ``adjust_tb_opening_for_policy`` / aux_in / EXCLUDE period
+	rules as the multi-query E1 path. Does not change accounting formulas.
+	"""
+	from frappe.utils import getdate
+
+	from erpnext_extensions.iran_accounting.account_explorer.gle_filters import (
+		apply_document_scope_filters,
+	)
+
+	policy = policy_from_spec(spec)
+	ignore_is_opening = site_ignore_is_opening()
+	from_date = getdate(spec.from_date)
+	to_date = getdate(spec.to_date)
+	gle = frappe.qb.DocType("GL Entry")
+	case = frappe.qb.terms.Case
+
+	if ignore_is_opening:
+		tb_cond = gle.posting_date < from_date
+	else:
+		tb_cond = (gle.posting_date < from_date) | (gle.is_opening == "Yes")
+	period_cond = (gle.posting_date >= from_date) & (gle.posting_date <= to_date)
+	pre_cond = (gle.is_opening == "Yes") & (gle.posting_date < from_date)
+	in_cond = (gle.is_opening == "Yes") & period_cond
+
+	query = (
+		frappe.qb.from_(gle)
+		.select(
+			gle.account,
+			Sum(case().when(tb_cond, gle.debit).else_(0)).as_("tb_debit"),
+			Sum(case().when(tb_cond, gle.credit).else_(0)).as_("tb_credit"),
+			Sum(case().when(period_cond, gle.debit).else_(0)).as_("period_debit"),
+			Sum(case().when(period_cond, gle.credit).else_(0)).as_("period_credit"),
+			Sum(case().when(pre_cond, gle.debit).else_(0)).as_("pre_debit"),
+			Sum(case().when(pre_cond, gle.credit).else_(0)).as_("pre_credit"),
+			Sum(case().when(in_cond, gle.debit).else_(0)).as_("in_debit"),
+			Sum(case().when(in_cond, gle.credit).else_(0)).as_("in_credit"),
+		)
+		.where((gle.posting_date <= to_date) | (gle.is_opening == "Yes"))
+	)
+	query = apply_document_scope_filters(query, gle, spec)
+	if restrict_accounts:
+		query = query.where(gle.account.isin(restrict_accounts))
+	# Prefer company index: the planner otherwise walks the account index (~750k rows).
+	query = query.force_index("company")
+	query = query.groupby(gle.account)
+
+	rows = query.run(as_dict=True)
+	by_account: dict[str, dict] = {}
+	for row in rows:
+		if not row.account:
+			continue
+		opening_debit, opening_credit = adjust_tb_opening_for_policy(
+			row.tb_debit,
+			row.tb_credit,
+			row.pre_debit,
+			row.pre_credit,
+			policy,
+		)
+		in_debit, in_credit = flt(row.in_debit), flt(row.in_credit)
+		if in_debit or in_credit:
+			opening_debit = flt(opening_debit) - in_debit
+			opening_credit = flt(opening_credit) - in_credit
+		period_debit, period_credit = flt(row.period_debit), flt(row.period_credit)
+		if policy == OpeningEntryPolicyMode.EXCLUDE_OPENING_FLAGGED:
+			period_debit = flt(period_debit) - in_debit
+			period_credit = flt(period_credit) - in_credit
+		by_account[row.account] = measures_from_opening_period(
+			opening_debit, opening_credit, period_debit, period_credit
+		)
+
+	if account_names is None:
+		return by_account
+	return {name: by_account.get(name) or measures_from_opening_period(0, 0, 0, 0) for name in account_names}
 
 
 def _get_account_wise_measures_e2(
