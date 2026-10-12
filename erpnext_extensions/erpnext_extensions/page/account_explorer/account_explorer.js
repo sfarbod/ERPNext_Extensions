@@ -3904,6 +3904,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	handle_summary_row_dblclick(row) {
+		// Account codes are not drill targets; hierarchy tabs change level.
+		if ((this.analysis_context.view_axis || "account_level") === "account_level") {
+			return;
+		}
 		this.drill_row(row);
 	}
 
@@ -4671,6 +4675,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		// omit / false: pagination, sort, page-size, polling — reuse current execution.
 		if (opts && opts.new_execution) {
 			this._new_ae_execution_id(opts.reason || "refresh");
+			// Do not keep the previous execution's balances on screen as current.
+			this.rows = [];
+			this.pagination = {
+				page: this.analysis_context.page || 1,
+				page_size: this.analysis_context.page_size || 50,
+				total_rows: 0,
+				has_next: false,
+			};
+			this.$grid?.empty();
 		} else {
 			this._ensure_ae_execution_id();
 		}
@@ -5659,11 +5672,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			if (row.is_virtual_group) {
 				$tr.addClass("ae-virtual-row");
 			}
-			if (row.drill_down_enabled !== 0 && row.drill_down_enabled !== false) {
-				$tr.addClass("ae-grid-row--drillable");
-			}
-			const is_drillable = row.drill_down_enabled !== 0 && row.drill_down_enabled !== false;
+			const is_account_code_row = String(row.row_key || "").startsWith("account:");
+			const is_drillable =
+				!is_account_code_row &&
+				row.drill_down_enabled !== 0 &&
+				row.drill_down_enabled !== false;
 			if (is_drillable) {
+				$tr.addClass("ae-grid-row--drillable");
 				$tr.attr("title", __("Click to select · Double-click to drill down"));
 			}
 			visible.forEach((col, col_index) => {
@@ -5689,7 +5704,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				const $actions = $('<td class="ae-row-actions ae-voucher-actions">').appendTo($tr);
 				this.render_voucher_action_bar($actions, row);
 			}
-			$tr.on("dblclick", () => this.drill_row(row));
+			$tr.on("dblclick", () => this.handle_summary_row_dblclick(row));
 			$tr.on("click", () => {
 				$body.find("tr.selected").removeClass("selected");
 				$tr.addClass("selected");
@@ -6662,6 +6677,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 
 		const axis = this.analysis_context.view_axis || "account_level";
+		// Analyze (explicit filter intent) stays; row expansion/drill does not.
+		if (axis === "account_level" && explicit_intent !== "filter") {
+			return;
+		}
 		if (axis === "party" && (row.is_virtual_group || !row.party)) {
 			return;
 		}
