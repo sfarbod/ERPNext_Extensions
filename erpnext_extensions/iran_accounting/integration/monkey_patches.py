@@ -44,6 +44,17 @@ def apply_monkey_patches():
 	_patch_stock_entry_pre_core_bridge()
 	# Idempotent: Job Card component return while WO In Process (v5.4.2).
 	_patch_stock_entry_jc_component_return()
+	# Idempotent: ERPNext #59476 compat — PR Additional Discount × PI landed cost.
+	_patch_pr_pi_landed_cost_compat()
+
+
+def _patch_pr_pi_landed_cost_compat():
+	"""Docker-safe backport of ERPNext #59476 (no Core image required)."""
+	from erpnext_extensions.iran_accounting.integration.pr_pi_landed_cost_compat import (
+		install_pr_pi_landed_cost_compat_patch,
+	)
+
+	install_pr_pi_landed_cost_compat_patch()
 
 
 def _patch_buying_regional_valuation_rate():

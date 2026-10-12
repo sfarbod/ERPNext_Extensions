@@ -260,6 +260,38 @@ def _reconcile_stock_entry_after_repost(voucher_no: str, company: str) -> list[s
 		sle.db_update()
 	actions.append("resynced_ste_sle")
 
+	# Native Material Issue/Transfer sync may have corrected SED in DB; reload and
+	# refresh header totals so mirror/contract checks see post-alignment economics.
+	doc = frappe.get_doc("Stock Entry", voucher_no)
+	align_stock_entry_item_amounts(doc)
+	round_stock_entry_totals(doc)
+	align_manufacture_finished_good_residual(doc)
+	if hasattr(doc, "set_total_incoming_outgoing_value"):
+		doc.set_total_incoming_outgoing_value()
+	for row in doc.items:
+		frappe.db.set_value(
+			"Stock Entry Detail",
+			row.name,
+			{
+				"amount": row.amount,
+				"basic_amount": row.get("basic_amount"),
+				"basic_rate": row.get("basic_rate"),
+				"valuation_rate": row.get("valuation_rate"),
+				"additional_cost": row.get("additional_cost"),
+				"landed_cost_voucher_amount": row.get("landed_cost_voucher_amount"),
+			},
+			update_modified=False,
+		)
+	doc.db_set(
+		{
+			"total_incoming_value": doc.total_incoming_value,
+			"total_outgoing_value": doc.total_outgoing_value,
+			"value_difference": doc.value_difference,
+		},
+		update_modified=False,
+	)
+	actions.append("reloaded_ste_row_truth_after_native_align")
+
 	mirror_failures = assert_stock_entry_row_sle_mirror(voucher_no, company)
 	if mirror_failures:
 		actions.append(f"sle_mirror_warnings:{len(mirror_failures)}")

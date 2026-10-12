@@ -1,5 +1,18 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Stock Entry: capitalization-aware row.amount is the source for SLE movement (IRR)."""
+"""Stock Entry: capitalization-aware row.amount is the source for SLE movement (IRR).
+
+Architectural boundary
+----------------------
+* Approved manufacturing purposes (Manufacture / Repack / Material Consumption
+  for Manufacture): document row economics remain authoritative — Iran contracts
+  allocate FG / secondary / scrap / residual amounts, then SLE mirrors SED.
+* Ordinary stock movements (Material Issue / Transfer / …): ERPNext native
+  valuation (BatchNoValuation / SABB / moving average) remains authoritative.
+  Iran only applies IRR monetary rounding and, when SED drifted from native
+  SLE, realigns SED to the native movement so SED/SABB/SLE/GL stay consistent.
+
+Never replace a correct native batch/MA movement with an unrelated SED.amount.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +31,27 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 )
 from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 	assert_non_negative_magnitude,
+)
+
+# Purposes where ERPNext Core stock valuation (MA / batch / SABB) owns the
+# outgoing movement. Document SED must not override that movement unless the
+# row is explicitly manual or allow-zero.
+NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES = frozenset(
+	{
+		"Material Issue",
+		"Material Transfer",
+		"Material Transfer for Manufacture",
+		"Send to Subcontractor",
+	}
+)
+
+# Purposes that keep SED → SLE mirroring (approved manufacturing contracts).
+DOCUMENT_AMOUNT_AUTHORITY_PURPOSES = frozenset(
+	{
+		"Manufacture",
+		"Repack",
+		"Material Consumption for Manufacture",
+	}
 )
 
 
@@ -70,8 +104,113 @@ def _sle_rate_from_row(row, ccy: str) -> float:
 	return 0.0
 
 
+def should_preserve_native_outgoing_valuation(sle, row, purpose: str | None) -> bool:
+	"""True when vanilla SLE movement must not be replaced by SED.amount."""
+	if str(purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		return False
+	if str(purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+	if flt(sle.actual_qty) >= 0:
+		# Inward legs keep document/incoming rate semantics.
+		return False
+	if cint(row.get("set_basic_rate_manually")):
+		return False
+	# Explicit free issue: document zero is intentional.
+	if cint(row.get("allow_zero_valuation_rate")) and abs(flt(row.get("basic_rate") or 0)) <= 1e-9:
+		return False
+	return True
+
+
+def _native_movement_rate(sle, ccy: str) -> tuple[float, float]:
+	"""IRR-round the vanilla SLE movement; derive per-unit rate from it."""
+	value_after = flt(sle.stock_value)
+	value_before = value_after - flt(sle.stock_value_difference)
+	movement = flt(round_currency(flt(sle.stock_value_difference), ccy))
+	sle.stock_value_difference = movement
+	sle.stock_value = flt(round_currency(value_before + movement, ccy))
+
+	qty = abs(flt(sle.actual_qty))
+	if qty > 1e-9:
+		rate = flt(round_monetary_rate(abs(movement) / qty, ccy))
+	else:
+		rate = flt(
+			round_monetary_rate(
+				flt(sle.outgoing_rate) or flt(sle.incoming_rate) or flt(sle.valuation_rate),
+				ccy,
+			)
+		)
+	return movement, rate
+
+
+def _apply_native_rates_to_sle(sle, rate: float, ccy: str) -> None:
+	sle.valuation_rate = rate
+	if flt(sle.actual_qty) > 0:
+		sle.incoming_rate = rate
+		sle.outgoing_rate = float(round_monetary_rate(sle.outgoing_rate or 0, ccy))
+	elif flt(sle.actual_qty) < 0:
+		sle.outgoing_rate = rate
+		sle.incoming_rate = float(round_monetary_rate(sle.incoming_rate or 0, ccy))
+	else:
+		sle.incoming_rate = float(round_monetary_rate(sle.incoming_rate or 0, ccy))
+		sle.outgoing_rate = float(round_monetary_rate(sle.outgoing_rate or 0, ccy))
+
+
+def align_sed_from_native_outgoing_sle(sle, row, rate: float, movement: float, ccy: str) -> None:
+	"""Realign SED basic/valuation amounts to native SLE movement (IRR).
+
+	Preserves additional_cost / landed_cost_voucher_amount. Does not clear
+	manual-rate flags (caller already excluded manual rows).
+	"""
+	if not sle.voucher_detail_no:
+		return
+
+	basic_amount = float(round_currency(abs(flt(movement)), ccy))
+	amount = float(
+		round_currency(
+			basic_amount + flt(row.get("additional_cost")) + flt(row.get("landed_cost_voucher_amount")),
+			ccy,
+		)
+	)
+	# Source-warehouse outward: valuation_rate matches basic_rate (no addl on source).
+	valuation_rate = rate
+	if flt(row.get("additional_cost")) or flt(row.get("landed_cost_voucher_amount")):
+		qty = abs(flt(sle.actual_qty)) or abs(
+			flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
+		)
+		if qty > 1e-9:
+			valuation_rate = float(round_monetary_rate(amount / qty, ccy))
+
+	frappe.db.set_value(
+		"Stock Entry Detail",
+		sle.voucher_detail_no,
+		{
+			"basic_rate": rate,
+			"valuation_rate": valuation_rate,
+			"basic_amount": basic_amount,
+			"amount": amount,
+		},
+		update_modified=False,
+	)
+
+
+def _preserve_native_outgoing_and_align_sed(sle, row, ccy: str) -> None:
+	movement, rate = _native_movement_rate(sle, ccy)
+	_apply_native_rates_to_sle(sle, rate, ccy)
+
+	# Only rewrite SED when it disagrees with native movement (poison / stale MA).
+	sed_mag = abs(flt(stock_entry_row_amount(row, sle.company)))
+	if abs(sed_mag - abs(flt(movement))) > 0.5 or abs(
+		flt(_sle_rate_from_row(row, ccy)) - rate
+	) > 0.5:
+		align_sed_from_native_outgoing_sle(sle, row, rate, movement, ccy)
+
+
 def sync_irr_sle_from_stock_entry_row(sle) -> None:
-	"""SLE movement mirrors signed row.amount; rates mirror integer SE rates. Idempotent.
+	"""Apply Iran SLE economics after vanilla process_sle.
+
+	* Manufacturing purposes: SLE movement mirrors signed SED.amount (contracts).
+	* Native outgoing stock purposes: keep vanilla SLE movement (SABB/MA), IRR-round,
+	  and realign SED when it conflicts — never stamp a poisoned SED onto SLE.
 
 	During Item-scoped RIV, out-of-scope legacy poison (different item_code than the
 	declared RIV target) must not abort the target repost — log and skip the Iran
@@ -97,7 +236,11 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			"valuation_rate",
 			"amount",
 			"allow_zero_valuation_rate",
+			"set_basic_rate_manually",
 			"parent",
+			"serial_and_batch_bundle",
+			"s_warehouse",
+			"t_warehouse",
 		],
 		as_dict=True,
 	)
@@ -110,9 +253,15 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	)
 
 	ccy = get_company_currency(sle.company)
+	purpose = frappe.db.get_value("Stock Entry", row.parent or sle.voucher_no, "purpose")
+
+	# Native outgoing stock valuation: preserve vanilla SLE; do not SED-stamp.
+	if should_preserve_native_outgoing_valuation(sle, row, purpose):
+		_preserve_native_outgoing_and_align_sed(sle, row, ccy)
+		return
+
 	try:
 		magnitude = stock_entry_row_amount(row, sle.company)
-		purpose = frappe.db.get_value("Stock Entry", row.parent or sle.voucher_no, "purpose")
 		# VALUED_SOURCE_ZERO_OUTGOING: document basic_rate/amount is 0 but
 		# vanilla moving-average already priced a Manufacture consume from a
 		# valued warehouse layer. Stamping the document zero would wipe
@@ -237,6 +386,35 @@ def assert_stock_entry_row_sle_mirror(voucher_no: str, company: str) -> list[str
 		if flt(sle.stock_value_difference) != expected:
 			failures.append(f"SLE {sle.name}: movement {sle.stock_value_difference} != row mirror {expected}")
 	return failures
+
+
+def refresh_native_outgoing_sed_from_db(doc) -> None:
+	"""Reload SED rates from DB into ``doc.items`` after process_sle alignment.
+
+	Iran ``on_submit`` otherwise ``db_update``s stale in-memory rates and can
+	re-poison rows that ``sync_irr_sle_from_stock_entry_row`` already corrected.
+	"""
+	if not doc or getattr(doc, "doctype", None) != "Stock Entry":
+		return
+	if str(doc.purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		return
+	for row in doc.get("items") or []:
+		if not row.get("name") or not row.get("s_warehouse"):
+			continue
+		if cint(row.get("set_basic_rate_manually")):
+			continue
+		live = frappe.db.get_value(
+			"Stock Entry Detail",
+			row.name,
+			["basic_rate", "valuation_rate", "basic_amount", "amount"],
+			as_dict=True,
+		)
+		if not live:
+			continue
+		row.basic_rate = live.basic_rate
+		row.valuation_rate = live.valuation_rate
+		row.basic_amount = live.basic_amount
+		row.amount = live.amount
 
 
 # Backward-compatible alias

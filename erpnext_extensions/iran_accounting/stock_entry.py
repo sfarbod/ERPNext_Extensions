@@ -166,6 +166,13 @@ def on_submit_stock_entry(doc, method=None):
 	# Re-finalize with the SAME order as validate: rate-first → Manufacture contract
 	# → residual. Persist must converge to the residual amounts SLE already used.
 	apply_irr_manufacture_economic_finalize(doc)
+	# process_sle may have realigned native Material Issue / Transfer SED rates in DB
+	# to match BatchNoValuation/SABB. Refresh memory so db_update cannot re-poison.
+	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+		refresh_native_outgoing_sed_from_db,
+	)
+
+	refresh_native_outgoing_sed_from_db(doc)
 	align_zero_value_transfer_totals(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
