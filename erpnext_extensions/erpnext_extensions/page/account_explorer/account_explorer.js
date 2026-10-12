@@ -1871,6 +1871,17 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.$export_btn.attr("title", __("Export is disabled in Iran Accounting Settings."));
 		}
 
+		// Minimal Date Format control on the existing Export control group (default Jalali).
+		const $date_wrap = $(
+			'<label class="ae-export-date-format-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-inline-start:8px;margin-bottom:0;"></label>'
+		).appendTo($parent);
+		$('<span class="ae-export-date-format-label text-muted">').text(__("Date Format")).appendTo($date_wrap);
+		this.$export_date_format = $('<select class="form-control input-xs ae-export-date-format" style="width:auto;min-width:110px;">')
+			.append($('<option value="jalali">').text(__("Jalali")))
+			.append($('<option value="gregorian">').text(__("Gregorian")))
+			.val("jalali")
+			.appendTo($date_wrap);
+
 		this.$export_status = $(
 			'<div class="ae-export-status" role="status" aria-live="polite" style="display:none;margin-inline-start:8px;align-items:center;gap:8px;"></div>'
 		).appendTo($parent);
@@ -1891,6 +1902,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				)
 				.appendTo($menu);
 		});
+	}
+
+	get_export_date_format() {
+		const value = (this.$export_date_format?.val?.() || "jalali").toLowerCase();
+		return value === "gregorian" ? "gregorian" : "jalali";
 	}
 
 	run_export(file_format) {
@@ -1916,6 +1932,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const args = {
 			payload,
 			file_format,
+			date_format: this.get_export_date_format(),
 		};
 		const threshold = ae_normalize_export_threshold(this.metadata.export_background_threshold);
 		const total_rows = cint(this.pagination?.total_rows || 0);
@@ -3407,9 +3424,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			// Do not clear selected_dimension_value here — comes from analysis_filters via payload mapper
 		} else if (view_axis === "currency") {
 			this.analysis_context.sort_field = "currency";
-		} else if (view_axis === "voucher") {
+		} else 		if (view_axis === "voucher") {
 			this.analysis_context.sort_field = "posting_date";
 			this.analysis_context.sort_order = "desc";
+			this._voucher_column_defaults_applied = false;
+			this.ensure_voucher_default_column_visibility();
 		} else if (view_axis === "item_group") {
 			this.analysis_context.sort_field = "display_code";
 			this.analysis_context.item_group_scope = {
@@ -4256,7 +4275,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	restore_column_defaults() {
-		this.set_summary_hidden_columns([]);
+		if (this.analysis_context.view_axis === "voucher") {
+			this.set_summary_hidden_columns(this.get_voucher_optional_column_ids());
+		} else {
+			this.set_summary_hidden_columns([]);
+		}
 		this.announce_grid_status(__("Column defaults restored"));
 	}
 
@@ -5253,6 +5276,66 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		);
 	}
 
+	get_voucher_preferred_column_ids() {
+		return [
+			"posting_date",
+			"voucher_type",
+			"voucher_no",
+			"account_code",
+			"account_name",
+			"debit",
+			"credit",
+			"account_currency",
+			"description",
+			"party_name",
+			"cost_center",
+		];
+	}
+
+	get_voucher_optional_column_ids() {
+		const cols = [
+			"gl_entry",
+			"voucher_detail_no",
+			"account",
+			"against_account",
+			"party_type",
+			"party",
+			"remarks",
+			"debit_in_account_currency",
+			"credit_in_account_currency",
+			"finance_book",
+			"is_opening",
+			"project",
+			"against_voucher_type",
+			"against_voucher",
+			"item_code",
+			"item_name",
+			"item_group",
+			"warehouse",
+			"batch_no",
+			"inventory_attribution",
+			"reference",
+		];
+		(this.gl_dimensions || this.metadata?.dimensions || []).forEach((dimension) => {
+			const id = `dim:${dimension.fieldname || dimension}`;
+			if (!cols.includes(id)) {
+				cols.push(id);
+			}
+		});
+		return cols;
+	}
+
+	ensure_voucher_default_column_visibility() {
+		if (this.analysis_context.view_axis !== "voucher") {
+			return;
+		}
+		if (this._voucher_column_defaults_applied) {
+			return;
+		}
+		this._voucher_column_defaults_applied = true;
+		this.set_summary_hidden_columns(this.get_voucher_optional_column_ids());
+	}
+
 	get_default_visible_columns() {
 		if (this.analysis_context.detail_mode === "grouped_gl") {
 			const layout = this.get_gl_dimension_layout();
@@ -5308,22 +5391,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			];
 		}
 		if (axis === "voucher") {
-			const cols = [
-				"posting_date",
-				"voucher_type",
-				"voucher_no",
-				"party_type",
-				"party_name",
-				"voucher_title",
-				"reference",
-				"scoped_debit",
-				"scoped_credit",
-				"scoped_net",
+			return [
+				...this.get_voucher_preferred_column_ids(),
+				...this.get_voucher_optional_column_ids(),
 			];
-			if (this.show_optional_full_voucher_columns) {
-				cols.push("full_voucher_debit", "full_voucher_credit");
-			}
-			return cols;
 		}
 		if (axis === "item_group") {
 			const cols = (this.metadata?.item_group_columns || [])
@@ -7056,9 +7127,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			];
 		} else if (this.analysis_context.view_axis === "voucher") {
 			items = [
-				["scoped_debit", __("Scoped Debit")],
-				["scoped_credit", __("Scoped Credit")],
-				["scoped_net", __("Scoped Net")],
+				["debit", __("Total Debit")],
+				["credit", __("Total Credit")],
+				["net", __("Net")],
 			];
 		} else if (this.analysis_context.view_axis === "item_group") {
 			items = [

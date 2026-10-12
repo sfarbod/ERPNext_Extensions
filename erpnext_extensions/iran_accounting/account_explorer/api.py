@@ -71,17 +71,37 @@ UNIFIED_PARTY_COLUMNS = [
 
 VOUCHER_COLUMNS = [
 	{"id": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
-	{"id": "voucher_type", "label": "Voucher Type", "fieldtype": "Data", "width": 130},
-	{"id": "voucher_no", "label": "Voucher No", "fieldtype": "Data", "width": 140},
-	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 110},
-	{"id": "party_name", "label": "Party", "fieldtype": "Data", "width": 180},
-	{"id": "voucher_title", "label": "Title", "fieldtype": "Data", "width": 180},
-	{"id": "reference", "label": "Reference", "fieldtype": "Data", "width": 140},
-	{"id": "scoped_debit", "label": "Scoped Debit", "fieldtype": "Currency", "width": 130},
-	{"id": "scoped_credit", "label": "Scoped Credit", "fieldtype": "Currency", "width": 130},
-	{"id": "scoped_net", "label": "Scoped Net", "fieldtype": "Currency", "width": 130},
-	{"id": "full_voucher_debit", "label": "Full Voucher Debit", "fieldtype": "Currency", "width": 130},
-	{"id": "full_voucher_credit", "label": "Full Voucher Credit", "fieldtype": "Currency", "width": 130},
+	{"id": "voucher_type", "label": "Voucher Type", "fieldtype": "Data", "width": 120},
+	{"id": "voucher_no", "label": "Voucher No", "fieldtype": "Dynamic Link", "width": 150},
+	{"id": "gl_entry", "label": "GL Entry ID", "fieldtype": "Link", "width": 140},
+	{"id": "voucher_detail_no", "label": "Voucher Detail No", "fieldtype": "Data", "width": 140},
+	{"id": "account_code", "label": "Account Code", "fieldtype": "Data", "width": 110},
+	{"id": "account_name", "label": "Account Name", "fieldtype": "Data", "width": 180},
+	{"id": "account", "label": "Account", "fieldtype": "Link", "width": 160},
+	{"id": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 160},
+	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 100},
+	{"id": "party_name", "label": "Party", "fieldtype": "Data", "width": 160},
+	{"id": "party", "label": "Party ID", "fieldtype": "Data", "width": 120},
+	{"id": "debit", "label": "Debit", "fieldtype": "Currency", "width": 130},
+	{"id": "credit", "label": "Credit", "fieldtype": "Currency", "width": 130},
+	{"id": "account_currency", "label": "Account Currency", "fieldtype": "Data", "width": 100},
+	{"id": "debit_in_account_currency", "label": "Debit in Account Currency", "fieldtype": "Currency", "width": 150},
+	{"id": "credit_in_account_currency", "label": "Credit in Account Currency", "fieldtype": "Currency", "width": 150},
+	{"id": "description", "label": "Description", "fieldtype": "Data", "width": 220},
+	{"id": "remarks", "label": "Remarks", "fieldtype": "Data", "width": 220},
+	{"id": "finance_book", "label": "Finance Book", "fieldtype": "Link", "width": 120},
+	{"id": "is_opening", "label": "Is Opening", "fieldtype": "Data", "width": 90},
+	{"id": "cost_center", "label": "Cost Center", "fieldtype": "Link", "width": 140},
+	{"id": "project", "label": "Project", "fieldtype": "Link", "width": 120},
+	{"id": "against_voucher_type", "label": "Against Voucher Type", "fieldtype": "Data", "width": 140},
+	{"id": "against_voucher", "label": "Against Voucher", "fieldtype": "Dynamic Link", "width": 140},
+	{"id": "item_code", "label": "Item Code", "fieldtype": "Link", "width": 120},
+	{"id": "item_name", "label": "Item Name", "fieldtype": "Data", "width": 160},
+	{"id": "item_group", "label": "Item Group", "fieldtype": "Link", "width": 120},
+	{"id": "warehouse", "label": "Warehouse", "fieldtype": "Link", "width": 140},
+	{"id": "batch_no", "label": "Batch No", "fieldtype": "Data", "width": 120},
+	{"id": "inventory_attribution", "label": "Inventory Attribution", "fieldtype": "Data", "width": 160},
+	{"id": "reference", "label": "Reference", "fieldtype": "Data", "width": 120},
 ]
 
 GL_GROUP_BASE_COLUMNS = [
@@ -543,6 +563,8 @@ def get_voucher_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "voucher" or spec.detail_mode != "summary":
 		frappe.throw(frappe._("Invalid axis for voucher summary."))
+	# GL line-level Voucher axis uses SQL pagination in-request. Prepared mode
+	# remains available when explicitly forced (legacy aggregate artifact path).
 	if _should_use_prepared(spec, payload):
 		from erpnext_extensions.iran_accounting.account_explorer.prepared_report import (
 			resolve_prepared_or_enqueue,
@@ -554,10 +576,23 @@ def get_voucher_summary(payload) -> dict:
 			columns=VOUCHER_COLUMNS,
 			response_builder=_voucher_response,
 		)
-	from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import build_voucher_summary
+	from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+		build_voucher_gl_line_summary,
+	)
 
-	result = build_voucher_summary(spec)
-	return _voucher_response(spec, VOUCHER_COLUMNS, result)
+	result = build_voucher_gl_line_summary(spec)
+	columns = list(VOUCHER_COLUMNS)
+	for dimension in result.get("dimensions") or []:
+		columns.append(
+			{
+				"id": f"dim:{dimension['fieldname']}",
+				"label": dimension.get("label") or dimension["fieldname"],
+				"label_fa": dimension.get("label_fa"),
+				"fieldtype": "Link",
+				"width": 140,
+			}
+		)
+	return _voucher_response(spec, columns, result)
 
 
 def get_item_group_summary(payload) -> dict:
@@ -766,8 +801,11 @@ def _should_use_prepared(spec: AccountExplorerQuerySpec, payload) -> bool:
 		return axis_uses_prepared_results(spec)
 	# Case B Account Levels: run the existing summary engine in-request.
 	# Avoids queue wait, gzip artifact, and polling when inventory filters
-	# are absent. Case A (item/item_group/warehouse) and voucher stay prepared.
+	# are absent. Case A (item/item_group/warehouse) still uses prepared.
 	if _account_levels_use_direct_path(spec):
+		return False
+	# Voucher axis is now GL line-level with SQL pagination — default direct.
+	if spec.view_axis == "voucher" and spec.detail_mode == "summary":
 		return False
 	return axis_uses_prepared_results(spec)
 

@@ -8,7 +8,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, now_datetime
+from frappe.utils import cint, cstr, flt, now_datetime
 from frappe.utils.xlsxutils import make_xlsx
 
 from erpnext_extensions.iran_accounting.account_explorer.permissions import assert_export_allowed
@@ -91,11 +91,11 @@ def _run_summary_builder(spec: AccountExplorerQuerySpec) -> dict:
 
 		return build_currency_summary(spec)
 	if axis == "voucher":
-		from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-			build_voucher_summary,
+		from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+			build_voucher_gl_line_summary,
 		)
 
-		return build_voucher_summary(spec)
+		return build_voucher_gl_line_summary(spec)
 	if axis == "item_group":
 		from erpnext_extensions.iran_accounting.account_explorer.item_group_summary import (
 			build_item_group_summary,
@@ -120,12 +120,12 @@ def collect_export_rows(spec: AccountExplorerQuerySpec) -> tuple[list[dict], dic
 
 	Phase 3 re-ran full aggregation per page. Phase 4:
 
-	- voucher: SQL-paginated ``iter_voucher_summary_pages`` (totals once)
+	- voucher: SQL-paginated GL line pages (totals once)
 	- other axes: one builder call (chart/party cardinality, not GL rows)
 	"""
 	if spec.view_axis == "voucher":
-		from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-			iter_voucher_summary_pages,
+		from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+			build_voucher_gl_line_summary,
 		)
 
 		settings = _export_settings()
@@ -133,10 +133,23 @@ def collect_export_rows(spec: AccountExplorerQuerySpec) -> tuple[list[dict], dic
 		all_rows: list[dict] = []
 		totals: dict = {}
 		total_rows = 0
-		for chunk in iter_voucher_summary_pages(spec, page_size=page_size):
-			all_rows.extend(chunk.get("rows") or [])
-			totals = chunk.get("totals") or totals
-			total_rows = cint((chunk.get("pagination") or {}).get("total_rows") or total_rows)
+		original_page = spec.pagination.page
+		original_size = spec.pagination.page_size
+		page = 1
+		try:
+			while True:
+				spec.pagination.page = page
+				spec.pagination.page_size = page_size
+				chunk = build_voucher_gl_line_summary(spec)
+				all_rows.extend(chunk.get("rows") or [])
+				totals = chunk.get("totals") or totals
+				total_rows = cint((chunk.get("pagination") or {}).get("total_rows") or total_rows)
+				if page * page_size >= total_rows:
+					break
+				page += 1
+		finally:
+			spec.pagination.page = original_page
+			spec.pagination.page_size = original_size
 		return all_rows, totals, total_rows
 
 	original_page = spec.pagination.page
@@ -214,12 +227,19 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 		]
 	if axis == "voucher":
 		return [
-			{"fieldname": "posting_date", "label": _("Posting Date")},
+			{"fieldname": "posting_date", "label": _("Posting Date"), "fieldtype": "Date"},
 			{"fieldname": "voucher_type", "label": _("Voucher Type")},
 			{"fieldname": "voucher_no", "label": _("Voucher No")},
-			{"fieldname": "scoped_debit", "label": _("Scoped Debit")},
-			{"fieldname": "scoped_credit", "label": _("Scoped Credit")},
-			{"fieldname": "scoped_net", "label": _("Scoped Net")},
+			{"fieldname": "gl_entry", "label": _("GL Entry ID")},
+			{"fieldname": "account_code", "label": _("Account Code")},
+			{"fieldname": "account_name", "label": _("Account Name")},
+			{"fieldname": "account", "label": _("Account")},
+			{"fieldname": "debit", "label": _("Debit")},
+			{"fieldname": "credit", "label": _("Credit")},
+			{"fieldname": "account_currency", "label": _("Account Currency")},
+			{"fieldname": "remarks", "label": _("Description")},
+			{"fieldname": "party", "label": _("Party")},
+			{"fieldname": "cost_center", "label": _("Cost Center")},
 		]
 	if axis == "item_group":
 		return [
@@ -263,10 +283,33 @@ def _normalize_export_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> 
 	return [{**row, "dimension_type": row.get("dimension_type") or dimension_type} for row in rows]
 
 
-def rows_to_matrix(rows: list[dict], columns: list[dict[str, str]]) -> tuple[list[str], list[list[Any]]]:
+def rows_to_matrix(
+	rows: list[dict],
+	columns: list[dict[str, str]],
+	*,
+	date_format: str = "jalali",
+) -> tuple[list[str], list[list[Any]]]:
 	headers = [column["label"] for column in columns]
-	data = [[row.get(column["fieldname"]) for column in columns] for row in rows]
+	data = []
+	for row in rows:
+		line = []
+		for column in columns:
+			value = row.get(column["fieldname"])
+			fieldtype = column.get("fieldtype") or _infer_export_fieldtype(column["fieldname"], value)
+			if fieldtype in {"Date", "Datetime"}:
+				value = _format_export_date(value, fieldtype, date_format)
+			line.append(value)
+		data.append(line)
 	return headers, data
+
+
+def _infer_export_fieldtype(fieldname: str, value: Any) -> str | None:
+	name = (fieldname or "").lower()
+	if name.endswith("_date") or name in {"posting_date", "from_date", "to_date", "creation", "modified"}:
+		if "time" in name or name in {"creation", "modified"}:
+			return "Datetime"
+		return "Date"
+	return None
 
 
 def _export_report_title(spec: AccountExplorerQuerySpec) -> str | None:
@@ -275,8 +318,14 @@ def _export_report_title(spec: AccountExplorerQuerySpec) -> str | None:
 	return None
 
 
-def build_csv_content(rows: list[dict], columns: list[dict[str, str]], *, title: str | None = None) -> str:
-	headers, data = rows_to_matrix(rows, columns)
+def build_csv_content(
+	rows: list[dict],
+	columns: list[dict[str, str]],
+	*,
+	title: str | None = None,
+	date_format: str = "jalali",
+) -> str:
+	headers, data = rows_to_matrix(rows, columns, date_format=date_format)
 	buffer = io.StringIO()
 	writer = csv.writer(buffer)
 	if title:
@@ -286,8 +335,10 @@ def build_csv_content(rows: list[dict], columns: list[dict[str, str]], *, title:
 	return buffer.getvalue()
 
 
-def build_csv_content_from_rows(rows: list[dict], columns: list[dict[str, str]]) -> str:
-	return build_csv_content(rows, columns)
+def build_csv_content_from_rows(
+	rows: list[dict], columns: list[dict[str, str]], *, date_format: str = "jalali"
+) -> str:
+	return build_csv_content(rows, columns, date_format=date_format)
 
 
 def _iter_voucher_export_rows(spec: AccountExplorerQuerySpec, *, page_size: int = 500):
@@ -316,23 +367,77 @@ def _voucher_export_fieldnames(columns: list[dict[str, str]]) -> list[str]:
 	return [column["fieldname"] for column in columns]
 
 
-def _tuple_to_export_values(row: tuple, fieldnames: list[str]) -> list[Any]:
-	"""Map lean SQL tuple → export column order.
+def _tuple_to_export_values(row: tuple, fieldnames: list[str], *, date_format: str = "jalali") -> list[Any]:
+	"""Map lean GL-line SQL tuple → export column order.
 
-	Tuple layout: posting_date, voucher_type, voucher_no, scoped_debit, scoped_credit.
+	Tuple layout:
+	gl_entry, posting_date, voucher_type, voucher_no, account_code, account_name,
+	debit, credit, account_currency, remarks, party, cost_center, account
 	"""
-	posting_date, voucher_type, voucher_no, scoped_debit, scoped_credit = row
-	scoped_debit = flt(scoped_debit)
-	scoped_credit = flt(scoped_credit)
+	(
+		gl_entry,
+		posting_date,
+		voucher_type,
+		voucher_no,
+		account_code,
+		account_name,
+		debit,
+		credit,
+		account_currency,
+		remarks,
+		party,
+		cost_center,
+		account,
+	) = row
+	debit = flt(debit)
+	credit = flt(credit)
 	values = {
-		"posting_date": str(posting_date or ""),
+		"gl_entry": gl_entry,
+		"posting_date": _format_export_date(posting_date, "Date", date_format),
 		"voucher_type": voucher_type,
 		"voucher_no": voucher_no,
-		"scoped_debit": scoped_debit,
-		"scoped_credit": scoped_credit,
-		"scoped_net": scoped_debit - scoped_credit,
+		"account_code": cstr(account_code or ""),
+		"account_name": account_name,
+		"account": account,
+		"debit": debit,
+		"credit": credit,
+		"account_currency": account_currency,
+		"remarks": remarks,
+		"party": party,
+		"cost_center": cost_center,
+		# Legacy aliases
+		"scoped_debit": debit,
+		"scoped_credit": credit,
+		"scoped_net": debit - credit,
 	}
 	return [values.get(name) for name in fieldnames]
+
+
+def _format_export_date(value: Any, fieldtype: str, date_format: str) -> Any:
+	"""Convert Date/Datetime cells for export without mutating stored values."""
+	if value in (None, ""):
+		return ""
+	mode = (date_format or "jalali").lower()
+	if mode in {"gregorian", "iso", "en"}:
+		return str(value)
+	try:
+		from persian_calendar.utils.data_io import convert_export_value
+
+		converted = convert_export_value(value, fieldtype, enabled=True)
+		if converted in (None, ""):
+			return str(value)
+		# Prefer YYYY-MM-DD for Date cells when persian_calendar returns slash form.
+		text = cstr(converted)
+		if fieldtype == "Date" and "/" in text and len(text) >= 10:
+			try:
+				from persian_calendar.utils.jalali import toshamshi
+
+				return toshamshi(value, format="YYYY-MM-DD")
+			except Exception:
+				return text.replace("/", "-")
+		return text
+	except Exception:
+		return str(value)
 
 
 def _publish_export_progress(*, phase: str, written: int = 0, total_rows: int = 0, extra: dict | None = None):
@@ -368,10 +473,12 @@ def build_streaming_voucher_csv(
 	columns: list[dict[str, str]],
 	*,
 	batch_size: int | None = None,
+	date_format: str = "jalali",
 ) -> tuple[str, dict, int]:
-	"""Stream voucher CSV from one temp GROUP BY via keyset batches (no UI enrichment)."""
-	from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-		iter_voucher_export_batches,
+	"""Stream voucher GL-line CSV via keyset batches on GL Entry.name."""
+	from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+		_gl_line_totals,
+		iter_voucher_gl_line_export_batches,
 	)
 
 	batch_size = cint(batch_size) or AE_VOUCHER_EXPORT_BATCH_SIZE
@@ -383,19 +490,15 @@ def build_streaming_voucher_csv(
 	total_rows = 0
 	written = 0
 	_publish_export_progress(phase="preparing_rows", written=0, total_rows=0)
-	for batch, totals, total_rows in iter_voucher_export_batches(spec, batch_size=batch_size):
+	for batch, totals, total_rows in iter_voucher_gl_line_export_batches(spec, batch_size=batch_size):
 		if not batch and total_rows == 0:
 			break
 		_publish_export_progress(phase="writing_csv", written=written, total_rows=total_rows)
 		for row in batch:
-			writer.writerow(_tuple_to_export_values(row, fieldnames))
+			writer.writerow(_tuple_to_export_values(row, fieldnames, date_format=date_format))
 			written += 1
 	if written == 0:
-		from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-			_scoped_voucher_totals,
-		)
-
-		totals, total_rows = _scoped_voucher_totals(spec)
+		totals, total_rows = _gl_line_totals(spec)
 	_publish_export_progress(phase="writing_csv", written=written, total_rows=cint(total_rows or written))
 	return buffer.getvalue(), totals, cint(total_rows or written)
 
@@ -405,12 +508,14 @@ def build_streaming_voucher_xlsx(
 	columns: list[dict[str, str]],
 	*,
 	batch_size: int | None = None,
+	date_format: str = "jalali",
 ) -> tuple[bytes, dict, int]:
-	"""Write-only XLSX for voucher export (lean keyset batches, no UI enrichment)."""
+	"""Write-only XLSX for voucher GL-line export (keyset batches)."""
 	from openpyxl import Workbook
 
-	from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-		iter_voucher_export_batches,
+	from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+		_gl_line_totals,
+		iter_voucher_gl_line_export_batches,
 	)
 
 	batch_size = cint(batch_size) or AE_VOUCHER_EXPORT_BATCH_SIZE
@@ -422,19 +527,15 @@ def build_streaming_voucher_xlsx(
 	total_rows = 0
 	written = 0
 	_publish_export_progress(phase="preparing_rows", written=0, total_rows=0)
-	for batch, totals, total_rows in iter_voucher_export_batches(spec, batch_size=batch_size):
+	for batch, totals, total_rows in iter_voucher_gl_line_export_batches(spec, batch_size=batch_size):
 		if not batch and total_rows == 0:
 			break
 		_publish_export_progress(phase="writing_xlsx", written=written, total_rows=total_rows)
 		for row in batch:
-			ws.append(_tuple_to_export_values(row, fieldnames))
+			ws.append(_tuple_to_export_values(row, fieldnames, date_format=date_format))
 			written += 1
 	if written == 0:
-		from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-			_scoped_voucher_totals,
-		)
-
-		totals, total_rows = _scoped_voucher_totals(spec)
+		totals, total_rows = _gl_line_totals(spec)
 	bio = io.BytesIO()
 	_publish_export_progress(phase="saving_file", written=written, total_rows=cint(total_rows or written))
 	wb.save(bio)
@@ -442,8 +543,14 @@ def build_streaming_voucher_xlsx(
 
 
 
-def build_xlsx_content(rows: list[dict], columns: list[dict[str, str]], *, title: str | None = None) -> bytes:
-	headers, data = rows_to_matrix(rows, columns)
+def build_xlsx_content(
+	rows: list[dict],
+	columns: list[dict[str, str]],
+	*,
+	title: str | None = None,
+	date_format: str = "jalali",
+) -> bytes:
+	headers, data = rows_to_matrix(rows, columns, date_format=date_format)
 	sheet_title = (title or "Account Explorer")[:31]
 	matrix = [headers, *data]
 	if title:
@@ -577,13 +684,13 @@ def _prepare_export_payload(payload: Any) -> AccountExplorerQuerySpec:
 
 
 def _probe_export_size(spec: AccountExplorerQuerySpec) -> int:
-	"""Cheap total_rows probe (voucher uses totals query only)."""
+	"""Cheap total_rows probe (voucher uses GL-line totals query only)."""
 	if spec.view_axis == "voucher":
-		from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-			_scoped_voucher_totals,
+		from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+			_gl_line_totals,
 		)
 
-		_totals, total_rows = _scoped_voucher_totals(spec)
+		_totals, total_rows = _gl_line_totals(spec)
 		return cint(total_rows)
 
 	settings = _export_settings()
@@ -606,10 +713,19 @@ def _trigger_download(content: bytes | str, filename: str) -> None:
 	frappe.local.response.type = "download"
 
 
-def export_account_explorer(payload: Any, file_format: str = "csv", *, force_sync: bool = False) -> dict:
+def export_account_explorer(
+	payload: Any,
+	file_format: str = "csv",
+	date_format: str = "jalali",
+	*,
+	force_sync: bool = False,
+) -> dict:
 	file_format = (file_format or "csv").lower()
+	date_format = (date_format or "jalali").lower()
 	if file_format not in EXPORT_FORMATS:
 		frappe.throw(_("Unsupported export format."))
+	if date_format not in {"jalali", "gregorian", "iso", "en"}:
+		date_format = "jalali"
 
 	spec = _prepare_export_payload(payload)
 	settings = _export_settings()
@@ -628,6 +744,7 @@ def export_account_explorer(payload: Any, file_format: str = "csv", *, force_syn
 			**export_enqueue_kwargs(
 				payload=payload,
 				file_format=file_format,
+				date_format=date_format,
 				user=frappe.session.user,
 			),
 		)
@@ -645,18 +762,28 @@ def export_account_explorer(payload: Any, file_format: str = "csv", *, force_syn
 	report_title = _export_report_title(spec)
 
 	if spec.view_axis == "voucher" and file_format == "csv":
-		content, totals, total_rows = build_streaming_voucher_csv(spec, columns)
+		content, totals, total_rows = build_streaming_voucher_csv(
+			spec, columns, date_format=date_format
+		)
 		_trigger_download(content, filename)
 	elif spec.view_axis == "voucher" and file_format == "xlsx":
-		content, totals, total_rows = build_streaming_voucher_xlsx(spec, columns)
+		content, totals, total_rows = build_streaming_voucher_xlsx(
+			spec, columns, date_format=date_format
+		)
 		_trigger_download(content, filename)
 	else:
 		rows, totals, total_rows = collect_export_rows(spec)
 		rows = _normalize_export_rows(rows, spec)
 		if file_format == "csv":
-			_trigger_download(build_csv_content(rows, columns, title=report_title), filename)
+			_trigger_download(
+				build_csv_content(rows, columns, title=report_title, date_format=date_format),
+				filename,
+			)
 		else:
-			_trigger_download(build_xlsx_content(rows, columns, title=report_title), filename)
+			_trigger_download(
+				build_xlsx_content(rows, columns, title=report_title, date_format=date_format),
+				filename,
+			)
 
 	return {
 		"queued": 0,
@@ -666,26 +793,33 @@ def export_account_explorer(payload: Any, file_format: str = "csv", *, force_syn
 	}
 
 
-def run_account_explorer_export_job(payload: Any, file_format: str, user: str) -> dict[str, Any]:
+def run_account_explorer_export_job(
+	payload: Any, file_format: str, user: str, date_format: str = "jalali"
+) -> dict[str, Any]:
 	"""Background export: persist file first; notifications must not fail the job."""
 	frappe.set_user(user)
+	date_format = (date_format or "jalali").lower()
 	spec = _prepare_export_payload(payload)
 	columns = get_export_columns(spec)
 	filename = _export_filename(spec, file_format)
 	total_rows = 0
 
 	if spec.view_axis == "voucher" and file_format == "csv":
-		content, _totals, total_rows = build_streaming_voucher_csv(spec, columns)
+		content, _totals, total_rows = build_streaming_voucher_csv(
+			spec, columns, date_format=date_format
+		)
 	elif spec.view_axis == "voucher" and file_format == "xlsx":
-		content, _totals, total_rows = build_streaming_voucher_xlsx(spec, columns)
+		content, _totals, total_rows = build_streaming_voucher_xlsx(
+			spec, columns, date_format=date_format
+		)
 	else:
 		rows, _totals, total_rows = collect_export_rows(spec)
 		rows = _normalize_export_rows(rows, spec)
 		report_title = _export_report_title(spec)
 		if file_format == "csv":
-			content = build_csv_content(rows, columns, title=report_title)
+			content = build_csv_content(rows, columns, title=report_title, date_format=date_format)
 		else:
-			content = build_xlsx_content(rows, columns, title=report_title)
+			content = build_xlsx_content(rows, columns, title=report_title, date_format=date_format)
 
 	file_url = _save_export_file(content, filename, file_format)
 	# Persist File before any notification side-effects so a broken Email Account

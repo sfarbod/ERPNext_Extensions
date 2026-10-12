@@ -69,15 +69,22 @@ class TestAccountExplorerLeafMeasuresCache(FrappeTestCase):
 		self.assertNotEqual(query_hash(spec_a), query_hash(spec_b))
 
 	def test_execution_local_cache_hit_and_revision_invalidation(self):
-		spec = AccountExplorerQuerySpec_from_client(_payload(self.company, 4), require_dates=True)
-		frappe.flags.ae_execution_id = "test-exec-leaf-cache"
+		import uuid
+
+		execution_id = f"test-exec-leaf-cache-{uuid.uuid4().hex[:12]}"
+		spec = AccountExplorerQuerySpec_from_client(
+			_payload(self.company, 4, execution_id=execution_id), require_dates=True
+		)
+		frappe.flags.ae_execution_id = execution_id
 		frappe.flags.ae_leaf_measures_cache_hit = None
 
 		first = _get_account_wise_measures_for_level_summary(spec, spec.included_account_names)
 		self.assertEqual(frappe.flags.ae_leaf_measures_cache_hit, 0)
 
-		spec_level = AccountExplorerQuerySpec_from_client(_payload(self.company, 8), require_dates=True)
-		frappe.flags.ae_execution_id = "test-exec-leaf-cache"
+		spec_level = AccountExplorerQuerySpec_from_client(
+			_payload(self.company, 8, execution_id=execution_id), require_dates=True
+		)
+		frappe.flags.ae_execution_id = execution_id
 		second = _get_account_wise_measures_for_level_summary(
 			spec_level, spec_level.included_account_names
 		)
@@ -85,7 +92,7 @@ class TestAccountExplorerLeafMeasuresCache(FrappeTestCase):
 		self.assertEqual(set(first.keys()), set(second.keys()))
 
 		bump_accounting_revision(company=spec.company)
-		frappe.flags.ae_execution_id = "test-exec-leaf-cache"
+		frappe.flags.ae_execution_id = execution_id
 		_get_account_wise_measures_for_level_summary(spec, spec.included_account_names)
 		self.assertEqual(frappe.flags.ae_leaf_measures_cache_hit, 0)
 		self.assertGreaterEqual(get_accounting_revision(spec.company), 1)
