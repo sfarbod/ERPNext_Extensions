@@ -755,7 +755,27 @@ def _should_use_prepared(spec: AccountExplorerQuerySpec, payload) -> bool:
 	mode = (data.get("prepared_mode") or "").lower()
 	if mode in {"live", "skip", "off", "0"}:
 		return False
+	if mode in {"prepared", "force", "async", "1"}:
+		return axis_uses_prepared_results(spec)
+	# Inline prepared tests still exercise the artifact path.
+	if getattr(frappe.flags, "ae_prepared_inline", False):
+		return axis_uses_prepared_results(spec)
+	# Case B Account Levels: run the existing summary engine in-request.
+	# Avoids queue wait, gzip artifact, and polling when inventory filters
+	# are absent. Case A (item/item_group/warehouse) and voucher stay prepared.
+	if _account_levels_use_direct_path(spec):
+		return False
 	return axis_uses_prepared_results(spec)
+
+
+def _account_levels_use_direct_path(spec: AccountExplorerQuerySpec) -> bool:
+	if spec.view_axis != "account_level" or spec.detail_mode != "summary":
+		return False
+	from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
+		has_inventory_document_filters,
+	)
+
+	return not has_inventory_document_filters(spec)
 
 
 def _document_scope_response(spec: AccountExplorerQuerySpec) -> dict:

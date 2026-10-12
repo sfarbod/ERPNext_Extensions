@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import frappe
-from erpnext.accounts.report.financial_statements import apply_additional_conditions, set_gl_entries_by_account
+from erpnext.accounts.report.financial_statements import apply_additional_conditions
 from erpnext.accounts.report.trial_balance.trial_balance import get_opening_balances
 from frappe.query_builder.functions import Sum
 from frappe.utils import flt
@@ -205,21 +205,14 @@ def _set_period_gl_entries_for_e1(
 	*,
 	restrict_accounts: list[str] | None,
 ) -> None:
-	"""Period GL grouped by account — company-wide or drill-scoped."""
-	ignore_closing = not spec.include_period_closing_vouchers
-	if not restrict_accounts:
-		set_gl_entries_by_account(
-			spec.company,
-			spec.from_date,
-			spec.to_date,
-			filters,
-			gl_entries_by_account,
-			ignore_closing_entries=ignore_closing,
-			ignore_opening_entries=False,
-			group_by_account=True,
-		)
-		return
+	"""Period GL grouped by account — company-wide or drill-scoped.
 
+	Uses the same SUM/GROUP BY path as leaf drills for company-wide Account Levels.
+	ERPNext ``set_gl_entries_by_account`` forces ``posting_date_company_index``, which
+	is several seconds slower on this restored dataset without changing balances.
+	Finance-book / closing filters still come from ``apply_additional_conditions``.
+	"""
+	ignore_closing = not spec.include_period_closing_vouchers
 	gl_entry = frappe.qb.DocType("GL Entry")
 	query = (
 		frappe.qb.from_(gl_entry)
@@ -237,12 +230,11 @@ def _set_period_gl_entries_for_e1(
 		.where(gl_entry.company == filters.company)
 		.where(gl_entry.is_cancelled == 0)
 		.where(gl_entry.posting_date <= spec.to_date)
-		.where(gl_entry.account.isin(restrict_accounts))
 	)
-	# v4.6.2: never FORCE INDEX(posting_date_company_index) when account IN (...) is
-	# present — that index defeats account selectivity (~1.5s vs ~1ms on leaf drills).
-	# Root / company-wide path above still uses ERPNext set_gl_entries_by_account
-	# (unchanged date/company force index).
+	if restrict_accounts:
+		query = query.where(gl_entry.account.isin(restrict_accounts))
+	# Never FORCE INDEX(posting_date_company_index) — it defeats account selectivity
+	# on drills and is slower for company-wide Account Levels on large GL tables.
 	query = apply_additional_conditions(
 		"GL Entry", query, spec.from_date, ignore_closing, filters
 	)
