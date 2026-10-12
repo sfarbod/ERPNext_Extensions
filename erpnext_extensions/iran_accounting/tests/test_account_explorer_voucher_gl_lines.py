@@ -108,3 +108,29 @@ class TestAccountExplorerVoucherGLLines(FrappeTestCase):
 		self.assertEqual(_format_export_date("2026-03-21", "Date", "jalali"), "1405-01-01")
 		self.assertEqual(_format_export_date("2026-03-21", "Date", "gregorian"), "2026-03-21")
 		self.assertEqual(_format_export_date("", "Date", "jalali"), "")
+
+	def test_direct_and_prepared_gl_line_parity(self):
+		"""Forced prepared materialization must keep GL Entry row identity."""
+		from erpnext_extensions.iran_accounting.account_explorer.prepared_report import (
+			_artifact_schema_compatible,
+			_materialize_voucher,
+		)
+
+		spec = AccountExplorerQuerySpec_from_client(self._payload(), require_dates=True)
+		direct = build_voucher_gl_line_summary(spec)
+		direct_rows = direct.get("rows") or []
+		if not direct_rows:
+			self.skipTest("No GL lines in scope")
+
+		artifact = _materialize_voucher(spec)
+		self.assertTrue(_artifact_schema_compatible(spec, artifact))
+		self.assertEqual((artifact.get("extras") or {}).get("voucher_view_mode"), "gl_line")
+		artifact_ids = {row.get("gl_entry") for row in (artifact.get("rows") or [])}
+		for row in direct_rows:
+			self.assertIn(row.get("gl_entry"), artifact_ids)
+
+		legacy_header = {
+			"rows": [{"row_key": "voucher:Journal Entry:X", "voucher_no": "X"}],
+			"extras": {},
+		}
+		self.assertFalse(_artifact_schema_compatible(spec, legacy_header))

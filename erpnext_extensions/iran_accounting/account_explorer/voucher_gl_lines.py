@@ -92,6 +92,49 @@ def iter_voucher_gl_line_export_batches(spec: AccountExplorerQuerySpec, *, batch
 			break
 
 
+_VOUCHER_TOTALS_CACHE_TTL_SEC = 30 * 60
+
+
+def _voucher_totals_cache_key(spec: AccountExplorerQuerySpec) -> str | None:
+	execution_id = getattr(frappe.flags, "ae_execution_id", None)
+	if not execution_id:
+		return None
+	from erpnext_extensions.iran_accounting.account_explorer.cache_revision import (
+		get_accounting_revision,
+	)
+	from erpnext_extensions.iran_accounting.account_explorer.query_fingerprint import (
+		measures_query_hash,
+	)
+
+	revision = int(get_accounting_revision(spec.company))
+	return f"ae:voucher-tot:{execution_id}:{measures_query_hash(spec)}:{revision}"
+
+
+def _empty_voucher_totals() -> dict:
+	return {
+		"debit": 0.0,
+		"credit": 0.0,
+		"net": 0.0,
+		"scoped_debit": 0.0,
+		"scoped_credit": 0.0,
+		"scoped_net": 0.0,
+	}
+
+
+def _totals_dict(debit, credit, total_rows: int) -> tuple[dict, int]:
+	debit_d = Decimal(str(debit or 0))
+	credit_d = Decimal(str(credit or 0))
+	totals = {
+		"debit": float(debit_d),
+		"credit": float(credit_d),
+		"net": float(debit_d - credit_d),
+		"scoped_debit": float(debit_d),
+		"scoped_credit": float(credit_d),
+		"scoped_net": float(debit_d - credit_d),
+	}
+	return totals, cint(total_rows)
+
+
 def _paged_gl_lines(
 	spec: AccountExplorerQuerySpec,
 	dimensions: list[dict],
@@ -99,12 +142,36 @@ def _paged_gl_lines(
 	limit: int,
 	offset: int,
 ) -> tuple[list[dict], dict, int]:
+	"""Paginate GL lines; prefer one window scan when totals are not cached.
+
+	Benchmarks on Espad (~84k lines): a single window aggregate (~2.3 s) beats
+	separate totals+page scans (~4 s). Cached totals let later pages skip the
+	aggregate and run a LIMIT/OFFSET page query only.
+	"""
+	cached = _get_cached_voucher_totals(spec)
 	gle = frappe.qb.DocType("GL Entry")
 	acc = frappe.qb.DocType("Account")
 	inner = _base_line_query(spec, gle, acc, dimensions)
 	inner_sql = inner.get_sql()
 	order_sql = _order_by_sql(spec)
-	dim_select = "".join(f", gle.`{d['fieldname']}`" for d in dimensions)
+
+	if cached is not None:
+		totals, total_rows = cached
+		if total_rows == 0:
+			return [], totals, 0
+		rows = frappe.db.sql(
+			f"""
+			select *
+			from (
+				{inner_sql}
+			) gle_lines
+			order by {order_sql}
+			limit {cint(limit)} offset {cint(offset)}
+			""",
+			as_dict=True,
+		)
+		return [_row_dict(row, dimensions) for row in rows], totals, total_rows
+
 	rows = frappe.db.sql(
 		f"""
 		with gle_lines as (
@@ -123,30 +190,57 @@ def _paged_gl_lines(
 	)
 	if not rows:
 		totals, total_rows = _gl_line_totals(spec)
+		_store_cached_voucher_totals(spec, totals, total_rows)
 		return [], totals, total_rows
 
-	total_rows = cint(rows[0]._total_rows)
-	total_debit = Decimal(str(rows[0]._total_debit or 0))
-	total_credit = Decimal(str(rows[0]._total_credit or 0))
-	totals = {
-		"debit": float(total_debit),
-		"credit": float(total_credit),
-		"net": float(total_debit - total_credit),
-		# Backward-compatible aliases for older UI bindings.
-		"scoped_debit": float(total_debit),
-		"scoped_credit": float(total_credit),
-		"scoped_net": float(total_debit - total_credit),
-	}
-	out = [_row_dict(row, dimensions) for row in rows]
-	return out, totals, total_rows
+	totals, total_rows = _totals_dict(rows[0]._total_debit, rows[0]._total_credit, rows[0]._total_rows)
+	_store_cached_voucher_totals(spec, totals, total_rows)
+	return [_row_dict(row, dimensions) for row in rows], totals, total_rows
+
+
+def _get_cached_voucher_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int] | None:
+	cache_key = _voucher_totals_cache_key(spec)
+	if not cache_key:
+		return None
+	cached = frappe.cache().get_value(cache_key)
+	if not isinstance(cached, dict):
+		return None
+	totals = cached.get("totals")
+	total_rows = cached.get("total_rows")
+	if not isinstance(totals, dict) or total_rows is None:
+		return None
+	return totals, cint(total_rows)
+
+
+def _store_cached_voucher_totals(spec: AccountExplorerQuerySpec, totals: dict, total_rows: int) -> None:
+	cache_key = _voucher_totals_cache_key(spec)
+	if not cache_key:
+		return
+	frappe.cache().set_value(
+		cache_key,
+		{"totals": totals, "total_rows": cint(total_rows)},
+		expires_in_sec=_VOUCHER_TOTALS_CACHE_TTL_SEC,
+	)
 
 
 def _gl_line_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int]:
+	"""Company-currency debit/credit/count without Account join."""
+	cached = _get_cached_voucher_totals(spec)
+	if cached is not None:
+		return cached
+
 	gle = frappe.qb.DocType("GL Entry")
-	acc = frappe.qb.DocType("Account")
-	dimensions = filter_usable_gl_dimensions(get_discovered_dimensions())
-	inner = _base_line_query(spec, gle, acc, dimensions)
-	inner_sql = inner.get_sql()
+	query = (
+		frappe.qb.from_(gle)
+		.select(
+			gle.name.as_("gl_entry"),
+			gle.debit,
+			gle.credit,
+		)
+	)
+	query = _apply_voucher_line_filters(query, gle, spec)
+	query = query.force_index("company")
+	inner_sql = query.get_sql()
 	row = frappe.db.sql(
 		f"""
 		select
@@ -160,18 +254,26 @@ def _gl_line_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int]:
 		as_dict=True,
 	)
 	if not row:
-		return {"debit": 0.0, "credit": 0.0, "net": 0.0, "scoped_debit": 0.0, "scoped_credit": 0.0, "scoped_net": 0.0}, 0
-	debit = Decimal(str(row[0].total_debit or 0))
-	credit = Decimal(str(row[0].total_credit or 0))
-	totals = {
-		"debit": float(debit),
-		"credit": float(credit),
-		"net": float(debit - credit),
-		"scoped_debit": float(debit),
-		"scoped_credit": float(credit),
-		"scoped_net": float(debit - credit),
-	}
-	return totals, cint(row[0].total_rows)
+		totals, total_rows = _empty_voucher_totals(), 0
+	else:
+		totals, total_rows = _totals_dict(row[0].total_debit, row[0].total_credit, row[0].total_rows)
+	_store_cached_voucher_totals(spec, totals, total_rows)
+	return totals, total_rows
+
+
+def _apply_voucher_line_filters(query, gle, spec: AccountExplorerQuerySpec):
+	query = apply_scoped_gle_filters(query, gle, spec)
+	query = (
+		query.where(gle.voucher_type.isnotnull())
+		.where(gle.voucher_no.isnotnull())
+		.where(gle.voucher_no != "")
+		.where(gle.posting_date >= getdate(spec.from_date))
+		.where(gle.posting_date <= getdate(spec.to_date))
+	)
+	query = apply_opening_entry_filters(query, gle, spec)
+	if spec.hide_zero_rows:
+		query = query.where((gle.debit != 0) | (gle.credit != 0))
+	return query
 
 
 def _base_line_query(spec: AccountExplorerQuerySpec, gle, acc, dimensions: list[dict]):
@@ -222,17 +324,8 @@ def _base_line_query(spec: AccountExplorerQuerySpec, gle, acc, dimensions: list[
 		.on(gle.account == acc.name)
 		.select(*select_fields)
 	)
-	query = apply_scoped_gle_filters(query, gle, spec)
-	query = (
-		query.where(gle.voucher_type.isnotnull())
-		.where(gle.voucher_no.isnotnull())
-		.where(gle.voucher_no != "")
-		.where(gle.posting_date >= getdate(spec.from_date))
-		.where(gle.posting_date <= getdate(spec.to_date))
-	)
-	query = apply_opening_entry_filters(query, gle, spec)
-	if spec.hide_zero_rows:
-		query = query.where((gle.debit != 0) | (gle.credit != 0))
+	query = _apply_voucher_line_filters(query, gle, spec)
+	query = query.force_index("company")
 	return query
 
 

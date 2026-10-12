@@ -33,10 +33,16 @@ A 2 ms six-account SQL microbenchmark is not the full Account Levels report. Com
 7. **Export Date Format on the existing Export control (same release cycle)**  
    The existing Export button/menu is preserved. A minimal **Date Format** selector (Jalali default / Gregorian) is added beside it. Serialization converts Date/Datetime columns for **all axes** using `persian_calendar` helpers. Account codes and document numbers stay text; financial amounts are unchanged.
 
+8. **FY1404 ghost-balance fix (same release cycle)**  
+   Root cause: E1 single-pass (and legacy ERPNext TB opening) treated unbounded `is_opening=Yes` as opening, so FY1405 opening vouchers dated `2026-03-21` appeared as FY1404 opening balances while period turnover stayed zero. Other axes correctly returned empty (period-dated GL only). Fix: bound opening-flagged rows to `posting_date <= to_date` in single-pass, strip post-`to_date` openings on the legacy TB path, and keep `WHERE posting_date <= to_date`. Aligns with AE `opening_entry_policy` (`AFTER_PERIOD` never contributes to opening). Empty FY1404 ⇒ all measures and footer zero. FY1405 baseline `11100409 = 994,353,195,185` unchanged. Footer for Account Levels remains sum-of-visible-hierarchy-rows (unclassified residual excluded from visible rows).
+
+9. **Voucher Direct/Prepared GL-line parity + pagination (same release cycle)**  
+   Forced prepared materialization now stores GL Entry lines (`voucher_view_mode=gl_line`) via the same line filters as direct mode. Legacy voucher-header artifacts are rejected and rebuilt. First-page pagination prefers one window aggregate (measured faster than separate totals+page on Espad); totals are cached per execution for later pages. Totals-only path avoids the Account join.
+
 ### Voucher / export known limitations
 - Item/Warehouse on a GL line is filled only when `voucher_detail_no` maps to exactly one SLE.
 - Case A means “voucher qualifies via SLE scope”; it does not invent per-item GL allocation.
-- Forced `prepared_mode=prepared` still uses the legacy voucher **header** artifact path until that materializer is migrated.
+- Company-wide Voucher first page remains a multi-second GL scan (~84k lines); correctness is prioritized over the <2s aspirational target.
 
 ## Mutation coverage (revision)
 
@@ -60,10 +66,11 @@ Do not enable Redis financial indexes until SLE and direct SQL paths advance a p
 | After Case B direct (pre–single-pass) | API median **9.8 s**; browser **13.2 s** |
 | After E1 single-pass (10 API / Playwright) | E1 median **~2.0–2.4 s**; API median **~2.2 s**; browser median **~3.3 s** |
 | After level-reuse + profiling | Browser median **~2.3 s** (API ~2.2 s, render ~60–100 ms); level change **~100–220 ms**; mid-year **~2.4 s** |
-| Voucher GL lines (Playwright) | First page ~4.8 s over ~84k matching lines; multi-line vouchers visible; totals present |
+| Voucher GL lines (Playwright) | First page median **~2.5 s** (min ~2.2 / p95 ~2.8) over ~84k matching lines after window+index path; multi-line vouchers visible; totals present |
+| FY1404 empty year | Account Levels / Vouchers / Parties / Currencies empty; footer zero (no future `is_opening` leak) |
 | Balance 11100409 | **994,353,195,185** (delta 0 vs legacy E1 and posted baseline) |
 
-Remaining cost on a cold Account Levels load is the company-wide GL aggregate (~2.1 s). Desk render is not the bottleneck. Returning to Account Levels after another axis still recomputes (new execution; no cross-execution financial cache). Voucher cold load cost is the company-wide GL line scan + window totals.
+Remaining cost on a cold Account Levels load is the company-wide GL aggregate (~2.1–2.6 s). Desk render is not the bottleneck. Returning to Account Levels after another axis still recomputes (new execution; no cross-execution financial cache). Voucher cold load cost is the company-wide GL line scan + window totals (`FORCE INDEX (company)`); later pages reuse execution-cached totals.
 
 ## Redis
 

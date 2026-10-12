@@ -8,7 +8,7 @@ import frappe
 from erpnext.accounts.report.financial_statements import apply_additional_conditions
 from erpnext.accounts.report.trial_balance.trial_balance import get_opening_balances
 from frappe.query_builder.functions import Sum
-from frappe.utils import flt
+from frappe.utils import flt, getdate
 from pypika import Bracket
 from pypika.terms import LiteralValue
 
@@ -78,6 +78,9 @@ def _get_account_wise_measures_e1(
 	ignore_is_opening = site_ignore_is_opening()
 	# v4.6.1: drill/filter scope → narrow TB + policy-aux GL SQL; root stays company-wide.
 	opening_balances = _get_opening_balances_for_e1(filters, ignore_is_opening, restrict_accounts)
+	# ERPNext TB includes unbounded is_opening=Yes; strip post-to_date openings.
+	if not ignore_is_opening:
+		_subtract_future_opening_flagged(opening_balances, spec, restrict_accounts)
 	aux_pre, aux_in = aggregate_opening_flagged_pre_in_by_account(spec)
 
 	gl_entries_by_account: dict[str, list] = {}
@@ -172,8 +175,6 @@ def _get_account_wise_measures_e1_single_pass(
 	Applies the same ``adjust_tb_opening_for_policy`` / aux_in / EXCLUDE period
 	rules as the multi-query E1 path. Does not change accounting formulas.
 	"""
-	from frappe.utils import getdate
-
 	from erpnext_extensions.iran_accounting.account_explorer.gle_filters import (
 		apply_document_scope_filters,
 	)
@@ -185,10 +186,15 @@ def _get_account_wise_measures_e1_single_pass(
 	gle = frappe.qb.DocType("GL Entry")
 	case = frappe.qb.terms.Case
 
+	# Bound is_opening to the report end date. Unbounded is_opening (ERPNext TB)
+	# pulls future-year opening vouchers into earlier fiscal years (FY1404 ghost
+	# balances). AE opening_entry_policy already rejects AFTER_PERIOD rows.
 	if ignore_is_opening:
 		tb_cond = gle.posting_date < from_date
 	else:
-		tb_cond = (gle.posting_date < from_date) | (gle.is_opening == "Yes")
+		tb_cond = (gle.posting_date < from_date) | (
+			(gle.is_opening == "Yes") & (gle.posting_date <= to_date)
+		)
 	period_cond = (gle.posting_date >= from_date) & (gle.posting_date <= to_date)
 	pre_cond = (gle.is_opening == "Yes") & (gle.posting_date < from_date)
 	in_cond = (gle.is_opening == "Yes") & period_cond
@@ -206,7 +212,7 @@ def _get_account_wise_measures_e1_single_pass(
 			Sum(case().when(in_cond, gle.debit).else_(0)).as_("in_debit"),
 			Sum(case().when(in_cond, gle.credit).else_(0)).as_("in_credit"),
 		)
-		.where((gle.posting_date <= to_date) | (gle.is_opening == "Yes"))
+		.where(gle.posting_date <= to_date)
 	)
 	query = apply_document_scope_filters(query, gle, spec)
 	if restrict_accounts:
@@ -294,6 +300,44 @@ def _force_report_type_account_names(account_names: list[str]):
 		yield
 	finally:
 		frappe.db.get_all = original  # type: ignore[method-assign]
+
+
+def _subtract_future_opening_flagged(
+	opening_balances: dict,
+	spec: AccountExplorerQuerySpec,
+	restrict_accounts: list[str] | None,
+) -> None:
+	"""Remove is_opening=Yes amounts posted after the report to_date (in-place).
+
+	ERPNext ``get_opening_balances`` uses unbounded ``is_opening == Yes``, which
+	imports later fiscal-year opening vouchers into earlier years. AE policy
+	treats AFTER_PERIOD rows as ineligible for opening.
+	"""
+	to_date = getdate(spec.to_date)
+	gle = frappe.qb.DocType("GL Entry")
+	query = (
+		frappe.qb.from_(gle)
+		.select(
+			gle.account,
+			Sum(gle.debit).as_("debit"),
+			Sum(gle.credit).as_("credit"),
+		)
+		.where(gle.company == spec.company)
+		.where(gle.is_cancelled == 0)
+		.where(gle.is_opening == "Yes")
+		.where(gle.posting_date > to_date)
+		.groupby(gle.account)
+	)
+	if restrict_accounts:
+		query = query.where(gle.account.isin(restrict_accounts))
+	if not spec.include_period_closing_vouchers:
+		query = query.where(gle.voucher_type != "Period Closing Voucher")
+	for row in query.run(as_dict=True):
+		bucket = opening_balances.get(row.account)
+		if not bucket:
+			continue
+		bucket["opening_debit"] = flt(bucket.get("opening_debit")) - flt(row.debit)
+		bucket["opening_credit"] = flt(bucket.get("opening_credit")) - flt(row.credit)
 
 
 def _get_opening_balances_for_e1(filters, ignore_is_opening, restrict_accounts: list[str] | None):

@@ -563,8 +563,9 @@ def get_voucher_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "voucher" or spec.detail_mode != "summary":
 		frappe.throw(frappe._("Invalid axis for voucher summary."))
-	# GL line-level Voucher axis uses SQL pagination in-request. Prepared mode
-	# remains available when explicitly forced (legacy aggregate artifact path).
+	_bind_execution_id(payload)
+	# GL line-level Voucher axis uses SQL pagination in-request. Forced prepared
+	# mode materializes the same GL Entry lines (not voucher headers).
 	if _should_use_prepared(spec, payload):
 		from erpnext_extensions.iran_accounting.account_explorer.prepared_report import (
 			resolve_prepared_or_enqueue,
