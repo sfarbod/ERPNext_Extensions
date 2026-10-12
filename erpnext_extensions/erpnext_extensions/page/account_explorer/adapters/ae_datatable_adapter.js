@@ -557,9 +557,12 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 			display = format_ae_date(value);
 		}
 		const col_index = this._column_defs.findIndex((col) => col.id === source_col.id);
+		// Account-code rows are navigated via hierarchy tabs, not row expansion.
+		const is_account_code_row = String(source_row?.row_key || "").startsWith("account:");
 		const drillable =
 			col_index === 0 &&
 			source_row &&
+			!is_account_code_row &&
 			source_row.drill_down_enabled !== 0 &&
 			source_row.drill_down_enabled !== false;
 		if (drillable) {
@@ -710,8 +713,10 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		if (!element) {
 			return;
 		}
+		const is_account_code_row = String(source_row?.row_key || "").startsWith("account:");
 		const drillable =
 			source_row &&
+			!is_account_code_row &&
 			source_row.drill_down_enabled !== 0 &&
 			source_row.drill_down_enabled !== false;
 		element.classList.toggle("ae-grid-row--drillable", !!drillable);

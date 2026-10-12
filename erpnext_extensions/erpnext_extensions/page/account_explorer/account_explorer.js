@@ -1242,13 +1242,18 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		};
 		const operation = this._grid_perf_token.operation;
 		this.grid_perf_report[operation] = entry;
-		if (["refresh", "first_render", "sort", "axis_switch", "drill_down", "navigate_back"].includes(operation)) {
+		if (
+			["refresh", "first_render", "sort", "axis_switch", "level_change", "drill_down", "navigate_back"].includes(
+				operation
+			)
+		) {
 			if (!Array.isArray(this.grid_perf_report.refresh_history)) {
 				this.grid_perf_report.refresh_history = [];
 			}
 			this.grid_perf_report.refresh_history.push({
 				operation,
 				elapsed_ms,
+				api_elapsed_ms: extra.api_elapsed_ms ?? null,
 				render_elapsed_ms: extra.render_elapsed_ms ?? null,
 				row_count: entry.row_count,
 				at: entry.at,
@@ -1866,29 +1871,72 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.$export_btn.attr("title", __("Export is disabled in Iran Accounting Settings."));
 		}
 
+		// Minimal Date Format control on the existing Export control group (default Jalali).
+		const $date_wrap = $(
+			'<label class="ae-export-date-format-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-inline-start:8px;margin-bottom:0;"></label>'
+		).appendTo($parent);
+		$('<span class="ae-export-date-format-label text-muted">').text(__("Date Format")).appendTo($date_wrap);
+		this.$export_date_format = $('<select class="form-control input-xs ae-export-date-format" style="width:auto;min-width:110px;">')
+			.append($('<option value="jalali">').text(__("Jalali")))
+			.append($('<option value="gregorian">').text(__("Gregorian")))
+			.val("jalali")
+			.appendTo($date_wrap);
+
 		this.$export_status = $(
 			'<div class="ae-export-status" role="status" aria-live="polite" style="display:none;margin-inline-start:8px;align-items:center;gap:8px;"></div>'
 		).appendTo($parent);
 
 		const $menu = $('<ul class="dropdown-menu dropdown-menu-right ae-export-menu"></ul>').appendTo($group);
-		["csv", "xlsx"].forEach((format) => {
+		const export_items = [
+			{ format: "csv", scope: "all", label: __("CSV — All filtered rows") },
+			{ format: "xlsx", scope: "all", label: __("XLSX — All filtered rows") },
+			{ format: "csv", scope: "selected", label: __("CSV — Selected rows") },
+			{ format: "xlsx", scope: "selected", label: __("XLSX — Selected rows") },
+		];
+		export_items.forEach((item) => {
 			$("<li>")
 				.append(
 					$("<a>")
 						.attr("href", "#")
-						.text(format.toUpperCase())
+						.attr("data-ae-export-scope", item.scope)
+						.text(item.label)
 						.on("click", (event) => {
 							event.preventDefault();
-							if (export_enabled) {
-								this.run_export(format);
+							if (!export_enabled) {
+								return;
 							}
+							this.run_export(item.format, item.scope);
 						})
 				)
 				.appendTo($menu);
 		});
+		this.$export_menu = $menu;
+		this.update_export_menu_state();
 	}
 
-	run_export(file_format) {
+	update_export_menu_state() {
+		if (!this.$export_menu?.length) {
+			return;
+		}
+		const selected_count = this.get_checked_row_count();
+		this.$export_menu.find("a[data-ae-export-scope='selected']").each((_, el) => {
+			const $el = $(el);
+			$el.toggleClass("disabled", !selected_count);
+			$el.attr(
+				"title",
+				selected_count
+					? __("Export {0} selected row(s)", [selected_count])
+					: __("Select one or more rows first")
+			);
+		});
+	}
+
+	get_export_date_format() {
+		const value = (this.$export_date_format?.val?.() || "jalali").toLowerCase();
+		return value === "gregorian" ? "gregorian" : "jalali";
+	}
+
+	run_export(file_format, row_scope = "all") {
 		if (!this.metadata?.export_enabled) {
 			frappe.msgprint(__("Export is disabled in Iran Accounting Settings."));
 			return;
@@ -1907,13 +1955,27 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			return;
 		}
 
+		const scope = row_scope === "selected" ? "selected" : "all";
+		const selected_row_keys =
+			scope === "selected" ? this.store.get("selection")?.checked_row_keys || [] : [];
+		if (scope === "selected" && !selected_row_keys.length) {
+			frappe.msgprint(__("Select at least one row before exporting the selection."));
+			return;
+		}
+
 		const payload = JSON.stringify(this.build_payload());
 		const args = {
 			payload,
 			file_format,
+			date_format: this.get_export_date_format(),
+			row_scope: scope,
+			selected_row_keys: scope === "selected" ? selected_row_keys : [],
 		};
 		const threshold = ae_normalize_export_threshold(this.metadata.export_background_threshold);
-		const total_rows = cint(this.pagination?.total_rows || 0);
+		const total_rows =
+			scope === "selected"
+				? selected_row_keys.length
+				: cint(this.pagination?.total_rows || 0);
 
 		if (total_rows > threshold) {
 			// Export enqueue must never claim summary loading / refresh tail / global spinner.
@@ -3330,6 +3392,36 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			view_axis = "account_level";
 			level_or_dimension = null;
 		}
+
+		const prev_axis = this.analysis_context.view_axis;
+		const prev_level = this.analysis_context.level_sequence;
+		const prev_detail = this.analysis_context.detail_mode;
+		// Account Level pills are presentation rollups over the same leaf GL measures.
+		// Keep the current execution_id and avoid datatable remount + row clear.
+		const level_only =
+			view_axis === "account_level" &&
+			prev_axis === "account_level" &&
+			prev_detail === "summary" &&
+			level_or_dimension != null &&
+			Number(level_or_dimension) !== Number(prev_level) &&
+			!!this.document_scope?.from_date &&
+			!!this.document_scope?.to_date;
+		if (level_only) {
+			this.analysis_context.view_axis = "account_level";
+			this.analysis_context.detail_mode = "summary";
+			this.analysis_context.level_sequence = level_or_dimension;
+			this.analysis_context.page = 1;
+			this.clear_grid_selection();
+			this._force_datatable_remount = false;
+			this._pending_grid_perf_operation = "level_change";
+			this.render_navigator();
+			this.render_detail_header();
+			this._sync_store_context({ emit: true });
+			this.schedule_workspace_url_update({ push: true });
+			this.refresh_summary({ reason: "level_change" });
+			return;
+		}
+
 		this.analysis_context.view_axis = view_axis;
 		this.analysis_context.detail_mode = "summary";
 		this.analysis_context.page = 1;
@@ -3372,9 +3464,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			// Do not clear selected_dimension_value here — comes from analysis_filters via payload mapper
 		} else if (view_axis === "currency") {
 			this.analysis_context.sort_field = "currency";
-		} else if (view_axis === "voucher") {
+		} else 		if (view_axis === "voucher") {
 			this.analysis_context.sort_field = "posting_date";
 			this.analysis_context.sort_order = "desc";
+			this._voucher_column_defaults_applied = false;
+			this.ensure_voucher_default_column_visibility();
 		} else if (view_axis === "item_group") {
 			this.analysis_context.sort_field = "display_code";
 			this.analysis_context.item_group_scope = {
@@ -3904,6 +3998,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	handle_summary_row_dblclick(row) {
+		// Account codes are not drill targets; hierarchy tabs change level.
+		if ((this.analysis_context.view_axis || "account_level") === "account_level") {
+			return;
+		}
 		this.drill_row(row);
 	}
 
@@ -4169,6 +4267,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		$toolbar.find(".ae-grid-toolbar-btn--clear").prop("disabled", !selected_count);
 		$toolbar.find(".ae-grid-page-size-select").val(String(this.analysis_context.page_size || 50));
 		$toolbar.find(".ae-grid-number-format-select").val(this.number_format_mode || "auto");
+		this.update_export_menu_state();
 	}
 
 	show_column_chooser() {
@@ -4217,7 +4316,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	restore_column_defaults() {
-		this.set_summary_hidden_columns([]);
+		if (this.analysis_context.view_axis === "voucher") {
+			this.set_summary_hidden_columns(this.get_voucher_optional_column_ids());
+		} else {
+			this.set_summary_hidden_columns([]);
+		}
 		this.announce_grid_status(__("Column defaults restored"));
 	}
 
@@ -4671,6 +4774,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		// omit / false: pagination, sort, page-size, polling — reuse current execution.
 		if (opts && opts.new_execution) {
 			this._new_ae_execution_id(opts.reason || "refresh");
+			// Do not keep the previous execution's balances on screen as current.
+			this.rows = [];
+			this.pagination = {
+				page: this.analysis_context.page || 1,
+				page_size: this.analysis_context.page_size || 50,
+				total_rows: 0,
+				has_next: false,
+			};
+			this.$grid?.empty();
 		} else {
 			this._ensure_ae_execution_id();
 		}
@@ -5205,6 +5317,66 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		);
 	}
 
+	get_voucher_preferred_column_ids() {
+		return [
+			"posting_date",
+			"voucher_type",
+			"voucher_no",
+			"account_code",
+			"account_name",
+			"debit",
+			"credit",
+			"account_currency",
+			"description",
+			"party_name",
+			"cost_center",
+		];
+	}
+
+	get_voucher_optional_column_ids() {
+		const cols = [
+			"gl_entry",
+			"voucher_detail_no",
+			"account",
+			"against_account",
+			"party_type",
+			"party",
+			"remarks",
+			"debit_in_account_currency",
+			"credit_in_account_currency",
+			"finance_book",
+			"is_opening",
+			"project",
+			"against_voucher_type",
+			"against_voucher",
+			"item_code",
+			"item_name",
+			"item_group",
+			"warehouse",
+			"batch_no",
+			"inventory_attribution",
+			"reference",
+		];
+		(this.gl_dimensions || this.metadata?.dimensions || []).forEach((dimension) => {
+			const id = `dim:${dimension.fieldname || dimension}`;
+			if (!cols.includes(id)) {
+				cols.push(id);
+			}
+		});
+		return cols;
+	}
+
+	ensure_voucher_default_column_visibility() {
+		if (this.analysis_context.view_axis !== "voucher") {
+			return;
+		}
+		if (this._voucher_column_defaults_applied) {
+			return;
+		}
+		this._voucher_column_defaults_applied = true;
+		this.set_summary_hidden_columns(this.get_voucher_optional_column_ids());
+	}
+
 	get_default_visible_columns() {
 		if (this.analysis_context.detail_mode === "grouped_gl") {
 			const layout = this.get_gl_dimension_layout();
@@ -5260,22 +5432,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			];
 		}
 		if (axis === "voucher") {
-			const cols = [
-				"posting_date",
-				"voucher_type",
-				"voucher_no",
-				"party_type",
-				"party_name",
-				"voucher_title",
-				"reference",
-				"scoped_debit",
-				"scoped_credit",
-				"scoped_net",
+			return [
+				...this.get_voucher_preferred_column_ids(),
+				...this.get_voucher_optional_column_ids(),
 			];
-			if (this.show_optional_full_voucher_columns) {
-				cols.push("full_voucher_debit", "full_voucher_credit");
-			}
-			return cols;
 		}
 		if (axis === "item_group") {
 			const cols = (this.metadata?.item_group_columns || [])
@@ -5659,11 +5819,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			if (row.is_virtual_group) {
 				$tr.addClass("ae-virtual-row");
 			}
-			if (row.drill_down_enabled !== 0 && row.drill_down_enabled !== false) {
-				$tr.addClass("ae-grid-row--drillable");
-			}
-			const is_drillable = row.drill_down_enabled !== 0 && row.drill_down_enabled !== false;
+			const is_account_code_row = String(row.row_key || "").startsWith("account:");
+			const is_drillable =
+				!is_account_code_row &&
+				row.drill_down_enabled !== 0 &&
+				row.drill_down_enabled !== false;
 			if (is_drillable) {
+				$tr.addClass("ae-grid-row--drillable");
 				$tr.attr("title", __("Click to select · Double-click to drill down"));
 			}
 			visible.forEach((col, col_index) => {
@@ -5689,7 +5851,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				const $actions = $('<td class="ae-row-actions ae-voucher-actions">').appendTo($tr);
 				this.render_voucher_action_bar($actions, row);
 			}
-			$tr.on("dblclick", () => this.drill_row(row));
+			$tr.on("dblclick", () => this.handle_summary_row_dblclick(row));
 			$tr.on("click", () => {
 				$body.find("tr.selected").removeClass("selected");
 				$tr.addClass("selected");
@@ -6662,6 +6824,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 
 		const axis = this.analysis_context.view_axis || "account_level";
+		// Analyze (explicit filter intent) stays; row expansion/drill does not.
+		if (axis === "account_level" && explicit_intent !== "filter") {
+			return;
+		}
 		if (axis === "party" && (row.is_virtual_group || !row.party)) {
 			return;
 		}
@@ -7002,9 +7168,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			];
 		} else if (this.analysis_context.view_axis === "voucher") {
 			items = [
-				["scoped_debit", __("Scoped Debit")],
-				["scoped_credit", __("Scoped Credit")],
-				["scoped_net", __("Scoped Net")],
+				["debit", __("Total Debit")],
+				["credit", __("Total Credit")],
+				["net", __("Net")],
 			];
 		} else if (this.analysis_context.view_axis === "item_group") {
 			items = [

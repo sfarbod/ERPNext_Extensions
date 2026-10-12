@@ -105,7 +105,11 @@ def resolve_prepared_or_enqueue(
 
 		if existing.status == "Completed":
 			artifact = _load_artifact(existing)
-			if artifact and cint(artifact.get("accounting_revision")) == revision:
+			if (
+				artifact
+				and cint(artifact.get("accounting_revision")) == revision
+				and _artifact_schema_compatible(spec, artifact)
+			):
 				return _present_artifact(
 					spec, columns, artifact, response_builder, execution_id=execution_id
 				)
@@ -134,7 +138,11 @@ def resolve_prepared_or_enqueue(
 			existing.reload()
 			if existing.status == "Completed":
 				artifact = _load_artifact(existing)
-				if artifact and cint(artifact.get("accounting_revision")) == revision:
+				if (
+					artifact
+					and cint(artifact.get("accounting_revision")) == revision
+					and _artifact_schema_compatible(spec, artifact)
+				):
 					return _present_artifact(
 						spec, columns, artifact, response_builder, execution_id=execution_id
 					)
@@ -157,7 +165,11 @@ def resolve_prepared_or_enqueue(
 	job.reload()
 	if job.status == "Completed":
 		artifact = _load_artifact(job)
-		if artifact and cint(artifact.get("accounting_revision")) == revision:
+		if (
+			artifact
+			and cint(artifact.get("accounting_revision")) == revision
+			and _artifact_schema_compatible(spec, artifact)
+		):
 			return _present_artifact(
 				spec, columns, artifact, response_builder, execution_id=execution_id
 			)
@@ -167,7 +179,11 @@ def resolve_prepared_or_enqueue(
 		job.reload()
 		if job.status == "Completed":
 			artifact = _load_artifact(job)
-			if artifact and cint(artifact.get("accounting_revision")) == revision:
+			if (
+				artifact
+				and cint(artifact.get("accounting_revision")) == revision
+				and _artifact_schema_compatible(spec, artifact)
+			):
 				return _present_artifact(
 					spec, columns, artifact, response_builder, execution_id=execution_id
 				)
@@ -218,59 +234,58 @@ def _materialize_paginated_builder(builder, spec: AccountExplorerQuerySpec) -> d
 
 
 def _materialize_voucher(spec: AccountExplorerQuerySpec) -> dict:
-	"""Store lean voucher aggregates (no title enrichment) for the full scope."""
+	"""Store GL Entry line rows for the Voucher axis (parity with direct mode)."""
 	from erpnext_extensions.iran_accounting.account_explorer.gle_filters import collect_scope_warnings
-	from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import (
-		_create_scoped_voucher_temp_table,
-		_order_by_sql_for_alias,
-		_totals_from_temp_table,
+	from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
+		_attach_inventory_attribution,
+		_gl_line_totals,
+		_row_dict,
+		_base_line_query,
+		_order_by_sql,
+	)
+	from erpnext_extensions.iran_accounting.account_explorer.dimension_discovery import (
+		filter_usable_gl_dimensions,
+		get_discovered_dimensions,
 	)
 
-	table = _create_scoped_voucher_temp_table(spec)
-	try:
-		totals, total_rows = _totals_from_temp_table(table)
-		order_sql = _order_by_sql_for_alias(spec)
-		raw_rows = frappe.db.sql(
-			f"""
-			select voucher_type, voucher_no, posting_date, scoped_debit, scoped_credit
-			from `{table}`
-			order by {order_sql}
-			""",
-			as_dict=True,
-		)
-		rows = []
-		for row in raw_rows:
-			scoped_debit = flt(row.get("scoped_debit"))
-			scoped_credit = flt(row.get("scoped_credit"))
-			rows.append(
+	dimensions = filter_usable_gl_dimensions(get_discovered_dimensions())
+	totals, total_rows = _gl_line_totals(spec)
+	gle = frappe.qb.DocType("GL Entry")
+	acc = frappe.qb.DocType("Account")
+	inner = _base_line_query(spec, gle, acc, dimensions)
+	inner_sql = inner.get_sql()
+	order_sql = _order_by_sql(spec)
+	raw_rows = frappe.db.sql(
+		f"""
+		select *
+		from (
+			{inner_sql}
+		) gle_lines
+		order by {order_sql}
+		""",
+		as_dict=True,
+	)
+	rows = [_row_dict(row, dimensions) for row in raw_rows]
+	_attach_inventory_attribution(spec, rows)
+	return {
+		"rows": rows,
+		"warnings": collect_scope_warnings(spec),
+		"extras": {
+			"voucher_totals": totals,
+			"voucher_total_rows": total_rows,
+			"voucher_view_mode": "gl_line",
+			"dimensions": [
 				{
-					"row_key": f"voucher:{row.voucher_type}:{row.voucher_no}",
-					"posting_date": str(row.get("posting_date") or ""),
-					"voucher_type": row.voucher_type,
-					"voucher_no": row.voucher_no,
-					"party_type": "",
-					"party": "",
-					"party_name": "",
-					"voucher_title": row.voucher_no,
-					"reference": None,
-					"scoped_debit": scoped_debit,
-					"scoped_credit": scoped_credit,
-					"scoped_net": scoped_debit - scoped_credit,
-					"full_voucher_debit": 0.0,
-					"full_voucher_credit": 0.0,
-					"has_multiple_parties": 0,
-					"is_virtual_group": 0,
-					"drill_down_enabled": 1,
-					"_lean": 1,
+					"fieldname": dimension["fieldname"],
+					"label": dimension["label"],
+					"label_fa": dimension.get("label_fa"),
+					"document_type": dimension.get("document_type"),
+					"is_native": dimension.get("is_native", 0),
 				}
-			)
-		return {
-			"rows": rows,
-			"warnings": collect_scope_warnings(spec),
-			"extras": {"voucher_totals": totals, "voucher_total_rows": total_rows},
-		}
-	finally:
-		frappe.db.sql(f"drop temporary table if exists `{table}`")
+				for dimension in dimensions
+			],
+		},
+	}
 
 
 def _enrich_voucher_page(spec: AccountExplorerQuerySpec, page_rows: list[dict]) -> list[dict]:
@@ -340,6 +355,20 @@ def _sortable_fields(spec: AccountExplorerQuerySpec):
 	return SORTABLE_FIELDS
 
 
+def _artifact_schema_compatible(spec: AccountExplorerQuerySpec, artifact: dict) -> bool:
+	"""Reject legacy voucher-header artifacts; they must not be read as GL lines."""
+	if spec.view_axis != "voucher":
+		return True
+	extras = artifact.get("extras") or {}
+	if extras.get("voucher_view_mode") == "gl_line":
+		return True
+	rows = artifact.get("rows") or []
+	if not rows:
+		return True
+	row_key = str(rows[0].get("row_key") or "")
+	return row_key.startswith("glentry:")
+
+
 def _present_artifact(
 	spec: AccountExplorerQuerySpec,
 	columns,
@@ -351,8 +380,8 @@ def _present_artifact(
 	rows = list(artifact.get("rows") or [])
 	rows = sort_rows(rows, spec, _sortable_fields(spec))
 	if spec.view_axis == "voucher":
-		paged = _paginate_voucher_lean_rows(rows, spec, artifact.get("extras") or {})
-		paged["rows"] = _enrich_voucher_page(spec, paged.get("rows") or [])
+		# GL-line artifacts are already enriched; do not apply header enrichment.
+		paged = _paginate_voucher_gl_line_rows(rows, spec, artifact.get("extras") or {})
 	else:
 		paged = paginate_summary_rows(rows, spec)
 	paged["warnings"] = list(artifact.get("warnings") or [])
@@ -370,12 +399,15 @@ def _present_artifact(
 	return response
 
 
-def _paginate_voucher_lean_rows(rows: list[dict], spec: AccountExplorerQuerySpec, extras: dict) -> dict:
+def _paginate_voucher_gl_line_rows(rows: list[dict], spec: AccountExplorerQuerySpec, extras: dict) -> dict:
 	if spec.hide_zero_rows:
 		rows = [
 			row
 			for row in rows
-			if flt(row.get("scoped_debit")) or flt(row.get("scoped_credit"))
+			if flt(row.get("debit"))
+			or flt(row.get("credit"))
+			or flt(row.get("scoped_debit"))
+			or flt(row.get("scoped_credit"))
 		]
 	total_rows = cint(extras.get("voucher_total_rows"))
 	if not total_rows:
@@ -384,12 +416,30 @@ def _paginate_voucher_lean_rows(rows: list[dict], spec: AccountExplorerQuerySpec
 	page_size = max(cint(spec.pagination.page_size) or 50, 1)
 	offset = (page - 1) * page_size
 	page_rows = rows[offset : offset + page_size]
-	totals = extras.get("voucher_totals") or {
-		"scoped_debit": sum(flt(r.get("scoped_debit")) for r in rows),
-		"scoped_credit": sum(flt(r.get("scoped_credit")) for r in rows),
-	}
+	totals = dict(extras.get("voucher_totals") or {})
+	if not totals:
+		debit = sum(flt(r.get("debit", r.get("scoped_debit"))) for r in rows)
+		credit = sum(flt(r.get("credit", r.get("scoped_credit"))) for r in rows)
+		totals = {
+			"debit": debit,
+			"credit": credit,
+			"net": debit - credit,
+			"scoped_debit": debit,
+			"scoped_credit": credit,
+			"scoped_net": debit - credit,
+		}
+	if "debit" not in totals and "scoped_debit" in totals:
+		totals["debit"] = flt(totals.get("scoped_debit"))
+		totals["credit"] = flt(totals.get("scoped_credit"))
+		totals["net"] = flt(totals.get("debit")) - flt(totals.get("credit"))
+	if "scoped_debit" not in totals and "debit" in totals:
+		totals["scoped_debit"] = flt(totals.get("debit"))
+		totals["scoped_credit"] = flt(totals.get("credit"))
+		totals["scoped_net"] = flt(totals.get("net"))
 	if "scoped_net" not in totals:
 		totals["scoped_net"] = flt(totals.get("scoped_debit")) - flt(totals.get("scoped_credit"))
+	if "net" not in totals:
+		totals["net"] = flt(totals.get("debit")) - flt(totals.get("credit"))
 	return {
 		"rows": page_rows,
 		"totals": totals,

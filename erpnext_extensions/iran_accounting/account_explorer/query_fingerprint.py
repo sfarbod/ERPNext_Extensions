@@ -120,6 +120,19 @@ def query_hash(spec: AccountExplorerQuerySpec) -> str:
 	return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
+def measures_query_hash(spec: AccountExplorerQuerySpec) -> str:
+	"""Hash accounting scope for leaf measure reuse across Account Level rollups.
+
+	``level_sequence`` is presentation-only for Account Levels (prefix rollup over
+	the same leaf measures). It is excluded here so level changes can reuse E1/E3
+	results when company, dates, filters, and accounting revision are unchanged.
+	"""
+	payload = canonical_query_dict(spec)
+	payload["level_sequence"] = None
+	serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+	return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:24]
+
+
 def build_fingerprint(spec: AccountExplorerQuerySpec, accounting_revision: int) -> str:
 	"""ae:v511:{company}:{query_hash}:{accounting_revision}"""
 	company_token = hashlib.sha1((spec.company or "").encode("utf-8")).hexdigest()[:10]

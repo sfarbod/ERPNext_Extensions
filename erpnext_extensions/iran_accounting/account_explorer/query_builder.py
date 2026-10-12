@@ -40,6 +40,57 @@ from erpnext_extensions.iran_accounting.account_explorer.pagination import pagin
 from erpnext_extensions.iran_accounting.account_explorer.schemas import AccountExplorerQuerySpec
 
 
+# Execution-local leaf measures (Case B). Keyed by execution_id + revision +
+# financial hash (level_sequence excluded). Not used for Case A SLE.
+_LEAF_MEASURES_CACHE_TTL_SEC = 30 * 60
+
+
+def _get_account_wise_measures_for_level_summary(
+	spec: AccountExplorerQuerySpec, account_names: list[str] | None
+) -> dict[str, dict]:
+	"""Fetch leaf measures, reusing an execution-scoped cache when safe.
+
+	Reuse requires the same ``execution_id``, accounting revision, and financial
+	scope (dates/filters/engine). Account Level changes are presentation rollups
+	and share the cached leaf dict. Case A inventory scopes never use this cache
+	because GL revision does not prove SLE freshness.
+	"""
+	from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
+		has_inventory_document_filters,
+	)
+
+	if has_inventory_document_filters(spec):
+		return get_account_wise_measures(spec, account_names)
+
+	execution_id = getattr(frappe.flags, "ae_execution_id", None)
+	if not execution_id:
+		return get_account_wise_measures(spec, account_names)
+
+	from erpnext_extensions.iran_accounting.account_explorer.cache_revision import (
+		get_accounting_revision,
+	)
+	from erpnext_extensions.iran_accounting.account_explorer.query_fingerprint import (
+		measures_query_hash,
+	)
+
+	revision = int(get_accounting_revision(spec.company))
+	cache_key = f"ae:leaf:{execution_id}:{measures_query_hash(spec)}:{revision}"
+	cached = frappe.cache().get_value(cache_key)
+	if isinstance(cached, dict):
+		frappe.flags.ae_leaf_measures_cache_hit = 1
+		if account_names is None:
+			return cached
+		return {
+			name: cached.get(name) or zero_measures()
+			for name in account_names
+		}
+
+	measures = get_account_wise_measures(spec, account_names)
+	frappe.cache().set_value(cache_key, measures, expires_in_sec=_LEAF_MEASURES_CACHE_TTL_SEC)
+	frappe.flags.ae_leaf_measures_cache_hit = 0
+	return measures
+
+
 @request_cache
 def get_enabled_levels() -> list:
 	from erpnext_extensions.iran_accounting.account_explorer.request_cache_helpers import (
@@ -67,7 +118,7 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	configured_lengths = configured_level_lengths(get_enabled_levels())
 	scoped_names = spec.included_account_names or []
 
-	measures_by_account = get_account_wise_measures(spec, scoped_names)
+	measures_by_account = _get_account_wise_measures_for_level_summary(spec, scoped_names)
 
 	from erpnext_extensions.iran_accounting.account_explorer.measures import row_has_activity
 

@@ -5,10 +5,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import frappe
-from erpnext.accounts.report.financial_statements import apply_additional_conditions, set_gl_entries_by_account
+from erpnext.accounts.report.financial_statements import apply_additional_conditions
 from erpnext.accounts.report.trial_balance.trial_balance import get_opening_balances
 from frappe.query_builder.functions import Sum
-from frappe.utils import flt
+from frappe.utils import flt, getdate
 from pypika import Bracket
 from pypika.terms import LiteralValue
 
@@ -69,12 +69,18 @@ def _get_account_wise_measures_e1(
 	spec: AccountExplorerQuerySpec, account_names: list[str] | None = None
 ) -> dict[str, dict]:
 	"""E1 — TB baseline + pre-period opening-flagged delta."""
+	restrict_accounts = e1_gl_scope.resolve_narrowed_gl_accounts(spec)
+	if _e1_single_pass_supported(spec):
+		return _get_account_wise_measures_e1_single_pass(spec, account_names, restrict_accounts)
+
 	filters = spec_to_trial_balance_filters(spec)
 	policy = policy_from_spec(spec)
 	ignore_is_opening = site_ignore_is_opening()
 	# v4.6.1: drill/filter scope → narrow TB + policy-aux GL SQL; root stays company-wide.
-	restrict_accounts = e1_gl_scope.resolve_narrowed_gl_accounts(spec)
 	opening_balances = _get_opening_balances_for_e1(filters, ignore_is_opening, restrict_accounts)
+	# ERPNext TB includes unbounded is_opening=Yes; strip post-to_date openings.
+	if not ignore_is_opening:
+		_subtract_future_opening_flagged(opening_balances, spec, restrict_accounts)
 	aux_pre, aux_in = aggregate_opening_flagged_pre_in_by_account(spec)
 
 	gl_entries_by_account: dict[str, list] = {}
@@ -119,6 +125,129 @@ def _get_account_wise_measures_e1(
 			opening_debit, opening_credit, period_debit, period_credit
 		)
 	return result
+
+
+def _e1_single_pass_supported(spec: AccountExplorerQuerySpec) -> bool:
+	"""True when one GL scan can replace TB opening + flagged aux + period.
+
+	Falls back when Account Closing Balance / mid-year PCV paths apply, or when
+	document-scope dimensions/vouchers would diverge from the shared predicate.
+	"""
+	from erpnext_extensions.iran_accounting.account_explorer.opening_entry_policy import (
+		acb_applicable,
+	)
+
+	if acb_applicable(spec):
+		return False
+	if spec.include_cancelled_entries:
+		return False
+	document = spec.document_scope
+	if document.voucher.voucher_type or document.voucher.voucher_no:
+		return False
+	if document.voucher.against_voucher_type or document.voucher.against_voucher_no:
+		return False
+	if document.voucher.reference_no:
+		return False
+	if document.accounting.account or document.accounting.party_type or document.accounting.party:
+		return False
+	if document.currency and document.currency.currency:
+		return False
+	for value in (document.accounting_dimensions or {}).values():
+		if value not in (None, "", [], ()):
+			return False
+	# When show_unclosed_fy_pl_balances is off, ERPNext TB restricts P&L opening
+	# to posting_date >= year_start_date. Account Explorer always sets this flag
+	# to 1 today (filters.spec_to_trial_balance_filters); keep the gate so a
+	# future TB filter change cannot silently diverge from legacy opening.
+	filters = spec_to_trial_balance_filters(spec)
+	if not filters.get("show_unclosed_fy_pl_balances"):
+		return False
+	return True
+
+
+def _get_account_wise_measures_e1_single_pass(
+	spec: AccountExplorerQuerySpec,
+	account_names: list[str] | None,
+	restrict_accounts: list[str] | None,
+) -> dict[str, dict]:
+	"""One company-scoped GL scan producing TB opening, flagged aux, and period.
+
+	Applies the same ``adjust_tb_opening_for_policy`` / aux_in / EXCLUDE period
+	rules as the multi-query E1 path. Does not change accounting formulas.
+	"""
+	from erpnext_extensions.iran_accounting.account_explorer.gle_filters import (
+		apply_document_scope_filters,
+	)
+
+	policy = policy_from_spec(spec)
+	ignore_is_opening = site_ignore_is_opening()
+	from_date = getdate(spec.from_date)
+	to_date = getdate(spec.to_date)
+	gle = frappe.qb.DocType("GL Entry")
+	case = frappe.qb.terms.Case
+
+	# Bound is_opening to the report end date. Unbounded is_opening (ERPNext TB)
+	# pulls future-year opening vouchers into earlier fiscal years (FY1404 ghost
+	# balances). AE opening_entry_policy already rejects AFTER_PERIOD rows.
+	if ignore_is_opening:
+		tb_cond = gle.posting_date < from_date
+	else:
+		tb_cond = (gle.posting_date < from_date) | (
+			(gle.is_opening == "Yes") & (gle.posting_date <= to_date)
+		)
+	period_cond = (gle.posting_date >= from_date) & (gle.posting_date <= to_date)
+	pre_cond = (gle.is_opening == "Yes") & (gle.posting_date < from_date)
+	in_cond = (gle.is_opening == "Yes") & period_cond
+
+	query = (
+		frappe.qb.from_(gle)
+		.select(
+			gle.account,
+			Sum(case().when(tb_cond, gle.debit).else_(0)).as_("tb_debit"),
+			Sum(case().when(tb_cond, gle.credit).else_(0)).as_("tb_credit"),
+			Sum(case().when(period_cond, gle.debit).else_(0)).as_("period_debit"),
+			Sum(case().when(period_cond, gle.credit).else_(0)).as_("period_credit"),
+			Sum(case().when(pre_cond, gle.debit).else_(0)).as_("pre_debit"),
+			Sum(case().when(pre_cond, gle.credit).else_(0)).as_("pre_credit"),
+			Sum(case().when(in_cond, gle.debit).else_(0)).as_("in_debit"),
+			Sum(case().when(in_cond, gle.credit).else_(0)).as_("in_credit"),
+		)
+		.where(gle.posting_date <= to_date)
+	)
+	query = apply_document_scope_filters(query, gle, spec)
+	if restrict_accounts:
+		query = query.where(gle.account.isin(restrict_accounts))
+	# Prefer company index: the planner otherwise walks the account index (~750k rows).
+	query = query.force_index("company")
+	query = query.groupby(gle.account)
+
+	rows = query.run(as_dict=True)
+	by_account: dict[str, dict] = {}
+	for row in rows:
+		if not row.account:
+			continue
+		opening_debit, opening_credit = adjust_tb_opening_for_policy(
+			row.tb_debit,
+			row.tb_credit,
+			row.pre_debit,
+			row.pre_credit,
+			policy,
+		)
+		in_debit, in_credit = flt(row.in_debit), flt(row.in_credit)
+		if in_debit or in_credit:
+			opening_debit = flt(opening_debit) - in_debit
+			opening_credit = flt(opening_credit) - in_credit
+		period_debit, period_credit = flt(row.period_debit), flt(row.period_credit)
+		if policy == OpeningEntryPolicyMode.EXCLUDE_OPENING_FLAGGED:
+			period_debit = flt(period_debit) - in_debit
+			period_credit = flt(period_credit) - in_credit
+		by_account[row.account] = measures_from_opening_period(
+			opening_debit, opening_credit, period_debit, period_credit
+		)
+
+	if account_names is None:
+		return by_account
+	return {name: by_account.get(name) or measures_from_opening_period(0, 0, 0, 0) for name in account_names}
 
 
 def _get_account_wise_measures_e2(
@@ -173,6 +302,44 @@ def _force_report_type_account_names(account_names: list[str]):
 		frappe.db.get_all = original  # type: ignore[method-assign]
 
 
+def _subtract_future_opening_flagged(
+	opening_balances: dict,
+	spec: AccountExplorerQuerySpec,
+	restrict_accounts: list[str] | None,
+) -> None:
+	"""Remove is_opening=Yes amounts posted after the report to_date (in-place).
+
+	ERPNext ``get_opening_balances`` uses unbounded ``is_opening == Yes``, which
+	imports later fiscal-year opening vouchers into earlier years. AE policy
+	treats AFTER_PERIOD rows as ineligible for opening.
+	"""
+	to_date = getdate(spec.to_date)
+	gle = frappe.qb.DocType("GL Entry")
+	query = (
+		frappe.qb.from_(gle)
+		.select(
+			gle.account,
+			Sum(gle.debit).as_("debit"),
+			Sum(gle.credit).as_("credit"),
+		)
+		.where(gle.company == spec.company)
+		.where(gle.is_cancelled == 0)
+		.where(gle.is_opening == "Yes")
+		.where(gle.posting_date > to_date)
+		.groupby(gle.account)
+	)
+	if restrict_accounts:
+		query = query.where(gle.account.isin(restrict_accounts))
+	if not spec.include_period_closing_vouchers:
+		query = query.where(gle.voucher_type != "Period Closing Voucher")
+	for row in query.run(as_dict=True):
+		bucket = opening_balances.get(row.account)
+		if not bucket:
+			continue
+		bucket["opening_debit"] = flt(bucket.get("opening_debit")) - flt(row.debit)
+		bucket["opening_credit"] = flt(bucket.get("opening_credit")) - flt(row.credit)
+
+
 def _get_opening_balances_for_e1(filters, ignore_is_opening, restrict_accounts: list[str] | None):
 	"""ERPNext Trial Balance opening, optionally restricted to a drill account tree."""
 	if not restrict_accounts:
@@ -205,21 +372,14 @@ def _set_period_gl_entries_for_e1(
 	*,
 	restrict_accounts: list[str] | None,
 ) -> None:
-	"""Period GL grouped by account — company-wide or drill-scoped."""
-	ignore_closing = not spec.include_period_closing_vouchers
-	if not restrict_accounts:
-		set_gl_entries_by_account(
-			spec.company,
-			spec.from_date,
-			spec.to_date,
-			filters,
-			gl_entries_by_account,
-			ignore_closing_entries=ignore_closing,
-			ignore_opening_entries=False,
-			group_by_account=True,
-		)
-		return
+	"""Period GL grouped by account — company-wide or drill-scoped.
 
+	Uses the same SUM/GROUP BY path as leaf drills for company-wide Account Levels.
+	ERPNext ``set_gl_entries_by_account`` forces ``posting_date_company_index``, which
+	is several seconds slower on this restored dataset without changing balances.
+	Finance-book / closing filters still come from ``apply_additional_conditions``.
+	"""
+	ignore_closing = not spec.include_period_closing_vouchers
 	gl_entry = frappe.qb.DocType("GL Entry")
 	query = (
 		frappe.qb.from_(gl_entry)
@@ -237,12 +397,11 @@ def _set_period_gl_entries_for_e1(
 		.where(gl_entry.company == filters.company)
 		.where(gl_entry.is_cancelled == 0)
 		.where(gl_entry.posting_date <= spec.to_date)
-		.where(gl_entry.account.isin(restrict_accounts))
 	)
-	# v4.6.2: never FORCE INDEX(posting_date_company_index) when account IN (...) is
-	# present — that index defeats account selectivity (~1.5s vs ~1ms on leaf drills).
-	# Root / company-wide path above still uses ERPNext set_gl_entries_by_account
-	# (unchanged date/company force index).
+	if restrict_accounts:
+		query = query.where(gl_entry.account.isin(restrict_accounts))
+	# Never FORCE INDEX(posting_date_company_index) — it defeats account selectivity
+	# on drills and is slower for company-wide Account Levels on large GL tables.
 	query = apply_additional_conditions(
 		"GL Entry", query, spec.from_date, ignore_closing, filters
 	)
