@@ -1887,20 +1887,47 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		).appendTo($parent);
 
 		const $menu = $('<ul class="dropdown-menu dropdown-menu-right ae-export-menu"></ul>').appendTo($group);
-		["csv", "xlsx"].forEach((format) => {
+		const export_items = [
+			{ format: "csv", scope: "all", label: __("CSV — All filtered rows") },
+			{ format: "xlsx", scope: "all", label: __("XLSX — All filtered rows") },
+			{ format: "csv", scope: "selected", label: __("CSV — Selected rows") },
+			{ format: "xlsx", scope: "selected", label: __("XLSX — Selected rows") },
+		];
+		export_items.forEach((item) => {
 			$("<li>")
 				.append(
 					$("<a>")
 						.attr("href", "#")
-						.text(format.toUpperCase())
+						.attr("data-ae-export-scope", item.scope)
+						.text(item.label)
 						.on("click", (event) => {
 							event.preventDefault();
-							if (export_enabled) {
-								this.run_export(format);
+							if (!export_enabled) {
+								return;
 							}
+							this.run_export(item.format, item.scope);
 						})
 				)
 				.appendTo($menu);
+		});
+		this.$export_menu = $menu;
+		this.update_export_menu_state();
+	}
+
+	update_export_menu_state() {
+		if (!this.$export_menu?.length) {
+			return;
+		}
+		const selected_count = this.get_checked_row_count();
+		this.$export_menu.find("a[data-ae-export-scope='selected']").each((_, el) => {
+			const $el = $(el);
+			$el.toggleClass("disabled", !selected_count);
+			$el.attr(
+				"title",
+				selected_count
+					? __("Export {0} selected row(s)", [selected_count])
+					: __("Select one or more rows first")
+			);
 		});
 	}
 
@@ -1909,7 +1936,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		return value === "gregorian" ? "gregorian" : "jalali";
 	}
 
-	run_export(file_format) {
+	run_export(file_format, row_scope = "all") {
 		if (!this.metadata?.export_enabled) {
 			frappe.msgprint(__("Export is disabled in Iran Accounting Settings."));
 			return;
@@ -1928,14 +1955,27 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			return;
 		}
 
+		const scope = row_scope === "selected" ? "selected" : "all";
+		const selected_row_keys =
+			scope === "selected" ? this.store.get("selection")?.checked_row_keys || [] : [];
+		if (scope === "selected" && !selected_row_keys.length) {
+			frappe.msgprint(__("Select at least one row before exporting the selection."));
+			return;
+		}
+
 		const payload = JSON.stringify(this.build_payload());
 		const args = {
 			payload,
 			file_format,
 			date_format: this.get_export_date_format(),
+			row_scope: scope,
+			selected_row_keys: scope === "selected" ? selected_row_keys : [],
 		};
 		const threshold = ae_normalize_export_threshold(this.metadata.export_background_threshold);
-		const total_rows = cint(this.pagination?.total_rows || 0);
+		const total_rows =
+			scope === "selected"
+				? selected_row_keys.length
+				: cint(this.pagination?.total_rows || 0);
 
 		if (total_rows > threshold) {
 			// Export enqueue must never claim summary loading / refresh tail / global spinner.
@@ -4227,6 +4267,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		$toolbar.find(".ae-grid-toolbar-btn--clear").prop("disabled", !selected_count);
 		$toolbar.find(".ae-grid-page-size-select").val(String(this.analysis_context.page_size || 50));
 		$toolbar.find(".ae-grid-number-format-select").val(this.number_format_mode || "auto");
+		this.update_export_menu_state();
 	}
 
 	show_column_chooser() {

@@ -39,10 +39,18 @@ A 2 ms six-account SQL microbenchmark is not the full Account Levels report. Com
 9. **Voucher Direct/Prepared GL-line parity + pagination (same release cycle)**  
    Forced prepared materialization now stores GL Entry lines (`voucher_view_mode=gl_line`) via the same line filters as direct mode. Legacy voucher-header artifacts are rejected and rebuilt. First-page pagination prefers one window aggregate (measured faster than separate totals+page on Espad); totals are cached per execution for later pages. Totals-only path avoids the Account join.
 
+10. **Grid selection → Copy + Export Selected (same release cycle)**  
+    Audit: checkboxes exist on all summary axes; selection feeds **Copy Selected Rows** and **Clear Selection**. Export previously ignored selection (only CSV/XLSX of all filtered rows). Keep checkboxes; extend the existing Export menu with **CSV/XLSX — All filtered rows** and **CSV/XLSX — Selected rows**. Selection uses authoritative `row_key` (e.g. `glentry:<name>`, `item:<code>`). Whitelist now forwards `date_format` (Jalali/Gregorian) and `row_scope`/`selected_row_keys`. Selection is page-local (cleared on page/sort/filter/axis change).
+
+11. **Item 13100057 negative credit — stock valuation, not AE formula (same release cycle)**  
+    Independent SLE: closing qty **+391,568**; closing value **≈ −32.95T IRR**. Dominant warehouse `انبار کالاهای FOR OTHER PURPOSE اسپاد` positive qty / hugely negative value. Outlier SLE `MAT-SLE-2026-259388` (Stock Entry `MAT-STE-2026-36831`, Material Issue, −1 qty, `valuation_rate` / `stock_value_difference` ≈ −32.98T). AE Items/Item Groups correctly use `stock_value_difference` sign (opening rolled into Inward); group `بسته‌بندی اولیه` credit **32,267,121,216,049** matches screenshot and is dominated by this item. **No SLE repair performed** — wait for explicit authorization.
+
 ### Voucher / export known limitations
 - Item/Warehouse on a GL line is filled only when `voucher_detail_no` maps to exactly one SLE.
 - Case A means “voucher qualifies via SLE scope”; it does not invent per-item GL allocation.
 - Company-wide Voucher first page remains a multi-second GL scan (~84k lines); correctness is prioritized over the <2s aspirational target.
+- Grid selection does not persist across pages; Export Selected applies to currently checked `row_key`s.
+- Item 13100057 requires authorized stock valuation / repost repair before financial stock value can normalize.
 
 ## Mutation coverage (revision)
 

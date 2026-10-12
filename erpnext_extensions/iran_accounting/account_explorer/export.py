@@ -115,14 +115,88 @@ def _run_summary_builder(spec: AccountExplorerQuerySpec) -> dict:
 	frappe.throw(_("Export is not supported for the current analysis context."))
 
 
-def collect_export_rows(spec: AccountExplorerQuerySpec) -> tuple[list[dict], dict, int]:
+def _normalize_selected_row_keys(selected_row_keys: Any) -> list[str]:
+	if selected_row_keys in (None, "", [], ()):
+		return []
+	if isinstance(selected_row_keys, str):
+		try:
+			selected_row_keys = frappe.parse_json(selected_row_keys)
+		except Exception:
+			selected_row_keys = [selected_row_keys]
+	keys: list[str] = []
+	seen: set[str] = set()
+	for raw in selected_row_keys or []:
+		key = cstr(raw).strip()
+		if not key or key in seen:
+			continue
+		seen.add(key)
+		keys.append(key)
+	return keys
+
+
+def _filter_rows_by_selected_keys(rows: list[dict], selected_row_keys: list[str]) -> list[dict]:
+	"""Keep rows whose authoritative ``row_key`` is in the selection set."""
+	if not selected_row_keys:
+		return []
+	wanted = set(selected_row_keys)
+	return [row for row in rows if cstr(row.get("row_key")) in wanted]
+
+
+def _totals_for_selected_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> dict:
+	"""Recompute export totals from the selected row set only."""
+	axis = spec.view_axis
+	if axis == "voucher":
+		debit = sum(flt(row.get("debit", row.get("scoped_debit"))) for row in rows)
+		credit = sum(flt(row.get("credit", row.get("scoped_credit"))) for row in rows)
+		return {
+			"debit": debit,
+			"credit": credit,
+			"net": debit - credit,
+			"scoped_debit": debit,
+			"scoped_credit": credit,
+			"scoped_net": debit - credit,
+		}
+	if axis in {"item", "item_group", "inventory_account"}:
+		from erpnext_extensions.iran_accounting.account_explorer.stock_measures import (
+			sum_stock_measure_rows,
+		)
+
+		include_qty = axis == "item"
+		totals = sum_stock_measure_rows(rows, include_qty=include_qty)
+		if not include_qty:
+			for qty_key in ("in_qty", "out_qty", "balance_qty", "opening_qty", "closing_qty"):
+				totals.pop(qty_key, None)
+		return totals
+	from erpnext_extensions.iran_accounting.account_explorer.measures import sum_measure_rows
+
+	return sum_measure_rows(rows)
+
+
+def collect_export_rows(
+	spec: AccountExplorerQuerySpec,
+	*,
+	row_scope: str = "all",
+	selected_row_keys: list[str] | None = None,
+) -> tuple[list[dict], dict, int]:
 	"""Collect export rows with a single accounting aggregation pass.
 
 	Phase 3 re-ran full aggregation per page. Phase 4:
 
 	- voucher: SQL-paginated GL line pages (totals once)
 	- other axes: one builder call (chart/party cardinality, not GL rows)
+
+	``row_scope=selected`` filters by authoritative ``row_key`` values
+	(``glentry:<name>``, ``item:<code>``, etc.) — never by visible index.
 	"""
+	scope = (row_scope or "all").lower()
+	keys = _normalize_selected_row_keys(selected_row_keys)
+	if scope == "selected":
+		if not keys:
+			frappe.throw(_("Select at least one row before exporting the selection."))
+	else:
+		scope = "all"
+		keys = []
+
 	if spec.view_axis == "voucher":
 		from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
 			build_voucher_gl_line_summary,
@@ -136,12 +210,25 @@ def collect_export_rows(spec: AccountExplorerQuerySpec) -> tuple[list[dict], dic
 		original_page = spec.pagination.page
 		original_size = spec.pagination.page_size
 		page = 1
+		wanted = set(keys)
 		try:
 			while True:
 				spec.pagination.page = page
 				spec.pagination.page_size = page_size
 				chunk = build_voucher_gl_line_summary(spec)
-				all_rows.extend(chunk.get("rows") or [])
+				chunk_rows = chunk.get("rows") or []
+				if scope == "selected":
+					all_rows.extend(
+						row for row in chunk_rows if cstr(row.get("row_key")) in wanted
+					)
+					# Stop early once every selected key has been found.
+					if wanted and len({cstr(r.get("row_key")) for r in all_rows}) >= len(wanted):
+						# Still need accurate filtered totals below; break page walk.
+						totals = chunk.get("totals") or totals
+						total_rows = cint((chunk.get("pagination") or {}).get("total_rows") or total_rows)
+						break
+				else:
+					all_rows.extend(chunk_rows)
 				totals = chunk.get("totals") or totals
 				total_rows = cint((chunk.get("pagination") or {}).get("total_rows") or total_rows)
 				if page * page_size >= total_rows:
@@ -150,6 +237,11 @@ def collect_export_rows(spec: AccountExplorerQuerySpec) -> tuple[list[dict], dic
 		finally:
 			spec.pagination.page = original_page
 			spec.pagination.page_size = original_size
+		if scope == "selected":
+			# Preserve selection order from the client keys list.
+			by_key = {cstr(row.get("row_key")): row for row in all_rows}
+			ordered = [by_key[key] for key in keys if key in by_key]
+			return ordered, _totals_for_selected_rows(ordered, spec), len(ordered)
 		return all_rows, totals, total_rows
 
 	original_page = spec.pagination.page
@@ -165,6 +257,10 @@ def collect_export_rows(spec: AccountExplorerQuerySpec) -> tuple[list[dict], dic
 	rows = result.get("rows") or []
 	totals = result.get("totals") or {}
 	total_rows = cint((result.get("pagination") or {}).get("total_rows") or len(rows))
+	if scope == "selected":
+		by_key = {cstr(row.get("row_key")): row for row in rows}
+		ordered = [by_key[key] for key in keys if key in by_key]
+		return ordered, _totals_for_selected_rows(ordered, spec), len(ordered)
 	return rows, totals, total_rows
 
 
@@ -683,8 +779,15 @@ def _prepare_export_payload(payload: Any) -> AccountExplorerQuerySpec:
 	return spec
 
 
-def _probe_export_size(spec: AccountExplorerQuerySpec) -> int:
+def _probe_export_size(
+	spec: AccountExplorerQuerySpec,
+	*,
+	row_scope: str = "all",
+	selected_row_keys: list[str] | None = None,
+) -> int:
 	"""Cheap total_rows probe (voucher uses GL-line totals query only)."""
+	if (row_scope or "all").lower() == "selected":
+		return len(_normalize_selected_row_keys(selected_row_keys))
 	if spec.view_axis == "voucher":
 		from erpnext_extensions.iran_accounting.account_explorer.voucher_gl_lines import (
 			_gl_line_totals,
@@ -718,18 +821,26 @@ def export_account_explorer(
 	file_format: str = "csv",
 	date_format: str = "jalali",
 	*,
+	row_scope: str = "all",
+	selected_row_keys: Any = None,
 	force_sync: bool = False,
 ) -> dict:
 	file_format = (file_format or "csv").lower()
 	date_format = (date_format or "jalali").lower()
+	row_scope = (row_scope or "all").lower()
 	if file_format not in EXPORT_FORMATS:
 		frappe.throw(_("Unsupported export format."))
 	if date_format not in {"jalali", "gregorian", "iso", "en"}:
 		date_format = "jalali"
+	if row_scope not in {"all", "selected"}:
+		row_scope = "all"
+	selected_keys = _normalize_selected_row_keys(selected_row_keys)
 
 	spec = _prepare_export_payload(payload)
 	settings = _export_settings()
-	total_rows = _probe_export_size(spec)
+	total_rows = _probe_export_size(
+		spec, row_scope=row_scope, selected_row_keys=selected_keys
+	)
 
 	if not force_sync and total_rows > settings["export_background_threshold"]:
 		from erpnext_extensions.iran_accounting.account_explorer.queue_policy import (
@@ -745,6 +856,8 @@ def export_account_explorer(
 				payload=payload,
 				file_format=file_format,
 				date_format=date_format,
+				row_scope=row_scope,
+				selected_row_keys=selected_keys,
 				user=frappe.session.user,
 			),
 		)
@@ -760,19 +873,25 @@ def export_account_explorer(
 	columns = get_export_columns(spec)
 	filename = _export_filename(spec, file_format)
 	report_title = _export_report_title(spec)
+	use_stream = (
+		spec.view_axis == "voucher"
+		and row_scope == "all"
+	)
 
-	if spec.view_axis == "voucher" and file_format == "csv":
+	if use_stream and file_format == "csv":
 		content, totals, total_rows = build_streaming_voucher_csv(
 			spec, columns, date_format=date_format
 		)
 		_trigger_download(content, filename)
-	elif spec.view_axis == "voucher" and file_format == "xlsx":
+	elif use_stream and file_format == "xlsx":
 		content, totals, total_rows = build_streaming_voucher_xlsx(
 			spec, columns, date_format=date_format
 		)
 		_trigger_download(content, filename)
 	else:
-		rows, totals, total_rows = collect_export_rows(spec)
+		rows, totals, total_rows = collect_export_rows(
+			spec, row_scope=row_scope, selected_row_keys=selected_keys
+		)
 		rows = _normalize_export_rows(rows, spec)
 		if file_format == "csv":
 			_trigger_download(
@@ -790,30 +909,41 @@ def export_account_explorer(
 		"total_rows": total_rows,
 		"filename": filename,
 		"totals": totals,
+		"row_scope": row_scope,
 	}
 
 
 def run_account_explorer_export_job(
-	payload: Any, file_format: str, user: str, date_format: str = "jalali"
+	payload: Any,
+	file_format: str,
+	user: str,
+	date_format: str = "jalali",
+	row_scope: str = "all",
+	selected_row_keys: Any = None,
 ) -> dict[str, Any]:
 	"""Background export: persist file first; notifications must not fail the job."""
 	frappe.set_user(user)
 	date_format = (date_format or "jalali").lower()
+	row_scope = (row_scope or "all").lower()
+	selected_keys = _normalize_selected_row_keys(selected_row_keys)
 	spec = _prepare_export_payload(payload)
 	columns = get_export_columns(spec)
 	filename = _export_filename(spec, file_format)
 	total_rows = 0
+	use_stream = spec.view_axis == "voucher" and row_scope == "all"
 
-	if spec.view_axis == "voucher" and file_format == "csv":
+	if use_stream and file_format == "csv":
 		content, _totals, total_rows = build_streaming_voucher_csv(
 			spec, columns, date_format=date_format
 		)
-	elif spec.view_axis == "voucher" and file_format == "xlsx":
+	elif use_stream and file_format == "xlsx":
 		content, _totals, total_rows = build_streaming_voucher_xlsx(
 			spec, columns, date_format=date_format
 		)
 	else:
-		rows, _totals, total_rows = collect_export_rows(spec)
+		rows, _totals, total_rows = collect_export_rows(
+			spec, row_scope=row_scope, selected_row_keys=selected_keys
+		)
 		rows = _normalize_export_rows(rows, spec)
 		report_title = _export_report_title(spec)
 		if file_format == "csv":
