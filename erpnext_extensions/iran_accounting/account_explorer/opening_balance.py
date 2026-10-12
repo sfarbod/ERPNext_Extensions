@@ -152,7 +152,10 @@ def _e1_single_pass_supported(spec: AccountExplorerQuerySpec) -> bool:
 	for value in (document.accounting_dimensions or {}).values():
 		if value not in (None, "", [], ()):
 			return False
-	# P&L mid-year closed-FY filter is not expressed in the single-pass CASE.
+	# When show_unclosed_fy_pl_balances is off, ERPNext TB restricts P&L opening
+	# to posting_date >= year_start_date. Account Explorer always sets this flag
+	# to 1 today (filters.spec_to_trial_balance_filters); keep the gate so a
+	# future TB filter change cannot silently diverge from legacy opening.
 	filters = spec_to_trial_balance_filters(spec)
 	if not filters.get("show_unclosed_fy_pl_balances"):
 		return False

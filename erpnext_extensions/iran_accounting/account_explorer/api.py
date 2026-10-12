@@ -444,6 +444,7 @@ def get_account_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "account_level":
 		frappe.throw(frappe._("Invalid axis for account summary."))
+	_bind_execution_id(payload)
 	if _should_use_prepared(spec, payload):
 		from erpnext_extensions.iran_accounting.account_explorer.prepared_report import (
 			resolve_prepared_or_enqueue,
@@ -456,7 +457,10 @@ def get_account_summary(payload) -> dict:
 			response_builder=_summary_response,
 		)
 	result = build_account_level_summary(spec)
-	return _summary_response(spec, SUMMARY_COLUMNS, result)
+	response = _summary_response(spec, SUMMARY_COLUMNS, result)
+	if getattr(frappe.flags, "ae_leaf_measures_cache_hit", None) is not None:
+		response["leaf_measures_cache_hit"] = int(frappe.flags.ae_leaf_measures_cache_hit)
+	return response
 
 
 def get_party_summary(payload) -> dict:
@@ -776,6 +780,17 @@ def _account_levels_use_direct_path(spec: AccountExplorerQuerySpec) -> bool:
 	)
 
 	return not has_inventory_document_filters(spec)
+
+
+def _bind_execution_id(payload) -> None:
+	"""Expose client execution_id for execution-local leaf measure reuse."""
+	data = payload
+	if isinstance(payload, str):
+		data = frappe.parse_json(payload) if payload else {}
+	data = data or {}
+	execution_id = data.get("execution_id")
+	frappe.flags.ae_execution_id = str(execution_id)[:64] if execution_id else None
+	frappe.flags.ae_leaf_measures_cache_hit = None
 
 
 def _document_scope_response(spec: AccountExplorerQuerySpec) -> dict:

@@ -1242,13 +1242,18 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		};
 		const operation = this._grid_perf_token.operation;
 		this.grid_perf_report[operation] = entry;
-		if (["refresh", "first_render", "sort", "axis_switch", "drill_down", "navigate_back"].includes(operation)) {
+		if (
+			["refresh", "first_render", "sort", "axis_switch", "level_change", "drill_down", "navigate_back"].includes(
+				operation
+			)
+		) {
 			if (!Array.isArray(this.grid_perf_report.refresh_history)) {
 				this.grid_perf_report.refresh_history = [];
 			}
 			this.grid_perf_report.refresh_history.push({
 				operation,
 				elapsed_ms,
+				api_elapsed_ms: extra.api_elapsed_ms ?? null,
 				render_elapsed_ms: extra.render_elapsed_ms ?? null,
 				row_count: entry.row_count,
 				at: entry.at,
@@ -3330,6 +3335,36 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			view_axis = "account_level";
 			level_or_dimension = null;
 		}
+
+		const prev_axis = this.analysis_context.view_axis;
+		const prev_level = this.analysis_context.level_sequence;
+		const prev_detail = this.analysis_context.detail_mode;
+		// Account Level pills are presentation rollups over the same leaf GL measures.
+		// Keep the current execution_id and avoid datatable remount + row clear.
+		const level_only =
+			view_axis === "account_level" &&
+			prev_axis === "account_level" &&
+			prev_detail === "summary" &&
+			level_or_dimension != null &&
+			Number(level_or_dimension) !== Number(prev_level) &&
+			!!this.document_scope?.from_date &&
+			!!this.document_scope?.to_date;
+		if (level_only) {
+			this.analysis_context.view_axis = "account_level";
+			this.analysis_context.detail_mode = "summary";
+			this.analysis_context.level_sequence = level_or_dimension;
+			this.analysis_context.page = 1;
+			this.clear_grid_selection();
+			this._force_datatable_remount = false;
+			this._pending_grid_perf_operation = "level_change";
+			this.render_navigator();
+			this.render_detail_header();
+			this._sync_store_context({ emit: true });
+			this.schedule_workspace_url_update({ push: true });
+			this.refresh_summary({ reason: "level_change" });
+			return;
+		}
+
 		this.analysis_context.view_axis = view_axis;
 		this.analysis_context.detail_mode = "summary";
 		this.analysis_context.page = 1;

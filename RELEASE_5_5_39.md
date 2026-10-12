@@ -24,6 +24,9 @@ A 2 ms six-account SQL microbenchmark is not the full Account Levels report. Com
 4. **E1 single-pass GL aggregation (same release cycle)**  
    When Account Closing Balance / cancelled / voucher / party / currency / dimension filters are absent and unclosed FY P&L balances are shown, Case B E1 replaces the three overlapping `tabGL Entry` scans (TB opening + opening-flagged aux + period turnover) with one company-indexed conditional `SUM(CASE …)` aggregation. Accounting formulas are unchanged: the same `adjust_tb_opening_for_policy` / aux_in / EXCLUDE period rules still apply. Unsupported scopes keep the legacy multi-query path.
 
+5. **Account Level presentation reuse (same release cycle)**  
+   Level pill changes on Account Levels keep the current `execution_id` and reuse execution-local leaf GL measures (keyed by execution + accounting revision + financial hash; `level_sequence` excluded). Case A SLE scopes never use this cache. Axis switches and filter/date/revision changes still recompute. Mid-year ranges on this restored site already use single-pass (no PCV / ACB); the `show_unclosed_fy_pl_balances` gate remains defensive because AE always sets that TB flag to 1.
+
 ## Mutation coverage (revision)
 
 | Path | Advances revision |
@@ -45,9 +48,10 @@ Do not enable Redis financial indexes until SLE and direct SQL paths advance a p
 | Before (prepared + queue, prior gate) | ~15 s browser / ~11–13 s calc |
 | After Case B direct (pre–single-pass) | API median **9.8 s**; browser **13.2 s** |
 | After E1 single-pass (10 API / Playwright) | E1 median **~2.0–2.4 s**; API median **~2.2 s**; browser median **~3.3 s** |
+| After level-reuse + profiling | Browser median **~2.3 s** (API ~2.2 s, render ~60–100 ms); level change **~100–220 ms**; mid-year **~2.4 s** |
 | Balance 11100409 | **994,353,195,185** (delta 0 vs legacy E1 and posted baseline) |
 
-Remaining cost is still the company-wide GL aggregate and Desk rendering, not Redis or the checkbox UI. Mid-year scopes that disable unclosed-FY P&L still use the legacy multi-scan path by design.
+Remaining cost on a cold Account Levels load is the company-wide GL aggregate (~2.1 s). Desk render is not the bottleneck. Returning to Account Levels after another axis still recomputes (new execution; no cross-execution financial cache).
 
 ## Redis
 
