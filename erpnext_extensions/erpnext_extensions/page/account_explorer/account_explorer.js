@@ -658,11 +658,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	_refresh_after_drill() {
 		this._pending_grid_perf_operation = "drill_down";
 		this.schedule_workspace_url_update({ push: true });
-		this.refresh_summary();
+		this.refresh_summary({ new_execution: true, reason: "drill_down" });
 	}
 
 	setup_actions() {
-		this.page.set_primary_action(__("Refresh"), () => this.refresh_summary());
+		this.page.set_primary_action(__("Refresh"), () =>
+			this.refresh_summary({ new_execution: true, reason: "refresh_button" })
+		);
 		this.page.add_inner_button(__("Copy Workspace Link"), () => {
 			void this.copy_workspace_link();
 		});
@@ -1162,7 +1164,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.update_advanced_filters_button();
 		this.render_filter_summary();
 		if (this.document_scope.from_date && this.document_scope.to_date) {
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "currency_mode" });
 		}
 	}
 
@@ -2674,7 +2676,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.render_filter_summary();
 		this.schedule_workspace_url_update({ push: false });
 		if (this.document_scope.from_date && this.document_scope.to_date) {
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "filter_removed" });
 		}
 	}
 
@@ -2693,7 +2695,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.render_filter_summary();
 		this.schedule_workspace_url_update({ push: false });
 		if (this.document_scope.from_date && this.document_scope.to_date) {
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "filters_cleared" });
 		}
 	}
 
@@ -3058,7 +3060,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_navigator();
 			this.render_breadcrumbs();
 			this.render_detail_header();
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "voucher_axis" });
 			return;
 		}
 		if (segment.step === "voucher_type") {
@@ -3069,7 +3071,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_navigator();
 			this.render_breadcrumbs();
 			this.render_detail_header();
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "voucher_type" });
 			return;
 		}
 		if (segment.step === "voucher_no") {
@@ -3078,7 +3080,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_navigator();
 			this.render_breadcrumbs();
 			this.render_detail_header();
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "voucher_no" });
 		}
 	}
 
@@ -3097,7 +3099,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.render_detail_header();
 		this._sync_store_context({ emit: true });
 		this.schedule_workspace_url_update({ push: true });
-		this.refresh_summary();
+		this.refresh_summary({ new_execution: true, reason: "axis_root" });
 	}
 
 	clear_axis_scopes(view_axis) {
@@ -3413,7 +3415,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._sync_store_context({ emit: true });
 		this.schedule_workspace_url_update({ push: true });
 		if (this.document_scope.from_date && this.document_scope.to_date) {
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "axis_switch" });
 		}
 	}
 
@@ -4558,6 +4560,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				item_scope: { ...(this.analysis_context.item_scope || {}) },
 			},
 			...(this.prepared_mode ? { prepared_mode: this.prepared_mode } : {}),
+			execution_id: this._ensure_ae_execution_id(),
 		};
 	}
 
@@ -4644,12 +4647,39 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (this.document_scope.company) {
 			this._load_metadata_enrichment(this.document_scope.company);
 		}
-		this.refresh_summary();
+		this.refresh_summary({ new_execution: true, reason: "apply_scope" });
 	}
 
-	refresh_summary() {
+	_new_ae_execution_id(reason = "manual") {
+		const uuid =
+			(typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+			`ae-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+		this._ae_execution_id = String(uuid).slice(0, 64);
+		this._ae_execution_reason = reason;
+		return this._ae_execution_id;
+	}
+
+	_ensure_ae_execution_id() {
+		if (!this._ae_execution_id) {
+			this._new_ae_execution_id("lazy");
+		}
+		return this._ae_execution_id;
+	}
+
+	refresh_summary(opts = {}) {
+		// new_execution: user Run/Refresh/filter/axis — always-fresh GL calculation.
+		// omit / false: pagination, sort, page-size, polling — reuse current execution.
+		if (opts && opts.new_execution) {
+			this._new_ae_execution_id(opts.reason || "refresh");
+		} else {
+			this._ensure_ae_execution_id();
+		}
 		const generation = this._begin_grid_render();
-		this._trace_summary_loading("refresh_summary", generation);
+		this._trace_summary_loading("refresh_summary", generation, {
+			execution_id: this._ae_execution_id,
+			new_execution: !!(opts && opts.new_execution),
+			reason: (opts && opts.reason) || null,
+		});
 		// Claim loading synchronously so a stale finally cannot clear a newer refresh's UI.
 		this._claim_summary_loading(generation);
 		const refresh_task = this._summary_refresh_tail.then(() => this._refresh_summary(generation));

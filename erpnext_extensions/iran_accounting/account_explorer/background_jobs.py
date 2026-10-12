@@ -64,6 +64,7 @@ def build_account_explorer_prepared_result(prepared_result_name: str = None, pay
 		artifact = {
 			"schema_version": RESULT_SCHEMA_VERSION,
 			"fingerprint": fingerprint,
+			"execution_id": getattr(doc, "execution_id", None),
 			"accounting_revision": revision,
 			"view_axis": spec.view_axis,
 			"company": spec.company,

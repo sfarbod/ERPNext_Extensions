@@ -37,12 +37,29 @@ def axis_uses_prepared_results(spec: AccountExplorerQuerySpec) -> bool:
 	return spec.view_axis in PREPARED_AXES
 
 
+def extract_execution_id(payload: Any) -> str:
+	"""Return client execution id, or mint a one-shot id when omitted.
+
+	Polling clients must send a stable ``execution_id``. Omitting it forces a
+	brand-new calculation on every request (always-fresh; cannot poll-reuse).
+	"""
+	data = payload
+	if isinstance(payload, str):
+		data = frappe.parse_json(payload) if payload else {}
+	data = data or {}
+	raw = (data.get("execution_id") or data.get("ae_execution_id") or "").strip()
+	if raw:
+		return raw[:64]
+	return frappe.generate_hash(length=20)
+
+
 def preparing_response(
 	*,
 	job_id: str,
 	fingerprint: str,
 	state: str,
 	accounting_revision: int,
+	execution_id: str | None = None,
 	message: str | None = None,
 ) -> dict:
 	from erpnext_extensions.iran_accounting.account_explorer.queue_policy import AE_PREPARED_QUEUE
@@ -51,6 +68,7 @@ def preparing_response(
 		"status": "preparing",
 		"job_id": job_id,
 		"fingerprint": fingerprint,
+		"execution_id": execution_id,
 		"state": state,
 		"queue": AE_PREPARED_QUEUE,
 		"accounting_revision": accounting_revision,
@@ -69,59 +87,95 @@ def resolve_prepared_or_enqueue(
 	columns: list[dict],
 	response_builder,
 ) -> dict:
-	"""Return ready summary, preparing status, or live fallback."""
+	"""Return ready summary or preparing status for one report execution.
+
+	v5.5.36: Always-fresh accounting. Completed artifacts from prior executions
+	are never reused. Only the current ``execution_id`` may be polled/presented.
+	"""
 	revision = get_accounting_revision(spec.company)
 	fingerprint = build_fingerprint(spec, revision)
-	existing = _get_prepared_doc(fingerprint)
+	execution_id = extract_execution_id(payload)
+	existing = _get_prepared_by_execution(execution_id)
 
-	if existing and existing.status == "Completed" and cint(existing.accounting_revision) == revision:
-		artifact = _load_artifact(existing)
-		if artifact and cint(artifact.get("accounting_revision")) == revision:
-			return _present_artifact(spec, columns, artifact, response_builder)
+	if existing:
+		# Filter change with a reused execution id → rebuild this execution only.
+		if existing.fingerprint != fingerprint or cint(existing.accounting_revision) != revision:
+			_reset_execution_for_rebuild(existing, spec, fingerprint, revision)
+			existing.reload()
 
-	if existing and existing.status == "Error" and cint(existing.accounting_revision) == revision:
-		return {
-			"status": "Error",
-			"state": "Error",
-			"job_id": existing.name,
-			"fingerprint": fingerprint,
-			"accounting_revision": revision,
-			"message": existing.error_message
-			or frappe._("Account Explorer preparation failed. Please try again."),
-			"error_message": existing.error_message,
-			"rows": [],
-			"totals": {},
-			"pagination": {"page": 1, "page_size": 50, "total_rows": 0, "has_next": False},
-			"warnings": [],
-		}
-
-	if existing and existing.status in ("Queued", "Started") and cint(existing.accounting_revision) == revision:
-		# Poll path: ensure the worker job still exists (enqueue_after_commit can be lost).
-		_ensure_prepared_job_running(existing.name, payload)
-		existing.reload()
 		if existing.status == "Completed":
 			artifact = _load_artifact(existing)
-			if artifact:
-				return _present_artifact(spec, columns, artifact, response_builder)
-		return preparing_response(
-			job_id=existing.name,
-			fingerprint=fingerprint,
-			state=existing.status,
-			accounting_revision=revision,
-		)
+			if artifact and cint(artifact.get("accounting_revision")) == revision:
+				return _present_artifact(
+					spec, columns, artifact, response_builder, execution_id=execution_id
+				)
+			_invalidate_prepared_for_rebuild(existing)
+			existing.reload()
 
-	job = _create_or_reuse_job(spec, fingerprint, revision, existing)
+		if existing.status == "Error":
+			return {
+				"status": "Error",
+				"state": "Error",
+				"job_id": existing.name,
+				"fingerprint": fingerprint,
+				"execution_id": execution_id,
+				"accounting_revision": revision,
+				"message": existing.error_message
+				or frappe._("Account Explorer preparation failed. Please try again."),
+				"error_message": existing.error_message,
+				"rows": [],
+				"totals": {},
+				"pagination": {"page": 1, "page_size": 50, "total_rows": 0, "has_next": False},
+				"warnings": [],
+			}
+
+		if existing.status in ("Queued", "Started"):
+			_ensure_prepared_job_running(existing.name, payload)
+			existing.reload()
+			if existing.status == "Completed":
+				artifact = _load_artifact(existing)
+				if artifact and cint(artifact.get("accounting_revision")) == revision:
+					return _present_artifact(
+						spec, columns, artifact, response_builder, execution_id=execution_id
+					)
+				_invalidate_prepared_for_rebuild(existing)
+				existing.reload()
+				_ensure_prepared_job_running(existing.name, payload)
+				existing.reload()
+			return preparing_response(
+				job_id=existing.name,
+				fingerprint=fingerprint,
+				execution_id=execution_id,
+				state=existing.status,
+				accounting_revision=revision,
+			)
+
+	# Never consult other executions' Completed rows for this query fingerprint.
+	job = _create_execution_job(spec, fingerprint, revision, execution_id)
 	_enqueue_or_inline(job.name, payload)
 
 	job.reload()
 	if job.status == "Completed":
 		artifact = _load_artifact(job)
-		if artifact:
-			return _present_artifact(spec, columns, artifact, response_builder)
+		if artifact and cint(artifact.get("accounting_revision")) == revision:
+			return _present_artifact(
+				spec, columns, artifact, response_builder, execution_id=execution_id
+			)
+		_invalidate_prepared_for_rebuild(job)
+		job.reload()
+		_enqueue_or_inline(job.name, payload)
+		job.reload()
+		if job.status == "Completed":
+			artifact = _load_artifact(job)
+			if artifact and cint(artifact.get("accounting_revision")) == revision:
+				return _present_artifact(
+					spec, columns, artifact, response_builder, execution_id=execution_id
+				)
 
 	return preparing_response(
 		job_id=job.name,
 		fingerprint=fingerprint,
+		execution_id=execution_id,
 		state=job.status,
 		accounting_revision=revision,
 	)
@@ -286,7 +340,14 @@ def _sortable_fields(spec: AccountExplorerQuerySpec):
 	return SORTABLE_FIELDS
 
 
-def _present_artifact(spec: AccountExplorerQuerySpec, columns, artifact: dict, response_builder) -> dict:
+def _present_artifact(
+	spec: AccountExplorerQuerySpec,
+	columns,
+	artifact: dict,
+	response_builder,
+	*,
+	execution_id: str | None = None,
+) -> dict:
 	rows = list(artifact.get("rows") or [])
 	rows = sort_rows(rows, spec, _sortable_fields(spec))
 	if spec.view_axis == "voucher":
@@ -302,7 +363,9 @@ def _present_artifact(spec: AccountExplorerQuerySpec, columns, artifact: dict, r
 	response = response_builder(spec, columns, paged)
 	response["status"] = "ready"
 	response["prepared"] = 1
+	response["fresh"] = 1
 	response["fingerprint"] = artifact.get("fingerprint")
+	response["execution_id"] = execution_id or artifact.get("execution_id")
 	response["accounting_revision"] = artifact.get("accounting_revision")
 	return response
 
@@ -340,47 +403,125 @@ def _paginate_voucher_lean_rows(rows: list[dict], spec: AccountExplorerQuerySpec
 
 
 def _get_prepared_doc(fingerprint: str):
+	"""Legacy helper: first row for a query fingerprint (diagnostics/tests only)."""
 	name = frappe.db.get_value(PREPARED_DOCTYPE, {"fingerprint": fingerprint}, "name")
 	if not name:
 		return None
 	return frappe.get_doc(PREPARED_DOCTYPE, name)
 
 
-def _create_or_reuse_job(spec: AccountExplorerQuerySpec, fingerprint: str, revision: int, existing):
-	if existing and cint(existing.accounting_revision) == revision and existing.status in (
-		"Queued",
-		"Started",
-		"Completed",
-	):
-		return existing
+def _get_prepared_by_execution(execution_id: str):
+	if not execution_id:
+		return None
+	name = frappe.db.get_value(PREPARED_DOCTYPE, {"execution_id": execution_id}, "name")
+	if not name:
+		return None
+	return frappe.get_doc(PREPARED_DOCTYPE, name)
 
-	if existing:
-		existing.status = "Queued"
-		existing.accounting_revision = revision
-		existing.spec_hash = query_hash(spec)
-		existing.view_axis = spec.view_axis
-		existing.error_message = None
-		existing.result_file = None
-		existing.row_count = 0
-		existing.flags.ignore_permissions = True
-		existing.save(ignore_permissions=True)
-		return existing
 
-	doc = frappe.get_doc(
-		{
-			"doctype": PREPARED_DOCTYPE,
-			"company": spec.company,
-			"fingerprint": fingerprint,
-			"spec_hash": query_hash(spec),
-			"accounting_revision": revision,
-			"view_axis": spec.view_axis,
-			"status": "Queued",
-			"row_count": 0,
-		}
-	)
+def _reset_execution_for_rebuild(doc, spec: AccountExplorerQuerySpec, fingerprint: str, revision: int) -> None:
+	"""Reuse the same execution row when filters diverge mid-execution."""
+	stale_url = doc.result_file
+	doc.status = "Queued"
+	doc.fingerprint = fingerprint
+	doc.accounting_revision = revision
+	doc.spec_hash = query_hash(spec)
+	doc.view_axis = spec.view_axis
+	doc.error_message = None
+	doc.result_file = None
+	doc.row_count = 0
 	doc.flags.ignore_permissions = True
-	doc.insert(ignore_permissions=True)
-	return doc
+	doc.save(ignore_permissions=True)
+	_unlink_local_artifact_path(stale_url)
+
+
+def _execution_lock_key(execution_id: str) -> str:
+	return f"ae:v511.6:exec-lock:{execution_id}"
+
+
+def _with_execution_lock(execution_id: str, ttl: int = 30):
+	"""Best-effort Redis lock so concurrent polls serialize job creation."""
+	try:
+		from frappe.utils.background_jobs import get_redis_conn
+
+		conn = get_redis_conn()
+		key = _execution_lock_key(execution_id)
+		token = frappe.generate_hash(length=12)
+		acquired = bool(conn.set(key, token, nx=True, ex=ttl))
+		return conn, key, token, acquired
+	except Exception:
+		return None, None, None, False
+
+
+def _release_execution_lock(conn, key, token) -> None:
+	if not conn or not key or not token:
+		return
+	try:
+		current = conn.get(key)
+		expected = token.encode() if isinstance(token, str) else token
+		if current in (token, expected):
+			conn.delete(key)
+	except Exception:
+		pass
+
+
+def _create_execution_job(
+	spec: AccountExplorerQuerySpec, fingerprint: str, revision: int, execution_id: str
+):
+	"""Create (or race-safe reuse) the prepared row for this execution only."""
+	existing = _get_prepared_by_execution(execution_id)
+	if existing:
+		if existing.status in ("Queued", "Started") and cint(existing.accounting_revision) == revision:
+			return existing
+		_reset_execution_for_rebuild(existing, spec, fingerprint, revision)
+		existing.reload()
+		return existing
+
+	import time
+
+	conn, lock_key, lock_token, acquired = _with_execution_lock(execution_id)
+	try:
+		# If another worker holds the lock, wait briefly for its insert.
+		if not acquired:
+			for _ in range(20):
+				existing = _get_prepared_by_execution(execution_id)
+				if existing:
+					return existing
+				time.sleep(0.05)
+			# Fall through and attempt insert anyway.
+
+		existing = _get_prepared_by_execution(execution_id)
+		if existing:
+			return existing
+
+		doc = frappe.get_doc(
+			{
+				"doctype": PREPARED_DOCTYPE,
+				"company": spec.company,
+				"execution_id": execution_id,
+				"fingerprint": fingerprint,
+				"spec_hash": query_hash(spec),
+				"accounting_revision": revision,
+				"view_axis": spec.view_axis,
+				"status": "Queued",
+				"row_count": 0,
+			}
+		)
+		doc.flags.ignore_permissions = True
+		try:
+			doc.insert(ignore_permissions=True)
+			return doc
+		except (frappe.UniqueValidationError, frappe.DuplicateEntryError) as exc:
+			try:
+				frappe.db.rollback()
+			except Exception:
+				pass
+			raced = _get_prepared_by_execution(execution_id)
+			if raced:
+				return raced
+			raise exc
+	finally:
+		_release_execution_lock(conn, lock_key, lock_token)
 
 
 def _rq_job_id(job_name: str) -> str:
@@ -467,26 +608,117 @@ def _enqueue_or_inline(job_name: str, payload: Any) -> None:
 			build_account_explorer_prepared_result(job_name, payload)
 
 
+def _unlink_local_artifact_path(file_url: str | None) -> None:
+	"""Best-effort removal of one private artifact path (this URL only)."""
+	if not file_url or "/private/files/" not in file_url:
+		return
+	rel = file_url.split("/private/files/", 1)[-1]
+	if not rel or ".." in rel:
+		return
+	path = frappe.get_site_path("private", "files", rel)
+	try:
+		import os
+
+		if os.path.isfile(path):
+			os.remove(path)
+	except OSError:
+		pass
+
+
+def _invalidate_prepared_for_rebuild(doc) -> bool:
+	"""Mark one prepared row for rebuild when its artifact is unreadable.
+
+	Clears only this document's ``result_file`` pointer. Does not delete File
+	rows belonging to other prepared results. Concurrent callers racing on the
+	same Completed row are idempotent: a non-Completed status is left alone.
+	"""
+	if not doc or not doc.name:
+		return False
+
+	# Concurrent Desk polls can race on the same Completed row after a restore.
+	# Retry briefly on MariaDB 1020 / deadlock; if another request already moved
+	# the row out of Completed/Error, treat that as a successful no-op.
+	for _attempt in range(3):
+		try:
+			frappe.db.sql(
+				f"select name from `tab{PREPARED_DOCTYPE}` where name=%s for update",
+				doc.name,
+			)
+			doc.reload()
+			if doc.status not in ("Completed", "Error"):
+				return False
+			stale_url = doc.result_file
+			doc.status = "Queued"
+			doc.result_file = None
+			doc.row_count = 0
+			doc.error_message = None
+			doc.flags.ignore_permissions = True
+			doc.save(ignore_permissions=True)
+			# Remove unreadable bytes at this URL so the rebuild can write a fresh file.
+			# File DocType rows for other prepared results are left untouched.
+			_unlink_local_artifact_path(stale_url)
+			return True
+		except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			try:
+				doc.reload()
+			except Exception:
+				return False
+			if doc.status not in ("Completed", "Error"):
+				return False
+	return False
+
+
 def _load_artifact(doc) -> dict | None:
+	"""Load gzip JSON artifact, or return None when the file is missing/corrupt.
+
+	Soft-fails only for restore/lifecycle failures (missing File doc, missing
+	disk bytes, corrupt gzip, invalid JSON). Unexpected errors still raise.
+	"""
 	if not doc.result_file:
 		return None
-	file_doc = frappe.get_doc("File", {"file_url": doc.result_file})
-	content = file_doc.get_content()
+	try:
+		file_doc = frappe.get_doc("File", {"file_url": doc.result_file})
+	except frappe.DoesNotExistError:
+		return None
+
+	try:
+		content = file_doc.get_content()
+	except FileNotFoundError:
+		return None
+	except OSError:
+		# Broken symlink / unreadable path after partial restore.
+		return None
+
 	if isinstance(content, str):
 		content = content.encode("utf-8")
+	if not content:
+		return None
+
 	try:
 		raw = gzip.decompress(content)
 	except OSError:
 		raw = content
-	return json.loads(raw.decode("utf-8"))
+
+	try:
+		if isinstance(raw, bytes):
+			raw = raw.decode("utf-8")
+		payload = json.loads(raw)
+	except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+		return None
+
+	return payload if isinstance(payload, dict) else None
 
 
 def store_artifact(doc, artifact: dict) -> None:
+	if getattr(doc, "execution_id", None) and not artifact.get("execution_id"):
+		artifact["execution_id"] = doc.execution_id
 	payload = gzip.compress(json.dumps(artifact, ensure_ascii=False, default=str).encode("utf-8"))
+	# Include execution id + prepared-doc name so executions never collide on disk.
+	exec_token = getattr(doc, "execution_id", None) or "noexec"
 	file_doc = frappe.get_doc(
 		{
 			"doctype": "File",
-			"file_name": f"{doc.fingerprint}.json.gz",
+			"file_name": f"{doc.fingerprint}:{exec_token}:{doc.name}.json.gz",
 			"is_private": 1,
 			"content": payload,
 			"attached_to_doctype": PREPARED_DOCTYPE,

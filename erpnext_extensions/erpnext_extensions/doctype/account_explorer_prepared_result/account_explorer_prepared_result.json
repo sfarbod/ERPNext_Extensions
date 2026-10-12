@@ -9,6 +9,7 @@
  "engine": "InnoDB",
  "field_order": [
   "company",
+  "execution_id",
   "fingerprint",
   "spec_hash",
   "accounting_revision",
@@ -30,13 +31,25 @@
    "reqd": 1
   },
   {
+   "description": "Stable id for one user-initiated report execution (shared across polls/pagination/sort).",
+   "fieldname": "execution_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Execution ID",
+   "length": 64,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Accounting query identity (company/filters/revision). Not unique — each execution has its own row.",
    "fieldname": "fingerprint",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Fingerprint",
    "length": 140,
    "reqd": 1,
-   "unique": 1
+   "search_index": 1
   },
   {
    "fieldname": "spec_hash",
@@ -94,7 +107,7 @@
  "index_web_pages_for_search": 0,
  "istable": 0,
  "links": [],
- "modified": "2026-08-24 00:00:00.000000",
+ "modified": "2026-10-12 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "erpnext_extensions",
  "name": "Account Explorer Prepared Result",

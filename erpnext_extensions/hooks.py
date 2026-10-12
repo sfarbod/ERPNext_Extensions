@@ -625,6 +625,9 @@ scheduler_events = {
 			"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.ensure_all_running_campaigns_live",
 		],
 	},
+	"hourly": [
+		"erpnext_extensions.iran_accounting.account_explorer.prepared_cleanup.cleanup_expired_prepared_executions",
+	],
 }
 
 fixtures = [
