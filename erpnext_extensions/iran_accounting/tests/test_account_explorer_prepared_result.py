@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import gzip
 import json
+import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 import frappe
 from frappe.utils import flt
@@ -13,6 +17,10 @@ from erpnext_extensions.iran_accounting.account_explorer import api
 from erpnext_extensions.iran_accounting.account_explorer.cache_revision import (
 	bump_accounting_revision,
 	get_accounting_revision,
+)
+from erpnext_extensions.iran_accounting.account_explorer.prepared_report import (
+	PREPARED_DOCTYPE,
+	_load_artifact,
 )
 from erpnext_extensions.iran_accounting.account_explorer.query_fingerprint import (
 	build_fingerprint,
@@ -31,7 +39,15 @@ from erpnext_extensions.iran_accounting.tests.test_account_explorer_fixtures imp
 
 class TestAccountExplorerPreparedResult(unittest.TestCase):
 	def setUp(self):
-		self.company = require_site(self)
+		# Prefer ERPNext fixture company; fall back to restored Production company
+		# so artifact lifecycle tests still run after DB-only restores.
+		try:
+			self.company = require_site(self)
+		except unittest.SkipTest:
+			if frappe.db and frappe.db.exists("Company", "اسپاد فارمد دارو"):
+				self.company = "اسپاد فارمد دارو"
+			else:
+				raise
 		enable_account_explorer()
 		frappe.set_user("Administrator")
 		frappe.flags.ae_prepared_inline = True
@@ -47,7 +63,12 @@ class TestAccountExplorerPreparedResult(unittest.TestCase):
 
 	def _payload(self, *, include_opening=0, page=1, sort_field="display_code"):
 		fy = current_fiscal_year(self.company)
-		fy_name, from_date, to_date = (fy if fy else (None, "2026-03-21", "2027-03-20"))
+		if fy:
+			fy_name, from_date, to_date = fy
+		elif frappe.db.exists("Fiscal Year", "1405"):
+			fy_name, from_date, to_date = ("1405", "2026-03-21", "2027-03-20")
+		else:
+			fy_name, from_date, to_date = (None, "2026-03-21", "2027-03-20")
 		return {
 			"document_scope": {
 				"company": self.company,
@@ -83,8 +104,20 @@ class TestAccountExplorerPreparedResult(unittest.TestCase):
 		on = AccountExplorerQuerySpec_from_client(self._payload(include_opening=1), require_dates=True)
 		self.assertNotEqual(query_hash(off), query_hash(on))
 
+	def _purge_prepared_for_payload(self, payload: dict):
+		"""Remove leftover prepared rows for this fingerprint (DB-restore leftovers)."""
+		spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+		fingerprint = build_fingerprint(spec, get_accounting_revision(self.company))
+		for name in frappe.get_all(
+			PREPARED_DOCTYPE, filters={"fingerprint": fingerprint}, pluck="name"
+		):
+			frappe.delete_doc(PREPARED_DOCTYPE, name, force=True, ignore_permissions=True)
+		frappe.db.commit()
+		return fingerprint
+
 	def test_prepared_miss_hit_and_invalidation(self):
 		payload = self._payload(include_opening=0)
+		self._purge_prepared_for_payload(payload)
 		# Defer first call → preparing
 		frappe.flags.ae_prepared_defer = True
 		miss = api.get_account_summary(json.dumps(payload))
@@ -120,6 +153,139 @@ class TestAccountExplorerPreparedResult(unittest.TestCase):
 		frappe.flags.ae_prepared_defer = True
 		after = api.get_account_summary(json.dumps(payload))
 		self.assertEqual(after.get("status"), "preparing")
+
+	def _completed_prepared_doc(self, payload: dict):
+		frappe.flags.ae_prepared_defer = False
+		ready = api.get_account_summary(json.dumps(payload))
+		self.assertEqual(ready.get("status"), "ready")
+		spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+		fingerprint = build_fingerprint(spec, get_accounting_revision(self.company))
+		name = frappe.db.get_value(PREPARED_DOCTYPE, {"fingerprint": fingerprint}, "name")
+		self.assertTrue(name)
+		return frappe.get_doc(PREPARED_DOCTYPE, name), fingerprint, ready
+
+	def test_missing_physical_artifact_rebuilds_without_filenotfound(self):
+		"""B: Completed metadata + missing disk file → rebuild, no FileNotFoundError."""
+		payload = self._payload(include_opening=0)
+		doc, _fingerprint, first = self._completed_prepared_doc(payload)
+		self.assertTrue(doc.result_file)
+
+		rel = doc.result_file.replace("/private/files/", "")
+		abs_path = frappe.get_site_path("private", "files", rel)
+		self.assertTrue(os.path.exists(abs_path), abs_path)
+		os.remove(abs_path)
+		self.assertFalse(os.path.exists(abs_path))
+
+		# File DocType row remains (restore-like); only bytes are gone.
+		self.assertTrue(frappe.db.exists("File", {"file_url": doc.result_file}))
+
+		second = api.get_account_summary(json.dumps(payload))
+		self.assertNotEqual(second.get("status"), "Error")
+		self.assertIn(second.get("status"), {"ready", "preparing"})
+		if second.get("status") == "ready":
+			self.assertEqual(cint(second.get("prepared")), 1)
+			self.assertEqual(len(second.get("rows") or []), len(first.get("rows") or []))
+			doc.reload()
+			self.assertEqual(doc.status, "Completed")
+			self.assertTrue(doc.result_file)
+			rel2 = doc.result_file.replace("/private/files/", "")
+			self.assertTrue(os.path.exists(frappe.get_site_path("private", "files", rel2)))
+
+	def test_missing_file_document_rebuilds(self):
+		"""C: Prepared row points at a File URL with no File document."""
+		payload = self._payload(include_opening=0)
+		doc, _fingerprint, first = self._completed_prepared_doc(payload)
+		file_name = frappe.db.get_value("File", {"file_url": doc.result_file}, "name")
+		self.assertTrue(file_name)
+		# Delete File row only; leave bytes if any (simulates orphaned pointer).
+		frappe.delete_doc("File", file_name, ignore_permissions=True, force=True)
+		frappe.db.commit()
+
+		second = api.get_account_summary(json.dumps(payload))
+		self.assertIn(second.get("status"), {"ready", "preparing"})
+		if second.get("status") == "ready":
+			self.assertEqual(len(second.get("rows") or []), len(first.get("rows") or []))
+
+	def test_corrupt_gzip_and_invalid_json_soft_fail(self):
+		"""D/E: corrupt gzip / invalid JSON return None from loader (no raise)."""
+		payload = self._payload(include_opening=0)
+		doc, _fingerprint, _first = self._completed_prepared_doc(payload)
+		rel = doc.result_file.replace("/private/files/", "")
+		abs_path = frappe.get_site_path("private", "files", rel)
+
+		with open(abs_path, "wb") as handle:
+			handle.write(b"not-a-valid-gzip-or-json")
+		self.assertIsNone(_load_artifact(doc))
+
+		with open(abs_path, "wb") as handle:
+			handle.write(gzip.compress(b"{not-json"))
+		self.assertIsNone(_load_artifact(doc))
+
+		# API recovers by rebuild.
+		second = api.get_account_summary(json.dumps(payload))
+		self.assertIn(second.get("status"), {"ready", "preparing"})
+
+	def test_concurrent_missing_artifact_single_rebuild(self):
+		"""F: concurrent polls for the same missing artifact do not raise."""
+		payload = self._payload(include_opening=0)
+		doc, _fingerprint, _first = self._completed_prepared_doc(payload)
+		rel = doc.result_file.replace("/private/files/", "")
+		abs_path = frappe.get_site_path("private", "files", rel)
+		os.remove(abs_path)
+
+		site = frappe.local.site
+
+		def _poll(_):
+			# Race the invalidate path only (defer rebuild) so concurrent polls
+			# exercise locking without four full materializations.
+			frappe.init(site=site)
+			frappe.connect()
+			frappe.set_user("Administrator")
+			frappe.flags.ae_prepared_inline = True
+			frappe.flags.ae_prepared_defer = True
+			try:
+				return api.get_account_summary(json.dumps(payload))
+			finally:
+				frappe.destroy()
+
+		with ThreadPoolExecutor(max_workers=4) as pool:
+			results = list(pool.map(_poll, range(4)))
+
+		for result in results:
+			self.assertNotEqual(result.get("status"), "Error")
+			self.assertIn(result.get("status"), {"ready", "preparing"})
+			self.assertNotIn("FileNotFoundError", str(result.get("message") or ""))
+			self.assertNotIn("FileNotFoundError", str(result.get("error_message") or ""))
+
+		# Single rebuild after the storm must succeed and keep one prepared row.
+		frappe.flags.ae_prepared_defer = False
+		final = api.get_account_summary(json.dumps(payload))
+		self.assertEqual(final.get("status"), "ready")
+		spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+		fingerprint = build_fingerprint(spec, get_accounting_revision(self.company))
+		count = frappe.db.count(PREPARED_DOCTYPE, {"fingerprint": fingerprint})
+		self.assertEqual(count, 1)
+
+	def test_valid_artifact_still_loads(self):
+		"""A/J: valid artifact path unchanged."""
+		payload = self._payload(include_opening=0)
+		_doc, _fp, first = self._completed_prepared_doc(payload)
+		second = api.get_account_summary(json.dumps(payload))
+		self.assertEqual(second.get("status"), "ready")
+		self.assertEqual(cint(second.get("prepared")), 1)
+		self.assertEqual(len(second.get("rows") or []), len(first.get("rows") or []))
+
+	def test_load_artifact_does_not_swallow_unexpected_errors(self):
+		"""Unexpected loader failures must still surface."""
+		payload = self._payload(include_opening=0)
+		doc, _fp, _first = self._completed_prepared_doc(payload)
+
+		with patch(
+			"erpnext_extensions.iran_accounting.account_explorer.prepared_report.frappe.get_doc",
+			side_effect=RuntimeError("boom"),
+		):
+			with self.assertRaises(RuntimeError):
+				_load_artifact(doc)
 
 
 def cint(value):

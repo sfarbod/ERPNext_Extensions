@@ -78,6 +78,10 @@ def resolve_prepared_or_enqueue(
 		artifact = _load_artifact(existing)
 		if artifact and cint(artifact.get("accounting_revision")) == revision:
 			return _present_artifact(spec, columns, artifact, response_builder)
+		# DB metadata without readable file (typical after DB-only restore),
+		# corrupt gzip/JSON, or revision mismatch inside the artifact payload.
+		_invalidate_prepared_for_rebuild(existing)
+		existing.reload()
 
 	if existing and existing.status == "Error" and cint(existing.accounting_revision) == revision:
 		return {
@@ -101,8 +105,12 @@ def resolve_prepared_or_enqueue(
 		existing.reload()
 		if existing.status == "Completed":
 			artifact = _load_artifact(existing)
-			if artifact:
+			if artifact and cint(artifact.get("accounting_revision")) == revision:
 				return _present_artifact(spec, columns, artifact, response_builder)
+			_invalidate_prepared_for_rebuild(existing)
+			existing.reload()
+			_ensure_prepared_job_running(existing.name, payload)
+			existing.reload()
 		return preparing_response(
 			job_id=existing.name,
 			fingerprint=fingerprint,
@@ -116,8 +124,16 @@ def resolve_prepared_or_enqueue(
 	job.reload()
 	if job.status == "Completed":
 		artifact = _load_artifact(job)
-		if artifact:
+		if artifact and cint(artifact.get("accounting_revision")) == revision:
 			return _present_artifact(spec, columns, artifact, response_builder)
+		_invalidate_prepared_for_rebuild(job)
+		job.reload()
+		_enqueue_or_inline(job.name, payload)
+		job.reload()
+		if job.status == "Completed":
+			artifact = _load_artifact(job)
+			if artifact and cint(artifact.get("accounting_revision")) == revision:
+				return _present_artifact(spec, columns, artifact, response_builder)
 
 	return preparing_response(
 		job_id=job.name,
@@ -347,10 +363,11 @@ def _get_prepared_doc(fingerprint: str):
 
 
 def _create_or_reuse_job(spec: AccountExplorerQuerySpec, fingerprint: str, revision: int, existing):
+	# Reuse in-flight jobs only. Completed rows must prove a readable artifact
+	# upstream; otherwise they are invalidated before reaching this helper.
 	if existing and cint(existing.accounting_revision) == revision and existing.status in (
 		"Queued",
 		"Started",
-		"Completed",
 	):
 		return existing
 
@@ -467,26 +484,115 @@ def _enqueue_or_inline(job_name: str, payload: Any) -> None:
 			build_account_explorer_prepared_result(job_name, payload)
 
 
+def _unlink_local_artifact_path(file_url: str | None) -> None:
+	"""Best-effort removal of one private artifact path (this URL only)."""
+	if not file_url or "/private/files/" not in file_url:
+		return
+	rel = file_url.split("/private/files/", 1)[-1]
+	if not rel or ".." in rel:
+		return
+	path = frappe.get_site_path("private", "files", rel)
+	try:
+		import os
+
+		if os.path.isfile(path):
+			os.remove(path)
+	except OSError:
+		pass
+
+
+def _invalidate_prepared_for_rebuild(doc) -> bool:
+	"""Mark one prepared row for rebuild when its artifact is unreadable.
+
+	Clears only this document's ``result_file`` pointer. Does not delete File
+	rows belonging to other prepared results. Concurrent callers racing on the
+	same Completed row are idempotent: a non-Completed status is left alone.
+	"""
+	if not doc or not doc.name:
+		return False
+
+	# Concurrent Desk polls can race on the same Completed row after a restore.
+	# Retry briefly on MariaDB 1020 / deadlock; if another request already moved
+	# the row out of Completed/Error, treat that as a successful no-op.
+	for _attempt in range(3):
+		try:
+			frappe.db.sql(
+				f"select name from `tab{PREPARED_DOCTYPE}` where name=%s for update",
+				doc.name,
+			)
+			doc.reload()
+			if doc.status not in ("Completed", "Error"):
+				return False
+			stale_url = doc.result_file
+			doc.status = "Queued"
+			doc.result_file = None
+			doc.row_count = 0
+			doc.error_message = None
+			doc.flags.ignore_permissions = True
+			doc.save(ignore_permissions=True)
+			# Remove unreadable bytes at this URL so the rebuild can write a fresh file.
+			# File DocType rows for other prepared results are left untouched.
+			_unlink_local_artifact_path(stale_url)
+			return True
+		except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			try:
+				doc.reload()
+			except Exception:
+				return False
+			if doc.status not in ("Completed", "Error"):
+				return False
+	return False
+
+
 def _load_artifact(doc) -> dict | None:
+	"""Load gzip JSON artifact, or return None when the file is missing/corrupt.
+
+	Soft-fails only for restore/lifecycle failures (missing File doc, missing
+	disk bytes, corrupt gzip, invalid JSON). Unexpected errors still raise.
+	"""
 	if not doc.result_file:
 		return None
-	file_doc = frappe.get_doc("File", {"file_url": doc.result_file})
-	content = file_doc.get_content()
+	try:
+		file_doc = frappe.get_doc("File", {"file_url": doc.result_file})
+	except frappe.DoesNotExistError:
+		return None
+
+	try:
+		content = file_doc.get_content()
+	except FileNotFoundError:
+		return None
+	except OSError:
+		# Broken symlink / unreadable path after partial restore.
+		return None
+
 	if isinstance(content, str):
 		content = content.encode("utf-8")
+	if not content:
+		return None
+
 	try:
 		raw = gzip.decompress(content)
 	except OSError:
 		raw = content
-	return json.loads(raw.decode("utf-8"))
+
+	try:
+		if isinstance(raw, bytes):
+			raw = raw.decode("utf-8")
+		payload = json.loads(raw)
+	except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+		return None
+
+	return payload if isinstance(payload, dict) else None
 
 
 def store_artifact(doc, artifact: dict) -> None:
 	payload = gzip.compress(json.dumps(artifact, ensure_ascii=False, default=str).encode("utf-8"))
+	# Include prepared-doc name so rebuilds after restore/corruption do not collide
+	# with a stale same-fingerprint filename left on disk.
 	file_doc = frappe.get_doc(
 		{
 			"doctype": "File",
-			"file_name": f"{doc.fingerprint}.json.gz",
+			"file_name": f"{doc.fingerprint}:{doc.name}.json.gz",
 			"is_private": 1,
 			"content": payload,
 			"attached_to_doctype": PREPARED_DOCTYPE,
