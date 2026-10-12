@@ -1249,6 +1249,28 @@
 	text-overflow: clip;
 }
 
+/* Checkbox column is 32px. frappe-datatable paints text-overflow:ellipsis on
+   .dt-cell__content, which draws "..." beside the selection checkbox.
+   Scope to the checkbox column only when that column actually holds the checkbox. */
+.account-explorer-page .ae-grid-container--datatable:has(.dt-row-header .dt-cell--col-0 input[type="checkbox"]) .dt-cell--col-0 .dt-cell__content {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 2px;
+	overflow: hidden;
+	text-overflow: clip;
+	white-space: nowrap;
+}
+
+.account-explorer-page .ae-grid-container--datatable:has(.dt-row-header .dt-cell--col-0 input[type="checkbox"]) .dt-cell--filter.dt-cell--col-0 .dt-filter {
+	opacity: 0;
+	pointer-events: none;
+	width: 1px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+}
+
 .account-explorer-page .ae-grid-container--datatable .ae-dt-cell-text {
 	display: block;
 	overflow: hidden;
