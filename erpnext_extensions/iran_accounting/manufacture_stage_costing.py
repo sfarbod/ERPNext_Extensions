@@ -6,9 +6,15 @@ remaining material pool and operating cost across MAIN_FG, MAIN_PRODUCT_REJECT,
 CO_PRODUCT and CO_PRODUCT_REJECT using a common equivalent unit.
 
 v5.5.43: zero MAIN_FG is allowed when stage-participating outputs exist. The
-IRR residual then lands on the highest equivalent-qty participant (stable-key
-tie-break). Multiple MAIN_FG still fails closed. Independent (finance-excluded)
-secondaries never absorb the stage pool.
+allocation residual share lands on the highest equivalent-qty participant
+(stable-key tie-break). Multiple MAIN_FG still fails closed. Independent
+(finance-excluded) secondaries never absorb the stage pool.
+
+Rate-authoritative IRR composition (v5.5.43 correction): each stage row sets
+``basic_rate = ROUND_HALF_UP(allocated_material / qty)`` and
+``basic_amount = qty × basic_rate``. Pool leftover after composition posts as
+native Stock Entry ``value_difference`` → Stock Adjustment (TYPE C). Hidden R2
+amount residuals are not allowed on STAGE_CO outputs.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from frappe.utils import cint, flt
 from erpnext_extensions.iran_accounting.domain.currency import (
 	integer_valuation_rate_from_amount,
 	round_monetary_rate,
+	round_row_amount_financial,
 )
 from erpnext_extensions.iran_accounting.rounding import (
 	get_company_currency,
@@ -678,10 +685,15 @@ def _select_zero_fg_residual_owner(stage_rows, eq_map: dict) -> object:
 def allocate_stage_output_cost(doc) -> bool:
 	"""Allocate material + operating cost across equivalent stage outputs.
 
-	Residual ownership:
-	- Exactly one MAIN_FG → MAIN_FG always receives the IRR residual (legacy).
+	Allocation-share ownership (before rate composition):
+	- Exactly one MAIN_FG → MAIN_FG always receives the leftover share.
 	- Zero MAIN_FG → highest equivalent-qty participant (stable-key tie-break).
 	- Multiple MAIN_FG → fail closed (unchanged STAGE_CO contract).
+
+	After shares are assigned, every stage row is rate-composed
+	(``amount = qty × ROUND_HALF_UP(share / qty)``). Any pool leftover becomes
+	header ``value_difference`` for native Stock Adjustment — not an embedded
+	row amount residual and not Additional Cost.
 	"""
 	classified = snapshot_output_classification(doc)
 	finance_excluded = [
@@ -833,17 +845,37 @@ def allocate_stage_output_cost(doc) -> bool:
 		row.valuation_rate = 0
 		row.allow_zero_valuation_rate = 1
 		_set_field(row, OUTPUT_CLASS_FIELD, CLASS_BULK_SCRAP)
+
+	# Expose composition leftover as Stock Entry value_difference (Stock Adjustment).
+	_refresh_stage_header_totals(doc)
 	return True
 
 
+def _refresh_stage_header_totals(doc) -> None:
+	inc = sum(flt(d.amount) for d in doc.get("items") or [] if d.get("t_warehouse"))
+	out = sum(flt(d.amount) for d in doc.get("items") or [] if d.get("s_warehouse"))
+	doc.total_incoming_value = inc
+	doc.total_outgoing_value = out
+	doc.value_difference = flt(inc) - flt(out)
+
+
 def _apply_stage_row(row, material: float, operating: float, currency: str) -> None:
+	"""Rate-authoritative stage row: amount = qty × ROUND_HALF_UP(material / qty).
+
+	``material`` is the equivalent-unit allocation share. The integer rate is
+	derived with ROUND_HALF_UP; ``basic_amount`` is recomposed as qty × rate so
+	no hidden R2 residual remains on the row. Share − amount contributes to the
+	document value_difference (Stock Adjustment), never Additional Cost.
+	"""
 	qty = _row_qty(row)
 	if operating < 0:
 		operating = 0.0
-	row.basic_amount = material
-	row.basic_rate = round_monetary_rate(material / qty, currency) if qty else 0
+	rate = round_monetary_rate(material / qty, currency) if qty else 0.0
+	basic_amount = round_row_amount_financial(qty, rate, currency) if qty else 0.0
+	row.basic_rate = rate
+	row.basic_amount = basic_amount
 	row.additional_cost = operating
-	row.amount = round_currency(material + _capitalized(row), currency)
+	row.amount = round_currency(basic_amount + _capitalized(row), currency)
 	row.valuation_rate = integer_valuation_rate_from_amount(row.amount, qty, currency)
 	if flt(row.amount):
 		row.allow_zero_valuation_rate = 0

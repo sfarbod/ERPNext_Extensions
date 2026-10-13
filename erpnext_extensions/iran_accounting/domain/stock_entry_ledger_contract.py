@@ -237,64 +237,29 @@ def _manufacture_fg_amount_authoritative(doc, row, company: str) -> bool:
 
 
 def _manufacture_stage_secondary_amount_authoritative(doc, row, company: str) -> bool:
-	"""True when a STAGE_CO / Product-Reject secondary may carry an R2 amount residual.
+	"""Removed: STAGE_CO secondaries are rate-authoritative (always False).
 
-	Durable recognition (survives ``get_doc`` reload):
-	- Manufacture + v5.3.3+ manufacture costing contract
-	- Incoming row classified as CO_PRODUCT, CO_PRODUCT_REJECT, or MAIN_PRODUCT_REJECT
-	- Not finance-excluded (independent Valuation Rate / Manual / % paths)
-	- Integer IRR rates/amounts with ROUND_HALF_UP-consistent representational rate
-	- |basic_amount − transfer_qty × basic_rate| ≤ R2 bound
-
-	Component Scrap / Bulk Scrap / OTHER_OUTPUT never receive this exemption.
+	Kept as a named stub so older tests/callers fail closed instead of ImportError.
+	Composition leftovers must post as TYPE C Stock Adjustment, not row R2.
 	"""
-	if getattr(doc, "purpose", None) != "Manufacture":
-		return False
-	if not row.get("t_warehouse") or row.get("s_warehouse"):
-		return False
-	if row.get("is_finished_item"):
-		return False
-
-	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
-		_is_finance_excluded,
-		uses_v533_contract,
-	)
-	from erpnext_extensions.iran_accounting.scrap_costing import (
-		CLASS_CO_PRODUCT,
-		CLASS_CO_PRODUCT_REJECT,
-		CLASS_MAIN_PRODUCT_REJECT,
-		classify_manufacture_outputs,
-	)
-
-	if not uses_v533_contract(doc):
-		return False
-
-	classified = classify_manufacture_outputs(doc)
-	eligible = (
-		classified[CLASS_CO_PRODUCT]
-		+ classified[CLASS_CO_PRODUCT_REJECT]
-		+ classified[CLASS_MAIN_PRODUCT_REJECT]
-	)
-	# Identity match: prefer object identity, fall back to durable row name.
-	row_name = row.get("name")
-	matched = None
-	for candidate in eligible:
-		if candidate is row or (row_name and candidate.get("name") == row_name):
-			matched = candidate
-			break
-	if matched is None:
-		return False
-	if matched in classified[CLASS_CO_PRODUCT] or matched in classified[CLASS_CO_PRODUCT_REJECT]:
-		if _is_finance_excluded(matched):
-			return False
-	return _r2_residual_within_bound(row, company)
+	return False
 
 
 def _manufacture_output_amount_authoritative(doc, row, company: str) -> bool:
-	"""Unified Manufacture amount-authoritative gate (FG + STAGE_CO secondaries)."""
-	if _manufacture_fg_amount_authoritative(doc, row, company):
-		return True
-	return _manufacture_stage_secondary_amount_authoritative(doc, row, company)
+	"""Manufacture amount-authoritative gate (FG residual / SAME_ITEM_MULTI_FG R2 only).
+
+	STAGE_CO documents (participating Co-/By-Product) are fully rate-authoritative
+	for FG and secondaries: ``basic_amount`` must equal ``transfer_qty × integer
+	basic_rate``. Composition leftovers post as TYPE C Stock Adjustment via
+	``value_difference`` — not as hidden row R2 residuals.
+	"""
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		has_stage_participating_co_product,
+	)
+
+	if has_stage_participating_co_product(doc):
+		return False
+	return _manufacture_fg_amount_authoritative(doc, row, company)
 
 
 def _assert_row_composition(doc, company: str) -> list[str]:
@@ -302,9 +267,8 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 	- basic_rate / valuation_rate must be integer (IRR)
 	- basic_amount == ROUND_HALF_UP(transfer_qty × integer basic_rate)
-	  except Manufacture amount-authoritative pool shares:
-	  single-FG residual, SAME_ITEM_MULTI_FG R2, or STAGE_CO / Product-Reject
-	  secondary R2 representation residual
+	  except Manufacture amount-authoritative FG pool shares:
+	  single-FG residual or SAME_ITEM_MULTI_FG R2 (STAGE_CO secondaries excluded)
 	- amount == basic_amount + additional_cost + LCV
 	- valuation_rate == ROUND_HALF_UP(amount / transfer_qty); amount remains authoritative
 	"""

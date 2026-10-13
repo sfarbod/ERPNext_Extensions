@@ -190,12 +190,16 @@ class TestZeroFgStageAllocationV5543(unittest.TestCase):
 		doc = _Doc(items=[_consumed("RM", 1, 100), fg, by_item])
 		with _env(stock_uoms={"FG": "Nos", "BY": "Nos", "RM": "Nos"}):
 			self.assertTrue(apply_iran_manufacture_output_contract(doc))
-		self.assertEqual(flt(fg.basic_amount) + flt(by_item.basic_amount), 100)
-		# Residual still on MAIN_FG (not highest-eq-qty By-Product).
+		# Shares: BY 33 (qty1→33), FG leftover 67 (qty2→ROUND(33.5)=34 → 68).
+		# Leftover share still on MAIN_FG; rate composition may leave SA residual.
 		self.assertEqual(flt(by_item.basic_amount), 33)
-		self.assertEqual(flt(fg.basic_amount), 67)
+		self.assertEqual(flt(fg.basic_amount), 68)
+		self.assertEqual(flt(fg.basic_rate), 34)
+		self.assertEqual(flt(by_item.basic_amount), flt(by_item.qty) * flt(by_item.basic_rate))
+		self.assertEqual(flt(fg.basic_amount), flt(fg.qty) * flt(fg.basic_rate))
+		self.assertEqual(flt(doc.value_difference), 1)
 
-	def test_t2_zero_fg_one_by_product_absorbs_pool(self):
+	def test_t2_zero_fg_one_by_product_rate_authoritative_sa_residual(self):
 		by_item = _output(
 			"30100096",
 			14000,
@@ -215,8 +219,13 @@ class TestZeroFgStageAllocationV5543(unittest.TestCase):
 		doc = _Doc(items=[_consumed("RM", 1, 7_654_007), by_item])
 		with _env(stock_uoms={"30100096": "Millilitre", "RM": "Nos"}):
 			self.assertTrue(allocate_stage_output_cost(doc))
-		self.assertEqual(flt(by_item.basic_amount), 7_654_007)
-		self.assertEqual(flt(by_item.amount), 7_654_007)
+		# Rate-authoritative: ROUND_HALF_UP(7654007/14000)=547; amount=14000×547.
+		self.assertEqual(flt(by_item.basic_rate), 547)
+		self.assertEqual(flt(by_item.valuation_rate), 547)
+		self.assertEqual(flt(by_item.basic_amount), 7_658_000)
+		self.assertEqual(flt(by_item.amount), 7_658_000)
+		self.assertEqual(flt(doc.value_difference), 3993)
+		self.assertEqual(flt(by_item.basic_amount), 14_000 * 547)
 
 	def test_t3_zero_fg_multiple_by_products_proportional(self):
 		by1 = _output(
@@ -387,7 +396,7 @@ class TestZeroFgStageAllocationV5543(unittest.TestCase):
 				allocate_stage_output_cost(doc)
 		self.assertIn("exactly one finished good", str(ctx.exception).lower())
 
-	def test_t10_irr_rounding_residual_conserves_pool(self):
+	def test_t10_irr_rounding_residual_share_then_rate_compose(self):
 		by1 = _output(
 			"BY1",
 			1,
@@ -422,11 +431,14 @@ class TestZeroFgStageAllocationV5543(unittest.TestCase):
 		with _env(stock_uoms={"BY1": "Nos", "BY2": "Nos", "BY3": "Nos", "RM": "Nos"}):
 			self.assertTrue(allocate_stage_output_cost(doc))
 		total = flt(by1.basic_amount) + flt(by2.basic_amount) + flt(by3.basic_amount)
+		# qty=1 → rate composition preserves integer shares; leftover share on by1.
 		self.assertEqual(total, 100)
-		# Equal eq qty → residual on lexicographically first stable name (by1).
+		self.assertEqual(flt(doc.value_difference), 0)
 		self.assertEqual(flt(by1.basic_amount), 34)
 		self.assertEqual(flt(by2.basic_amount), 33)
 		self.assertEqual(flt(by3.basic_amount), 33)
+		for row in (by1, by2, by3):
+			self.assertEqual(flt(row.basic_amount), flt(row.qty) * flt(row.basic_rate))
 
 	def test_t11_equal_eq_qty_deterministic_residual_by_name(self):
 		# Same eq qty; residual owner must be stable name ascending ("a-row" before "z-row")
@@ -509,11 +521,16 @@ class TestZeroFgStageAllocationV5543(unittest.TestCase):
 		with _env(stock_uoms={"BY": "Nos", "RM": "Nos"}):
 			self.assertTrue(apply_iran_manufacture_output_contract(doc))
 			first = flt(by_item.basic_amount)
+			first_vd = flt(doc.value_difference)
 			doc.docstatus = 1
 			doc.set("custom_manufacturing_costing_contract_version", "5.3.43")
 			self.assertTrue(apply_iran_manufacture_output_contract(doc))
+		# ROUND_HALF_UP(7777/10)=778 → amount 7780; SA residual +3.
 		self.assertEqual(flt(by_item.basic_amount), first)
-		self.assertEqual(first, 7777)
+		self.assertEqual(first, 7780)
+		self.assertEqual(flt(by_item.basic_rate), 778)
+		self.assertEqual(first_vd, 3)
+		self.assertEqual(flt(doc.value_difference), first_vd)
 
 	def test_t15_repeated_validation_no_drift(self):
 		by_item = _output(
@@ -577,8 +594,11 @@ class TestZeroFgStageAllocationV5543(unittest.TestCase):
 			self.assertEqual(len(classified[CLASS_MAIN_FG]), 0)
 			self.assertEqual(len(classified[CLASS_CO_PRODUCT]), 1)
 			self.assertTrue(allocate_stage_output_cost(doc))
-		self.assertEqual(flt(by_item.basic_amount), 7_654_007)
-		self.assertEqual(flt(by_item.amount), 7_654_007)
+		self.assertEqual(flt(by_item.basic_rate), 547)
+		self.assertEqual(flt(by_item.basic_amount), 7_658_000)
+		self.assertEqual(flt(by_item.amount), 7_658_000)
+		self.assertEqual(flt(doc.value_difference), 3993)
+		self.assertEqual(flt(by_item.basic_amount), 14_000 * flt(by_item.basic_rate))
 
 
 if __name__ == "__main__":
