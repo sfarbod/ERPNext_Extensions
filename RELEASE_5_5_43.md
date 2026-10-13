@@ -6,7 +6,7 @@
 **Branch:** `develop`  
 **Validated stack:** Frappe **16.36.1**, ERPNext **16.37.0** (unmodified Core)
 
-**Validation scope:** Unit tests for Iran Accounting STAGE_CO (zero-FG, rate-authoritative composition, TYPE C Stock Adjustment, ledger determinism); development-site Cancel + Amend of `MAT-STE-2026-41263`.  
+**Validation scope:** Unit tests for Iran Accounting STAGE_CO (zero-FG, rate-authoritative composition, TYPE C Stock Adjustment, ledger determinism); development-site Cancel + Amend + Submit of `MAT-STE-2026-41263` → `MAT-STE-2026-41263-1` with full SLE/GL/Bin/SA reconciliation.  
 **Production:** Not deployed by this release preparation. No bulk historical repair. No new patches.
 
 ---
@@ -59,26 +59,34 @@ Expected GL for the target shape:
 
 | Step | Result |
 |------|--------|
-| Original `MAT-STE-2026-41263` | Cancelled (`docstatus=2`); SLE cancelled |
-| Amend `MAT-STE-2026-41263-1` | `amended_from` = original |
+| Original `MAT-STE-2026-41263` | Cancelled (`docstatus=2`) |
+| Amend `MAT-STE-2026-41263-1` | **Submitted** (`docstatus=1`), `amended_from` = original |
 | SED By-Product `30100096` | rate **547**, amount **7 658 000** (= 14 000 × 547), additional_costs **0** |
 | Header | Outgoing **7 654 007**, Incoming **7 658 000**, `value_difference` **+3 993** |
 
 ### D.1 Operator UAT
 
-Operator reported successful manual testing of the corrected Stock Entry on development.
+Operator Cancel + Amend + Submit completed successfully on development.
 
-### D.2 Agent re-verification (2026-10-13)
+### D.2 Verified accounting reconciliation (fresh DB read 2026-10-13)
 
-| Check | Result |
-|-------|--------|
-| `MAT-STE-2026-41263-1` `docstatus` | **0 (Draft)** — not Submitted |
-| SED economics (rate / amount / VD) | **PASS** (matches contract) |
-| SLE rows for amend | **0** |
-| GL / Stock Adjustment credit | **0** (not posted) |
-| Bin Quarantine `30100096` | qty **0**, value **0** (cancel reversed; amend not submitted) |
+| Check | Expected | Actual | Result |
+|-------|----------|--------|--------|
+| Document | submitted amend | `MAT-STE-2026-41263-1` docstatus **1** | PASS |
+| Incoming | 7 658 000 | 7 658 000 | PASS |
+| Outgoing | 7 654 007 | 7 654 007 | PASS |
+| Value difference | +3 993 | +3 993 | PASS |
+| SLE By-Product SVD | +7 658 000 | +7 658 000 (rate 547) | PASS |
+| SLE net (in − out) | +3 993 | +3 993 | PASS |
+| GL SFG Debit (`111605`) | 7 658 000 | 7 658 000 | PASS |
+| GL WIP Credit (`111701`) | 7 654 007 | 7 654 007 | PASS |
+| GL Stock Adjustment Credit (`621301`) | 3 993 | 3 993 | PASS |
+| GL balanced | 0 | debit = credit = 7 658 000 | PASS |
+| Bin Quarantine `30100096` | qty 14 000 · value 7 658 000 · rate 547 | same | PASS |
+| Duplicate cancelled SLE on amend | none | 0 | PASS |
+| Artificial Additional Cost | 0 | 0 | PASS |
 
-**Release gate:** Code and draft economics are correct. Full SLE / GL / Bin / Stock Adjustment acceptance is **not** confirmed in the database until `MAT-STE-2026-41263-1` is **Submitted**. Standard ERPNext Repost / Iran post-repost alone were not used as the correction path (see Known Issues).
+Standard ERPNext Repost / Iran post-repost alone were **not** used as the correction path (see Known Issues).
 
 ---
 
@@ -172,3 +180,11 @@ Already-submitted amount-first STAGE_CO documents are **not** auto-repaired by m
 - Production data changes  
 - Bulk historical SLE/GL repair  
 - Fixing Bin-refresh / TYPE C GL-magnitude known issues in this release commit  
+
+---
+
+## K. Release readiness
+
+**READY** for operator push of `develop` at version **5.5.43**.
+
+Site verification of submitted `MAT-STE-2026-41263-1` passes SED / SLE / GL / Stock Adjustment / Bin. Known reposting limitations (§F) remain documented and out of scope for this release.  
