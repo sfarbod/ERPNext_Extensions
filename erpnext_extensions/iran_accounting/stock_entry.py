@@ -121,6 +121,11 @@ def validate_stock_entry(doc, method=None):
 	)
 
 	assert_round_off_ready_if_needed(doc)
+	from erpnext_extensions.iran_accounting.domain.stock_entry_prevention import (
+		run_validate_prevention_guards,
+	)
+
+	run_validate_prevention_guards(doc)
 
 
 def before_submit_stock_entry(doc, method=None):
@@ -157,6 +162,11 @@ def before_submit_stock_entry(doc, method=None):
 	)
 
 	assert_round_off_ready_if_needed(doc)
+	from erpnext_extensions.iran_accounting.domain.stock_entry_prevention import (
+		run_before_submit_prevention_guards,
+	)
+
+	run_before_submit_prevention_guards(doc)
 
 
 def on_submit_stock_entry(doc, method=None):
