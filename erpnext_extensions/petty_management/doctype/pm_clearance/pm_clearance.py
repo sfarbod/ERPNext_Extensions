@@ -109,6 +109,14 @@ class PMClearance(Document):
 			)
 			raise
 
+	def save(self, *args, **kwargs):
+		# v5.5.42: core _validate_links runs before before_validate/validate.
+		# Corrective Return must keep cancelled PI links so the requester can
+		# remove/replace them in Draft — scope ignore_links to this flag only.
+		if getattr(frappe.flags, "pm_return_for_correction", False):
+			self.flags.ignore_links = True
+		return super().save(*args, **kwargs)
+
 	def before_validate(self):
 		before_validate_clearance(self)
 
