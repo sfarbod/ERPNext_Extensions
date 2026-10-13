@@ -60,14 +60,25 @@ Expected GL for the target shape:
 | Step | Result |
 |------|--------|
 | Original `MAT-STE-2026-41263` | Cancelled (`docstatus=2`); SLE cancelled |
-| Amend `MAT-STE-2026-41263-1` | Draft (`docstatus=0`), `amended_from` = original |
-| Draft SED By-Product `30100096` | rate **547**, amount **7 658 000**, VD **+3 993**, additional_costs **0** |
-| Draft SLE / GL | **Not posted** until Submit |
-| Bin Quarantine after cancel | qty **0**, value **0** (stock reversed) |
+| Amend `MAT-STE-2026-41263-1` | `amended_from` = original |
+| SED By-Product `30100096` | rate **547**, amount **7 658 000** (= 14 000 × 547), additional_costs **0** |
+| Header | Outgoing **7 654 007**, Incoming **7 658 000**, `value_difference` **+3 993** |
 
-**Release-prep status:** Draft economics match the contract. Full SLE / GL / Bin / Stock Adjustment reconciliation requires **Submit** of `MAT-STE-2026-41263-1` on development (not performed during this release-note commit).
+### D.1 Operator UAT
 
-Standard ERPNext Repost / Iran post-repost alone were **not** used as the correction path (see Known Issues).
+Operator reported successful manual testing of the corrected Stock Entry on development.
+
+### D.2 Agent re-verification (2026-10-13)
+
+| Check | Result |
+|-------|--------|
+| `MAT-STE-2026-41263-1` `docstatus` | **0 (Draft)** — not Submitted |
+| SED economics (rate / amount / VD) | **PASS** (matches contract) |
+| SLE rows for amend | **0** |
+| GL / Stock Adjustment credit | **0** (not posted) |
+| Bin Quarantine `30100096` | qty **0**, value **0** (cancel reversed; amend not submitted) |
+
+**Release gate:** Code and draft economics are correct. Full SLE / GL / Bin / Stock Adjustment acceptance is **not** confirmed in the database until `MAT-STE-2026-41263-1` is **Submitted**. Standard ERPNext Repost / Iran post-repost alone were not used as the correction path (see Known Issues).
 
 ---
 
