@@ -109,6 +109,41 @@ class PMClearance(Document):
 			)
 			raise
 
+	def _validate_links(self):
+		"""v5.5.42 safety: narrow Return exception for cancelled Purchase Invoice only.
+
+		Frappe ``flags.ignore_links`` skips *all* of ``_validate_links`` (missing and
+		cancelled). Corrective Return must allow an existing cancelled PI reference so
+		Draft can be repaired, but must still reject nonexistent / deleted / other
+		cancelled Links. See RELEASE_5_5_42.md safety audit.
+		"""
+		if self._action == "cancel":
+			return
+		# Honor non-Return ignore_links (tests / rare callers).
+		if self.flags.ignore_links and not getattr(frappe.flags, "pm_return_for_correction", False):
+			return
+		if not getattr(frappe.flags, "pm_return_for_correction", False):
+			return super()._validate_links()
+
+		invalid_links, cancelled_links = self.get_invalid_links()
+		for child in self.get_all_children():
+			inv, canc = child.get_invalid_links(is_submittable=self.meta.is_submittable)
+			invalid_links.extend(inv)
+			cancelled_links.extend(canc)
+
+		if invalid_links:
+			msg = ", ".join(each[2] for each in invalid_links)
+			frappe.throw(_("Could not find {0}").format(msg), frappe.LinkValidationError)
+
+		# Allow only cancelled Purchase Invoice link fields (parent or child).
+		blocked_cancelled = [each for each in cancelled_links if each[0] != "purchase_invoice"]
+		if blocked_cancelled:
+			msg = ", ".join(each[2] for each in blocked_cancelled)
+			frappe.throw(
+				_("Cannot link cancelled document: {0}").format(msg),
+				frappe.CancelledLinkError,
+			)
+
 	def before_validate(self):
 		before_validate_clearance(self)
 

@@ -372,6 +372,11 @@ doc_events = {
 			"erpnext_extensions.iran_accounting.accounts_invoice.round_irr_invoice_totals",
 		],
 		"on_submit": "erpnext_extensions.cheque_management.pdc_invoice_advance_application.on_invoice_submit",
+		# v5.5.42: block cancel while referenced by an active PM Clearance (incl. Draft).
+		"before_cancel": (
+			"erpnext_extensions.petty_management.services.purchase_invoice_clearance_guard"
+			".before_cancel_purchase_invoice"
+		),
 		"on_cancel": "erpnext_extensions.cheque_management.pdc_invoice_advance_application.on_invoice_cancel",
 	},
 	"Sales Invoice": {

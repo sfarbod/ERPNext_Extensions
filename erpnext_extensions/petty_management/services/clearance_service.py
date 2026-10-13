@@ -36,6 +36,9 @@ def before_validate_clearance(doc: Document) -> None:
 	from erpnext_extensions.petty_management.services.draft_approval_guards import (
 		assert_pending_not_editable,
 	)
+	from erpnext_extensions.petty_management.services.purchase_invoice_clearance_guard import (
+		assert_linked_purchase_invoices_cancellable_state,
+	)
 
 	# v5.0.6: evaluate pending-edit guard before row normalization mutates child tables.
 	assert_pending_not_editable(doc)
@@ -45,6 +48,8 @@ def before_validate_clearance(doc: Document) -> None:
 	if doc.docstatus == 0:
 		normalize_funding_allocation_rows(doc)
 		prune_empty_request_allocation_rows(doc)
+	# v5.5.42: lock PIs as early as possible (before validate) for cancel races.
+	assert_linked_purchase_invoices_cancellable_state(doc)
 
 
 def normalize_funding_allocation_rows(doc: Document) -> None:
@@ -64,7 +69,6 @@ def validate_clearance(doc: Document) -> None:
 	from erpnext_extensions.petty_management.services.draft_approval_guards import (
 		assert_pm_clearance_remark_locked_after_submit,
 	)
-
 	assert_pm_clearance_remark_locked_after_submit(doc)
 	doc.je_clearance_date = getdate(doc.transaction_date or today())
 	sync_clearance_holder_fields(doc)
@@ -73,6 +77,7 @@ def validate_clearance(doc: Document) -> None:
 	stamp_rows(doc)
 	validate_details_not_empty(doc)
 	validate_duplicate_settlement_targets(doc)
+	# PI lock/cancelled check already ran in before_validate (v5.5.42).
 	validate_and_stamp_pi_rows(doc)
 	validate_and_stamp_supplier_advance_rows(doc)
 	calc_line_totals(doc)

@@ -233,6 +233,11 @@ def validate_purchase_invoices_for_prepare(doc: Document) -> None:
 		pi = _load_pi_row(row.purchase_invoice)
 		ds = cint(pi.docstatus)
 		if ds == 2:
+			# v5.5.42: corrective Return only — leave cancelled PI row intact so
+			# requester can remove/replace it in Draft. Finance Approve / normal
+			# save / settlement still block via readiness gates (no skip here).
+			if getattr(frappe.flags, "pm_return_for_correction", False):
+				continue
 			frappe.throw(
 				_("Row {0}: Purchase Invoice {1} is cancelled and cannot be settled.").format(
 					row.idx, row.purchase_invoice
