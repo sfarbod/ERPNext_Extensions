@@ -364,6 +364,88 @@ async function main() {
     assert(!snap.journal_entry, "E unexpected JE");
     await context.close();
 
+    // ---- Scenario F: unauthorized Return blocked (Desk + server) ----
+    const fixF = prep("prepare_cancelled_pi_return_fixture");
+    context = await browser.newContext(ctxOpts);
+    page = await context.newPage();
+    await login(page, fixF.holder, fixF.password);
+    await openDoc(page, "pm-clearance", fixF.pm_clearance);
+    evidence.screenshots.f_before = await shot(page, "f_unauthorized_before");
+    const fActions = await page.evaluate(() => {
+      const items = [
+        ...document.querySelectorAll(
+          ".actions-btn-group .dropdown-menu a, .actions-btn-group .dropdown-menu li a"
+        ),
+      ];
+      return items.map((a) => (a.textContent || "").trim()).filter(Boolean);
+    });
+    const returnVisible = fActions.some((t) => /PM Return for Correction/i.test(t));
+    let fServer = { ok: true };
+    if (returnVisible) {
+      // If Desk still shows it, click must fail server-side.
+      try {
+        await clickWorkflowAction(page, "PM Return for Correction");
+      } catch (_e) {
+        /* expected */
+      }
+    }
+    fServer = prep("attempt_return_server", {
+      clearance: fixF.pm_clearance,
+      as_user: fixF.holder,
+    });
+    const snapF = prep("snapshot_clearance", { name: fixF.pm_clearance });
+    evidence.scenarios.F = {
+      return_action_visible: returnVisible,
+      server_ok: fServer.ok,
+      server_error: (fServer.error || "").slice(0, 400),
+      workflow_state: snapF.workflow_state,
+    };
+    assert(!fServer.ok, "F: unauthorized Return must be rejected");
+    assert(
+      snapF.workflow_state === "Pending Finance Review",
+      `F: state must stay Pending Finance Review, got ${snapF.workflow_state}`
+    );
+    await context.close();
+
+    // ---- Scenario G: invalid Link (nonexistent Project) cannot pass Return ----
+    const fixG = prep("prepare_invalid_link_return_fixture");
+    context = await browser.newContext(ctxOpts);
+    page = await context.newPage();
+    await login(page, fixG.reviewer, fixG.password);
+    await openDoc(page, "pm-clearance", fixG.pm_clearance);
+    evidence.screenshots.g_before = await shot(page, "g_invalid_link_before");
+    let gDeskFailed = false;
+    try {
+      await clickWorkflowAction(page, "PM Return for Correction", {
+        expectWorkflowTitle: "Draft",
+      });
+    } catch (_e) {
+      gDeskFailed = true;
+    }
+    const gServer = prep("attempt_return_server", {
+      clearance: fixG.pm_clearance,
+      as_user: fixG.reviewer,
+    });
+    const snapG = prep("snapshot_clearance", { name: fixG.pm_clearance });
+    evidence.scenarios.G = {
+      desk_failed_or_incomplete: gDeskFailed || snapG.workflow_state !== "Draft",
+      server_ok: gServer.ok,
+      server_error: (gServer.error || "").slice(0, 400),
+      flag_leaked: !!gServer.flag_leaked,
+      workflow_state: snapG.workflow_state,
+    };
+    assert(!gServer.ok, "G: Return with nonexistent Project must be blocked");
+    assert(
+      /LinkValidationError|Could not find|PROJECT-NOPE/i.test(gServer.error || ""),
+      `G: expected LinkValidationError, got ${gServer.error}`
+    );
+    assert(!gServer.flag_leaked, "G: pm_return_for_correction leaked");
+    assert(
+      snapG.workflow_state === "Pending Finance Review",
+      `G: must remain Pending Finance Review, got ${snapG.workflow_state}`
+    );
+    await context.close();
+
     evidence.legacy = prep("legacy_cancelled_pi_report");
     evidence.ok = true;
     console.log(JSON.stringify(evidence, null, 2));

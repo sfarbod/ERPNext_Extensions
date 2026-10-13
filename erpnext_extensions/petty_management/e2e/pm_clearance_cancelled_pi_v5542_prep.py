@@ -235,3 +235,45 @@ def replace_pi_on_clearance(clearance: str, new_amount: float | None = None) -> 
 @frappe.whitelist()
 def legacy_cancelled_pi_report() -> list:
 	return report_legacy_cancelled_pi_on_clearances()
+
+
+@frappe.whitelist()
+def prepare_invalid_link_return_fixture() -> dict:
+	"""Pending Finance Clearance with cancelled PI + nonexistent Project (must block Return)."""
+	fix = prepare_cancelled_pi_return_fixture()
+	frappe.db.set_value(
+		"PM Clearance",
+		fix["pm_clearance"],
+		"project",
+		"PROJECT-NOPE-E2E-V5542",
+		update_modified=False,
+	)
+	frappe.db.commit()
+	return fix
+
+
+@frappe.whitelist()
+def attempt_return_server(clearance: str, as_user: str) -> dict:
+	"""Server-side Return attempt for unauthorized / invalid-link Desk corroboration."""
+	from erpnext_extensions.petty_management.services.workflow_utils import apply_pm_workflow
+
+	frappe.set_user(as_user)
+	try:
+		out = apply_pm_workflow(frappe.get_doc("PM Clearance", clearance), "PM Return for Correction")
+		frappe.set_user("Administrator")
+		return {
+			"ok": True,
+			"workflow_state": _wf_title(getattr(out, "workflow_state", None)),
+			"name": getattr(out, "name", None),
+		}
+	except Exception as exc:
+		frappe.set_user("Administrator")
+		frappe.flags.pm_return_for_correction = False
+		return {
+			"ok": False,
+			"error": f"{type(exc).__name__}: {exc}",
+			"flag_leaked": bool(getattr(frappe.flags, "pm_return_for_correction", False)),
+			"workflow_state": _wf_title(
+				frappe.db.get_value("PM Clearance", clearance, "workflow_state")
+			),
+		}

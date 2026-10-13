@@ -57,11 +57,11 @@ Ordering: workflow Return → save → `_validate_links` (fail) → never reache
 
 | Change | Scope |
 |--------|-------|
-| `PMClearance.save()` sets `flags.ignore_links` when `pm_return_for_correction` | Return path only |
+| `PMClearance._validate_links()` narrow exception: during `pm_return_for_correction`, still reject **missing/invalid** Links; allow **cancelled** only when `fieldname == purchase_invoice` | Return path only |
 | `validate_purchase_invoices_for_prepare` skips cancelled throw when flag set | Return path only |
 | Finance Approve / settlement / normal Draft save | Still block cancelled PI |
 
-Does **not** reactivate PI, remove rows, or bypass workflow/permissions.
+**Safety audit (post-c49aa47):** Frappe `flags.ignore_links` skips *all* of `_validate_links` (missing + cancelled, parent + child, Link + Dynamic Link). A Return-scoped `ignore_links=True` therefore allowed nonexistent Project during Return. Replaced with the narrow override above. Does **not** use `ignore_links` on the Return path. Does **not** reactivate PI, remove rows, or bypass workflow/permissions.
 
 ---
 
@@ -101,7 +101,7 @@ Residual risk: extreme isolation edge cases across non-standard cancellation hel
 
 **Production**
 
-- `petty_management/doctype/pm_clearance/pm_clearance.py` — Return-scoped `ignore_links`
+- `petty_management/doctype/pm_clearance/pm_clearance.py` — narrow `_validate_links` (cancelled PI only on Return)
 - `petty_management/services/purchase_invoice_readiness.py` — skip cancelled on Return flag
 - `petty_management/services/clearance_service.py` — early PI lock/cancelled check
 - `petty_management/services/purchase_invoice_clearance_guard.py` — **new**
@@ -110,6 +110,7 @@ Residual risk: extreme isolation edge cases across non-standard cancellation hel
 **Tests / Playwright / Release**
 
 - `tests/test_pm_clearance_cancelled_pi_return_v5542.py`
+- `tests/test_pm_clearance_link_validation_safety_v5542.py` — negative Link matrix A–O
 - `e2e/pm_clearance_cancelled_pi_v5542_prep.py`
 - `e2e/playwright_pm_clearance_cancelled_pi_v5542.mjs`
 - `RELEASE_5_5_42.md`
@@ -119,7 +120,8 @@ Residual risk: extreme isolation edge cases across non-standard cancellation hel
 
 ## J. Unit / Integration Tests (v5.5.42 module)
 
-All **24 PASS** (including Tests 1–25 coverage and legacy diagnostic).
+All **24 PASS** (including Tests 1–25 coverage and legacy diagnostic).  
+Link validation safety module: **17 PASS** (A–O + missing Project + no `ignore_links` assignment).
 
 ---
 
@@ -132,7 +134,8 @@ All **24 PASS** (including Tests 1–25 coverage and legacy diagnostic).
 | C PI cancel blocked (Draft Clearance) | PASS |
 | D Remove reference releases PM guard | PASS |
 | E Full correction flow to Approved | PASS |
-| F Regressions | See L |
+| F Unauthorized Return blocked | PASS |
+| G Nonexistent Project Link blocked on Return | PASS |
 
 Note: Playwright contexts must use `locale: "en-US"` — default `en-US@posix` breaks Desk Actions via `Intl.Locale`.
 
@@ -146,6 +149,7 @@ Note: Playwright contexts must use `locale: "en-US"` — default `en-US@posix` b
 | v5.2.11 funding availability Return | PASS (7) |
 | v5.5.5 active reservation | PASS (18) |
 | v5.5.42 cancelled PI module | PASS (24) |
+| v5.5.42 link validation safety A–O | PASS (17) |
 | v5.0.4 / v5.0.6 site suites | Flaky on polluted development fixtures (allocation/reservation exhaustion); dedicated v5.5.42 repeated-Return + remark-cancelled tests PASS |
 
 ---
@@ -158,6 +162,8 @@ Note: Playwright contexts must use `locale: "en-US"` — default `en-US@posix` b
 - Workflow authorization unchanged.
 - Finance Approve still blocks cancelled PI.
 - Financial history not auto-mutated.
+- **Link validation:** Return does **not** set `ignore_links`. Narrow `_validate_links` keeps existence checks for all Links/Dynamic Links; cancelled exception limited to `purchase_invoice`.
+- `pm_return_for_correction` cleared in `workflow_hooks` `finally` (no flag leak after ValidationError / CancelledLinkError / unexpected exceptions).
 
 ---
 
