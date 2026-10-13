@@ -4,6 +4,11 @@
 Component Scrap is priced elsewhere (issued rate). This module allocates the
 remaining material pool and operating cost across MAIN_FG, MAIN_PRODUCT_REJECT,
 CO_PRODUCT and CO_PRODUCT_REJECT using a common equivalent unit.
+
+v5.5.43: zero MAIN_FG is allowed when stage-participating outputs exist. The
+IRR residual then lands on the highest equivalent-qty participant (stable-key
+tie-break). Multiple MAIN_FG still fails closed. Independent (finance-excluded)
+secondaries never absorb the stage pool.
 """
 
 from __future__ import annotations
@@ -648,8 +653,36 @@ def has_stage_participating_co_product(doc) -> bool:
 	return bool(stage_participating_co_product_rows(doc))
 
 
+def _stable_row_key(row) -> tuple:
+	"""Deterministic tie-break key — prefer persisted name, then idx, then identity."""
+	name = row.get("name")
+	if name not in (None, ""):
+		return (0, str(name))
+	idx = row.get("idx")
+	if idx not in (None, ""):
+		try:
+			return (1, int(idx))
+		except (TypeError, ValueError):
+			return (1, str(idx))
+	return (2, id(row))
+
+
+def _select_zero_fg_residual_owner(stage_rows, eq_map: dict) -> object:
+	"""Zero-FG residual sink: highest equivalent qty, then stable row key ascending."""
+	return sorted(
+		stage_rows,
+		key=lambda row: (-flt(eq_map[id(row)][0]), _stable_row_key(row)),
+	)[0]
+
+
 def allocate_stage_output_cost(doc) -> bool:
-	"""Allocate material + operating cost across equivalent stage outputs."""
+	"""Allocate material + operating cost across equivalent stage outputs.
+
+	Residual ownership:
+	- Exactly one MAIN_FG → MAIN_FG always receives the IRR residual (legacy).
+	- Zero MAIN_FG → highest equivalent-qty participant (stable-key tie-break).
+	- Multiple MAIN_FG → fail closed (unchanged STAGE_CO contract).
+	"""
 	classified = snapshot_output_classification(doc)
 	finance_excluded = [
 		row
@@ -660,22 +693,34 @@ def allocate_stage_output_cost(doc) -> bool:
 	participating_reject = [
 		row for row in classified[CLASS_CO_PRODUCT_REJECT] if row not in finance_excluded
 	]
-	stage = (
-		list(classified[CLASS_MAIN_FG])
-		+ list(classified[CLASS_MAIN_PRODUCT_REJECT])
-		+ participating_co
-		+ participating_reject
-	)
+	main_fg = list(classified[CLASS_MAIN_FG])
+	main_product_reject = list(classified[CLASS_MAIN_PRODUCT_REJECT])
+	stage = main_fg + main_product_reject + participating_co + participating_reject
+	fg_count = len(main_fg)
+
 	if not participating_co and not participating_reject:
 		# Independently valued By-Product / Co-Product (Valuation Rate, Manual, %)
 		# is not a stage-equivalent output. Restore FG as the residual so I5 can
 		# fail closed when that independent value exceeds the manufacturing pool.
-		if finance_excluded and len(classified[CLASS_MAIN_FG]) == 1:
-			return _restore_finished_good_as_residual(doc, classified[CLASS_MAIN_FG][0])
+		if finance_excluded and fg_count == 1:
+			return _restore_finished_good_as_residual(doc, main_fg[0])
+		# Zero FG with only finance-excluded secondaries: nothing may absorb the pool.
+		if fg_count == 0 and finance_excluded and not main_product_reject:
+			frappe.throw(
+				_("Manufacturing has no eligible output to receive the production cost."),
+				frappe.ValidationError,
+			)
+		# Leave Product Reject / SAME_ITEM_MULTI_FG / single-FG residual paths alone.
 		return False
-	if len(classified[CLASS_MAIN_FG]) != 1:
+
+	if fg_count > 1:
 		frappe.throw(
 			_("Equivalent-unit Manufacture costing requires exactly one finished good."),
+			frappe.ValidationError,
+		)
+	if fg_count == 0 and not stage:
+		frappe.throw(
+			_("Manufacturing has no eligible output to receive the production cost."),
 			frappe.ValidationError,
 		)
 	if not stage:
@@ -755,8 +800,12 @@ def allocate_stage_output_cost(doc) -> bool:
 			frappe.ValidationError,
 		)
 
-	fg = classified[CLASS_MAIN_FG][0]
-	others = [row for row in stage if row is not fg]
+	if fg_count == 1:
+		residual_owner = main_fg[0]
+	else:
+		residual_owner = _select_zero_fg_residual_owner(stage, eq_map)
+
+	others = [row for row in stage if row is not residual_owner]
 	assigned_mat = 0.0
 	assigned_oh = 0.0
 	for row in others:
@@ -767,7 +816,7 @@ def allocate_stage_output_cost(doc) -> bool:
 		assigned_mat += mat
 		assigned_oh += oh
 	_apply_stage_row(
-		fg,
+		residual_owner,
 		round_currency(material_pool - assigned_mat, currency),
 		round_currency(operating_pool - assigned_oh, currency),
 		currency,
