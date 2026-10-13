@@ -150,6 +150,43 @@ def _single_manufacture_fg_row(doc, row) -> bool:
 	return fg_count == 1
 
 
+def _r2_transfer_qty(row) -> float:
+	return flt(
+		row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
+	)
+
+
+def _r2_residual_within_bound(row, company: str) -> bool:
+	"""True when |basic_amount − qty×integer basic_rate| ≤ R2 bound and rate is HALF_UP(amount/qty)."""
+	from erpnext_extensions.iran_accounting.domain.currency import (
+		amount_is_fractional,
+		amount_rate_qty_residual,
+		round_monetary_rate,
+	)
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		r2_representation_bound,
+	)
+
+	ccy = get_company_currency(company)
+	transfer_qty = _r2_transfer_qty(row)
+	if transfer_qty <= 0 or row.get("basic_rate") is None:
+		return False
+	if amount_is_fractional(row.get("basic_amount"), ccy):
+		return False
+	if amount_is_fractional(row.get("amount"), ccy):
+		return False
+	if rate_is_fractional(row.basic_rate, ccy):
+		return False
+	# Representational rate must match ROUND_HALF_UP(amount / qty).
+	expected_rate = round_monetary_rate(flt(row.basic_amount) / transfer_qty, ccy)
+	if abs(flt(row.basic_rate) - flt(expected_rate)) > 1e-9:
+		return False
+	residual = amount_rate_qty_residual(
+		flt(row.basic_amount), transfer_qty, flt(row.basic_rate), ccy
+	)
+	return abs(flt(residual)) <= r2_representation_bound(transfer_qty) + 1e-9
+
+
 def _manufacture_fg_amount_authoritative(doc, row, company: str) -> bool:
 	"""True when Manufacture FG basic_amount may carry an R2 rate residual.
 
@@ -190,9 +227,7 @@ def _manufacture_fg_amount_authoritative(doc, row, company: str) -> bool:
 		return False
 
 	ccy = get_company_currency(company)
-	transfer_qty = flt(
-		row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
-	)
+	transfer_qty = _r2_transfer_qty(row)
 	if transfer_qty <= 0 or row.get("basic_rate") is None:
 		return False
 	residual = amount_rate_qty_residual(
@@ -201,13 +236,39 @@ def _manufacture_fg_amount_authoritative(doc, row, company: str) -> bool:
 	return abs(flt(residual)) <= r2_representation_bound(transfer_qty) + 1e-9
 
 
+def _manufacture_stage_secondary_amount_authoritative(doc, row, company: str) -> bool:
+	"""Removed: STAGE_CO secondaries are rate-authoritative (always False).
+
+	Kept as a named stub so older tests/callers fail closed instead of ImportError.
+	Composition leftovers must post as TYPE C Stock Adjustment, not row R2.
+	"""
+	return False
+
+
+def _manufacture_output_amount_authoritative(doc, row, company: str) -> bool:
+	"""Manufacture amount-authoritative gate (FG residual / SAME_ITEM_MULTI_FG R2 only).
+
+	STAGE_CO documents (participating Co-/By-Product) are fully rate-authoritative
+	for FG and secondaries: ``basic_amount`` must equal ``transfer_qty × integer
+	basic_rate``. Composition leftovers post as TYPE C Stock Adjustment via
+	``value_difference`` — not as hidden row R2 residuals.
+	"""
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		has_stage_participating_co_product,
+	)
+
+	if has_stage_participating_co_product(doc):
+		return False
+	return _manufacture_fg_amount_authoritative(doc, row, company)
+
+
 def _assert_row_composition(doc, company: str) -> list[str]:
 	"""Verify rate-first IRR composition (verifier, not calculator).
 
 	- basic_rate / valuation_rate must be integer (IRR)
 	- basic_amount == ROUND_HALF_UP(transfer_qty × integer basic_rate)
-	  except Manufacture FG rows that own an amount-authoritative pool share
-	  (single-FG residual or SAME_ITEM_MULTI_FG R2 representation residual)
+	  except Manufacture amount-authoritative FG pool shares:
+	  single-FG residual or SAME_ITEM_MULTI_FG R2 (STAGE_CO secondaries excluded)
 	- amount == basic_amount + additional_cost + LCV
 	- valuation_rate == ROUND_HALF_UP(amount / transfer_qty); amount remains authoritative
 	"""
@@ -215,9 +276,7 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 	ccy = get_company_currency(company)
 	tol = _tol(company)
 	for row in doc.get("items") or []:
-		transfer_qty = flt(
-			row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
-		)
+		transfer_qty = _r2_transfer_qty(row)
 		if row.get("basic_rate") is not None and rate_is_fractional(row.basic_rate, ccy):
 			failures.append(
 				_fail(doc, row, "basic_rate integer IRR", "ROUND_HALF_UP(basic_rate,0)", row.basic_rate)
@@ -235,7 +294,7 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 		if row.get("basic_rate") is not None and transfer_qty:
 			exp_basic = round_row_amount_financial(transfer_qty, row.basic_rate, ccy)
-			if abs(flt(row.basic_amount) - exp_basic) > tol and not _manufacture_fg_amount_authoritative(
+			if abs(flt(row.basic_amount) - exp_basic) > tol and not _manufacture_output_amount_authoritative(
 				doc, row, company
 			):
 				failures.append(

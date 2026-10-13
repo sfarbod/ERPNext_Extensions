@@ -490,9 +490,13 @@ class TestEquivalentUnitCosting(unittest.TestCase):
 		doc = _Doc(items=[_consumed("RM", 1, 100), fg, cp])
 		with _env(stock_uoms={"FG": "Nos", "CP": "Nos"}, uom_factors={}, jc_secondaries={}):
 			apply_iran_manufacture_output_contract(doc)
-		self.assertEqual(flt(fg.basic_amount) + flt(cp.basic_amount), 100)
+		# Leftover allocation share still on MAIN_FG; rate composition may leave SA residual.
 		self.assertEqual(flt(cp.basic_amount), 33)
-		self.assertEqual(flt(fg.basic_amount), 67)
+		self.assertEqual(flt(fg.basic_amount), 68)  # ROUND_HALF_UP(67/2)=34 → 2×34
+		self.assertEqual(flt(fg.basic_rate), 34)
+		self.assertEqual(flt(fg.basic_amount), flt(fg.qty) * flt(fg.basic_rate))
+		self.assertEqual(flt(cp.basic_amount), flt(cp.qty) * flt(cp.basic_rate))
+		self.assertEqual(flt(doc.value_difference), 1)
 
 	def test_stage_output_total_equals_stage_cost_pool(self):
 		doc = _box_syringe_doc()

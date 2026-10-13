@@ -361,6 +361,21 @@ def classify_manufacture_irr_residual(doc) -> ManufactureIrrResidualResult:
 			evidence=evidence,
 		)
 
+	# --- TYPE C: STAGE_CO rate-authoritative composition leftover → Stock Adjustment ---
+	stage_type_c = _classify_stage_co_type_c(
+		doc,
+		classified,
+		fg_rows,
+		reject_rows,
+		economic_pool=economic_pool,
+		header_add=header_add,
+		lcv_total=lcv_total,
+		evidence=evidence,
+		currency=currency,
+	)
+	if stage_type_c is not None:
+		return stage_type_c
+
 	# --- TYPE B: single FG, no product reject ---
 	if len(fg_rows) == 1 and not reject_rows:
 		fg = fg_rows[0]
@@ -526,3 +541,164 @@ def proven_type_c_residual(doc) -> float | None:
 	if result.classification != CLASS_TYPE_C:
 		return None
 	return float(result.residual)
+
+
+def _classify_stage_co_type_c(
+	doc,
+	classified,
+	fg_rows,
+	reject_rows,
+	*,
+	economic_pool: float,
+	header_add: float,
+	lcv_total: float,
+	evidence: dict[str, Any],
+	currency: str,
+) -> ManufactureIrrResidualResult | None:
+	"""Prove TYPE C for STAGE_CO outputs (0/1 MAIN_FG + participating secondaries).
+
+	Requires rate-authoritative composition: ``basic_amount == qty × integer basic_rate``.
+	Residual ``economic_pool − Σ basic_amount`` posts via native Stock Adjustment.
+	Returns None when STAGE_CO topology does not apply (caller continues).
+	"""
+	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
+		_is_finance_excluded,
+	)
+	from erpnext_extensions.iran_accounting.scrap_costing import (
+		CLASS_CO_PRODUCT,
+		CLASS_CO_PRODUCT_REJECT,
+	)
+
+	# Without participating Co-/By-Product rows, existing FG/reject/TYPE B paths own the case.
+	# Use classified rows only — avoid DB company lookups inside the pure classifier.
+	if len(fg_rows) > 1:
+		return None
+
+	finance_excluded = {
+		id(row)
+		for row in classified[CLASS_CO_PRODUCT] + classified[CLASS_CO_PRODUCT_REJECT]
+		if _is_finance_excluded(row)
+	}
+	participating_co = [
+		row for row in classified[CLASS_CO_PRODUCT] if id(row) not in finance_excluded
+	]
+	participating_reject = [
+		row for row in classified[CLASS_CO_PRODUCT_REJECT] if id(row) not in finance_excluded
+	]
+	if not participating_co and not participating_reject:
+		return None
+	stage_rows = list(fg_rows) + list(reject_rows) + participating_co + participating_reject
+	if not stage_rows:
+		return None
+
+	qtys = [_row_qty(r) for r in stage_rows]
+	if any(q <= 0 for q in qtys):
+		return ManufactureIrrResidualResult(
+			CLASS_INVALID,
+			reason="stage_co_non_positive_output_qty",
+			evidence=evidence,
+			economic_pool=economic_pool,
+		)
+
+	g = integer_qtys_gcd(qtys)
+	bound = type_c_residual_bound(qtys)
+	evidence = dict(evidence)
+	evidence.update(
+		{
+			"stage_co_type_c": True,
+			"output_quantities": qtys,
+			"gcd": g,
+			"mathematical_bound": bound,
+			"stage_row_count": len(stage_rows),
+		}
+	)
+	if g <= 0:
+		return ManufactureIrrResidualResult(
+			CLASS_INVALID,
+			reason="stage_co_non_integer_output_qty",
+			evidence=evidence,
+			economic_pool=economic_pool,
+			output_quantities=qtys,
+		)
+
+	composed = 0.0
+	for row in stage_rows:
+		qty = _row_qty(row)
+		rate = flt(row.get("basic_rate"))
+		if abs(rate - round(rate)) > 1e-9:
+			return ManufactureIrrResidualResult(
+				CLASS_INVALID,
+				reason="stage_co_non_integer_output_rate",
+				evidence=evidence,
+				economic_pool=economic_pool,
+				output_quantities=qtys,
+				gcd=float(g),
+				mathematical_bound=bound,
+			)
+		expected_basic = round_currency(rate * qty, currency)
+		if abs(flt(row.get("basic_amount")) - expected_basic) > 0:
+			return ManufactureIrrResidualResult(
+				CLASS_INVALID,
+				reason="stage_co_basic_amount_not_qty_times_rate",
+				evidence=evidence,
+				economic_pool=economic_pool,
+				output_quantities=qtys,
+				gcd=float(g),
+				mathematical_bound=bound,
+			)
+		composed += expected_basic
+
+	composed = round_currency(composed, currency)
+	residual = round_currency(economic_pool - composed, currency)
+	evidence["composed_output_value"] = composed
+	evidence["residual"] = residual
+
+	if residual == 0:
+		if header_add or lcv_total:
+			return ManufactureIrrResidualResult(
+				CLASS_TYPE_A,
+				economic_pool=economic_pool,
+				composed_output_value=composed,
+				residual=0.0,
+				mathematical_bound=bound,
+				output_quantities=qtys,
+				gcd=float(g),
+				reason="stage_co_exact_composition_with_real_capitalization",
+				evidence=evidence,
+			)
+		return ManufactureIrrResidualResult(
+			CLASS_NONE,
+			economic_pool=economic_pool,
+			composed_output_value=composed,
+			residual=0.0,
+			mathematical_bound=bound,
+			output_quantities=qtys,
+			gcd=float(g),
+			reason="stage_co_exact_composition",
+			evidence=evidence,
+		)
+
+	if abs(residual) > bound:
+		return ManufactureIrrResidualResult(
+			CLASS_INVALID,
+			economic_pool=economic_pool,
+			composed_output_value=composed,
+			residual=residual,
+			mathematical_bound=bound,
+			output_quantities=qtys,
+			gcd=float(g),
+			reason="stage_co_residual_outside_mathematical_bound",
+			evidence=evidence,
+		)
+
+	return ManufactureIrrResidualResult(
+		CLASS_TYPE_C,
+		economic_pool=economic_pool,
+		composed_output_value=composed,
+		residual=residual,
+		mathematical_bound=bound,
+		output_quantities=qtys,
+		gcd=float(g),
+		reason="proven_stage_co_rate_authoritative_allocation_residual",
+		evidence=evidence,
+	)
