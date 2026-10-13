@@ -260,6 +260,27 @@ class TestBatchPreventionV5544(unittest.TestCase):
 				assert_batch_valuation_identity_before_submit(doc)
 		self.assertIn("batchwise valuation", str(ctx.exception).lower())
 
+	def test_b_auto_create_outward_without_use_sbf_blocked(self):
+		"""auto_create + batch_no is not a safe batch identity path (Core conflict)."""
+		row = _Row(
+			idx=1,
+			item_code="20100094",
+			batch_no="6163",
+			qty=4,
+			s_warehouse="Q",
+			use_serial_batch_fields=0,
+			serial_and_batch_bundle=None,
+			basic_rate=100,
+			amount=400,
+		)
+		doc = _Doc(purpose="Material Issue", items=[row])
+		with _throwing(), mock.patch(f"{PREV}.is_irr_company", return_value=True), mock.patch(
+			f"{PREV}._batchwise_required", return_value=True
+		), mock.patch(f"{PREV}.frappe.db.get_single_value", return_value=1):
+			with self.assertRaises(Exception) as ctx:
+				assert_batch_valuation_identity_before_submit(doc)
+		self.assertIn("use_serial_batch_fields", str(ctx.exception))
+
 	def test_b_fractional_sabe_detected(self):
 		def _get_all(doctype, *args, **kwargs):
 			if doctype == "Stock Ledger Entry":
@@ -473,6 +494,36 @@ class TestRegressionHooksV5544(unittest.TestCase):
 			f"{PREV}._through_riv", return_value=True
 		):
 			assert_no_unapproved_indivisible_ma_remainder(doc)
+
+
+class TestClosedManufactureRestoreV5544(unittest.TestCase):
+	"""Core set_basic_rate rewrite must not survive closed SAME_ITEM plan on submit."""
+
+	def test_restore_reapplies_when_allocation_closed(self):
+		from erpnext_extensions.iran_accounting.stock_entry import (
+			_restore_closed_manufacture_contract_after_core_rates,
+		)
+
+		doc = _Doc(purpose="Manufacture", items=[])
+		with mock.patch(
+			f"{CONTRACT}.is_allocation_closed", return_value=True
+		), mock.patch(
+			f"{CONTRACT}.get_allocation_owner", return_value=STRATEGY_SAME_ITEM_MULTI_FG
+		), mock.patch(f"{STOCK}.apply_iran_manufacture_output_contract") as apply:
+			_restore_closed_manufacture_contract_after_core_rates(doc)
+			apply.assert_called_once_with(doc)
+
+	def test_restore_skips_when_not_closed(self):
+		from erpnext_extensions.iran_accounting.stock_entry import (
+			_restore_closed_manufacture_contract_after_core_rates,
+		)
+
+		doc = _Doc(purpose="Manufacture", items=[])
+		with mock.patch(
+			f"{CONTRACT}.is_allocation_closed", return_value=False
+		), mock.patch(f"{STOCK}.apply_iran_manufacture_output_contract") as apply:
+			_restore_closed_manufacture_contract_after_core_rates(doc)
+			apply.assert_not_called()
 
 
 if __name__ == "__main__":

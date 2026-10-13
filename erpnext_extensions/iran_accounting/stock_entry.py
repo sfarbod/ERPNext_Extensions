@@ -289,12 +289,45 @@ def before_gl_preview_stock_entry(doc, method=None):
 	align_zero_value_transfer_totals(doc)
 
 
+def _restore_closed_manufacture_contract_after_core_rates(doc) -> None:
+	"""Re-apply Iran manufacture allocation after Core ``set_basic_rate``.
+
+	On submit, ``StockEntry.validate`` → ``calculate_rate_and_amount`` rewrites
+	every finished row as ``outgoing / row_qty`` (Core multi-FG double
+	capitalization). That destroys a previously closed SAME_ITEM_MULTI_FG /
+	STAGE_CO / OUTPUT_FAMILY plan. Restore contract economics before residual
+	polish / header totals so R1 does not fire on the corrupted Core amounts.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return
+	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+		STRATEGY_SAME_ITEM_MULTI_FG,
+		STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+		STRATEGY_STAGE_CO,
+		get_allocation_owner,
+		is_allocation_closed,
+	)
+
+	if not is_allocation_closed(doc):
+		return
+	owner = get_allocation_owner(doc)
+	if owner not in (
+		STRATEGY_SAME_ITEM_MULTI_FG,
+		STRATEGY_SAME_ITEM_OUTPUT_FAMILY,
+		STRATEGY_STAGE_CO,
+	):
+		return
+	apply_iran_manufacture_output_contract(doc)
+
+
 def patched_set_total_incoming_outgoing_value(self):
 	"""IRR-aware totals; bound to Stock Entry when monkey patches apply."""
 	if not is_irr_company(self.company):
 		if _original_set_total_incoming_outgoing_value:
 			return _original_set_total_incoming_outgoing_value(self)
 		return
+
+	_restore_closed_manufacture_contract_after_core_rates(self)
 
 	company_currency = get_company_currency(self.company)
 	self.total_incoming_value = self.total_outgoing_value = 0.0

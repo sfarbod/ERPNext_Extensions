@@ -142,13 +142,13 @@ def assert_batch_valuation_identity_before_submit(doc) -> None:
 
 	Core ``get_sl_entries`` does not copy ``batch_no`` onto SLE on submit.
 	Batch valuation therefore requires ``serial_and_batch_bundle`` (created on
-	submit via ``make_bundle_using_old_serial_batch_fields``, or already set).
+	submit via ``make_bundle_using_old_serial_batch_fields`` when
+	``use_serial_batch_fields`` is set, or already attached).
 
-	When ``use_serial_batch_fields`` is set and no bundle exists, Core still
-	creates the bundle on submit. This guard only fails when neither path can
-	establish batch identity: batchwise required, batch_no set, no bundle, and
-	``use_serial_batch_fields`` is off while auto-create outward is also off
-	for outward legs.
+	Do not rely on ``auto_create_serial_and_batch_bundle_for_outward`` together
+	with a populated ``batch_no`` field: Core rejects that combination
+	("bundle already created / remove batch no fields"). Require either an
+	existing bundle or ``use_serial_batch_fields=1``.
 	"""
 	if getattr(doc, "doctype", None) != "Stock Entry":
 		return
@@ -157,13 +157,24 @@ def assert_batch_valuation_identity_before_submit(doc) -> None:
 	if _through_riv():
 		return
 
-	auto_outward = cint(
-		frappe.db.get_single_value("Stock Settings", "auto_create_serial_and_batch_bundle_for_outward")
-	)
-
 	for row in doc.get("items") or []:
 		batch_no = row.get("batch_no")
 		item_code = row.get("item_code")
+		if not item_code:
+			continue
+		# Batch-controlled item with no batch identity at all.
+		has_batch = cint(frappe.get_cached_value("Item", item_code, "has_batch_no"))
+		if has_batch and not batch_no and not row.get("serial_and_batch_bundle"):
+			if row.get("s_warehouse") or row.get("t_warehouse"):
+				frappe.throw(
+					_(
+						"Row {0}: item {1} is batch-controlled but has no batch_no and no Serial and "
+						"Batch Bundle. Submit would price the movement at warehouse Moving Average."
+					).format(row.idx, item_code),
+					exc=StockEntryPreventionError,
+					title=_("Batch Valuation"),
+				)
+			continue
 		if not _batchwise_required(item_code, batch_no):
 			continue
 		if row.get("serial_and_batch_bundle"):
@@ -171,29 +182,18 @@ def assert_batch_valuation_identity_before_submit(doc) -> None:
 		# Core on_submit creates bundles when use_serial_batch_fields + batch_no.
 		if cint(row.get("use_serial_batch_fields")):
 			continue
-		# Outward without fields and without auto-create → SLE has no batch scope.
-		if row.get("s_warehouse") and not auto_outward:
-			frappe.throw(
-				_(
-					"Row {0}: item {1} batch {2} requires batchwise valuation, but no Serial and "
-					"Batch Bundle is set and Stock Settings will not auto-create one for outward "
-					"movements. Enable use_serial_batch_fields (so Core creates a bundle on submit) "
-					"or attach a Serial and Batch Bundle. Silent warehouse Moving Average is not allowed."
-				).format(row.idx, item_code, batch_no),
-				exc=StockEntryPreventionError,
-				title=_("Batch Valuation"),
-			)
-		# Inward without fields/bundle: Core make_bundle_using_old_serial_batch_fields
-		# still needs batch_no or serial_no. batch_no is present → OK.
-		if row.get("t_warehouse") and not row.get("batch_no") and not row.get("serial_no"):
-			frappe.throw(
-				_(
-					"Row {0}: item {1} is batch-controlled but has no batch_no and no Serial and "
-					"Batch Bundle. Submit would price the movement at warehouse Moving Average."
-				).format(row.idx, item_code),
-				exc=StockEntryPreventionError,
-				title=_("Batch Valuation"),
-			)
+		frappe.throw(
+			_(
+				"Row {0}: item {1} batch {2} requires batchwise valuation, but no Serial and "
+				"Batch Bundle is set and use_serial_batch_fields is not enabled. "
+				"Enable use_serial_batch_fields (so Core creates a bundle on submit) "
+				"or attach a Serial and Batch Bundle. "
+				"Do not rely on auto-create outward while batch_no is populated — "
+				"Core rejects that combination. Silent warehouse Moving Average is not allowed."
+			).format(row.idx, item_code, batch_no),
+			exc=StockEntryPreventionError,
+			title=_("Batch Valuation"),
+		)
 
 
 def collect_submitted_batch_identity_failures(voucher_no: str, company: str) -> list[str]:
