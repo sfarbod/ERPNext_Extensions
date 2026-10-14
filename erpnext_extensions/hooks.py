@@ -432,6 +432,7 @@ doc_events = {
 			"erpnext_extensions.consignment_stock.material_loan.stock_entry_hooks.before_cancel",
 		],
 		"on_cancel": [
+			"erpnext_extensions.iran_accounting.stock_entry.on_cancel_stock_entry",
 			"erpnext_extensions.consignment_stock.stock_entry_hooks.on_cancel",
 			"erpnext_extensions.consignment_stock.material_loan.stock_entry_hooks.on_cancel",
 		],
