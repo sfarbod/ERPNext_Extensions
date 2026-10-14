@@ -11,7 +11,9 @@ from frappe.utils import flt
 from erpnext_extensions.iran_accounting.domain.currency import get_currency_precision, is_irr_company
 from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 	assert_irr_residual_round_off_masters,
+	is_irr_inventory_valuation_residual_gl,
 	is_irr_rate_rounding_residual_gl,
+	stamp_irr_inventory_valuation_residual_masters,
 	stamp_irr_residual_round_off_masters,
 )
 
@@ -53,8 +55,9 @@ def _original_distribute_gl_based_on_cost_center_allocation():
 def distribute_gl_based_on_cost_center_allocation_irr(gl_map, precision=None, from_repost=False):
 	"""Drop-in replacement for ERPNext distribute_gl with exact IRR splits.
 
-	IRR residual Round Off rows are excluded from allocation and always keep
-	Company.round_off_cost_center (never first allocation child / dimension fallback).
+	IRR residual legs are excluded from allocation and keep the residual destination
+	masters (Stock Adjustment for inventory valuation; Round Off for financial).
+	Never first allocation child / dimension fallback for residual cost center.
 	"""
 	from erpnext.accounts.general_ledger import (
 		get_cost_center_allocation_data,
@@ -75,10 +78,24 @@ def distribute_gl_based_on_cost_center_allocation_irr(gl_map, precision=None, fr
 		precision = get_currency_precision(company_currency)
 
 	round_off_account = frappe.get_cached_value("Company", company, "round_off_account")
+	stock_adjustment_account = frappe.get_cached_value(
+		"Company", company, "stock_adjustment_account"
+	)
 
 	new_gl_map = []
 	for d in gl_map:
-		# IRR residual Round Off: never allocate; Company Round Off masters only.
+		# Inventory valuation residual: never allocate; keep Stock Adjustment masters.
+		# Must run before generic residual detection — inventory marker alone would
+		# otherwise match is_irr_rate_rounding_residual_gl and be restamped onto
+		# Financial Round Off (v5.5.45 policy violation).
+		if is_irr_inventory_valuation_residual_gl(
+			d, company=company, stock_adjustment_account=stock_adjustment_account
+		):
+			stamp_irr_inventory_valuation_residual_masters(d, company)
+			new_gl_map.append(d)
+			continue
+
+		# Financial IRR Round Off residual: never allocate; Company Round Off masters.
 		if is_irr_rate_rounding_residual_gl(d, company=company, round_off_account=round_off_account):
 			stamp_irr_residual_round_off_masters(d, company)
 			assert_irr_residual_round_off_masters(d, company)

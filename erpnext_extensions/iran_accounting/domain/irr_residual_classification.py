@@ -683,8 +683,11 @@ def evaluate_irr_rate_rounding_residual(
 		_pick_adjustable_non_stock_leg,
 		_protected_reclass_accounts,
 		resolve_company_round_off,
+		resolve_company_stock_adjustment_residual,
 		stock_entry_excludes_irr_residual_round_off,
+		uses_stock_adjustment_for_irr_residual,
 		validate_round_off_configuration,
+		validate_stock_adjustment_residual_configuration,
 	)
 
 	_ = context
@@ -737,15 +740,25 @@ def evaluate_irr_rate_rounding_residual(
 		decision.messages.append("net_class_a_zero")
 		return decision
 
-	# Net Class A != 0 → resolve Round Off masters (not before)
+	# Net Class A != 0 → resolve residual destination masters (not before).
+	# Inventory vouchers (SE/PR/SR): Stock Adjustment. Never Financial Round Off.
+	use_sa = uses_stock_adjustment_for_irr_residual(doc)
 	try:
-		cfg = resolve_company_round_off(doc.company, require=True)
-		validate_round_off_configuration(doc.company, cfg["account"], cfg["cost_center"])
+		if use_sa:
+			cfg = resolve_company_stock_adjustment_residual(doc.company, require=True)
+			validate_stock_adjustment_residual_configuration(
+				doc.company, cfg["account"], cfg["cost_center"]
+			)
+		else:
+			cfg = resolve_company_round_off(doc.company, require=True)
+			validate_round_off_configuration(doc.company, cfg["account"], cfg["cost_center"])
 	except Exception as e:
 		decision.status = STATUS_CONFIG
 		decision.messages.append(str(e))
 		return decision
 
+	# ResidualDecision.round_off_* fields hold the residual *destination* masters
+	# (Stock Adjustment for inventory vouchers; Round Off for non-inventory).
 	decision.round_off_account = cfg["account"]
 	decision.round_off_cost_center = cfg["cost_center"]
 
@@ -768,7 +781,13 @@ def evaluate_irr_rate_rounding_residual(
 		decision.messages.append("ready_pending_partner_at_apply")
 		return decision
 
-	protected = _protected_reclass_accounts(doc)
+	protected = set(_protected_reclass_accounts(doc) or ())
+	if use_sa:
+		# Never reclassify Financial Round Off into Stock Adjustment residual.
+		ro_acc = frappe.get_cached_value("Company", doc.company, "round_off_account")
+		if ro_acc:
+			protected.add(ro_acc)
+	# Exclude residual destination from partner candidates (pass as round_off_account arg).
 	partner = _pick_adjustable_non_stock_leg(
 		gl_entries,
 		doc.company,
@@ -793,13 +812,19 @@ def evaluate_irr_rate_rounding_residual(
 			f"{e['account']}(D={e['debit']}/C={e['credit']})" for e in examined[:20]
 		)
 		protected_txt = ", ".join(sorted(protected)) if protected else "none"
+		dest_label = "Stock Adjustment Account" if use_sa else "Round Off Account"
 		decision.messages.append(
-			"No safe non-stock GL partner is available to reclassify the IRR Round Off residual.\n"
+			"No safe non-stock GL partner is available to reclassify the IRR inventory "
+			"valuation residual.\n"
 			f"Voucher: {doc.doctype} {doc.name or 'new'}\n"
 			f"Net residual (signed debit): {decision.net_signed_debit}\n"
-			f"Round Off Account: {cfg['account']}\n"
-			"Stock Adjustment Account must not be used as a fallback.\n"
-			f"Protected Additional Cost accounts: {protected_txt}\n"
+			f"{dest_label}: {cfg['account']}\n"
+			+ (
+				"Financial Round Off must not be used for inventory valuation.\n"
+				if use_sa
+				else "Stock Adjustment Account must not be used as a fallback for financial Round Off.\n"
+			)
+			+ f"Protected Additional Cost accounts: {protected_txt}\n"
 			f"GL accounts examined: {examined_txt}"
 		)
 		return decision
@@ -816,8 +841,8 @@ def raise_residual_decision(decision: ResidualDecision) -> None:
 		return
 	title = {
 		STATUS_CLASS_B: _("IRR Residual Classification"),
-		STATUS_CONFIG: _("IRR Round Off Configuration"),
-		STATUS_PARTNER: _("IRR Round Off Partner"),
-	}.get(decision.status, _("IRR Round Off"))
+		STATUS_CONFIG: _("IRR Residual Configuration"),
+		STATUS_PARTNER: _("IRR Residual Partner"),
+	}.get(decision.status, _("IRR Valuation Residual"))
 	msg = "\n".join(decision.messages) or decision.status
 	frappe.throw(msg, title=title)

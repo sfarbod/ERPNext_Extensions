@@ -1,10 +1,10 @@
-# Release 5.5.45 — Temporary Stock Adjustment Bridge (Phase 1)
+# Release 5.5.45 — Temporary Stock Adjustment Bridge + Inventory Residual Policy
 
 **Version:** 5.5.45  
 **Date:** 2026-10-14  
 **Previous:** 5.5.44  
 **Branch:** `hotfix/5.5.45-temporary-stock-adjustment-bridge`  
-**Validated stack:** Frappe **16.36.1**, ERPNext **16.37.0** (unmodified Core), Iran Accounting **5.5.44 → 5.5.45**  
+**Validated stack:** Frappe **16.36.1**, ERPNext **16.37.0** (unmodified Core), Iran Accounting **5.5.45**  
 **Site:** `development.localhost` only — **no production**, **no push**, **no tag**
 
 **Backup:** `20261014_083123-development_localhost-database.sql.gz`  
@@ -14,181 +14,141 @@
 
 ## A. Business objective
 
-Warehouse operations were blocked because Stock Entries could not submit due to **historical valuation inconsistencies** (not quantity / negative-stock issues). Phase 1 allows submission by:
-
-1. Detecting eligible valuation gaps with **general rules** (no voucher hardcoding).
-2. Calculating the exact signed delta from authoritative values.
-3. Applying the correct accounting category (Round Off / Stock Adjustment / TRACE).
-4. Tracking every temporary adjustment for Phase 2 Full Historical Rebuild.
-5. Preserving SLE, SABE, Bin, GL balance, batch identity, and quantity validation.
+Warehouse operations were blocked by historical valuation inconsistencies. Phase 1 allows submission via a Temporary Valuation Adjustment (TVA) bridge and — in this policy correction — routes **all inventory valuation residuals that require GL** to Company **Stock Adjustment**, never Financial Round Off.
 
 Negative stock behavior is **out of scope** and unchanged.
 
 ---
 
-## B. Accounting policy (root-cause based)
+## B. Corrected accounting policy (mandatory)
 
-Classification is by **root cause**, not by amount size.
+| Domain | Destination |
+|--------|-------------|
+| Inventory valuation difference (any amount, including ±1/±2 IRR Class A) | Company **Stock Adjustment** |
+| Financial document rounding (SI / PI / PE / JE, etc.) | Company **Financial Round Off** |
 
-| Category | Meaning | GL treatment | TVA `accounting_category` / `posting_mode` |
-|----------|---------|--------------|---------------------------------------------|
-| **1. GENUINE_ROUNDING** | Authoritative amount − qty×integer_rate within R2 bound (Iran Class A) | Company **Round Off** | `GENUINE_ROUNDING` / `ROUND_OFF_GL` |
-| **2. HISTORICAL_VALUATION** | Net inventory valuation gap that must be recognized in P&L | Company **Stock Adjustment** | `HISTORICAL_VALUATION` / `STOCK_ADJUSTMENT_GL` |
-| **3. TRACE_ONLY** | Observable residual with **no** net inventory GL effect | No artificial GL | `TRACE_ONLY` / `TRACE` |
+**Transaction origin** determines treatment — not the size of the difference.
 
-### Why ±1 / ±2 on 41489 / 41492 / 41477 stay Round Off
+Root-cause labels remain separate from GL destination:
 
-After native SLE↔SED sync, SLE amount is authoritative.  
-`residual = SLE_amount − qty × ROUND_HALF_UP(SLE_amount/qty)`.  
-That residual is **Class A representation** of an already-accepted inventory movement — Category 1.  
-Historical poison may have produced the SLE amount; it does **not** convert the Class A residual into Stock Adjustment merely because |delta| is small.
+| Category | Meaning | GL treatment |
+|----------|---------|--------------|
+| **GENUINE_ROUNDING** | Authoritative amount − qty×integer_rate (Class A) | **Stock Adjustment** |
+| **HISTORICAL_VALUATION** | Net inventory valuation gap requiring recognition | **Stock Adjustment** |
+| **TRACE_ONLY** | Observable residual with **no** net inventory GL effect | No artificial GL |
 
-### Why 41402 (110.526) stays TRACE
+Financial Round Off must **not** be used for stock valuation residuals. Missing Stock Adjustment Account fails closed (no silent Round Off fallback).
 
-- Material Transfer between warehouses that share inventory account `111625`.
-- Core posts **no transfer GL** (zero-value transfer / same account).
-- Σ SLE = 0; inventory value relocates; no net inventory change.
-- Posting Stock Adjustment would invent artificial P&L → **forbidden**.
-- TVA records the indivisible MA remainder for Phase 2.
+### TRACE_ONLY exception (41402)
 
-### Stock Adjustment contract (Category 2)
-
-When a future eligible case has a **real** net valuation gap requiring recognition:
-
-```
-EXPECTED_VALUE / ACTUAL_VALUE / SIGNED_DELTA
-→ Company.stock_adjustment_account (never hardcoded)
-→ balanced GL debit/credit
-→ TVA posting_mode=STOCK_ADJUSTMENT_GL
-```
-
-Manufacture TYPE C / `value_difference` Stock Adjustment paths remain the existing Iran contracts (unchanged by this bridge).
+- Material Transfer between warehouses sharing inventory account `111625`.
+- Σ SLE = 0; Core posts no transfer GL.
+- TVA records indivisible MA remainder (110.526) for Phase 2 — no SA/Round Off GL.
 
 ---
 
 ## C. Root causes (mandatory examples)
 
-| Document | Purpose | Original blocker | Category |
-|----------|---------|------------------|----------|
-| MAT-STE-2026-41402 | Material Transfer | Indivisible MA remainder 110.526 | TRACE_ONLY |
-| MAT-STE-2026-41489 → 41489-1 | Material Issue | Missing Class A Round Off (−1) | GENUINE_ROUNDING |
-| MAT-STE-2026-41492 | Material Issue | R2 composition + missing Round Off (−2) | GENUINE_ROUNDING |
-| MAT-STE-2026-41477 → 41477-1 | Material Issue | Same (−2) | GENUINE_ROUNDING |
-| MAT-STE-2026-41500 | Material Issue (20 rows) | Fractional historical batch SABE + Class A (−1) | TRACE + GENUINE_ROUNDING |
+| Document | Purpose | Category | GL residual |
+|----------|---------|----------|-------------|
+| MAT-STE-2026-41402 | Material Transfer | TRACE_ONLY | none (0/0) |
+| MAT-STE-2026-41489-2 | Material Issue | GENUINE_ROUNDING | SA Cr 1 |
+| MAT-STE-2026-41492-1 | Material Issue | GENUINE_ROUNDING | SA Cr 2 |
+| MAT-STE-2026-41477-2 | Material Issue | GENUINE_ROUNDING | SA Cr 2 |
+| MAT-STE-2026-41500-1 | Material Issue | GENUINE_ROUNDING + TRACE | SA Cr 1 |
+
+(Amended names from cancel→amend re-submit under corrected policy; originals cancelled with prior Round Off history preserved.)
 
 ---
 
 ## D. Hotfix behavior
 
-### Eligibility
+### Residual GL algorithm (inventory)
 
-General-purpose; no voucher / item / batch / warehouse hardcoding.
-
-Supported purposes (when valuation bridge is valid): Material Issue/Receipt/Transfer, MTfM, Manufacture, Repack, Send to Subcontractor, Material Consumption for Manufacture, source-linked returns.
-
-Unsupported (fail closed, unchanged): negative stock, lost outgoing rate zero, batch identity failures, quantity errors.
+1. Classify Class A rows: `residual = authoritative_amount − qty×integer_rate`.
+2. Net signed debit → destination = `Company.stock_adjustment_account`.
+3. Reclassify equal magnitude from a safe non-stock partner (expense/COGS; never inventory, never Financial Round Off, never SA as partner).
+4. Post residual leg with remark `IRR inventory valuation residual` + in-memory marker.
+5. Cost-center allocator **must not** restamp inventory residuals onto Round Off.
+6. Ledger contract asserts SA destination and rejects Financial Round Off for inventory residuals.
 
 ### Insertion points
 
-1. `before_validate` / `validate` — early TVA stamp (Frappe sets docstatus=1 before `before_submit`).
+1. Early TVA stamp (`before_validate` / `validate`).
 2. `before_submit` prevention — indivisible MA → TVA + fractional SABE allow.
 3. SABE monkey patch — skip integer fractional throw when TVA allows.
-4. `on_submit` after SED sync — remake Round Off if Class A READY but missing; persist TVA.
-5. Ledger contract — native outgoing R2 amount-authoritative; fractional SLE/SABE skip when TVA-authorized.
-6. `on_cancel` — TVA `repair_status=CANCELLED` (no automatic SA reversal).
-
-### Fractional valuation
-
-| Concept | Treatment |
-|---------|-----------|
-| Fractional MA / batch **rate** | May exist historically; authorized SABE under TVA |
-| Intermediate calculation | Not silently truncated |
-| Persisted SLE monetary (IRR) | Integer via existing rounding helpers |
-| Final GL (IRR) | Integer; Class A residual → Round Off |
-| Quantity fields | **Never** modified to absorb monetary residuals |
+4. `on_submit` after SED sync — remake residual GL if Class A READY but missing; persist TVA (`STOCK_ADJUSTMENT_GL`).
+5. Ledger contract — native outgoing R2; SA residual assert.
+6. `on_cancel` — TVA `repair_status=CANCELLED`.
 
 ---
 
-## E. Adjustment calculation
-
-```
-EXPECTED_VALUE   = ROUND_HALF_UP(qty × integer_rate)   # or rate_derived_amount
-ACTUAL_VALUE     = authoritative movement (SLE SVD / pool / SED amount)
-ADJUSTMENT_DELTA = ACTUAL_VALUE − EXPECTED_VALUE       # signed
-```
-
-Idempotency key: `sha256(hotfix_version|stock_entry|detail|reason|delta)[:40]`.
-
----
-
-## F. Test evidence (development.localhost)
+## E. Test evidence (development.localhost)
 
 | DOCUMENT | DOCSTATUS | DELTA | CATEGORY | GL | TVA | STATUS |
 |----------|-----------|-------|----------|----|-----|--------|
-| 41402 | 1 | +110.526 | TRACE_ONLY | 0/0 (same inv. account) | INDIVISIBLE_MOVING_AVERAGE | **PASS** |
-| 41489-1 | 1 | −1 | GENUINE_ROUNDING | 877743/877743 + RO Cr 1 | SED_SLE_VALUE_MISMATCH ROUND_OFF | **PASS** |
-| 41492 | 1 | −2 | GENUINE_ROUNDING | 68113638/68113638 + RO Cr 2 | ROUND_OFF | **PASS** |
-| 41477-1 | 1 | −2 | GENUINE_ROUNDING | 8169645/8169645 + RO Cr 2 | ROUND_OFF | **PASS** |
-| 41500 | 1 | −1 + frac TRACE | GENUINE_ROUNDING + TRACE | 21133114/21133114 | batch mismatch + RO | **PASS** |
+| 41402 | 1 | +110.526 | TRACE_ONLY | 0/0 | TRACE | **PASS** |
+| 41489-2 | 1 | −1 | GENUINE_ROUNDING | 877743/877743 + **SA Cr 1** | STOCK_ADJUSTMENT_GL | **PASS** |
+| 41492-1 | 1 | −2 | GENUINE_ROUNDING | 68113638/68113638 + **SA Cr 2** | STOCK_ADJUSTMENT_GL | **PASS** |
+| 41477-2 | 1 | −2 | GENUINE_ROUNDING | 8169645/8169645 + **SA Cr 2** | STOCK_ADJUSTMENT_GL | **PASS** |
+| 41500-1 | 1 | −1 + frac TRACE | GENUINE_ROUNDING + TRACE | 21133114/21133114 + **SA Cr 1** | STOCK_ADJUSTMENT_GL + TRACE | **PASS** |
 
-Additional: 41488/41487/41475/41472 Class A bridge PASS (prior probes).  
-Negative stock (41491) still **NegativeStockError** — unchanged.  
-Lost outgoing rate (41454/41465) still fail closed.
+### Before / after GL account
 
-Cancel/retry: originals cancelled → TVA CANCELLED; amend re-submit recreates TVA with new keys.
+| Case | Before (prior policy) | After (v5.5.45 correction) |
+|------|----------------------|----------------------------|
+| 41489 / 41492 / 41477 / 41500 Class A | Financial Round Off `622515` | Stock Adjustment `621301` |
+| 41402 | no residual GL | unchanged TRACE |
+
+SLE / SABE / Bin remain consistent; GL balanced; no duplicate residual legs.
 
 ---
 
-## G. Regression
+## F. Regression
 
 - `test_prevention_v5544` — **19 OK**
-- Indivisible MA bridges when SA account configured; fails closed without it
-- Manufacture / SAME_ITEM_MULTI_FG / returns / RIV skip guards intact
-- No quantity or negative-stock logic changes
+- `test_irr_residual_classification` — **25 OK**
+- `test_irr_rounding_residual` — **19 OK**
+- `test_gl_cost_center_allocation_irr` — **2 OK**
+- Negative stock / lost outgoing rate fail-closed unchanged
+- SI/PI/PE/JE Round Off paths untouched
 
 ---
 
-## H. Phase 2 compatibility
+## G. Phase 2 compatibility
 
 Discover via DocType **Temporary Valuation Adjustment** where `hotfix_version=5.5.45`.
 
-Per row: source voucher, reason, `accounting_category`, expected/actual/delta, posting_mode, SA account, related `gl_entry`, repair_status, payload JSON.
+Per row: source voucher, item/warehouse/batch (when present), reason, `accounting_category`, expected/actual/delta, `posting_mode=STOCK_ADJUSTMENT_GL`, SA account, related `gl_entry`, repair_status, payload JSON.
 
 Ordinary RIV does **not** auto-reverse these. Phase 2 must reconcile explicitly → `SUPERSEDED_BY_PHASE2`.
 
 ---
 
-## I. Modified files (finalization)
+## H. Modified code paths (policy correction)
 
-- `temporary_valuation_adjustment.py` — accounting categories; TRACE/Round Off root-cause remarks; no Class A→historical overwrite
-- `temporary_valuation_adjustment.json` — `accounting_category` field
-- `RELEASE_5_5_45.md` — policy + evidence
+- `irr_rounding_residual.py` — inventory residual → Stock Adjustment masters/markers/remarks
+- `irr_residual_classification.py` — evaluate destination SA for SE/PR/SR; protect Round Off from partner reclass
+- `gl_cost_center_allocation.py` — do not restamp inventory residual onto Round Off
+- `stock_entry_ledger_contract.py` — assert SA; reject Financial Round Off for inventory
+- `temporary_valuation_adjustment.py` — Class A `posting_mode=STOCK_ADJUSTMENT_GL`
+- Unit tests updated for SA destination
 
-Prior commit `7c0977e` delivered the bridge; this finalization only clarifies accounting policy metadata.
-
----
-
-## J. Deployment / rollback
-
-1. Deploy 5.5.45; `bench migrate` (TVA DocType + `accounting_category`).
-2. Confirm Company Stock Adjustment + Round Off accounts.
-3. Do not start historical RIV for Phase 1.
-4. Rollback: restore backup `20261014_083123-…` and/or revert app to 5.5.44.
+Preserved: `cancelled_voucher_repair.py` (untracked local tool).
 
 ---
 
-## K. Known limitations
+## I. Deployment / rollback
 
-1. Same-account transfers: TRACE-only for indivisible remainder (no transfer GL).
-2. Class A uses Round Off (Category 1), not SA — by root cause.
-3. Manufacture TYPE A/B/C SA contracts unchanged.
-4. `HISTORICAL_VALUATION` / `STOCK_ADJUSTMENT_GL` path is reserved for true net valuation gaps; example suite did not require inventing SA GL.
-5. Workflow-gated amend may need UI on some sites.
+1. Deploy 5.5.45; `bench migrate` if TVA schema pending.
+2. Confirm Company Stock Adjustment Account (+ residual cost center via Round Off Cost Center).
+3. Do not start historical Full Repost for Phase 1.
+4. Rollback: restore backup `20261014_083123-…` and/or revert app.
 
 ---
 
-## L. Final verdict
+## J. Final verdict
 
 **HOTFIX_READY** (development.localhost)
 
-Generalized valuation bridge; known examples submitted; Round Off vs TRACE classified by root cause; negative stock untouched; Phase 2 discoverable.
+Inventory valuation residuals use Stock Adjustment when GL is required; Financial Round Off excluded from stock valuation; TRACE_ONLY preserved; regressions green; Phase 2 discoverable.

@@ -71,7 +71,9 @@ KIND_TEMPORARY = "TEMPORARY_VALUATION_ADJUSTMENT"
 KIND_UNSUPPORTED = "UNSUPPORTED_OR_UNSAFE_TRANSACTION"
 
 # Accounting policy categories (root-cause based — not amount-based).
-# CATEGORY 1: approved IRR amount vs qty×integer_rate representation → Round Off GL.
+# Root cause ≠ GL destination. All inventory valuation residuals that need GL
+# post to Company Stock Adjustment — never Financial Round Off.
+# CATEGORY 1: approved IRR amount vs qty×integer_rate representation → Stock Adjustment GL.
 CATEGORY_GENUINE_ROUNDING = "GENUINE_ROUNDING"
 # CATEGORY 2: net inventory valuation gap requiring Stock Adjustment GL.
 CATEGORY_HISTORICAL_VALUATION = "HISTORICAL_VALUATION"
@@ -256,8 +258,8 @@ def classify_indivisible_ma_row(doc, row, pool_label: str, bal_qty: float, bal_v
 	# Indivisible remainder is provenance of a historical fractional pool.
 	# Net inventory GL effect is none when SLE already moves the full pool value
 	# (Issue expense/inventory at SLE SVD; Transfer ZVT same-account has Σ SLE=0).
-	# Class A Round Off (if any) handles amount vs qty×integer_rate separately.
-	# Forcing Stock Adjustment GL here would invent artificial P&L.
+	# Class A residual (if any) posts to Stock Adjustment separately on Issue/Receipt.
+	# Forcing extra SA GL for the pool remainder on ZVT would invent artificial P&L.
 	posting_mode = "TRACE"
 	debit_credit = "None"
 	accounting_category = CATEGORY_TRACE_ONLY
@@ -352,7 +354,7 @@ def classify_zero_value_stock_row(doc, row, bal_qty: float, bal_value: float) ->
 			f"[{accounting_category}] Historical zero-value stock: item={row.item_code} "
 			f"warehouse={row.s_warehouse} bin_qty={bal_qty} bin_value={bal_value}; "
 			f"native SLE valuation accepted on submit. Any Class A amount vs qty×rate "
-			f"residual posts separately as GENUINE_ROUNDING Round Off."
+			f"residual posts separately as GENUINE_ROUNDING → Stock Adjustment GL."
 		),
 		"payload": {
 			"bin_qty": bal_qty,
@@ -403,8 +405,8 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 	delta = float(remainder) if remainder else float(move_amount - float(product))
 	reason = REASON_HISTORICAL_BATCH_RATE_MISMATCH
 	# Fractional historical batch layer is already in the SLE movement value.
-	# Authorization to persist fractional SABE is TRACE; Class A Round Off (if any)
-	# covers integer IRR representation of the authoritative SLE amount.
+	# Authorization to persist fractional SABE is TRACE; Class A residual (if any)
+	# posts to Stock Adjustment for integer IRR representation of SLE amount.
 	accounting_category = CATEGORY_TRACE_ONLY
 	key = make_idempotency_key(doc.name or "NEW", row.get("name"), reason, delta or move_amount)
 	return {
@@ -503,7 +505,12 @@ def prepare_before_submit_bridge(doc) -> None:
 
 
 def classify_class_a_residual_bridge(doc) -> list[dict[str, Any]]:
-	"""After SED↔SLE sync: Class A rate×qty residual needing Round Off remake."""
+	"""After SED↔SLE sync: Class A rate×qty residual needing Stock Adjustment remake.
+
+	v5.5.45 policy: inventory valuation residuals (including genuine IRR Class A
+	rounding) post to Company Stock Adjustment — never Financial Round Off.
+	Root-cause category remains GENUINE_ROUNDING; GL destination is Stock Adjustment.
+	"""
 	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 		STATUS_READY,
 		evaluate_irr_rate_rounding_residual,
@@ -530,18 +537,20 @@ def classify_class_a_residual_bridge(doc) -> list[dict[str, Any]]:
 		return []
 
 	sa_account = resolve_stock_adjustment_account(doc.company)
-	round_off = frappe.get_cached_value("Company", doc.company, "round_off_account")
+	if not sa_account:
+		frappe.throw(
+			_(
+				"Company {0} Stock Adjustment Account is required for inventory valuation residuals. "
+				"Financial Round Off must not be used."
+			).format(frappe.bold(doc.company)),
+			title=_("Missing Stock Adjustment Account"),
+		)
 	out: list[dict[str, Any]] = []
 	for row_info in decision.class_a_rows or []:
 		delta = flt(row_info.get("residual"))
 		if not delta:
 			continue
-		# Root cause of THIS residual is IRR Class A representation
-		# (authoritative_amount − qty×integer_rate within R2 bound) — CATEGORY 1.
-		# Historical poison may have produced the authoritative SLE amount, but once
-		# SLE is accepted the residual is genuine Round Off, not Stock Adjustment.
-		# Do not reclassify to HISTORICAL_* merely because |delta| is small or a
-		# zero-value provenance stamp exists (that stamp is a separate TRACE row).
+		# Root cause = Class A representation; GL destination = Stock Adjustment (policy).
 		reason = REASON_SED_SLE_VALUE_MISMATCH
 		accounting_category = CATEGORY_GENUINE_ROUNDING
 		key = make_idempotency_key(doc.name, row_info.get("row_name"), reason, delta)
@@ -564,7 +573,7 @@ def classify_class_a_residual_bridge(doc) -> list[dict[str, Any]]:
 				"adjustment_delta": delta,
 				"debit_credit": "Debit" if signed > 0 else "Credit",
 				"stock_adjustment_account": sa_account,
-				"posting_mode": "ROUND_OFF_GL",
+				"posting_mode": "STOCK_ADJUSTMENT_GL",
 				"accounting_category": accounting_category,
 				"hotfix_version": HOTFIX_VERSION,
 				"idempotency_key": key,
@@ -572,15 +581,15 @@ def classify_class_a_residual_bridge(doc) -> list[dict[str, Any]]:
 					f"[{accounting_category}] Class A IRR residual after native SLE sync: "
 					f"authoritative={row_info.get('authoritative_amount')} "
 					f"rate_derived={row_info.get('rate_derived_amount')} residual={delta}; "
-					f"posted via Company Round Off {round_off}. "
-					f"Not Stock Adjustment (root cause = approved amount vs qty×integer_rate). "
-					f"SA account for Phase 2 discoverability={sa_account}"
+					f"posted via Company Stock Adjustment {sa_account}. "
+					f"Financial Round Off is not used for inventory valuation."
 				),
 				"payload": {
 					"class_a_row": row_info,
 					"net_signed_debit": flt(decision.net_signed_debit),
-					"round_off_account": round_off,
+					"stock_adjustment_account": sa_account,
 					"accounting_category": accounting_category,
+					"gl_destination": "STOCK_ADJUSTMENT",
 					"historical_zero_value_provenance": has_pending_reason(
 						doc, REASON_HISTORICAL_ZERO_VALUE_STOCK
 					),
@@ -666,6 +675,7 @@ def persist_adjustments(doc, adjustments: list[dict[str, Any]], *, repair_status
 
 
 def link_round_off_gl_to_adjustments(doc, adjustments: list[dict[str, Any]]) -> None:
+	"""Attach residual GL name to TVA rows (Stock Adjustment destination for inventory)."""
 	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 		fetch_irr_residual_gl_rows,
 	)
@@ -675,7 +685,7 @@ def link_round_off_gl_to_adjustments(doc, adjustments: list[dict[str, Any]]) -> 
 	if not gl_name:
 		return
 	for adj in adjustments:
-		if adj.get("posting_mode") == "ROUND_OFF_GL":
+		if adj.get("posting_mode") in ("STOCK_ADJUSTMENT_GL", "ROUND_OFF_GL"):
 			adj["gl_entry"] = gl_name
 
 
@@ -764,7 +774,7 @@ def classify_sle_sabe_mismatches(doc) -> list[dict[str, Any]]:
 
 
 def apply_on_submit_bridge(doc) -> list[str]:
-	"""After SED sync / before ledger contract: remake Round Off + persist TVA."""
+	"""After SED sync / before ledger contract: remake Stock Adjustment residual + persist TVA."""
 	if getattr(doc, "doctype", None) != "Stock Entry":
 		return []
 	if not is_irr_company(doc.company):
@@ -784,7 +794,7 @@ def apply_on_submit_bridge(doc) -> list[str]:
 		)
 
 		rebuild_actions = rebuild_irr_rate_rounding_residual_after_repost(doc)
-		actions.extend(rebuild_actions or ["remade_round_off_for_tva"])
+		actions.extend(rebuild_actions or ["remade_stock_adjustment_residual_for_tva"])
 		link_round_off_gl_to_adjustments(doc, class_a)
 		for adj in class_a:
 			append_pending(doc, adj)
@@ -814,8 +824,8 @@ def native_outgoing_r2_amount_authoritative(doc, row, company: str) -> bool:
 	"""Allow amount-authoritative composition for native SLE-synced outgoing rows.
 
 	When SED.basic_amount mirrors SLE.stock_value_difference and integer rate is
-	ROUND_HALF_UP(amount/qty), |amount − qty×rate| ≤ R2 bound is Class A — Round Off
-	(or temporary bridge remake) owns the residual. Not a manufacture-only privilege.
+	ROUND_HALF_UP(amount/qty), |amount − qty×rate| ≤ R2 bound is Class A — Stock Adjustment
+	(inventory policy) owns the residual GL. Not a manufacture-only privilege.
 	"""
 	purpose = getattr(doc, "purpose", None) or ""
 	if purpose not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES and purpose != "Material Receipt":

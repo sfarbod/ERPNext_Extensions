@@ -331,8 +331,8 @@ def _patch_stock_controller():
 						if self.doctype == "Purchase Receipt"
 						else self.get_gl_entries(inventory_account_map)
 					)
-				# Iran post-processing: IRR rate×qty residual → Company Round Off Account.
-				# Ordinary get_gl_entries remains ERPNext (or ZVT); this only appends/adjusts.
+				# Iran post-processing: IRR rate×qty residual → Stock Adjustment (inventory)
+				# or Round Off (non-inventory). Ordinary get_gl_entries remains ERPNext/ZVT.
 				from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
 				from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 					apply_irr_rate_rounding_residual_gl,

@@ -262,6 +262,14 @@ class TestEvaluateNetGate(unittest.TestCase):
 				return_value=None,
 			),
 			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_stock_adjustment_residual",
+				return_value={"account": "SA - T", "cost_center": "CC-RO"},
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.validate_stock_adjustment_residual_configuration",
+				return_value=None,
+			),
+			mock.patch(
 				"erpnext_extensions.iran_accounting.domain.irr_residual_classification.resolve_round_off_dimensions",
 				return_value={"department": "D"},
 			),
@@ -280,6 +288,12 @@ class TestEvaluateNetGate(unittest.TestCase):
 			mock.patch(
 				"erpnext_extensions.iran_accounting.domain.irr_rounding_residual._is_stock_adjustment_account",
 				return_value=False,
+			),
+			mock.patch(
+				"frappe.get_cached_value",
+				side_effect=lambda *a, **k: (
+					"RO - T" if a[-1] == "round_off_account" else None
+				),
 			),
 		):
 			d = evaluate_irr_rate_rounding_residual(doc, gl_entries=gl)
