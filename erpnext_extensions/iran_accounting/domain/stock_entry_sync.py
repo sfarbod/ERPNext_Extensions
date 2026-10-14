@@ -393,6 +393,10 @@ def refresh_native_outgoing_sed_from_db(doc) -> None:
 
 	Iran ``on_submit`` otherwise ``db_update``s stale in-memory rates and can
 	re-poison rows that ``sync_irr_sle_from_stock_entry_row`` already corrected.
+
+	Also required before ``get_gl_entries`` / balanced-transfer GL: process_sle
+	writes authoritative native amounts to DB while in-memory SED may still hold
+	pre-submit integer document rates (v5.5.46).
 	"""
 	if not doc or getattr(doc, "doctype", None) != "Stock Entry":
 		return
@@ -415,6 +419,36 @@ def refresh_native_outgoing_sed_from_db(doc) -> None:
 		row.valuation_rate = live.valuation_rate
 		row.basic_amount = live.basic_amount
 		row.amount = live.amount
+
+
+def sync_native_outgoing_sed_into_memory_for_gl(doc) -> bool:
+	"""Refresh in-memory SED (+ header totals) before Stock Entry inventory GL.
+
+	Returns True when a native-outgoing Stock Entry was refreshed. Callers must
+	invoke this before ``get_gl_entries`` so transfer / issue GL consumes the
+	authoritative BatchNoValuation / SABB movement already persisted by
+	``sync_irr_sle_from_stock_entry_row``, not stale draft SED amounts.
+
+	Does not reverse or remake GL; does not invent Stock Adjustment.
+	"""
+	if not doc or getattr(doc, "doctype", None) != "Stock Entry":
+		return False
+	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+
+	if not is_irr_company(doc.company):
+		return False
+	if str(doc.purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		return False
+
+	refresh_native_outgoing_sed_from_db(doc)
+
+	# Keep ZVT / balanced-transfer header gates coherent with refreshed rows.
+	from erpnext_extensions.iran_accounting.stock_entry import align_zero_value_transfer_totals
+
+	align_zero_value_transfer_totals(doc)
+	if hasattr(doc, "set_total_incoming_outgoing_value"):
+		doc.set_total_incoming_outgoing_value()
+	return True
 
 
 # Backward-compatible alias

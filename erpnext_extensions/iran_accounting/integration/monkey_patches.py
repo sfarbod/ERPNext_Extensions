@@ -325,6 +325,16 @@ def _patch_stock_controller():
 
 		if need_inventory_map or provisional_accounting_for_non_stock_items or is_asset_pr:
 			if self.docstatus == 1:
+				# v5.5.46: process_sle may have realigned SED in DB to native batch/MA
+				# movement while in-memory items still hold draft integer rates.
+				# Refresh before get_gl_entries so transfer GL matches SLE/SABE.
+				if self.doctype == "Stock Entry" and not gl_entries:
+					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						sync_native_outgoing_sed_into_memory_for_gl,
+					)
+
+					sync_native_outgoing_sed_into_memory_for_gl(self)
+
 				if not gl_entries:
 					gl_entries = (
 						self.get_gl_entries(inventory_account_map, via_landed_cost_voucher)
