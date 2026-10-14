@@ -1,0 +1,260 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-10-14 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "idempotency_key",
+  "hotfix_version",
+  "reason_code",
+  "repair_status",
+  "section_source",
+  "stock_entry",
+  "stock_entry_detail",
+  "item_code",
+  "warehouse",
+  "batch_no",
+  "column_break_src",
+  "company",
+  "purpose",
+  "posting_date",
+  "posting_time",
+  "section_values",
+  "expected_value",
+  "actual_value",
+  "adjustment_delta",
+  "column_break_val",
+  "debit_credit",
+  "stock_adjustment_account",
+  "gl_entry",
+  "posting_mode",
+  "section_meta",
+  "remarks",
+  "payload"
+ ],
+ "fields": [
+  {
+   "fieldname": "idempotency_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Idempotency Key",
+   "reqd": 1,
+   "unique": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "default": "5.5.45",
+   "fieldname": "hotfix_version",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Hotfix Version",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "reason_code",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Reason Code",
+   "options": "HISTORICAL_VALUATION_MISMATCH\nINDIVISIBLE_MOVING_AVERAGE\nHISTORICAL_BATCH_RATE_MISMATCH\nSED_SLE_VALUE_MISMATCH\nSLE_SABE_VALUE_MISMATCH\nHISTORICAL_ZERO_VALUE_STOCK\nSOURCE_RATE_MISMATCH\nMANUFACTURING_VALUATION_RESIDUAL\nTRANSFER_VALUATION_RESIDUAL",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "default": "OPEN",
+   "fieldname": "repair_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Repair Status",
+   "options": "OPEN\nSUBMITTED\nCANCELLED\nSUPERSEDED_BY_PHASE2",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_source",
+   "fieldtype": "Section Break",
+   "label": "Source Document"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_entry_detail",
+   "fieldtype": "Data",
+   "label": "Stock Entry Detail",
+   "read_only": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "label": "Batch",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_src",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "purpose",
+   "fieldtype": "Data",
+   "label": "Purpose",
+   "read_only": 1
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "posting_time",
+   "fieldtype": "Time",
+   "label": "Posting Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_values",
+   "fieldtype": "Section Break",
+   "label": "Adjustment Values"
+  },
+  {
+   "fieldname": "expected_value",
+   "fieldtype": "Currency",
+   "label": "Expected Value",
+   "read_only": 1,
+   "options": "Company:company:default_currency"
+  },
+  {
+   "fieldname": "actual_value",
+   "fieldtype": "Currency",
+   "label": "Actual Value",
+   "read_only": 1,
+   "options": "Company:company:default_currency"
+  },
+  {
+   "fieldname": "adjustment_delta",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Adjustment Delta",
+   "read_only": 1,
+   "options": "Company:company:default_currency"
+  },
+  {
+   "fieldname": "column_break_val",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "debit_credit",
+   "fieldtype": "Select",
+   "label": "Debit/Credit Direction",
+   "options": "\nDebit\nCredit\nNone",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_adjustment_account",
+   "fieldtype": "Link",
+   "label": "Stock Adjustment Account",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gl_entry",
+   "fieldtype": "Data",
+   "label": "Related GL Entry",
+   "read_only": 1
+  },
+  {
+   "default": "TRACE",
+   "fieldname": "posting_mode",
+   "fieldtype": "Select",
+   "label": "Posting Mode",
+   "options": "TRACE\nROUND_OFF_GL\nSTOCK_ADJUSTMENT_GL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_meta",
+   "fieldtype": "Section Break",
+   "label": "Metadata"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payload",
+   "fieldtype": "Long Text",
+   "label": "Payload JSON",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-10-14 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Temporary Valuation Adjustment",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

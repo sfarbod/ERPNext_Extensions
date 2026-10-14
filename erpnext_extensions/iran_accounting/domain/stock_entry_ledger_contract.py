@@ -294,9 +294,14 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 		if row.get("basic_rate") is not None and transfer_qty:
 			exp_basic = round_row_amount_financial(transfer_qty, row.basic_rate, ccy)
-			if abs(flt(row.basic_amount) - exp_basic) > tol and not _manufacture_output_amount_authoritative(
-				doc, row, company
-			):
+			amount_auth = _manufacture_output_amount_authoritative(doc, row, company)
+			if not amount_auth:
+				from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+					native_outgoing_r2_amount_authoritative,
+				)
+
+				amount_auth = native_outgoing_r2_amount_authoritative(doc, row, company)
+			if abs(flt(row.basic_amount) - exp_basic) > tol and not amount_auth:
 				failures.append(
 					_fail(
 						doc,
@@ -515,12 +520,17 @@ def collect_ledger_contract_failures(voucher_no: str, company: str) -> list[str]
 			failures.extend(_assert_lcv_gl(doc, gl_rows))
 			failures.extend(_assert_irr_rate_rounding_residual_gl(doc, gl_rows, company))
 
+		from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+			allows_fractional_sabe,
+		)
+
+		tva_fractional = allows_fractional_sabe(voucher_no)
 		if not assert_no_fractional_irr_gl("Stock Entry", voucher_no, company):
 			bad = []
 			for row in gl_rows:
 				bad.extend(fractional_gl_fields(row, company))
 			failures.append(f"{doc.doctype} {doc.name}: fractional IRR in GL: {bad[:3]}")
-		if not assert_no_fractional_irr_sle("Stock Entry", voucher_no, company):
+		if not tva_fractional and not assert_no_fractional_irr_sle("Stock Entry", voucher_no, company):
 			from erpnext_extensions.iran_accounting.validation import fetch_sle_rows
 
 			bad = []
