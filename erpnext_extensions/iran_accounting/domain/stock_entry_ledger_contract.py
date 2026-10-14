@@ -528,6 +528,12 @@ def collect_ledger_contract_failures(voucher_no: str, company: str) -> list[str]
 				bad.extend(fractional_sle_fields(row, company))
 			failures.append(f"{doc.doctype} {doc.name}: fractional IRR in SLE: {bad[:3]}")
 
+		from erpnext_extensions.iran_accounting.domain.stock_entry_prevention import (
+			collect_post_submit_prevention_failures,
+		)
+
+		failures.extend(collect_post_submit_prevention_failures(voucher_no, company))
+
 	return failures
 
 

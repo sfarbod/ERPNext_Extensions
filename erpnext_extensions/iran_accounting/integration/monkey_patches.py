@@ -1194,6 +1194,7 @@ def _patch_stock_ledger_engine():
 		sl.update_entries_after.validate_negative_stock = make_validate_negative_stock_wrapper(live_neg)
 
 	_patch_serial_and_batch_bundle_negative_healing()
+	_patch_serial_batch_irr_integer_guard(sl)
 
 	# Idempotent install of rate-first RIV wrapper (may run after older process_sle-only patch).
 	if not getattr(sl, "_iran_patched_update_rate_on_stock_entry", None):
@@ -1243,6 +1244,77 @@ def _patch_serial_and_batch_bundle_negative_healing():
 	if not getattr(live_inv, "_iran_negative_stock_healing", None):
 		SerialandBatchBundle._iran_original_validate_batch_inventory = live_inv
 		SerialandBatchBundle.validate_batch_inventory = make_validate_batch_inventory_wrapper(live_inv)
+
+
+def _patch_serial_batch_irr_integer_guard(sl):
+	"""Block NEW IRR Serial and Batch Entry rows with fractional rates/amounts.
+
+	Does not invent an indivisible-MA Stock Adjustment policy. Historical RIV
+	(``through_repost_item_valuation``) is left alone so era data is not
+	reinterpreted mid-campaign.
+	"""
+	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+
+	if getattr(sl.update_entries_after, "_iran_sabe_irr_integer_guard", None):
+		return
+
+	_orig = sl.update_entries_after.update_serial_batch_no_valuation
+
+	def update_serial_batch_no_valuation(self, sle, doc, prev_sle=None):
+		_orig(self, sle, doc, prev_sle=prev_sle)
+		company = getattr(self, "company", None) or (
+			sle.get("company") if hasattr(sle, "get") else None
+		)
+		if not company or not is_irr_company(company):
+			return
+		try:
+			if frappe.flags.get("through_repost_item_valuation"):
+				return
+		except Exception:
+			pass
+		bundle = sle.get("serial_and_batch_bundle") if hasattr(sle, "get") else None
+		if not bundle:
+			return
+		from frappe import _
+
+		from erpnext_extensions.iran_accounting.domain.currency import (
+			amount_is_fractional,
+			get_company_currency,
+			rate_is_fractional,
+		)
+		from erpnext_extensions.iran_accounting.domain.stock_entry_prevention import (
+			StockEntryPreventionError,
+		)
+
+		ccy = get_company_currency(company)
+		rows = frappe.get_all(
+			"Serial and Batch Entry",
+			filters={"parent": bundle},
+			fields=["name", "batch_no", "incoming_rate", "stock_value_difference"],
+		)
+		for row in rows:
+			if rate_is_fractional(row.incoming_rate, ccy) or amount_is_fractional(
+				row.stock_value_difference, ccy
+			):
+				frappe.throw(
+					_(
+						"Serial and Batch Entry {0} (batch {1}) has a fractional IRR rate "
+						"({2}) or amount ({3}). New documents must not persist fractional "
+						"batch valuation. Indivisible Moving Average remainders require an "
+						"approved accounting treatment before submit."
+					).format(
+						row.name,
+						row.batch_no,
+						row.incoming_rate,
+						row.stock_value_difference,
+					),
+					exc=StockEntryPreventionError,
+					title=_("Integer IRR Batch Valuation"),
+				)
+
+	sl.update_entries_after.update_serial_batch_no_valuation = update_serial_batch_no_valuation
+	sl.update_entries_after._iran_sabe_irr_integer_guard = True
+	sl.update_entries_after._iran_original_update_serial_batch_no_valuation = _orig
 
 
 def _patch_stock_ledger_report():
