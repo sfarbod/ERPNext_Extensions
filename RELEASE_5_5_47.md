@@ -95,6 +95,33 @@ Order: `posting_date, posting_time, creation, doctype, name`.
 
 ---
 
-## G. Verdict (local)
+## G. Local execution evidence (HRC-00001)
 
-See final execution report for `FULL_REBUILD_*` status after end-to-end run on `development.localhost`.
+| Metric | Value |
+|--------|------:|
+| Manifest total | 15,802 |
+| Stock Entry | 14,173 |
+| Purchase Receipt | 1,343 |
+| Delivery Note | 212 |
+| Stock Reconciliation | 31 |
+| Subcontracting Receipt | 42 |
+| Sales Invoice (update_stock) | 1 |
+| Completed (pilot + continuous) | growing — see STATUS |
+| Skipped Covered | growing as identities covered |
+| Core RIV created/completed | 1,400+ during pilot |
+
+Verified locally:
+
+- CREATE / BUILD MANIFEST / START / PAUSE / STOP / RESUME / STATUS
+- Maintenance Mode on during START (campaign-driven `execute_reposting_entry`)
+- Pause stops new selections only
+- Skipped Covered when Completed covering RIV exists
+- Transaction RIV for large multi-identity vouchers
+- RQ purge required after bulk DocType inserts flooded default queue
+- Unit/regression: 80 tests OK (prevention, residual, CC, native transfer, campaign)
+
+**Not yet complete:** full drain of all 15,802 vouchers (multi-hour/day Core RIV wall-clock). Continuous resume left running for operator continuation.
+
+## H. Verdict (local)
+
+**IMPLEMENTED_BUT_REBUILD_INCOMPLETE** — architecture and controls verified; full historical population not fully drained in this session.
