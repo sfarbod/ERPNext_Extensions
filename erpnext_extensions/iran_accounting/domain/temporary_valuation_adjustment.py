@@ -36,7 +36,7 @@ from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 	NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES,
 )
 
-HOTFIX_VERSION = "5.5.45"
+HOTFIX_VERSION = "5.5.46"
 DOCTYPE = "Temporary Valuation Adjustment"
 
 # In-memory stamp on Stock Entry during submit (not a DocType field).
@@ -365,6 +365,76 @@ def classify_zero_value_stock_row(doc, row, bal_qty: float, bal_value: float) ->
 	}
 
 
+def _inward_batch_avg_at_warehouse(item_code: str, batch_no: str, warehouse: str) -> tuple[float, float, float] | None:
+	"""Positive-qty SABE average for batch+warehouse (BatchNoValuation seed when net qty corrupt)."""
+	row = frappe.db.sql(
+		"""
+		select coalesce(sum(qty), 0) as q,
+		       coalesce(sum(stock_value_difference), 0) as v
+		from `tabSerial and Batch Entry`
+		where batch_no = %s
+		  and warehouse = %s
+		  and item_code = %s
+		  and is_cancelled = 0
+		  and docstatus = 1
+		  and qty > 0
+		""",
+		(batch_no, warehouse, item_code),
+		as_dict=True,
+	)
+	if not row or flt(row[0].q) <= 0:
+		return None
+	q = flt(row[0].q)
+	v = flt(row[0].v)
+	return q, v, v / q
+
+
+def resolve_fractional_batch_pool(
+	doc,
+	row,
+	bal_qty: float,
+	bal_value: float,
+) -> tuple[float, float, float, str] | None:
+	"""Return (pool_qty, pool_value, avg_rate, pool_source) for fractional-batch TVA classify.
+
+	When warehouse SABE nets to ≤0 (historical corruption) but Bin still covers the
+	move, fall back to inward-positive SABE average so BatchNoValuation-aligned
+	fractional rates can be authorized without inventing Stock Adjustment GL.
+	"""
+	move_qty = abs(
+		flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
+	)
+	if move_qty <= 0:
+		return None
+	ccy = get_company_currency(doc.company)
+	if bal_qty > 1e-9:
+		if move_qty > bal_qty + 1e-9:
+			return None
+		avg = flt(bal_value) / flt(bal_qty)
+		return bal_qty, flt(bal_value), avg, "warehouse_net"
+
+	# Net SABE qty corrupt/negative: require Bin coverage, then inward avg.
+	from erpnext_extensions.iran_accounting.domain.stock_entry_prevention import (
+		_warehouse_balance,
+	)
+
+	wq, _wv = _warehouse_balance(row.item_code, row.s_warehouse)
+	if wq + 1e-9 < move_qty:
+		return None
+	inward = _inward_batch_avg_at_warehouse(row.item_code, row.batch_no, row.s_warehouse)
+	if not inward:
+		return None
+	_iq, _iv, avg = inward
+	if not (
+		amount_is_fractional(avg, ccy)
+		or amount_is_fractional(bal_value, ccy)
+		or amount_is_fractional(_iv, ccy)
+	):
+		return None
+	# Synthetic pool sized to the move (Bin already covers qty).
+	return move_qty, avg * move_qty, avg, "inward_avg_fallback"
+
+
 def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value: float) -> dict | None:
 	"""Outgoing batch move whose historical batch average is fractional IRR."""
 	if not row.get("s_warehouse") or not row.get("batch_no") or not row.get("item_code"):
@@ -377,15 +447,18 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 	move_qty = abs(
 		flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
 	)
-	if move_qty <= 0 or bal_qty <= 0:
+	if move_qty <= 0:
 		return None
-	if move_qty > bal_qty + 1e-9:
+
+	pool = resolve_fractional_batch_pool(doc, row, bal_qty, bal_value)
+	if not pool:
 		return None
+	pool_qty, pool_value, avg_rate, pool_source = pool
 	ccy = get_company_currency(doc.company)
-	avg_rate = flt(bal_value) / flt(bal_qty) if bal_qty else 0
 	move_amount = abs(avg_rate * move_qty)
 	if not (
 		amount_is_fractional(avg_rate, ccy)
+		or amount_is_fractional(pool_value, ccy)
 		or amount_is_fractional(bal_value, ccy)
 		or amount_is_fractional(move_amount, ccy)
 	):
@@ -432,14 +505,18 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 		"idempotency_key": key,
 		"remarks": (
 			f"[{accounting_category}] Historical fractional batch rate: batch={row.batch_no} "
-			f"pool_qty={bal_qty} pool_value={bal_value} avg_rate={avg_rate} move_qty={move_qty} "
-			f"move_amount={move_amount} remainder_vs_integer={remainder}. "
+			f"pool_qty={pool_qty} pool_value={pool_value} avg_rate={avg_rate} "
+			f"net_sabe_qty={bal_qty} net_sabe_value={bal_value} pool_source={pool_source} "
+			f"move_qty={move_qty} move_amount={move_amount} remainder_vs_integer={remainder}. "
 			f"Fractional rate ≠ negative stock; quantity unchanged."
 		),
 		"payload": {
-			"pool_qty": bal_qty,
-			"pool_value": float(_d(bal_value)),
+			"pool_qty": pool_qty,
+			"pool_value": float(_d(pool_value)),
 			"avg_rate": avg_rate,
+			"net_sabe_qty": bal_qty,
+			"net_sabe_value": float(_d(bal_value)),
+			"pool_source": pool_source,
 			"move_qty": move_qty,
 			"move_amount": float(_d(move_amount)),
 			"integer_rate": float(rate),
@@ -449,6 +526,99 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 			"accounting_category": accounting_category,
 		},
 	}
+
+
+def classify_observed_native_fractional_sabe(doc) -> list[dict[str, Any]]:
+	"""After process_sle: authorize TRACE when Core persisted fractional SABE.
+
+	Safety net when pre-submit pool classify missed corrupt warehouse SABE nets.
+	Does not invent Stock Adjustment GL — TRACE_ONLY for Phase 2 discovery.
+	"""
+	if (doc.get("purpose") or "") not in ELIGIBLE_PURPOSES:
+		return []
+	if (doc.get("purpose") or "") in ("Manufacture", "Repack", "Material Consumption for Manufacture"):
+		return []
+	ccy = get_company_currency(doc.company)
+	sa_account = resolve_stock_adjustment_account(doc.company)
+	if not sa_account:
+		return []
+	rows = frappe.db.sql(
+		"""
+		select e.name as sabe_name, e.batch_no, e.qty, e.incoming_rate,
+		       e.stock_value_difference, e.warehouse, sle.voucher_detail_no, sle.item_code
+		from `tabStock Ledger Entry` sle
+		inner join `tabSerial and Batch Entry` e
+		  on e.parent = sle.serial_and_batch_bundle and e.is_cancelled = 0
+		where sle.voucher_type = 'Stock Entry'
+		  and sle.voucher_no = %s
+		  and sle.is_cancelled = 0
+		  and sle.serial_and_batch_bundle is not null
+		""",
+		doc.name,
+		as_dict=True,
+	)
+	out: list[dict[str, Any]] = []
+	seen_detail: set[str] = set()
+	already = {
+		p.get("stock_entry_detail")
+		for p in (pending_adjustments(doc) or [])
+		if p.get("reason_code") == REASON_HISTORICAL_BATCH_RATE_MISMATCH
+	}
+	for r in rows:
+		if not (
+			amount_is_fractional(r.incoming_rate, ccy)
+			or amount_is_fractional(r.stock_value_difference, ccy)
+		):
+			continue
+		detail = r.voucher_detail_no or r.sabe_name
+		if detail in seen_detail or detail in already:
+			continue
+		seen_detail.add(detail)
+		move_amount = abs(flt(r.stock_value_difference))
+		move_qty = abs(flt(r.qty))
+		rate, product, remainder = integer_rate_and_product(move_qty or 1, move_amount or flt(r.incoming_rate))
+		delta = float(remainder) if remainder else 0.0
+		reason = REASON_HISTORICAL_BATCH_RATE_MISMATCH
+		accounting_category = CATEGORY_TRACE_ONLY
+		key = make_idempotency_key(doc.name, detail, reason, delta or move_amount or flt(r.incoming_rate))
+		out.append(
+			{
+				"kind": KIND_TEMPORARY,
+				"reason_code": reason,
+				"stock_entry": doc.name,
+				"stock_entry_detail": detail,
+				"item_code": r.item_code,
+				"warehouse": r.warehouse,
+				"batch_no": r.batch_no,
+				"company": doc.company,
+				"purpose": doc.get("purpose"),
+				"posting_date": doc.get("posting_date"),
+				"posting_time": doc.get("posting_time"),
+				"expected_value": float(product),
+				"actual_value": float(move_amount),
+				"adjustment_delta": delta,
+				"debit_credit": "None",
+				"stock_adjustment_account": sa_account,
+				"posting_mode": "TRACE",
+				"accounting_category": accounting_category,
+				"hotfix_version": HOTFIX_VERSION,
+				"idempotency_key": key,
+				"remarks": (
+					f"[{accounting_category}] Observed native fractional SABE after process_sle: "
+					f"batch={r.batch_no} rate={r.incoming_rate} svd={r.stock_value_difference}; "
+					f"TRACE only — no Stock Adjustment for integer-vs-native transfer sync."
+				),
+				"payload": {
+					"sabe_name": r.sabe_name,
+					"incoming_rate": flt(r.incoming_rate),
+					"stock_value_difference": flt(r.stock_value_difference),
+					"allow_fractional_sabe": True,
+					"accounting_category": accounting_category,
+					"source": "observed_native_sabe",
+				},
+			}
+		)
+	return out
 
 
 def prepare_before_submit_bridge(doc) -> None:
@@ -785,6 +955,13 @@ def apply_on_submit_bridge(doc) -> list[str]:
 		return []
 
 	actions: list[str] = []
+	pending = pending_adjustments(doc)
+
+	# v5.5.46: authorize fractional SABE from observed native BatchNoValuation
+	# before Class A / SLE↔SABE TRACE so ledger contract sees allows_fractional_sabe.
+	for adj in classify_observed_native_fractional_sabe(doc):
+		append_pending(doc, adj)
+		mark_fractional_allowed(doc)
 	pending = pending_adjustments(doc)
 
 	class_a = classify_class_a_residual_bridge(doc)

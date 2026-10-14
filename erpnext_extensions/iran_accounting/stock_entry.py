@@ -213,8 +213,9 @@ def on_submit_stock_entry(doc, method=None):
 			"custom_manufacturing_costing_contract_version"
 		)
 	doc.db_set(header_update, update_modified=False)
-	# v5.5.45 Temporary Stock Adjustment Bridge: remake Round Off after native SED
-	# sync and persist Temporary Valuation Adjustment audit rows before contract.
+	# v5.5.45/46 Temporary Valuation Bridge + native-transfer GL sync:
+	# make_gl_entries already refreshed SED into memory before posting GL (5.5.46).
+	# Persist TVA audit rows and enforce ledger contract here.
 	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
 		apply_on_submit_bridge,
 	)
