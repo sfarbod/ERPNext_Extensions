@@ -9,6 +9,7 @@
   "idempotency_key",
   "hotfix_version",
   "reason_code",
+  "accounting_category",
   "repair_status",
   "section_source",
   "stock_entry",
@@ -63,6 +64,17 @@
    "options": "HISTORICAL_VALUATION_MISMATCH\nINDIVISIBLE_MOVING_AVERAGE\nHISTORICAL_BATCH_RATE_MISMATCH\nSED_SLE_VALUE_MISMATCH\nSLE_SABE_VALUE_MISMATCH\nHISTORICAL_ZERO_VALUE_STOCK\nSOURCE_RATE_MISMATCH\nMANUFACTURING_VALUATION_RESIDUAL\nTRANSFER_VALUATION_RESIDUAL",
    "reqd": 1,
    "read_only": 1
+  },
+  {
+   "default": "TRACE_ONLY",
+   "fieldname": "accounting_category",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Accounting Category",
+   "options": "GENUINE_ROUNDING\nHISTORICAL_VALUATION\nTRACE_ONLY",
+   "read_only": 1,
+   "description": "Root-cause category: Round Off vs Stock Adjustment GL vs TRACE-only (not amount-based)."
   },
   {
    "default": "OPEN",

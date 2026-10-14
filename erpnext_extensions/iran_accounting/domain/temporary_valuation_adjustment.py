@@ -70,6 +70,14 @@ KIND_NORMAL = "NORMAL_TRANSACTION"
 KIND_TEMPORARY = "TEMPORARY_VALUATION_ADJUSTMENT"
 KIND_UNSUPPORTED = "UNSUPPORTED_OR_UNSAFE_TRANSACTION"
 
+# Accounting policy categories (root-cause based — not amount-based).
+# CATEGORY 1: approved IRR amount vs qty×integer_rate representation → Round Off GL.
+CATEGORY_GENUINE_ROUNDING = "GENUINE_ROUNDING"
+# CATEGORY 2: net inventory valuation gap requiring Stock Adjustment GL.
+CATEGORY_HISTORICAL_VALUATION = "HISTORICAL_VALUATION"
+# CATEGORY 3: observable residual with no net inventory GL effect (e.g. ZVT same account).
+CATEGORY_TRACE_ONLY = "TRACE_ONLY"
+
 
 def _through_riv() -> bool:
 	try:
@@ -99,6 +107,26 @@ def integer_rate_and_product(qty, pool_or_amount) -> tuple[Decimal, Decimal, Dec
 
 def resolve_stock_adjustment_account(company: str) -> str | None:
 	return frappe.get_cached_value("Company", company, "stock_adjustment_account")
+
+
+def _is_same_inventory_account_transfer(doc) -> bool:
+	"""True when all SE warehouses share one inventory account (Core ZVT / no transfer GL)."""
+	purpose = doc.get("purpose") or ""
+	if purpose not in (
+		"Material Transfer",
+		"Material Transfer for Manufacture",
+		"Send to Subcontractor",
+	):
+		return False
+	accounts: set[str] = set()
+	for row in doc.get("items") or []:
+		for wh in (row.get("s_warehouse"), row.get("t_warehouse")):
+			if not wh:
+				continue
+			acc = frappe.get_cached_value("Warehouse", wh, "account")
+			if acc:
+				accounts.add(acc)
+	return len(accounts) == 1
 
 
 def make_idempotency_key(
@@ -225,18 +253,15 @@ def classify_indivisible_ma_row(doc, row, pool_label: str, bal_qty: float, bal_v
 
 	delta = float(remainder)
 	reason = REASON_INDIVISIBLE_MOVING_AVERAGE
-	if purpose in (
-		"Material Transfer",
-		"Material Transfer for Manufacture",
-		"Send to Subcontractor",
-	):
-		# Dual-warehouse symmetry keeps inventory; remainder is representation/trace.
-		posting_mode = "TRACE"
-		debit_credit = "None"
-	else:
-		# Material Issue / Receipt: remainder is recorded; Round Off / SA settle at GL layer.
-		posting_mode = "TRACE"
-		debit_credit = "Debit" if delta > 0 else "Credit"
+	# Indivisible remainder is provenance of a historical fractional pool.
+	# Net inventory GL effect is none when SLE already moves the full pool value
+	# (Issue expense/inventory at SLE SVD; Transfer ZVT same-account has Σ SLE=0).
+	# Class A Round Off (if any) handles amount vs qty×integer_rate separately.
+	# Forcing Stock Adjustment GL here would invent artificial P&L.
+	posting_mode = "TRACE"
+	debit_credit = "None"
+	accounting_category = CATEGORY_TRACE_ONLY
+	zvt_same_account = _is_same_inventory_account_transfer(doc)
 
 	key = make_idempotency_key(doc.name or "NEW", row.get("name"), reason, delta)
 	return {
@@ -257,11 +282,14 @@ def classify_indivisible_ma_row(doc, row, pool_label: str, bal_qty: float, bal_v
 		"debit_credit": debit_credit,
 		"stock_adjustment_account": sa_account,
 		"posting_mode": posting_mode,
+		"accounting_category": accounting_category,
 		"hotfix_version": HOTFIX_VERSION,
 		"idempotency_key": key,
 		"remarks": (
-			f"Indivisible MA remainder on {pool_label}: qty={move_qty}, "
-			f"pool={bal_value}, integer_rate={rate}, qty×rate={product}, remainder={remainder}"
+			f"[{accounting_category}] Indivisible MA remainder on {pool_label}: qty={move_qty}, "
+			f"pool={bal_value}, integer_rate={rate}, qty×rate={product}, remainder={remainder}. "
+			f"TRACE-only: SLE already carries pool movement; zvt_same_account={zvt_same_account}. "
+			f"Do not invent Stock Adjustment GL."
 		),
 		"payload": {
 			"pool_label": pool_label,
@@ -271,6 +299,8 @@ def classify_indivisible_ma_row(doc, row, pool_label: str, bal_qty: float, bal_v
 			"qty_times_rate": float(product),
 			"remainder": float(remainder),
 			"allow_fractional_sabe": True,
+			"accounting_category": accounting_category,
+			"zvt_same_account": zvt_same_account,
 		},
 	}
 
@@ -295,6 +325,7 @@ def classify_zero_value_stock_row(doc, row, bal_qty: float, bal_value: float) ->
 
 	delta = 0.0  # native MA will invent a rate; stamp provenance only
 	reason = REASON_HISTORICAL_ZERO_VALUE_STOCK
+	accounting_category = CATEGORY_TRACE_ONLY
 	key = make_idempotency_key(doc.name or "NEW", row.get("name"), reason, delta)
 	return {
 		"kind": KIND_TEMPORARY,
@@ -314,13 +345,21 @@ def classify_zero_value_stock_row(doc, row, bal_qty: float, bal_value: float) ->
 		"debit_credit": "None",
 		"stock_adjustment_account": sa_account,
 		"posting_mode": "TRACE",
+		"accounting_category": accounting_category,
 		"hotfix_version": HOTFIX_VERSION,
 		"idempotency_key": key,
 		"remarks": (
-			f"Historical zero-value stock: item={row.item_code} warehouse={row.s_warehouse} "
-			f"bin_qty={bal_qty} bin_value={bal_value}; native valuation accepted on submit"
+			f"[{accounting_category}] Historical zero-value stock: item={row.item_code} "
+			f"warehouse={row.s_warehouse} bin_qty={bal_qty} bin_value={bal_value}; "
+			f"native SLE valuation accepted on submit. Any Class A amount vs qty×rate "
+			f"residual posts separately as GENUINE_ROUNDING Round Off."
 		),
-		"payload": {"bin_qty": bal_qty, "bin_value": float(bal_value), "move_qty": move_qty},
+		"payload": {
+			"bin_qty": bal_qty,
+			"bin_value": float(bal_value),
+			"move_qty": move_qty,
+			"accounting_category": accounting_category,
+		},
 	}
 
 
@@ -363,6 +402,10 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 	rate, product, remainder = integer_rate_and_product(move_qty, move_amount)
 	delta = float(remainder) if remainder else float(move_amount - float(product))
 	reason = REASON_HISTORICAL_BATCH_RATE_MISMATCH
+	# Fractional historical batch layer is already in the SLE movement value.
+	# Authorization to persist fractional SABE is TRACE; Class A Round Off (if any)
+	# covers integer IRR representation of the authoritative SLE amount.
+	accounting_category = CATEGORY_TRACE_ONLY
 	key = make_idempotency_key(doc.name or "NEW", row.get("name"), reason, delta or move_amount)
 	return {
 		"kind": KIND_TEMPORARY,
@@ -382,12 +425,14 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 		"debit_credit": "None",
 		"stock_adjustment_account": sa_account,
 		"posting_mode": "TRACE",
+		"accounting_category": accounting_category,
 		"hotfix_version": HOTFIX_VERSION,
 		"idempotency_key": key,
 		"remarks": (
-			f"Historical fractional batch rate: batch={row.batch_no} pool_qty={bal_qty} "
-			f"pool_value={bal_value} avg_rate={avg_rate} move_qty={move_qty} "
-			f"move_amount={move_amount} remainder_vs_integer={remainder}"
+			f"[{accounting_category}] Historical fractional batch rate: batch={row.batch_no} "
+			f"pool_qty={bal_qty} pool_value={bal_value} avg_rate={avg_rate} move_qty={move_qty} "
+			f"move_amount={move_amount} remainder_vs_integer={remainder}. "
+			f"Fractional rate ≠ negative stock; quantity unchanged."
 		),
 		"payload": {
 			"pool_qty": bal_qty,
@@ -399,6 +444,7 @@ def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value
 			"qty_times_rate": float(product),
 			"remainder": float(remainder),
 			"allow_fractional_sabe": True,
+			"accounting_category": accounting_category,
 		},
 	}
 
@@ -490,10 +536,14 @@ def classify_class_a_residual_bridge(doc) -> list[dict[str, Any]]:
 		delta = flt(row_info.get("residual"))
 		if not delta:
 			continue
+		# Root cause of THIS residual is IRR Class A representation
+		# (authoritative_amount − qty×integer_rate within R2 bound) — CATEGORY 1.
+		# Historical poison may have produced the authoritative SLE amount, but once
+		# SLE is accepted the residual is genuine Round Off, not Stock Adjustment.
+		# Do not reclassify to HISTORICAL_* merely because |delta| is small or a
+		# zero-value provenance stamp exists (that stamp is a separate TRACE row).
 		reason = REASON_SED_SLE_VALUE_MISMATCH
-		# Zero-value provenance upgrades reason when stamped earlier.
-		if has_pending_reason(doc, REASON_HISTORICAL_ZERO_VALUE_STOCK):
-			reason = REASON_HISTORICAL_ZERO_VALUE_STOCK
+		accounting_category = CATEGORY_GENUINE_ROUNDING
 		key = make_idempotency_key(doc.name, row_info.get("row_name"), reason, delta)
 		signed = flt(row_info.get("round_off_debit"))
 		out.append(
@@ -515,18 +565,25 @@ def classify_class_a_residual_bridge(doc) -> list[dict[str, Any]]:
 				"debit_credit": "Debit" if signed > 0 else "Credit",
 				"stock_adjustment_account": sa_account,
 				"posting_mode": "ROUND_OFF_GL",
+				"accounting_category": accounting_category,
 				"hotfix_version": HOTFIX_VERSION,
 				"idempotency_key": key,
 				"remarks": (
-					f"Class A residual after native SLE sync: authoritative={row_info.get('authoritative_amount')} "
+					f"[{accounting_category}] Class A IRR residual after native SLE sync: "
+					f"authoritative={row_info.get('authoritative_amount')} "
 					f"rate_derived={row_info.get('rate_derived_amount')} residual={delta}; "
-					f"posted via Company Round Off {round_off} (ledger contract); "
-					f"Stock Adjustment account recorded for Phase 2={sa_account}"
+					f"posted via Company Round Off {round_off}. "
+					f"Not Stock Adjustment (root cause = approved amount vs qty×integer_rate). "
+					f"SA account for Phase 2 discoverability={sa_account}"
 				),
 				"payload": {
 					"class_a_row": row_info,
 					"net_signed_debit": flt(decision.net_signed_debit),
 					"round_off_account": round_off,
+					"accounting_category": accounting_category,
+					"historical_zero_value_provenance": has_pending_reason(
+						doc, REASON_HISTORICAL_ZERO_VALUE_STOCK
+					),
 				},
 			}
 		)
@@ -562,37 +619,47 @@ def persist_adjustments(doc, adjustments: list[dict[str, Any]], *, repair_status
 			created.append(existing)
 			continue
 
-		payload = adj.get("payload")
-		if not isinstance(payload, str):
-			payload = json.dumps(payload or {}, default=str, ensure_ascii=False)
+		payload_obj = adj.get("payload")
+		if isinstance(payload_obj, str):
+			try:
+				payload_obj = json.loads(payload_obj)
+			except Exception:
+				payload_obj = {"raw": payload_obj}
+		if not isinstance(payload_obj, dict):
+			payload_obj = {}
+		if adj.get("accounting_category"):
+			payload_obj.setdefault("accounting_category", adj["accounting_category"])
+		payload = json.dumps(payload_obj, default=str, ensure_ascii=False)
 
-		row = frappe.get_doc(
-			{
-				"doctype": DOCTYPE,
-				"idempotency_key": key,
-				"hotfix_version": adj.get("hotfix_version") or HOTFIX_VERSION,
-				"reason_code": adj["reason_code"],
-				"repair_status": repair_status,
-				"stock_entry": adj.get("stock_entry") or doc.name,
-				"stock_entry_detail": adj.get("stock_entry_detail"),
-				"item_code": adj.get("item_code"),
-				"warehouse": adj.get("warehouse"),
-				"batch_no": adj.get("batch_no"),
-				"company": adj.get("company") or doc.company,
-				"purpose": adj.get("purpose") or doc.get("purpose"),
-				"posting_date": adj.get("posting_date") or doc.get("posting_date"),
-				"posting_time": adj.get("posting_time") or doc.get("posting_time"),
-				"expected_value": adj.get("expected_value"),
-				"actual_value": adj.get("actual_value"),
-				"adjustment_delta": adj.get("adjustment_delta"),
-				"debit_credit": adj.get("debit_credit") or "None",
-				"stock_adjustment_account": adj.get("stock_adjustment_account"),
-				"gl_entry": adj.get("gl_entry"),
-				"posting_mode": adj.get("posting_mode") or "TRACE",
-				"remarks": adj.get("remarks"),
-				"payload": payload,
-			}
-		)
+		row_dict = {
+			"doctype": DOCTYPE,
+			"idempotency_key": key,
+			"hotfix_version": adj.get("hotfix_version") or HOTFIX_VERSION,
+			"reason_code": adj["reason_code"],
+			"repair_status": repair_status,
+			"stock_entry": adj.get("stock_entry") or doc.name,
+			"stock_entry_detail": adj.get("stock_entry_detail"),
+			"item_code": adj.get("item_code"),
+			"warehouse": adj.get("warehouse"),
+			"batch_no": adj.get("batch_no"),
+			"company": adj.get("company") or doc.company,
+			"purpose": adj.get("purpose") or doc.get("purpose"),
+			"posting_date": adj.get("posting_date") or doc.get("posting_date"),
+			"posting_time": adj.get("posting_time") or doc.get("posting_time"),
+			"expected_value": adj.get("expected_value"),
+			"actual_value": adj.get("actual_value"),
+			"adjustment_delta": adj.get("adjustment_delta"),
+			"debit_credit": adj.get("debit_credit") or "None",
+			"stock_adjustment_account": adj.get("stock_adjustment_account"),
+			"gl_entry": adj.get("gl_entry"),
+			"posting_mode": adj.get("posting_mode") or "TRACE",
+			"remarks": adj.get("remarks"),
+			"payload": payload,
+		}
+		# Optional DocType field (present after migrate); ignore if meta lacks it.
+		if frappe.get_meta(DOCTYPE).has_field("accounting_category"):
+			row_dict["accounting_category"] = adj.get("accounting_category") or CATEGORY_TRACE_ONLY
+		row = frappe.get_doc(row_dict)
 		row.insert(ignore_permissions=True)
 		created.append(row.name)
 	return created
@@ -657,6 +724,7 @@ def classify_sle_sabe_mismatches(doc) -> list[dict[str, Any]]:
 		if not amount_is_fractional(r.sabe_svd, ccy) and abs(flt(delta)) < 0.5:
 			continue
 		reason = REASON_SLE_SABE_VALUE_MISMATCH
+		accounting_category = CATEGORY_TRACE_ONLY
 		key = make_idempotency_key(doc.name, r.voucher_detail_no, reason, delta)
 		out.append(
 			{
@@ -677,13 +745,19 @@ def classify_sle_sabe_mismatches(doc) -> list[dict[str, Any]]:
 				"debit_credit": "None",
 				"stock_adjustment_account": sa_account,
 				"posting_mode": "TRACE",
+				"accounting_category": accounting_category,
 				"hotfix_version": HOTFIX_VERSION,
 				"idempotency_key": key,
 				"remarks": (
-					f"SLE SVD {r.sle_svd} vs SABE sum {r.sabe_svd} (delta={delta}); "
-					"integer SLE rounding vs historical fractional batch layer"
+					f"[{accounting_category}] SLE SVD {r.sle_svd} vs SABE sum {r.sabe_svd} "
+					f"(delta={delta}); integer SLE rounding vs historical fractional batch layer. "
+					f"No artificial Stock Adjustment GL."
 				),
-				"payload": {"sle_svd": flt(r.sle_svd), "sabe_svd": flt(r.sabe_svd)},
+				"payload": {
+					"sle_svd": flt(r.sle_svd),
+					"sabe_svd": flt(r.sabe_svd),
+					"accounting_category": accounting_category,
+				},
 			}
 		)
 	return out

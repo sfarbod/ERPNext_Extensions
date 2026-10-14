@@ -14,174 +14,176 @@
 
 ## A. Business objective
 
-Warehouse operations were blocked because Stock Entries could not submit due to **historical valuation inconsistencies**. Phase 1 allows submission now by:
+Warehouse operations were blocked because Stock Entries could not submit due to **historical valuation inconsistencies** (not quantity / negative-stock issues). Phase 1 allows submission by:
 
-1. Detecting eligible valuation gaps (general rules — **no voucher hardcoding**).
+1. Detecting eligible valuation gaps with **general rules** (no voucher hardcoding).
 2. Calculating the exact signed delta from authoritative values.
-3. Posting Class A rate×qty residuals via Company **Round Off** (existing Iran contract) after native SLE↔SED sync.
-4. Recording all temporary adjustments in DocType **Temporary Valuation Adjustment** for Phase 2 Full Historical Rebuild.
-5. Narrowly authorizing fractional SABE only when stamped for historical batch / indivisible MA cases.
+3. Applying the correct accounting category (Round Off / Stock Adjustment / TRACE).
+4. Tracking every temporary adjustment for Phase 2 Full Historical Rebuild.
+5. Preserving SLE, SABE, Bin, GL balance, batch identity, and quantity validation.
 
-Phase 2 will reconstruct historical rates/SLE/SABE/GL. Phase 1 does **not** reverse adjustments automatically.
-
----
-
-## B. Root causes (mandatory examples)
-
-| Document | Purpose | Original blocker | Root cause |
-|----------|---------|------------------|------------|
-| MAT-STE-2026-41402 | Material Transfer | `StockEntryPreventionError` indivisible MA remainder 110.526 | Historical fractional batch pool on full deplete (batch 6163-20100094-…) |
-| MAT-STE-2026-41489 | Material Issue | Ledger contract: missing Round Off GL (net −1) | Native SLE sync creates Class A residual after GL already posted |
-| MAT-STE-2026-41492 | Material Issue | Composition `basic_amount ≠ qty×rate` + missing Round Off (−2) | Historical MA / zero-value poison → native SLE amount authoritative; R2 residual |
-| MAT-STE-2026-41477 | Material Issue | Same as 41492 (−2) | Same Class A timing gap |
-
-Additional real draft (general bridge): **MAT-STE-2026-41500** (Material Issue, 20 rows) — historical fractional batch rates → fractional SABE guard; bridged via `HISTORICAL_BATCH_RATE_MISMATCH`.
+Negative stock behavior is **out of scope** and unchanged.
 
 ---
 
-## C. Hotfix behavior
+## B. Accounting policy (root-cause based)
 
-### Classification
+Classification is by **root cause**, not by amount size.
 
-| Kind | Meaning |
-|------|---------|
-| `NORMAL_TRANSACTION` | No bridge |
-| `TEMPORARY_VALUATION_ADJUSTMENT` | Eligible historical valuation gap |
-| `UNSUPPORTED_OR_UNSAFE_TRANSACTION` | Original validation still fails (qty/batch/negative stock/lost rate/etc.) |
+| Category | Meaning | GL treatment | TVA `accounting_category` / `posting_mode` |
+|----------|---------|--------------|---------------------------------------------|
+| **1. GENUINE_ROUNDING** | Authoritative amount − qty×integer_rate within R2 bound (Iran Class A) | Company **Round Off** | `GENUINE_ROUNDING` / `ROUND_OFF_GL` |
+| **2. HISTORICAL_VALUATION** | Net inventory valuation gap that must be recognized in P&L | Company **Stock Adjustment** | `HISTORICAL_VALUATION` / `STOCK_ADJUSTMENT_GL` |
+| **3. TRACE_ONLY** | Observable residual with **no** net inventory GL effect | No artificial GL | `TRACE_ONLY` / `TRACE` |
 
-### Reason codes (verified only)
+### Why ±1 / ±2 on 41489 / 41492 / 41477 stay Round Off
 
-- `HISTORICAL_VALUATION_MISMATCH`
-- `INDIVISIBLE_MOVING_AVERAGE`
-- `HISTORICAL_BATCH_RATE_MISMATCH`
-- `SED_SLE_VALUE_MISMATCH`
-- `SLE_SABE_VALUE_MISMATCH`
-- `HISTORICAL_ZERO_VALUE_STOCK`
-- `SOURCE_RATE_MISMATCH`
-- `MANUFACTURING_VALUATION_RESIDUAL`
-- `TRANSFER_VALUATION_RESIDUAL`
+After native SLE↔SED sync, SLE amount is authoritative.  
+`residual = SLE_amount − qty × ROUND_HALF_UP(SLE_amount/qty)`.  
+That residual is **Class A representation** of an already-accepted inventory movement — Category 1.  
+Historical poison may have produced the SLE amount; it does **not** convert the Class A residual into Stock Adjustment merely because |delta| is small.
+
+### Why 41402 (110.526) stays TRACE
+
+- Material Transfer between warehouses that share inventory account `111625`.
+- Core posts **no transfer GL** (zero-value transfer / same account).
+- Σ SLE = 0; inventory value relocates; no net inventory change.
+- Posting Stock Adjustment would invent artificial P&L → **forbidden**.
+- TVA records the indivisible MA remainder for Phase 2.
+
+### Stock Adjustment contract (Category 2)
+
+When a future eligible case has a **real** net valuation gap requiring recognition:
+
+```
+EXPECTED_VALUE / ACTUAL_VALUE / SIGNED_DELTA
+→ Company.stock_adjustment_account (never hardcoded)
+→ balanced GL debit/credit
+→ TVA posting_mode=STOCK_ADJUSTMENT_GL
+```
+
+Manufacture TYPE C / `value_difference` Stock Adjustment paths remain the existing Iran contracts (unchanged by this bridge).
+
+---
+
+## C. Root causes (mandatory examples)
+
+| Document | Purpose | Original blocker | Category |
+|----------|---------|------------------|----------|
+| MAT-STE-2026-41402 | Material Transfer | Indivisible MA remainder 110.526 | TRACE_ONLY |
+| MAT-STE-2026-41489 → 41489-1 | Material Issue | Missing Class A Round Off (−1) | GENUINE_ROUNDING |
+| MAT-STE-2026-41492 | Material Issue | R2 composition + missing Round Off (−2) | GENUINE_ROUNDING |
+| MAT-STE-2026-41477 → 41477-1 | Material Issue | Same (−2) | GENUINE_ROUNDING |
+| MAT-STE-2026-41500 | Material Issue (20 rows) | Fractional historical batch SABE + Class A (−1) | TRACE + GENUINE_ROUNDING |
+
+---
+
+## D. Hotfix behavior
+
+### Eligibility
+
+General-purpose; no voucher / item / batch / warehouse hardcoding.
+
+Supported purposes (when valuation bridge is valid): Material Issue/Receipt/Transfer, MTfM, Manufacture, Repack, Send to Subcontractor, Material Consumption for Manufacture, source-linked returns.
+
+Unsupported (fail closed, unchanged): negative stock, lost outgoing rate zero, batch identity failures, quantity errors.
 
 ### Insertion points
 
-1. **before_validate / validate** — early `prepare_before_submit_bridge` (Frappe sets `docstatus=1` before `before_submit`).
-2. **before_submit prevention** — indivisible MA → stamp TVA + allow fractional SABE (requires Company Stock Adjustment Account).
-3. **SABE monkey patch** — skip integer fractional throw when TVA allows; late reclassify if needed.
-4. **on_submit after SED sync** — remake Round Off GL when Class A residual READY but missing; persist TVA rows.
-5. **ledger contract** — native outgoing R2 amount-authoritative composition; skip fractional SLE/SABE checks when TVA fractional authorized.
-6. **on_cancel** — mark TVA `repair_status=CANCELLED` (no automatic SA reversal in Phase 1).
+1. `before_validate` / `validate` — early TVA stamp (Frappe sets docstatus=1 before `before_submit`).
+2. `before_submit` prevention — indivisible MA → TVA + fractional SABE allow.
+3. SABE monkey patch — skip integer fractional throw when TVA allows.
+4. `on_submit` after SED sync — remake Round Off if Class A READY but missing; persist TVA.
+5. Ledger contract — native outgoing R2 amount-authoritative; fractional SLE/SABE skip when TVA-authorized.
+6. `on_cancel` — TVA `repair_status=CANCELLED` (no automatic SA reversal).
 
-### Accounting treatment
+### Fractional valuation
 
-| Residual class | GL treatment | TVA `posting_mode` |
-|----------------|--------------|--------------------|
-| Class A amount vs qty×integer_rate (Issue/Receipt/…) | Company **Round Off** via `rebuild_irr_rate_rounding_residual_after_repost` | `ROUND_OFF_GL` |
-| Indivisible MA / historical fractional batch on Transfer (same stock account / ZVT) | Inventory already balanced via SLE; remainder **traced** | `TRACE` |
-| Large unsupported integrity errors | Still fail closed | — |
-
-Company Stock Adjustment Account is always recorded on TVA for Phase 2 discoverability (`621301 - تعدیلات موجودی کالا - E` on the test company).
-
-**No hardcoded** voucher names, items, batches, warehouses, or adjustment caps.
+| Concept | Treatment |
+|---------|-----------|
+| Fractional MA / batch **rate** | May exist historically; authorized SABE under TVA |
+| Intermediate calculation | Not silently truncated |
+| Persisted SLE monetary (IRR) | Integer via existing rounding helpers |
+| Final GL (IRR) | Integer; Class A residual → Round Off |
+| Quantity fields | **Never** modified to absorb monetary residuals |
 
 ---
 
-## D. Adjustment calculation
+## E. Adjustment calculation
 
 ```
-EXPECTED_VALUE  = ROUND_HALF_UP(qty × integer_rate)   # or rate_derived_amount
-ACTUAL_VALUE    = authoritative movement (SLE SVD / pool / SED amount)
-ADJUSTMENT_DELTA = ACTUAL_VALUE − EXPECTED_VALUE      # signed
+EXPECTED_VALUE   = ROUND_HALF_UP(qty × integer_rate)   # or rate_derived_amount
+ACTUAL_VALUE     = authoritative movement (SLE SVD / pool / SED amount)
+ADJUSTMENT_DELTA = ACTUAL_VALUE − EXPECTED_VALUE       # signed
 ```
 
 Idempotency key: `sha256(hotfix_version|stock_entry|detail|reason|delta)[:40]`.
 
 ---
 
-## E. Four-document test matrix (development.localhost)
+## F. Test evidence (development.localhost)
 
-| DOCUMENT | ORIGINAL ERROR | ROOT CAUSE | EXPECTED | ACTUAL | DELTA | SA ACCOUNT | GL | SUBMIT | SLE | SABE | BIN | TVA | STATUS |
-|----------|----------------|------------|----------|--------|-------|------------|----|--------|-----|------|-----|-----|--------|
-| 41402 | Indivisible MA | Fractional batch pool full deplete | 1809165600 | 1809165710.526 | +110.526 | 621301… | 0 (same WH account ZVT) | docstatus=1 | 8 rows Σ0 | 8 (frac allowed) | source qty/value 0 | INDIVISIBLE_MOVING_AVERAGE TRACE | **PASS** |
-| 41489 | Missing Round Off −1 | Class A after SED sync | rate_derived | SLE amount | −1 | 621301… (RO posted) | Dr/Cr 877743 balanced; RO credit 1 | original + amend `MAT-STE-2026-41489-1` docstatus=1 | 1 | n/a | OK | SED_SLE_VALUE_MISMATCH ROUND_OFF_GL | **PASS** |
-| 41492 | Composition + RO −2 | Native MA / R2 | 68113638 | 68113636 | −2 | 621301… | Dr/Cr 68113638; RO credit 2 | docstatus=1 | 1 Σ−68113636 | n/a | OK | SED_SLE_VALUE_MISMATCH | **PASS** |
-| 41477 | Composition + RO −2 | Same | 8169645 | 8169643 | −2 | 621301… | Dr/Cr 8169645; RO credit 2 | original + amend `MAT-STE-2026-41477-1` docstatus=1 | 1 Σ−8169643 | n/a | OK | SED_SLE_VALUE_MISMATCH | **PASS** |
+| DOCUMENT | DOCSTATUS | DELTA | CATEGORY | GL | TVA | STATUS |
+|----------|-----------|-------|----------|----|-----|--------|
+| 41402 | 1 | +110.526 | TRACE_ONLY | 0/0 (same inv. account) | INDIVISIBLE_MOVING_AVERAGE | **PASS** |
+| 41489-1 | 1 | −1 | GENUINE_ROUNDING | 877743/877743 + RO Cr 1 | SED_SLE_VALUE_MISMATCH ROUND_OFF | **PASS** |
+| 41492 | 1 | −2 | GENUINE_ROUNDING | 68113638/68113638 + RO Cr 2 | ROUND_OFF | **PASS** |
+| 41477-1 | 1 | −2 | GENUINE_ROUNDING | 8169645/8169645 + RO Cr 2 | ROUND_OFF | **PASS** |
+| 41500 | 1 | −1 + frac TRACE | GENUINE_ROUNDING + TRACE | 21133114/21133114 | batch mismatch + RO | **PASS** |
 
-Cancel/retry: originals cancelled → TVA `CANCELLED`; amend re-submit (workflow temporarily inactive) recreated TVA with new idempotency keys — **PASS**.
+Additional: 41488/41487/41475/41472 Class A bridge PASS (prior probes).  
+Negative stock (41491) still **NegativeStockError** — unchanged.  
+Lost outgoing rate (41454/41465) still fail closed.
 
-### Additional general cases
-
-| Document | Result |
-|----------|--------|
-| MAT-STE-2026-41500 | **PASS** — HISTORICAL_BATCH_RATE_MISMATCH + SED_SLE_VALUE_MISMATCH; GL balanced |
-| MAT-STE-2026-41488 / 41487 / 41475 / 41472 | **PASS** (rollback probes) — Class A Round Off bridge |
-| MAT-STE-2026-41491 / 41460 | Still **NegativeStockError** (correct — not valuation bridge) |
-| MAT-STE-2026-41454 / 41465 | Still **ValuationIntegrityError** lost outgoing rate (correct — unsupported) |
+Cancel/retry: originals cancelled → TVA CANCELLED; amend re-submit recreates TVA with new keys.
 
 ---
 
-## F. Regression
+## G. Regression
 
-- `test_prevention_v5544` — **19 OK** (indivisible MA now bridges when SA account configured; still fails closed without SA account).
-- Negative stock / lost outgoing rate / return divergence still block.
-- Native outgoing R2 composition allowed within mathematical bound.
-- TVA idempotency: duplicate `idempotency_key` reuses the same row.
-- Cancel sets TVA `repair_status=CANCELLED`.
-- v5.5.44 prevention contracts otherwise intact.
+- `test_prevention_v5544` — **19 OK**
+- Indivisible MA bridges when SA account configured; fails closed without it
+- Manufacture / SAME_ITEM_MULTI_FG / returns / RIV skip guards intact
+- No quantity or negative-stock logic changes
 
 ---
 
-## G. Future Full Rebuild (Phase 2) compatibility
+## H. Phase 2 compatibility
 
-Do **not** implement Phase 2 here. Phase 2 can:
+Discover via DocType **Temporary Valuation Adjustment** where `hotfix_version=5.5.45`.
 
-1. **Identify** all `Temporary Valuation Adjustment` with `hotfix_version=5.5.45` and `repair_status in (OPEN, SUBMITTED)`.
-2. **Recalculate** corrected valuation from reconstructed source rates / SABE / SLE.
-3. **Determine** remaining valid delta vs temporary delta.
-4. **Reverse or settle** Round Off / SA legs without duplication (use `gl_entry` + idempotency key).
-5. **Verify** final inventory GL; set `repair_status=SUPERSEDED_BY_PHASE2`.
+Per row: source voucher, reason, `accounting_category`, expected/actual/delta, posting_mode, SA account, related `gl_entry`, repair_status, payload JSON.
 
-Ordinary RIV will **not** automatically reverse these adjustments.
+Ordinary RIV does **not** auto-reverse these. Phase 2 must reconcile explicitly → `SUPERSEDED_BY_PHASE2`.
 
 ---
 
-## H. Known limitations
+## I. Modified files (finalization)
 
-1. Transfer indivisible / fractional batch remainders on **same inventory account** warehouses produce **no Stock Adjustment GL** (ERPNext posts no transfer GL); remainder is TRACE-only.
-2. Class A residuals use **Round Off**, not Stock Adjustment GL (ledger contract / existing Iran residual policy). SA account is still stored on TVA.
-3. Manufacture / Repack TYPE A/B/C contracts are **not** replaced by this bridge.
-4. `lost_outgoing_rate_zero` and negative stock remain hard failures.
-5. Workflow-gated amend re-submit may require UI workflow actions on this site.
-6. Fractional SABE under TVA means integer IRR SLE may differ slightly from SABE; `SLE_SABE_VALUE_MISMATCH` rows capture that for Phase 2.
+- `temporary_valuation_adjustment.py` — accounting categories; TRACE/Round Off root-cause remarks; no Class A→historical overwrite
+- `temporary_valuation_adjustment.json` — `accounting_category` field
+- `RELEASE_5_5_45.md` — policy + evidence
 
----
-
-## I. Modified files
-
-- `erpnext_extensions/__init__.py` — version 5.5.45
-- `erpnext_extensions/iran_accounting/domain/temporary_valuation_adjustment.py` — **new**
-- `erpnext_extensions/erpnext_extensions/doctype/temporary_valuation_adjustment/*` — **new** DocType
-- `erpnext_extensions/iran_accounting/domain/stock_entry_prevention.py`
-- `erpnext_extensions/iran_accounting/domain/stock_entry_ledger_contract.py`
-- `erpnext_extensions/iran_accounting/stock_entry.py`
-- `erpnext_extensions/iran_accounting/integration/monkey_patches.py`
-- `erpnext_extensions/hooks.py` — on_cancel hook
-- `erpnext_extensions/iran_accounting/tests/test_prevention_v5544.py`
-- `RELEASE_5_5_45.md`
-
-Unrelated untracked: `erpnext_extensions/scripts/cancelled_voucher_repair.py` (preserved, not committed).
+Prior commit `7c0977e` delivered the bridge; this finalization only clarifies accounting policy metadata.
 
 ---
 
-## J. Deployment notes
+## J. Deployment / rollback
 
-1. Deploy app 5.5.45; `bench migrate` (creates Temporary Valuation Adjustment).
-2. Confirm Company **Stock Adjustment Account** and **Round Off Account** are set.
-3. Scheduler / RIV queue unchanged — do not start historical RIV for Phase 1.
-4. Submit blocked Stock Entries normally from Desk.
+1. Deploy 5.5.45; `bench migrate` (TVA DocType + `accounting_category`).
+2. Confirm Company Stock Adjustment + Round Off accounts.
+3. Do not start historical RIV for Phase 1.
+4. Rollback: restore backup `20261014_083123-…` and/or revert app to 5.5.44.
 
-## K. Rollback
+---
 
-1. Restore DB from `20261014_083123-development_localhost-database.sql.gz` **or** cancel affected Stock Entries and remove TVA rows.
-2. Revert app to 5.5.44.
+## K. Known limitations
+
+1. Same-account transfers: TRACE-only for indivisible remainder (no transfer GL).
+2. Class A uses Round Off (Category 1), not SA — by root cause.
+3. Manufacture TYPE A/B/C SA contracts unchanged.
+4. `HISTORICAL_VALUATION` / `STOCK_ADJUSTMENT_GL` path is reserved for true net valuation gaps; example suite did not require inventing SA GL.
+5. Workflow-gated amend may need UI on some sites.
 
 ---
 
@@ -189,4 +191,4 @@ Unrelated untracked: `erpnext_extensions/scripts/cancelled_voucher_repair.py` (p
 
 **HOTFIX_READY** (development.localhost)
 
-Mandatory examples submitted with calculated, traceable adjustments; general bridge validated on additional drafts; unrelated validations still fail closed; Phase 2 discoverability documented.
+Generalized valuation bridge; known examples submitted; Round Off vs TRACE classified by root cause; negative stock untouched; Phase 2 discoverable.
