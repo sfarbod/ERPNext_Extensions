@@ -310,8 +310,9 @@ def _batch_balance(item_code: str, batch_no: str, warehouse: str) -> tuple[float
 def assert_no_unapproved_indivisible_ma_remainder(doc) -> None:
 	"""Block full-depletion outgoing moves when integer pool is not divisible by qty.
 
-	Accounting treatment for the remainder is not approved. Do not invent Stock
-	Adjustment, row splits, or silent discard on new documents.
+	v5.5.45: eligible historical remainders are converted to Temporary Valuation
+	Adjustment stamps (Stock Adjustment bridge) instead of a hard block. Unsupported
+	cases still fail closed — no silent discard.
 	"""
 	if getattr(doc, "doctype", None) != "Stock Entry":
 		return
@@ -322,6 +323,12 @@ def assert_no_unapproved_indivisible_ma_remainder(doc) -> None:
 	if doc.get("purpose") in ("Manufacture", "Repack", "Material Consumption for Manufacture"):
 		# Manufacturing residuals use the approved TYPE A/B/C / STAGE_CO contracts.
 		return
+
+	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+		append_pending,
+		classify_indivisible_ma_row,
+		mark_fractional_allowed,
+	)
 
 	for row in doc.get("items") or []:
 		warehouse = row.get("s_warehouse")
@@ -350,6 +357,12 @@ def assert_no_unapproved_indivisible_ma_remainder(doc) -> None:
 
 		rate, product, remainder = _integer_rate_and_product(move_qty, bal_value)
 		if remainder == 0:
+			continue
+
+		adj = classify_indivisible_ma_row(doc, row, pool_label, bal_qty, bal_value)
+		if adj:
+			append_pending(doc, adj)
+			mark_fractional_allowed(doc)
 			continue
 
 		frappe.throw(
@@ -498,6 +511,12 @@ def run_validate_prevention_guards(doc) -> None:
 
 def run_before_submit_prevention_guards(doc) -> None:
 	"""Before-submit prevention for NEW IRR Stock Entries."""
+	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+		prepare_before_submit_bridge,
+	)
+
+	# Stamp eligible temporary valuation adjustments before hard prevention.
+	prepare_before_submit_bridge(doc)
 	assert_batch_valuation_identity_before_submit(doc)
 	assert_source_linked_return_valuation(doc)
 	assert_no_unapproved_indivisible_ma_remainder(doc)
@@ -509,5 +528,10 @@ def collect_post_submit_prevention_failures(voucher_no: str, company: str) -> li
 		return []
 	failures: list[str] = []
 	failures.extend(collect_submitted_batch_identity_failures(voucher_no, company))
-	failures.extend(collect_fractional_sabe_failures(voucher_no, company))
+	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+		allows_fractional_sabe,
+	)
+
+	if not allows_fractional_sabe(voucher_no):
+		failures.extend(collect_fractional_sabe_failures(voucher_no, company))
 	return failures

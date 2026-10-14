@@ -331,8 +331,8 @@ def _patch_stock_controller():
 						if self.doctype == "Purchase Receipt"
 						else self.get_gl_entries(inventory_account_map)
 					)
-				# Iran post-processing: IRR rate×qty residual → Company Round Off Account.
-				# Ordinary get_gl_entries remains ERPNext (or ZVT); this only appends/adjusts.
+				# Iran post-processing: IRR rate×qty residual → Stock Adjustment (inventory)
+				# or Round Off (non-inventory). Ordinary get_gl_entries remains ERPNext/ZVT.
 				from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
 				from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 					apply_irr_rate_rounding_residual_gl,
@@ -1285,6 +1285,43 @@ def _patch_serial_batch_irr_integer_guard(sl):
 		from erpnext_extensions.iran_accounting.domain.stock_entry_prevention import (
 			StockEntryPreventionError,
 		)
+		from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+			allows_fractional_sabe,
+		)
+
+		# v5.5.45: Temporary Stock Adjustment Bridge may authorize fractional SABE
+		# for stamped indivisible-MA / historical batch cases only.
+		voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+
+		def _tva_allows() -> bool:
+			flags = getattr(frappe.local, "iran_tva_fractional_vouchers", None) or set()
+			if voucher_no and voucher_no in flags:
+				return True
+			active = getattr(frappe.local, "iran_tva_active_stock_entry", None)
+			if active is not None and allows_fractional_sabe(active):
+				return True
+			if voucher_no and allows_fractional_sabe(voucher_no):
+				return True
+			# Late classify: validate may hit this guard before before_submit stamps.
+			if voucher_no and frappe.db.exists("Stock Entry", voucher_no):
+				try:
+					from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+						mark_fractional_allowed,
+						pending_adjustments,
+						prepare_before_submit_bridge,
+					)
+
+					se = frappe.get_doc("Stock Entry", voucher_no)
+					prepare_before_submit_bridge(se)
+					if pending_adjustments(se) and allows_fractional_sabe(se):
+						mark_fractional_allowed(se)
+						return True
+				except Exception:
+					pass
+			return False
+
+		if _tva_allows():
+			return
 
 		ccy = get_company_currency(company)
 		rows = frappe.get_all(
@@ -1296,6 +1333,32 @@ def _patch_serial_batch_irr_integer_guard(sl):
 			if rate_is_fractional(row.incoming_rate, ccy) or amount_is_fractional(
 				row.stock_value_difference, ccy
 			):
+				# Re-check after row scan in case flags were stamped concurrently.
+				if _tva_allows():
+					return
+				# Last resort: resolve voucher from bundle / SLE fields and reclassify.
+				resolved = voucher_no
+				if not resolved and hasattr(sle, "get"):
+					resolved = sle.get("voucher_no") or sle.get("voucher_detail_no")
+				if not resolved:
+					resolved = frappe.db.get_value(
+						"Serial and Batch Bundle", bundle, "voucher_no"
+					)
+				if resolved and frappe.db.exists("Stock Entry", resolved):
+					try:
+						from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+							mark_fractional_allowed,
+							pending_adjustments,
+							prepare_before_submit_bridge,
+						)
+
+						se = frappe.get_doc("Stock Entry", resolved)
+						prepare_before_submit_bridge(se)
+						if pending_adjustments(se):
+							mark_fractional_allowed(se)
+							return
+					except Exception:
+						pass
 				frappe.throw(
 					_(
 						"Serial and Batch Entry {0} (batch {1}) has a fractional IRR rate "

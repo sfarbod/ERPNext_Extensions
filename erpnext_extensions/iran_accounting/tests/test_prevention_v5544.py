@@ -314,7 +314,10 @@ class TestBatchPreventionV5544(unittest.TestCase):
 class TestIntegerIRRPreventionV5544(unittest.TestCase):
 	"""Group C — indivisible MA remainder."""
 
-	def test_c_full_depletion_indivisible_remainder_blocked(self):
+	def test_c_full_depletion_indivisible_remainder_bridged_when_sa_configured(self):
+		"""v5.5.45: eligible indivisible MA stamps Temporary Valuation Adjustment instead of throw."""
+		from erpnext_extensions.iran_accounting.domain import temporary_valuation_adjustment as tva
+
 		row = _Row(
 			idx=1,
 			item_code="20100094",
@@ -324,18 +327,57 @@ class TestIntegerIRRPreventionV5544(unittest.TestCase):
 			batch_no=None,
 			basic_rate=6030552,
 			amount=1809165600,
+			name="row-indiv",
 		)
-		doc = _Doc(purpose="Material Transfer", items=[row])
+		doc = _Doc(purpose="Material Transfer", items=[row], name="SE-INDIV")
+		with mock.patch(f"{PREV}.is_irr_company", return_value=True), mock.patch(
+			f"{PREV}._through_riv", return_value=False
+		), mock.patch(
+			f"{PREV}._warehouse_balance", return_value=(300.0, 1_809_165_711.0)
+		), mock.patch(f"{PREV}._batchwise_required", return_value=False), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment.resolve_stock_adjustment_account",
+			return_value="Stock Adjustment - T",
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment.is_irr_company",
+			return_value=True,
+		):
+			assert_no_unapproved_indivisible_ma_remainder(doc)
+		pending = tva.pending_adjustments(doc)
+		self.assertTrue(pending)
+		self.assertEqual(pending[0]["reason_code"], "INDIVISIBLE_MOVING_AVERAGE")
+		self.assertAlmostEqual(abs(pending[0]["adjustment_delta"]), 111.0, places=0)
+
+	def test_c_full_depletion_indivisible_remainder_blocked_without_sa_account(self):
+		row = _Row(
+			idx=1,
+			item_code="20100094",
+			qty=300,
+			transfer_qty=300,
+			s_warehouse="Quarantine",
+			batch_no=None,
+			basic_rate=6030552,
+			amount=1809165600,
+			name="row-indiv-2",
+		)
+		doc = _Doc(purpose="Material Transfer", items=[row], name="SE-INDIV-2")
 		with _throwing(), mock.patch(f"{PREV}.is_irr_company", return_value=True), mock.patch(
 			f"{PREV}._through_riv", return_value=False
 		), mock.patch(
 			f"{PREV}._warehouse_balance", return_value=(300.0, 1_809_165_711.0)
-		), mock.patch(f"{PREV}._batchwise_required", return_value=False):
+		), mock.patch(f"{PREV}._batchwise_required", return_value=False), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment.resolve_stock_adjustment_account",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment.is_irr_company",
+			return_value=True,
+		):
 			with self.assertRaises(Exception) as ctx:
 				assert_no_unapproved_indivisible_ma_remainder(doc)
 		msg = str(ctx.exception)
-		self.assertIn("indivisible Moving Average remainder", msg)
-		self.assertIn("111", msg)
+		self.assertTrue(
+			"Stock Adjustment" in msg or "indivisible Moving Average remainder" in msg,
+			msg,
+		)
 
 	def test_c_partial_issue_not_blocked(self):
 		row = _Row(

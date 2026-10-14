@@ -294,9 +294,14 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 		if row.get("basic_rate") is not None and transfer_qty:
 			exp_basic = round_row_amount_financial(transfer_qty, row.basic_rate, ccy)
-			if abs(flt(row.basic_amount) - exp_basic) > tol and not _manufacture_output_amount_authoritative(
-				doc, row, company
-			):
+			amount_auth = _manufacture_output_amount_authoritative(doc, row, company)
+			if not amount_auth:
+				from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+					native_outgoing_r2_amount_authoritative,
+				)
+
+				amount_auth = native_outgoing_r2_amount_authoritative(doc, row, company)
+			if abs(flt(row.basic_amount) - exp_basic) > tol and not amount_auth:
 				failures.append(
 					_fail(
 						doc,
@@ -335,54 +340,74 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 
 
 def _assert_irr_rate_rounding_residual_gl(doc, gl_rows: list[dict], company: str) -> list[str]:
-	"""Round Off GL must match IRR rate residual; zero residual → no residual lines."""
+	"""Inventory Class A residual must post to Stock Adjustment (v5.5.45); not Financial Round Off."""
 	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 		expected_round_off_gl_totals,
+		is_irr_inventory_valuation_residual_gl,
 		is_irr_rate_rounding_residual_gl,
 		resolve_company_round_off,
+		resolve_company_stock_adjustment_residual,
+		uses_stock_adjustment_for_irr_residual,
 	)
 
 	failures = []
 	exp = expected_round_off_gl_totals(doc)
+	use_sa = uses_stock_adjustment_for_irr_residual(doc)
 	residual_rows = [r for r in gl_rows if is_irr_rate_rounding_residual_gl(r, company=company)]
+	dest_label = "Stock Adjustment" if use_sa else "Round Off"
+
 	if not exp["net_signed_debit"]:
 		if residual_rows:
 			failures.append(
-				f"{doc.doctype} {doc.name}: zero IRR rate residual but Round Off residual GL present"
+				f"{doc.doctype} {doc.name}: zero IRR rate residual but {dest_label} residual GL present"
 			)
 		return failures
 
 	if not residual_rows:
-		# 3.8.6: missing partner / Class B must fail at apply — soft-skip is not allowed.
-		# If expected net is non-zero but no residual GL, report failure (apply should have thrown).
 		failures.append(
-			f"{doc.doctype} {doc.name}: expected IRR Round Off residual GL "
+			f"{doc.doctype} {doc.name}: expected IRR {dest_label} residual GL "
 			f"(net_signed_debit={exp['net_signed_debit']}) but none posted "
-			f"(no Stock Adjustment fallback; partner/config must fail closed)"
+			f"(partner/config must fail closed)"
 		)
 		return failures
 
 	if len(residual_rows) != 1:
 		failures.append(
-			f"{doc.doctype} {doc.name}: expected 1 IRR Round Off residual GL row, got {len(residual_rows)}"
+			f"{doc.doctype} {doc.name}: expected 1 IRR {dest_label} residual GL row, "
+			f"got {len(residual_rows)}"
 		)
 		return failures
 
-	cfg = resolve_company_round_off(company, require=False)
 	row = residual_rows[0]
+	if use_sa:
+		cfg = resolve_company_stock_adjustment_residual(company, require=False)
+		# Must not land on Financial Round Off.
+		ro_acc = frappe.get_cached_value("Company", company, "round_off_account")
+		if ro_acc and row.get("account") == ro_acc:
+			failures.append(
+				f"{doc.doctype} {doc.name}: inventory valuation residual posted to Financial "
+				f"Round Off {ro_acc}; must use Stock Adjustment"
+			)
+		if not is_irr_inventory_valuation_residual_gl(row, company=company):
+			failures.append(
+				f"{doc.doctype} {doc.name}: residual GL missing inventory Stock Adjustment marker/remark"
+			)
+	else:
+		cfg = resolve_company_round_off(company, require=False)
+
 	if cfg.get("account") and row.get("account") != cfg["account"]:
 		failures.append(
-			f"{doc.doctype} {doc.name}: residual Round Off account {row.get('account')} "
-			f"!= Company.round_off_account {cfg.get('account')}"
+			f"{doc.doctype} {doc.name}: residual {dest_label} account {row.get('account')} "
+			f"!= expected {cfg.get('account')}"
 		)
 	if cfg.get("cost_center") and row.get("cost_center") != cfg["cost_center"]:
 		failures.append(
-			f"{doc.doctype} {doc.name}: residual Round Off cost center {row.get('cost_center')} "
-			f"!= Company.round_off_cost_center {cfg.get('cost_center')}"
+			f"{doc.doctype} {doc.name}: residual {dest_label} cost center {row.get('cost_center')} "
+			f"!= expected {cfg.get('cost_center')}"
 		)
 	if flt(row.get("debit")) != flt(exp["debit"]) or flt(row.get("credit")) != flt(exp["credit"]):
 		failures.append(
-			f"{doc.doctype} {doc.name}: residual Round Off GL debit/credit "
+			f"{doc.doctype} {doc.name}: residual {dest_label} GL debit/credit "
 			f"{row.get('debit')}/{row.get('credit')} != expected {exp['debit']}/{exp['credit']}"
 		)
 	return failures
@@ -515,12 +540,17 @@ def collect_ledger_contract_failures(voucher_no: str, company: str) -> list[str]
 			failures.extend(_assert_lcv_gl(doc, gl_rows))
 			failures.extend(_assert_irr_rate_rounding_residual_gl(doc, gl_rows, company))
 
+		from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+			allows_fractional_sabe,
+		)
+
+		tva_fractional = allows_fractional_sabe(voucher_no)
 		if not assert_no_fractional_irr_gl("Stock Entry", voucher_no, company):
 			bad = []
 			for row in gl_rows:
 				bad.extend(fractional_gl_fields(row, company))
 			failures.append(f"{doc.doctype} {doc.name}: fractional IRR in GL: {bad[:3]}")
-		if not assert_no_fractional_irr_sle("Stock Entry", voucher_no, company):
+		if not tva_fractional and not assert_no_fractional_irr_sle("Stock Entry", voucher_no, company):
 			from erpnext_extensions.iran_accounting.validation import fetch_sle_rows
 
 			bad = []

@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""IRR integer-rate rounding residual → Company Round Off Account.
+"""IRR integer-rate rounding residual → destination account by voucher domain.
 
 Contract
 --------
@@ -8,17 +8,22 @@ authoritative_amount = finalized row / SLE movement amount
 rounding_residual = authoritative_amount − rate_derived_amount
 
 Inventory GL and SLE keep authoritative_amount.
-When residual ≠ 0, post an explicit Round Off GL leg (Company.round_off_account /
-round_off_cost_center) and reclassify the same magnitude from a non-Stock GL leg
-so the voucher stays balanced without changing inventory value.
+When residual ≠ 0, post an explicit residual GL leg and reclassify the same
+magnitude from a non-Stock GL leg so the voucher stays balanced without
+changing inventory value.
 
-Debit/credit (Round Off signed debit; positive = Debit Round Off):
+Destination (v5.5.45 accounting policy):
+  Inventory valuation vouchers (Stock Entry / Purchase Receipt / Stock
+  Reconciliation) → Company.stock_adjustment_account (never Financial Round Off).
+  Non-inventory / financial Round Off paths remain on Company.round_off_account.
+
+Debit/credit (signed debit on residual destination; positive = Debit):
   incoming inventory movement: round_off_debit = −residual
   outgoing inventory movement: round_off_debit = +residual
 
 Example (incoming, amount=1371, qty=7, rate=196):
   residual = 1371 − 1372 = −1
-  round_off_debit = −(−1) = +1  → Debit Round Off 1
+  round_off_debit = −(−1) = +1  → Debit Stock Adjustment 1 (inventory)
 """
 
 from __future__ import annotations
@@ -42,11 +47,18 @@ IRR_RATE_ROUNDING_RESIDUAL_REMARK = "IRR rate rounding residual"
 # Company.round_off_account + IRR_RATE_ROUNDING_RESIDUAL_REMARK in remarks.
 IRR_RATE_ROUNDING_RESIDUAL_MARKER = "_irr_rate_rounding_residual"
 
+# v5.5.45 policy: inventory valuation Class A residuals → Stock Adjustment (not Financial Round Off).
+IRR_INVENTORY_VALUATION_RESIDUAL_REMARK = "IRR inventory valuation residual"
+IRR_INVENTORY_VALUATION_RESIDUAL_MARKER = "_irr_inventory_valuation_residual"
+
 SUPPORTED_RESIDUAL_DOCTYPES = (
 	"Stock Entry",
 	"Purchase Receipt",
 	"Stock Reconciliation",
 )
+
+# Inventory valuation vouchers: residual destination is Company.stock_adjustment_account.
+INVENTORY_VALUATION_RESIDUAL_DOCTYPES = frozenset(SUPPORTED_RESIDUAL_DOCTYPES)
 
 # Manufacture / Repack: incoming≠outgoing from integer-rate policy is a stock valuation
 # difference → Company Stock Adjustment (vanilla ERPNext). Round Off must NOT compensate
@@ -66,20 +78,150 @@ def stock_entry_excludes_irr_residual_round_off(doc) -> bool:
 	return (doc.get("purpose") or "") in IRR_RESIDUAL_ROUND_OFF_EXCLUDED_STOCK_ENTRY_PURPOSES
 
 
+def uses_stock_adjustment_for_irr_residual(doc) -> bool:
+	"""True when Class A residual must post to Stock Adjustment (inventory policy v5.5.45)."""
+	return getattr(doc, "doctype", None) in INVENTORY_VALUATION_RESIDUAL_DOCTYPES
+
+
+def resolve_company_stock_adjustment_residual(company: str, *, require: bool = True) -> dict[str, str | None]:
+	"""Stock Adjustment account + cost center for inventory valuation residuals.
+
+	Cost center reuses Company.round_off_cost_center (sole dimension authority for residual
+	legs) so inventory residual CC stays consistent with prior Round Off dimension policy.
+	"""
+	sa_account = frappe.get_cached_value("Company", company, "stock_adjustment_account")
+	cost_center = frappe.get_cached_value("Company", company, "round_off_cost_center")
+	if require:
+		validate_stock_adjustment_residual_configuration(company, sa_account, cost_center)
+	return {"account": sa_account, "cost_center": cost_center}
+
+
+def validate_stock_adjustment_residual_configuration(
+	company: str, account: str | None = None, cost_center: str | None = None
+) -> None:
+	"""Fail closed when inventory residual posting requires Stock Adjustment masters."""
+	if account is None:
+		account = frappe.get_cached_value("Company", company, "stock_adjustment_account")
+	if cost_center is None:
+		cost_center = frappe.get_cached_value("Company", company, "round_off_cost_center")
+
+	if not account:
+		frappe.throw(
+			_(
+				"Please set Stock Adjustment Account on Company {0} for inventory "
+				"valuation residuals. Financial Round Off must not be used for stock valuation."
+			).format(frappe.bold(company)),
+			title=_("Missing Stock Adjustment Account"),
+		)
+	if not cost_center:
+		frappe.throw(
+			_(
+				"Please set Round Off Cost Center on Company {0} (used as residual cost center "
+				"for inventory Stock Adjustment legs)."
+			).format(frappe.bold(company)),
+			title=_("Missing Residual Cost Center"),
+		)
+
+	acc = frappe.db.get_value(
+		"Account",
+		account,
+		["name", "company", "is_group", "disabled"],
+		as_dict=True,
+	)
+	if not acc:
+		frappe.throw(_("Stock Adjustment Account {0} does not exist.").format(frappe.bold(account)))
+	if acc.company != company:
+		frappe.throw(
+			_("Stock Adjustment Account {0} does not belong to Company {1}.").format(
+				frappe.bold(account), frappe.bold(company)
+			)
+		)
+	if cint(acc.is_group):
+		frappe.throw(_("Stock Adjustment Account {0} must not be a group.").format(frappe.bold(account)))
+	if cint(acc.disabled):
+		frappe.throw(_("Stock Adjustment Account {0} is disabled.").format(frappe.bold(account)))
+
+	company_currency = frappe.get_cached_value("Company", company, "default_currency")
+	account_currency = frappe.get_cached_value("Account", account, "account_currency")
+	if company_currency and account_currency and account_currency != company_currency:
+		frappe.throw(
+			_(
+				"Stock Adjustment Account {0} currency {1} is incompatible with Company {2} currency {3}."
+			).format(
+				frappe.bold(account),
+				frappe.bold(account_currency),
+				frappe.bold(company),
+				frappe.bold(company_currency),
+			),
+			title=_("Stock Adjustment Currency"),
+		)
+
+	cc = frappe.db.get_value(
+		"Cost Center",
+		cost_center,
+		["name", "company", "disabled", "is_group"],
+		as_dict=True,
+	)
+	if not cc:
+		frappe.throw(_("Residual Cost Center {0} does not exist.").format(frappe.bold(cost_center)))
+	if cc.company != company:
+		frappe.throw(
+			_("Residual Cost Center {0} does not belong to Company {1}.").format(
+				frappe.bold(cost_center), frappe.bold(company)
+			)
+		)
+	if cint(cc.disabled):
+		frappe.throw(_("Residual Cost Center {0} is disabled.").format(frappe.bold(cost_center)))
+	if cint(cc.is_group):
+		frappe.throw(_("Residual Cost Center {0} must not be a group.").format(frappe.bold(cost_center)))
+
+
+def is_irr_inventory_valuation_residual_gl(
+	entry,
+	*,
+	company: str | None = None,
+	stock_adjustment_account: str | None = None,
+) -> bool:
+	"""Detect inventory valuation residual GL (Stock Adjustment destination)."""
+	if not entry:
+		return False
+	if entry.get(IRR_INVENTORY_VALUATION_RESIDUAL_MARKER):
+		return True
+	account = entry.get("account")
+	if not account:
+		return False
+	if stock_adjustment_account is None and company:
+		try:
+			stock_adjustment_account = frappe.get_cached_value(
+				"Company", company, "stock_adjustment_account"
+			)
+		except Exception:
+			stock_adjustment_account = None
+	if not stock_adjustment_account or account != stock_adjustment_account:
+		return False
+	return IRR_INVENTORY_VALUATION_RESIDUAL_REMARK in (entry.get("remarks") or "")
+
+
 def is_irr_rate_rounding_residual_gl(
 	entry,
 	*,
 	company: str | None = None,
 	round_off_account: str | None = None,
 ) -> bool:
-	"""Structural detection of IRR residual Round Off GL rows.
+	"""Structural detection of IRR residual GL rows (Round Off or inventory Stock Adjustment).
 
-	Prefer the explicit in-memory marker. After persist (marker stripped by make_entry),
-	require both Company.round_off_account and the residual remark — never remarks alone.
+	Prefer explicit in-memory markers. After persist, require destination account + remark.
+	Inventory vouchers use Stock Adjustment; financial Round Off remark is still recognized
+	for legacy rows / non-inventory paths.
 	"""
 	if not entry:
 		return False
-	if entry.get(IRR_RATE_ROUNDING_RESIDUAL_MARKER):
+	if entry.get(IRR_RATE_ROUNDING_RESIDUAL_MARKER) or entry.get(
+		IRR_INVENTORY_VALUATION_RESIDUAL_MARKER
+	):
+		return True
+
+	if is_irr_inventory_valuation_residual_gl(entry, company=company):
 		return True
 
 	account = entry.get("account")
@@ -121,6 +263,29 @@ def stamp_irr_residual_round_off_masters(entry, company: str) -> None:
 	entry["cost_center"] = cfg["cost_center"]
 	entry[IRR_RATE_ROUNDING_RESIDUAL_MARKER] = 1
 	assert_irr_residual_round_off_masters(entry, company)
+
+
+def stamp_irr_inventory_valuation_residual_masters(entry, company: str) -> None:
+	"""Set account/cost_center from Stock Adjustment masters for inventory residuals."""
+	cfg = resolve_company_stock_adjustment_residual(company, require=True)
+	entry["account"] = cfg["account"]
+	entry["cost_center"] = cfg["cost_center"]
+	entry[IRR_INVENTORY_VALUATION_RESIDUAL_MARKER] = 1
+	entry.pop(IRR_RATE_ROUNDING_RESIDUAL_MARKER, None)
+	if entry.get("account") != cfg["account"]:
+		frappe.throw(
+			_("Inventory residual GL account {0} must equal Company.stock_adjustment_account {1}.").format(
+				frappe.bold(entry.get("account")), frappe.bold(cfg["account"])
+			),
+			title=_("Stock Adjustment Account"),
+		)
+	if entry.get("cost_center") != cfg["cost_center"]:
+		frappe.throw(
+			_("Inventory residual GL cost center {0} must equal residual cost center {1}.").format(
+				frappe.bold(entry.get("cost_center")), frappe.bold(cfg["cost_center"])
+			),
+			title=_("Stock Adjustment Cost Center"),
+		)
 
 
 def rate_derived_amount(qty, valuation_rate, currency: str | None):
@@ -539,9 +704,11 @@ def _populate_round_off_dimensions(gle: dict, voucher_type: str, voucher_no: str
 
 
 def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None:
-	"""Post-process ERPNext GL map using shared ResidualDecision (3.8.6).
+	"""Post-process ERPNext GL map using shared ResidualDecision (3.8.6 / v5.5.45).
 
-	Manufacture / Repack: no IRR residual Round Off — value_difference uses Stock Adjustment.
+	Manufacture / Repack: no Class A residual layer — value_difference uses Stock Adjustment.
+	Other inventory vouchers (Stock Entry / PR / SR): Class A residual → Stock Adjustment.
+	Financial Round Off is never used for inventory valuation residuals.
 	"""
 	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 		STATUS_BYPASS,
@@ -564,12 +731,16 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 		return gl_map
 
 	net_ro_debit = flt(decision.net_signed_debit)
+	use_sa = uses_stock_adjustment_for_irr_residual(doc)
 	existing_ro = [
 		e for e in gl_map if is_irr_rate_rounding_residual_gl(e, company=doc.company)
 	]
 	if existing_ro:
 		for e in existing_ro:
-			stamp_irr_residual_round_off_masters(e, doc.company)
+			if use_sa:
+				stamp_irr_inventory_valuation_residual_masters(e, doc.company)
+			else:
+				stamp_irr_residual_round_off_masters(e, doc.company)
 			for fieldname, value in (decision.dimensions or {}).items():
 				if fieldname != "cost_center" and value:
 					e[fieldname] = value
@@ -592,16 +763,18 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 		f"row {r.get('idx')} {r.get('item_code')} residual={r.get('residual')}"
 		for r in decision.class_a_rows[:8]
 	)
+	remark_prefix = (
+		IRR_INVENTORY_VALUATION_RESIDUAL_REMARK if use_sa else IRR_RATE_ROUNDING_RESIDUAL_REMARK
+	)
 	ro = frappe._dict(
 		{
 			"account": cfg_account,
 			"cost_center": cfg_cc,
-			IRR_RATE_ROUNDING_RESIDUAL_MARKER: 1,
 			"company": doc.company,
 			"posting_date": template.get("posting_date") or doc.get("posting_date"),
 			"voucher_type": doc.doctype,
 			"voucher_no": doc.name,
-			"remarks": f"{IRR_RATE_ROUNDING_RESIDUAL_REMARK}: {row_trace}",
+			"remarks": f"{remark_prefix}: {row_trace}",
 			"is_opening": "No",
 			"party_type": None,
 			"party": None,
@@ -621,7 +794,11 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 	if template.get("finance_book"):
 		ro["finance_book"] = template.get("finance_book")
 	# Sole authority — never inherit row/leg/CCA/dimension CC.
-	stamp_irr_residual_round_off_masters(ro, doc.company)
+	if use_sa:
+		stamp_irr_inventory_valuation_residual_masters(ro, doc.company)
+	else:
+		ro[IRR_RATE_ROUNDING_RESIDUAL_MARKER] = 1
+		stamp_irr_residual_round_off_masters(ro, doc.company)
 	gl_map.append(ro)
 	return gl_map
 

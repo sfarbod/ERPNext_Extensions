@@ -59,6 +59,13 @@ def before_validate_stock_entry(doc, method=None):
 	)
 
 	apply_stock_entry_site_defaults(doc)
+	# Early TVA stamp so validate-time bundle valuation can see fractional allow flags.
+	if is_irr_company(doc.company):
+		from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+			prepare_before_submit_bridge,
+		)
+
+		prepare_before_submit_bridge(doc)
 	# Proven Job Card / Work Order dependents must post at least 1s after the
 	# inbound that supplies them. Not a global Stock Entry timestamp patch.
 	apply_production_posting_order(doc)
@@ -101,6 +108,13 @@ def validate_stock_entry(doc, method=None):
 	# so Manufacture / MTfM Draft Save can persist for manual dimension correction.
 	if not is_irr_company(doc.company):
 		return
+	# v5.5.45: stamp Temporary Valuation Adjustment eligibility before Core validate
+	# may create Serial/Batch bundles (runs before before_submit on submit path).
+	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+		prepare_before_submit_bridge,
+	)
+
+	prepare_before_submit_bridge(doc)
 	# Totals polish sits between rate-first align and Manufacture residual restore
 	# so header figures use integer row components before pool absorption.
 	align_stock_entry_item_amounts(doc)
@@ -199,6 +213,13 @@ def on_submit_stock_entry(doc, method=None):
 			"custom_manufacturing_costing_contract_version"
 		)
 	doc.db_set(header_update, update_modified=False)
+	# v5.5.45 Temporary Stock Adjustment Bridge: remake Round Off after native SED
+	# sync and persist Temporary Valuation Adjustment audit rows before contract.
+	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+		apply_on_submit_bridge,
+	)
+
+	apply_on_submit_bridge(doc)
 	from erpnext_extensions.iran_accounting.domain.stock_entry_ledger_contract import (
 		enforce_stock_entry_ledger_contract,
 	)
@@ -259,6 +280,17 @@ def persist_irr_stock_entry_header_and_rows(doc) -> None:
 			"custom_manufacturing_costing_contract_version"
 		)
 	doc.db_set(header_update, update_modified=False)
+
+
+def on_cancel_stock_entry(doc, method=None):
+	"""Mark Temporary Valuation Adjustment rows cancelled (Phase 1 does not reverse SA history)."""
+	if not is_irr_company(doc.company):
+		return
+	from erpnext_extensions.iran_accounting.domain.temporary_valuation_adjustment import (
+		mark_adjustments_cancelled,
+	)
+
+	mark_adjustments_cancelled(doc.name)
 
 
 def on_submit_landed_cost_voucher(doc, method=None):
