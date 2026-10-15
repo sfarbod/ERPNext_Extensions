@@ -33,18 +33,38 @@ def bulk_skip_covered(campaign: str, limit: int = 500) -> dict:
 	skipped = 0
 	left = 0
 	for it in items:
-		sles = frappe.get_all(
-			"Stock Ledger Entry",
-			filters={
-				"voucher_type": it.voucher_type,
-				"voucher_no": it.voucher_no,
-				"is_cancelled": 0,
-			},
-			fields=["item_code", "warehouse", "posting_date", "posting_time"],
-			limit_page_length=0,
-		)
+		# Do not use limit_page_length=0 — Frappe treats 0 as "return no rows".
+		sles = frappe.db.sql(
+			"""
+			select item_code, warehouse, posting_date, posting_time
+			from `tabStock Ledger Entry`
+			where is_cancelled=0 and voucher_type=%s and voucher_no=%s
+			  and item_code is not null and item_code!=''
+			  and warehouse is not null and warehouse!=''
+			""",
+			(it.voucher_type, it.voucher_no),
+			as_dict=True,
+		) or []
 		if not sles:
-			left += 1
+			# Fixed-asset / non-stock vouchers: verify without SLE cover.
+			ver = verify_voucher_basic(it.voucher_type, it.voucher_no)
+			if ver.get("ok"):
+				tva = reconcile_tva_for_voucher(it.voucher_type, it.voucher_no)
+				frappe.db.set_value(
+					ITEM_DOCTYPE,
+					it.name,
+					{
+						"item_status": ITEM_SKIPPED,
+						"covering_riv": None,
+						"tva_reconcile_status": tva.get("status") or TVA_NA,
+						"last_processed_at": now_datetime(),
+						"error_message": f"no_sle:{ver.get('detail')}",
+					},
+					update_modified=False,
+				)
+				skipped += 1
+			else:
+				left += 1
 			continue
 		seen = set()
 		covers = []
