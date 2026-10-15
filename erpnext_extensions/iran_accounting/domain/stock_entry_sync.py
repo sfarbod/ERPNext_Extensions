@@ -121,6 +121,62 @@ def should_preserve_native_outgoing_valuation(sle, row, purpose: str | None) -> 
 	return True
 
 
+def clear_sticky_native_outgoing_rate_for_riv(sle) -> bool:
+	"""Clear DB-sticky SLE.outgoing_rate so Core MA uses warehouse valuation_rate.
+
+	During Item+WH RIV, Core skips ``get_dynamic_incoming_outgoing_rate`` when
+	``sle_id`` is set and keeps the persisted SLE.outgoing_rate. For Material
+	Issue / Transfer that rate may be a poisoned SED stamp (e.g. 1,581,633 vs
+	MA 1,500,000). ``get_moving_average_values`` then mixes it into wh_data and
+	can drive stock_value negative → I3 when qty hits zero.
+
+	Native-outgoing purposes must let MA own the rate; Iran then realigns SED
+	via :func:`_preserve_native_outgoing_and_align_sed`. Manual / free-issue
+	rows are left unchanged.
+	"""
+	if flt(getattr(sle, "actual_qty", 0) if not hasattr(sle, "get") else sle.get("actual_qty")) >= 0:
+		return False
+	voucher_type = sle.get("voucher_type") if hasattr(sle, "get") else getattr(sle, "voucher_type", None)
+	if voucher_type != "Stock Entry":
+		return False
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	detail_no = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	if not voucher_no:
+		return False
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if str(purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		return False
+	if str(purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+	row = None
+	if detail_no:
+		row = frappe.db.get_value(
+			"Stock Entry Detail",
+			detail_no,
+			["set_basic_rate_manually", "allow_zero_valuation_rate", "basic_rate"],
+			as_dict=True,
+		)
+	if row and cint(row.get("set_basic_rate_manually")):
+		return False
+	if (
+		row
+		and cint(row.get("allow_zero_valuation_rate"))
+		and abs(flt(row.get("basic_rate") or 0)) <= 1e-9
+	):
+		return False
+	# Only clear when a sticky non-zero rate is present (avoid noop churn).
+	cur = flt(sle.get("outgoing_rate") if hasattr(sle, "get") else getattr(sle, "outgoing_rate", 0))
+	if abs(cur) <= 1e-9:
+		return False
+	if hasattr(sle, "outgoing_rate"):
+		sle.outgoing_rate = 0
+	elif hasattr(sle, "__setitem__"):
+		sle["outgoing_rate"] = 0
+	return True
+
+
 def _native_movement_rate(sle, ccy: str) -> tuple[float, float]:
 	"""IRR-round the vanilla SLE movement; derive per-unit rate from it."""
 	value_after = flt(sle.stock_value)
