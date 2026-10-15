@@ -163,7 +163,14 @@ def _categorize(sig: str) -> str:
 		return "component_scrap"
 	if "stock valuation integrity" in s or "(i3)" in s:
 		return "valuation_integrity_i3"
-	if "no such file" in s or "repost_item_valuation-" in s:
+	if (
+		"no such file" in s
+		or "repost_item_valuation-" in s
+		or "jsondecodeerror" in s
+		or "expecting value" in s
+		or "get_reposting_data" in s
+		or "reposting_data_file" in s
+	):
 		return "missing_repost_file"
 	if "deadlock" in s or "timeout" in s:
 		return "recoverable_db"
@@ -247,6 +254,12 @@ def repair_failed_identity(
 		return {"ok": False, "detail": "no Failed RIV for identity"}
 	row = fail[0]
 	cat = _categorize(row.err or "")
+	# Truncated error_log prefixes often miss JSONDecodeError; empty/missing
+	# reposting_data_file is authoritative for this recovery class.
+	if cat == "other":
+		fpath = frappe.db.get_value("Repost Item Valuation", row.name, "reposting_data_file")
+		if not fpath:
+			cat = "missing_repost_file"
 	actions = []
 
 	if cat == "component_scrap":
@@ -274,21 +287,32 @@ def repair_failed_identity(
 		actions.append({"cleared_sticky_outgoing_rates": True, "sql": str(cleared)})
 	elif cat == "missing_repost_file":
 		# Drop broken file pointer so Core regenerates on next execute.
+		# Re-queue the same RIV (Core-supported recovery) — do not leave it Failed
+		# under backpressure with a cleared file and no replacement.
 		frappe.db.set_value(
 			"Repost Item Valuation",
 			row.name,
-			"reposting_data_file",
-			None,
+			{
+				"reposting_data_file": None,
+				"status": "Queued",
+				"error_log": None,
+			},
 			update_modified=False,
 		)
 		frappe.db.commit()
-		actions.append({"cleared_reposting_data_file": row.name})
+		actions.append({"cleared_and_requeued": row.name})
 		try:
-			execute_reposting_entry(row.name, continue_reposting=False)
+			if enqueue:
+				enqueue_reposting_entry(row.name)
+			else:
+				execute_reposting_entry(row.name, continue_reposting=False)
 			frappe.db.commit()
 			st = frappe.db.get_value("Repost Item Valuation", row.name, "status")
 			if st == "Completed":
 				mark_resolved(item_code, warehouse, detail=f"re-executed {row.name}")
+				return {"ok": True, "status": st, "riv": row.name, "actions": actions}
+			if st in ("Queued", "In Progress"):
+				# Old Failed cleared by requeue; identity no longer blocks seeding.
 				return {"ok": True, "status": st, "riv": row.name, "actions": actions}
 		except Exception as e:
 			actions.append({"reexecute_error": str(e)[:200]})
@@ -337,8 +361,9 @@ def repair_failed_identity(
 			execute_reposting_entry(new_name, continue_reposting=False)
 		frappe.db.commit()
 		st = frappe.db.get_value("Repost Item Valuation", new_name, "status") if new_name else None
-		if st == "Completed":
-			mark_resolved(item_code, warehouse, detail=f"new riv {new_name}")
+		if st in ("Completed", "Queued", "In Progress"):
+			# Clear old Failed blockers immediately; replacement RIV owns recovery.
+			mark_resolved(item_code, warehouse, detail=f"new riv {new_name} status={st}")
 		elif st == "Failed":
 			record_failure(
 				item_code=item_code,

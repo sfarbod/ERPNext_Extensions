@@ -21,15 +21,74 @@ from erpnext_extensions.iran_accounting.historical_rebuild.tva_reconcile import 
 )
 
 
+def _covered_pending_candidates(campaign: str, limit: int) -> list[dict]:
+	"""Pending campaign items whose every SLE identity already has Completed cover.
+
+	Uses a set-oriented anti-join so early multi-identity Opening SRs do not
+	block discovery of later vouchers that are already fully covered.
+	"""
+	cap = cint(limit) or 500
+	return frappe.db.sql(
+		"""
+		select i.name, i.voucher_type, i.voucher_no, i.ordinal
+		from `tabHistorical Rebuild Campaign Item` i
+		where i.campaign=%s
+		  and i.item_status=%s
+		  and not exists (
+			select 1
+			from `tabStock Ledger Entry` sle
+			where sle.is_cancelled=0
+			  and sle.voucher_type=i.voucher_type
+			  and sle.voucher_no=i.voucher_no
+			  and sle.item_code is not null and sle.item_code!=''
+			  and sle.warehouse is not null and sle.warehouse!=''
+			  and not exists (
+				select 1
+				from `tabRepost Item Valuation` r
+				where r.docstatus=1
+				  and r.based_on='Item and Warehouse'
+				  and r.status='Completed'
+				  and r.item_code=sle.item_code
+				  and r.warehouse=sle.warehouse
+				  and (
+					r.posting_date < sle.posting_date
+					or (r.posting_date=sle.posting_date and r.posting_time<=sle.posting_time)
+				  )
+			  )
+		  )
+		order by i.ordinal asc
+		limit %s
+		""",
+		(campaign, ITEM_PENDING, cap),
+		as_dict=True,
+	) or []
+
+
 def bulk_skip_covered(campaign: str, limit: int = 500) -> dict:
-	"""Scan Pending items; mark Skipped Covered when every SLE identity has Completed cover."""
-	items = frappe.get_all(
-		ITEM_DOCTYPE,
-		filters={"campaign": campaign, "item_status": ITEM_PENDING},
-		fields=["name", "voucher_type", "voucher_no", "ordinal"],
-		order_by="ordinal asc",
-		limit_page_length=cint(limit) or 500,
-	)
+	"""Mark Skipped Covered when every SLE identity has Completed cover.
+
+	Prefers SQL candidates that are already fully covered so early Opening
+	Stock Reconciliations do not monopolize the scan window. Falls back to
+	ordinal Pending scan for no-SLE / edge vouchers.
+	"""
+	cap = cint(limit) or 500
+	items = _covered_pending_candidates(campaign, cap)
+	# Also pick up no-SLE pending vouchers (fixed asset / non-stock) via a
+	# small ordinal scan — they never appear in the SLE anti-join as covered.
+	if len(items) < cap:
+		extra = frappe.get_all(
+			ITEM_DOCTYPE,
+			filters={"campaign": campaign, "item_status": ITEM_PENDING},
+			fields=["name", "voucher_type", "voucher_no", "ordinal"],
+			order_by="ordinal asc",
+			limit_page_length=min(200, cap - len(items)),
+		)
+		seen = {it["name"] for it in items}
+		for it in extra or []:
+			if it.name not in seen:
+				items.append(it)
+				seen.add(it.name)
+
 	skipped = 0
 	left = 0
 	for it in items:
@@ -101,4 +160,9 @@ def bulk_skip_covered(campaign: str, limit: int = 500) -> dict:
 		)
 		skipped += 1
 	frappe.db.commit()
-	return {"campaign": campaign, "skipped_covered": skipped, "still_pending_in_batch": left, "scanned": len(items)}
+	return {
+		"campaign": campaign,
+		"skipped_covered": skipped,
+		"still_pending_in_batch": left,
+		"scanned": len(items),
+	}
