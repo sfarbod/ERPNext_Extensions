@@ -9,6 +9,7 @@ Commands (development.localhost / production under Maintenance Mode):
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import frappe
@@ -18,6 +19,7 @@ from erpnext_extensions.iran_accounting.historical_rebuild.constants import (
 	CAMPAIGN_DOCTYPE,
 	DEFAULT_INTERNAL_BATCH,
 	ITEM_BLOCKED,
+	MAX_OUTSTANDING_RIV,
 	ITEM_COMPLETED,
 	ITEM_DOCTYPE,
 	ITEM_FAILED,
@@ -292,6 +294,84 @@ def stop(campaign: str) -> dict:
 	return {"campaign": campaign, "status": STATUS_STOPPED, "stop_requested": 1}
 
 
+def linked_riv_names(campaign: str) -> list[str]:
+	"""RIV names stored on this campaign's items only."""
+	raw_rows = frappe.db.sql(
+		f"""
+		select riv_names from `tab{ITEM_DOCTYPE}`
+		where campaign=%s and riv_names is not null and riv_names != ''
+		""",
+		campaign,
+	)
+	names: list[str] = []
+	seen = set()
+	for (raw,) in raw_rows:
+		try:
+			data = json.loads(raw)
+		except Exception:
+			continue
+		if not isinstance(data, list):
+			continue
+		for n in data:
+			n = str(n)
+			if n and n not in seen:
+				seen.add(n)
+				names.append(n)
+	return names
+
+
+def outstanding_linked_rivs(campaign: str) -> list[str]:
+	names = linked_riv_names(campaign)
+	if not names:
+		return []
+	return frappe.db.sql(
+		"""
+		select name from `tabRepost Item Valuation`
+		where name in ({})
+		  and docstatus=1
+		  and status in ('Queued', 'In Progress')
+		order by creation asc
+		""".format(",".join(["%s"] * len(names))),
+		tuple(names),
+		pluck=True,
+	)
+
+
+def recover_unscheduled_rivs(campaign: str, limit: int | None = None) -> dict:
+	"""Drive campaign-linked Queued/In Progress RIV via Core execute (no enqueue).
+
+	Does not touch unrelated RIV. Does not purge Redis. Does not force status.
+	"""
+	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+		execute_reposting_entry,
+	)
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran
+
+	apply_iran()
+	targets = outstanding_linked_rivs(campaign)
+	cap = cint(limit) if limit else len(targets)
+	results = []
+	for name in targets[:cap]:
+		if _flags_block_selection(campaign) == "stopped":
+			break
+		before = frappe.db.get_value("Repost Item Valuation", name, "status")
+		try:
+			execute_reposting_entry(name, continue_reposting=False)
+			frappe.db.commit()
+		except Exception as e:
+			frappe.db.rollback()
+			results.append({"name": name, "before": before, "error": str(e)[:200]})
+			continue
+		after = frappe.db.get_value("Repost Item Valuation", name, "status")
+		results.append({"name": name, "before": before, "after": after})
+	return {
+		"campaign": campaign,
+		"outstanding_before": len(targets),
+		"attempted": len(results),
+		"results": results,
+	}
+
+
 def _flags_block_selection(campaign: str) -> str | None:
 	row = frappe.db.get_value(
 		CAMPAIGN_DOCTYPE,
@@ -313,6 +393,7 @@ def _run_loop(campaign: str, *, batch_size: int | None = None, max_items: int | 
 	batch_size = cint(batch_size) or DEFAULT_INTERNAL_BATCH
 	processed = 0
 	results = []
+	stalls = 0
 
 	frappe.db.set_value(
 		CAMPAIGN_DOCTYPE,
@@ -337,6 +418,30 @@ def _run_loop(campaign: str, *, batch_size: int | None = None, max_items: int | 
 		if block:
 			_append_log(campaign, f"Selection halted ({block})")
 			break
+
+		# Settle already-created campaign RIV before selecting more work.
+		outstanding = outstanding_linked_rivs(campaign)
+		if outstanding:
+			recover_unscheduled_rivs(campaign, limit=MAX_OUTSTANDING_RIV)
+			outstanding = outstanding_linked_rivs(campaign)
+		if len(outstanding) >= MAX_OUTSTANDING_RIV:
+			stalls += 1
+			_append_log(
+				campaign,
+				f"Backpressure: {len(outstanding)} outstanding campaign RIV "
+				f"(cap {MAX_OUTSTANDING_RIV}); not selecting new documents",
+				level="WARN",
+			)
+			if stalls >= 3:
+				_append_log(
+					campaign,
+					"Blocking: outstanding campaign RIV did not settle after repeated Core execute",
+					level="ERROR",
+				)
+				break
+			time.sleep(2)
+			continue
+		stalls = 0
 
 		items = frappe.get_all(
 			ITEM_DOCTYPE,

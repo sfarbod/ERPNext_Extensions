@@ -122,6 +122,21 @@ Verified locally:
 
 **Not yet complete:** full drain of all 15,802 vouchers (multi-hour/day Core RIV wall-clock). Continuous resume left running for operator continuation.
 
-## H. Verdict (local)
+## H. Queue recovery (2026-10-15)
 
-**IMPLEMENTED_BUT_REBUILD_INCOMPLETE** — architecture and controls verified; full historical population not fully drained in this session.
+Root cause of stalled RIV (verified, not assumed):
+
+1. Site scheduler is **disabled** and `pause_scheduler=1`, so Core never drains Queued RIV onto RQ.
+2. Campaign PAUSE stopped new selection; already-created RIV were left without a worker.
+3. Long queue depth was **0**. None of the 98 Queued or 3 In Progress rows had an RQ job (`owned=false`).
+4. The three In Progress rows (`19d2jmtnfq`, `19d3vl82or`, `1h86o2nbn5`) were **stale**: `current_index=0`, last modified ~9h earlier. Core had classified the failures as recoverable because the traceback contained `deadlock`, so status stayed In Progress instead of Failed.
+
+Recovery: `recover_unscheduled_rivs` calls Core `execute_reposting_entry(..., continue_reposting=False)` **only** for RIV names linked on this campaign. No Redis purge. No unrelated job deletion.
+
+The three In Progress rows completed on re-execute.
+
+Backpressure: `MAX_OUTSTANDING_RIV=8`. START/RESUME settles outstanding campaign RIV before selecting more documents.
+
+## I. Verdict (local)
+
+**IMPLEMENTED_BUT_REBUILD_INCOMPLETE** until HRC-00001 pending reaches 0 with accounting verification.

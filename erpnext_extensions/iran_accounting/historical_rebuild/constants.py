@@ -52,3 +52,6 @@ MAX_LOG_ROWS = 200
 RIV_SETTLE_POLL_SECONDS = 1
 RIV_SETTLE_MAX_WAITS = 120  # ~2 min poll after sync execute; pending left for resume
 MAX_ITEM_RETRIES = 3
+# Backpressure: do not create more Core RIV while this many campaign-linked
+# Queued/In Progress rows are still unsettled. Prevents Redis job floods.
+MAX_OUTSTANDING_RIV = 8
