@@ -102,8 +102,14 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 	if not identities:
 		return {"riv_names": [], "skipped_covered": False, "covering": None, "detail": "no SLE"}
 
+	from erpnext_extensions.iran_accounting.historical_rebuild.failure_registry import (
+		is_blocked_identity,
+		record_failure,
+	)
+
 	covers: list[str] = []
 	need_create: list[dict] = []
+	blocked_ids: list[tuple[str, str]] = []
 	seen: set[tuple[str, str]] = set()
 	for sle in identities:
 		key = (sle.item_code, sle.warehouse)
@@ -129,7 +135,29 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 		if open_cov:
 			covers.append(open_cov[0][0])
 			continue
+		# Never create replacement RIV for an unresolved Failed identity.
+		if is_blocked_identity(sle.item_code, sle.warehouse):
+			blocked_ids.append(key)
+			record_failure(
+				item_code=sle.item_code,
+				warehouse=sle.warehouse,
+				riv_name=None,
+				error="blocked: prior Failed RIV without Completed cover",
+				posting_date=sle.posting_date,
+				category="blocked_prior_failure",
+				voucher_hint=f"{voucher_type}/{voucher_no}",
+			)
+			continue
 		need_create.append(sle)
+
+	if blocked_ids and not need_create and not covers:
+		return {
+			"riv_names": [],
+			"skipped_covered": False,
+			"covering": None,
+			"blocked_identities": blocked_ids,
+			"detail": f"blocked {len(blocked_ids)} failed identities — no new RIV",
+		}
 
 	if not need_create and covers:
 		return {
@@ -436,6 +464,22 @@ def process_campaign_item(item_name: str, *, stop_check=None) -> dict[str, Any]:
 		)
 		frappe.db.commit()
 		out["final_status"] = ITEM_FAILED
+		return out
+
+	if link.get("blocked_identities") and not (link.get("riv_names") or []):
+		reason = link.get("detail") or "blocked failed valuation identity"
+		frappe.db.set_value(
+			"Historical Rebuild Campaign Item",
+			item_name,
+			{
+				"item_status": ITEM_BLOCKED,
+				"error_message": reason[:1000],
+			},
+			update_modified=False,
+		)
+		frappe.db.commit()
+		out["final_status"] = ITEM_BLOCKED
+		out["blocked_identities"] = link.get("blocked_identities")
 		return out
 
 	riv_names = link.get("riv_names") or []
