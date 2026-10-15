@@ -285,8 +285,9 @@ def drain_cycle(campaign: str, *, seed_limit: int = 8, cover_limit: int = 2000) 
 	# Skip sync recover while workers are healthy (enqueue path above).
 	recover = {"attempted": 0, "skipped": "workers_active"}
 	# Coverage is read-only vs Core RIV — safe while workers drain outstanding.
-	# Cap batch size so cycles stay responsive under load.
-	cover = bulk_skip_covered(campaign, limit=min(cover_limit, 300))
+	# Scan enough Pending rows to look past early multi-identity Opening SRs
+	# that are not yet fully covered (Frappe limit_page_length=0 returns none).
+	cover = bulk_skip_covered(campaign, limit=max(cint(cover_limit) or 2500, 500))
 	counters = _refresh_counters(campaign)
 	return {
 		"seed": seed,
