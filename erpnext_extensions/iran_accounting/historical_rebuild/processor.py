@@ -56,7 +56,12 @@ def _parse_riv_names(raw) -> list[str]:
 
 
 def find_covering_riv(item_code: str, warehouse: str, posting_date, posting_time) -> str | None:
-	"""Return a Completed Core RIV that already covers this identity from an earlier/equal boundary."""
+	"""Return a Completed Core RIV covering this identity from an earlier/equal boundary.
+
+	Coverage requires RIV posting datetime <= voucher SLE posting datetime.
+	Same-day RIV that starts after the voucher does NOT cover it.
+	"""
+	pt = str(posting_time or "00:00:00")
 	rows = frappe.db.sql(
 		"""
 		select name from `tabRepost Item Valuation`
@@ -64,11 +69,14 @@ def find_covering_riv(item_code: str, warehouse: str, posting_date, posting_time
 		  and based_on='Item and Warehouse'
 		  and item_code=%s and warehouse=%s
 		  and status='Completed'
-		  and posting_date <= %s
+		  and (
+		    posting_date < %s
+		    or (posting_date = %s and posting_time <= %s)
+		  )
 		order by posting_date asc, posting_time asc, creation asc
 		limit 1
 		""",
-		(item_code, warehouse, posting_date),
+		(item_code, warehouse, posting_date, posting_date, pt),
 	)
 	return rows[0][0] if rows else None
 

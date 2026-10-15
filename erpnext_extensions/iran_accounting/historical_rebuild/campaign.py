@@ -582,6 +582,35 @@ def resume(campaign: str, batch_size: int | None = None, max_items: int | None =
 	return _run_loop(campaign, batch_size=batch_size, max_items=max_items)
 
 
+def resume_identity_drain(
+	campaign: str,
+	max_cycles: int | None = None,
+	seed_limit: int | None = None,
+	cover_limit: int | None = None,
+) -> dict:
+	"""RESUME via identity-seed + Skipped Covered drain (scale path for full rebuild).
+
+	Creates bounded Core Item+WH RIVs from earliest SLE per identity, enqueues to
+	long workers, bulk-marks Skipped Covered, then processes remaining pending
+	items that still need source reconstruction. Respects PAUSE/STOP selection
+	semantics; does not cancel unrelated Core RIV.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.identity_seed import (
+		run_identity_drain,
+	)
+
+	doc = _require_campaign(campaign)
+	if doc.status not in (STATUS_PAUSED, STATUS_STOPPED, STATUS_RUNNING, STATUS_FAILED, STATUS_READY):
+		frappe.throw(f"Cannot identity-drain from status={doc.status}")
+	_append_log(campaign, "RESUME identity-drain — seed + cover + remaining items")
+	return run_identity_drain(
+		campaign,
+		max_cycles=max_cycles,
+		seed_limit=cint(seed_limit) or MAX_OUTSTANDING_RIV,
+		cover_limit=cint(cover_limit) or 2500,
+	)
+
+
 def status(campaign: str) -> dict:
 	"""Read-only campaign progress + recent logs."""
 	doc = _require_campaign(campaign)
@@ -603,6 +632,25 @@ def status(campaign: str) -> dict:
 		fields=["ordinal", "voucher_type", "voucher_no", "item_status", "error_message"],
 		order_by="ordinal desc",
 		limit_page_length=10,
+	)
+	# Distinct Failed Item+WH identities (not RIV row count).
+	distinct_failed = frappe.db.sql(
+		"""
+		select item_code, warehouse, count(*) as riv_count,
+		       left(max(error_log), 160) as error_sample
+		from `tabRepost Item Valuation`
+		where docstatus=1 and status='Failed' and based_on='Item and Warehouse'
+		group by item_code, warehouse
+		order by riv_count desc
+		limit 20
+		""",
+		as_dict=True,
+	)
+	outstanding_riv = cint(
+		frappe.db.count(
+			"Repost Item Valuation",
+			{"docstatus": 1, "status": ("in", ["Queued", "In Progress"])},
+		)
 	)
 	remaining = (
 		cint(counters.get("total", 0))
@@ -654,6 +702,12 @@ Core RIV In Progress:
 Core RIV Failed:
 {counters.get('riv_failed', 0):,}
 
+Distinct Failed Identities:
+{len(distinct_failed)}
+
+Queue Pressure (outstanding RIV):
+{outstanding_riv} / {MAX_OUTSTANDING_RIV}
+
 Current:
 {(doc.current_voucher_type or '')} {(doc.current_voucher_no or '')}
 
@@ -673,6 +727,8 @@ Recent Logs:
 		"campaign": doc.name,
 		"status": doc.status,
 		"counters": counters,
+		"distinct_failed_identities": distinct_failed,
+		"queue_pressure": {"outstanding": outstanding_riv, "cap": MAX_OUTSTANDING_RIV},
 		"current": {"type": doc.current_voucher_type, "name": doc.current_voucher_no},
 		"last": {
 			"ordinal": doc.last_ordinal,

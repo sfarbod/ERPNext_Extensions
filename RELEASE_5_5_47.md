@@ -137,6 +137,31 @@ The three In Progress rows completed on re-execute.
 
 Backpressure: `MAX_OUTSTANDING_RIV=8`. START/RESUME settles outstanding campaign RIV before selecting more documents.
 
-## I. Verdict (local)
+## I. Component Scrap mid-RIV fix (2026-10-15)
 
-**IMPLEMENTED_BUT_REBUILD_INCOMPLETE** until HRC-00001 pending reaches 0 with accounting verification.
+**Root cause (item 13200190 / MAT-STE-2026-40937):** during Core RIV,
+`apply_component_scrap_issued_rates` ran after Core cleared consume
+`basic_amount`/`basic_rate` mid-walk. Issued-rate lookup returned 0 and threw
+even though matching consume rows and persisted SED rates existed.
+
+**Fix (smallest safe):**
+
+1. `_weighted_issued_rate` falls back to in-memory `basic_rate`, then persisted
+   SED / outgoing SLE for the consume `voucher_detail_no` (never destination WH).
+2. Under `through_repost_item_valuation`, if consume rows exist but rate is still
+   unavailable, skip reprice instead of aborting the identity walk.
+3. `failure_registry` tracks Failed Item+WH identities, blocks uncontrolled
+   re-seed, and provides explicit `repair_failed_identity`.
+4. Extra workers via `scripts/hrc_workers.sh` (2 long + 2 short,default).
+
+**Verified:** new RIV `ufmeni3hau` / `uq0euger8u` Completed for 13200190 after fix.
+
+**Remaining blocker identity:** `16400017` @ ملزومات مصرفی — I3 integrity on
+`MAT-STE-2026-41477` (outgoing rate drift during RIV). Campaign items touching
+that identity are Blocked with the exact reason.
+
+## J. Verdict (local)
+
+**IMPLEMENTED_BUT_REBUILD_INCOMPLETE** until HRC-00001 pending reaches 0 with
+accounting verification and the I3 identity is repaired or formally accepted
+as a documented blocker with dependents Blocked.

@@ -151,3 +151,58 @@ def apply_source_reconstruction(voucher_type: str, voucher_no: str) -> dict[str,
 	except Exception as e:
 		frappe.db.rollback()
 		return {"status": SOURCE_FAILED, "detail": str(e), "actions": actions}
+
+
+def repair_component_scrap_for_item(item_code: str, limit: int = 200) -> dict[str, Any]:
+	"""Re-apply existing Component Scrap issued-rate contract on Manufacture vouchers.
+
+	Uses :func:`scrap_costing.apply_component_scrap_issued_rates` only — no parallel
+	valuation. Persists corrected SED rates so Core RIV mid-walk has a stable
+	issued-rate baseline via persisted SED/SLE fallback.
+	"""
+	from erpnext_extensions.iran_accounting.scrap_costing import (
+		apply_component_scrap_issued_rates,
+		classify_manufacture_outputs,
+		CLASS_COMPONENT_SCRAP,
+	)
+
+	parents = frappe.db.sql(
+		"""
+		select distinct sed.parent
+		from `tabStock Entry Detail` sed
+		inner join `tabStock Entry` se on se.name=sed.parent
+		where se.docstatus=1 and se.purpose='Manufacture'
+		  and sed.item_code=%s
+		  and sed.t_warehouse is not null and sed.t_warehouse!=''
+		order by se.posting_date asc, se.posting_time asc
+		limit %s
+		""",
+		(item_code, int(limit or 200)),
+		pluck=True,
+	)
+	parents = parents or []
+	fixed = []
+	errors = []
+	for name in parents:
+		try:
+			doc = frappe.get_doc("Stock Entry", name)
+			classified = classify_manufacture_outputs(doc)
+			if not classified.get(CLASS_COMPONENT_SCRAP):
+				continue
+			changed = apply_component_scrap_issued_rates(doc)
+			if changed:
+				for row in doc.get("items") or []:
+					if row.get("name"):
+						row.db_update()
+				fixed.append(name)
+			frappe.db.commit()
+		except Exception as e:
+			frappe.db.rollback()
+			errors.append({"voucher": name, "error": str(e)[:200]})
+	return {
+		"item_code": item_code,
+		"scanned": len(parents),
+		"fixed": len(fixed),
+		"vouchers": fixed[:50],
+		"errors": errors[:20],
+	}
