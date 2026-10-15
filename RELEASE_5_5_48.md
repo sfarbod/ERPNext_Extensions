@@ -104,7 +104,7 @@ After restore (before new campaign seeding):
 
 | Status | Count |
 |--------|------:|
-| Completed | **5,908** |
+| Completed | **6,042** (includes post-campaign Component Scrap repair RIVs) |
 | Skipped (resolved Failed) | 406 |
 | Queued / In Progress / Failed | **0** |
 | Uncovered Item+WH identities | **0** |
