@@ -142,7 +142,7 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 				item_code=sle.item_code,
 				warehouse=sle.warehouse,
 				riv_name=None,
-				error="blocked: prior Failed RIV without Completed cover",
+				error="blocked: prior Failed RIV — explicit repair required",
 				posting_date=sle.posting_date,
 				category="blocked_prior_failure",
 				voucher_hint=f"{voucher_type}/{voucher_no}",
@@ -338,6 +338,41 @@ def execute_linked_rivs(riv_names: list[str], *, stop_check=None) -> dict[str, A
 	return results
 
 
+def _is_fixed_asset_only_purchase_receipt(voucher_no: str) -> bool:
+	"""True when PR has items and every item is a fixed asset (no stock SLE expected)."""
+	rows = frappe.db.sql(
+		"""
+		select count(*) as n,
+		       sum(case when ifnull(is_fixed_asset,0)=1 then 1 else 0 end) as assets
+		from `tabPurchase Receipt Item`
+		where parent=%s
+		""",
+		(voucher_no,),
+		as_dict=True,
+	)
+	if not rows or not cint(rows[0].n):
+		return False
+	return cint(rows[0].n) == cint(rows[0].assets)
+
+
+def _is_non_stock_only_purchase_receipt(voucher_no: str) -> bool:
+	"""True when every PR item is a non-stock Item (no SLE expected)."""
+	rows = frappe.db.sql(
+		"""
+		select count(*) as n,
+		       sum(case when ifnull(i.is_stock_item,0)=0 then 1 else 0 end) as non_stock
+		from `tabPurchase Receipt Item` pri
+		left join `tabItem` i on i.name=pri.item_code
+		where pri.parent=%s
+		""",
+		(voucher_no,),
+		as_dict=True,
+	)
+	if not rows or not cint(rows[0].n):
+		return False
+	return cint(rows[0].n) == cint(rows[0].non_stock)
+
+
 def verify_voucher_basic(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 	"""Lightweight post-rebuild checks (non-destructive)."""
 	sle_count = cint(
@@ -352,8 +387,17 @@ def verify_voucher_basic(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 			{"voucher_type": voucher_type, "voucher_no": voucher_no, "is_cancelled": 0},
 		)
 	)
-	ok = sle_count > 0
 	detail = f"sle={sle_count} gl={gl_count}"
+	ok = sle_count > 0
+	if not ok and voucher_type == "Purchase Receipt":
+		if _is_fixed_asset_only_purchase_receipt(voucher_no):
+			# Fixed-asset PRs post asset/GL only — no SLE by design.
+			ok = gl_count > 0
+			detail += "; fixed_asset_pr"
+		elif _is_non_stock_only_purchase_receipt(voucher_no):
+			# Service / non-stock PRs never create SLE; GL may land on the PI.
+			ok = True
+			detail += "; non_stock_pr"
 	# Optional Iran determinism for SE/SR
 	if voucher_type in ("Stock Entry", "Stock Reconciliation") and ok:
 		try:

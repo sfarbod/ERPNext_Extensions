@@ -103,9 +103,75 @@ class TestFailureRegistry(unittest.TestCase):
 		self.assertEqual(fr._categorize("Stock valuation integrity (I3)."), "valuation_integrity_i3")
 		self.assertEqual(fr._categorize("No such file or directory: repost_item_valuation-x.json.gz"), "missing_repost_file")
 
-	def test_is_blocked_cleared_by_completed(self):
-		with mock.patch.object(fr.frappe, "db") as db:
-			db.exists.side_effect = lambda *a, **k: (
-				True if (isinstance(a[1], dict) and a[1].get("status") == "Completed") else False
-			)
+	def test_is_blocked_by_any_failed(self):
+		"""Any Failed RIV permanently blocks auto-seed (even if a late Completed exists)."""
+		db = mock.MagicMock()
+		db.exists.side_effect = lambda *a, **k: (
+			True if (isinstance(a[1], dict) and a[1].get("status") == "Failed") else False
+		)
+		with mock.patch.object(fr.frappe, "db", db), mock.patch.object(
+			fr, "get_failure", return_value=None
+		):
+			self.assertTrue(fr.is_blocked_identity("X", "WH"))
+
+	def test_is_not_blocked_without_failed(self):
+		db = mock.MagicMock()
+		db.exists.return_value = False
+		with mock.patch.object(fr.frappe, "db", db), mock.patch.object(
+			fr, "get_failure", return_value=None
+		):
 			self.assertFalse(fr.is_blocked_identity("X", "WH"))
+
+	def test_resolved_registry_clears_block(self):
+		db = mock.MagicMock()
+		db.exists.return_value = True
+		with mock.patch.object(fr.frappe, "db", db), mock.patch.object(
+			fr, "get_failure", return_value={"resolution_state": "resolved"}
+		):
+			self.assertFalse(fr.is_blocked_identity("X", "WH"))
+
+
+class TestStickyNativeOutgoingRate(unittest.TestCase):
+	def test_clears_material_issue_outgoing_rate(self):
+		from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+			clear_sticky_native_outgoing_rate_for_riv,
+		)
+
+		sle = frappe._dict(
+			actual_qty=-10,
+			voucher_type="Stock Entry",
+			voucher_no="STE-TEST",
+			voucher_detail_no="sed-1",
+			outgoing_rate=1581633,
+		)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.stock_entry_sync.frappe.db.get_value"
+		) as gv:
+			gv.side_effect = lambda *a, **k: (
+				"Material Issue"
+				if a[0] == "Stock Entry"
+				else frappe._dict(
+					set_basic_rate_manually=0, allow_zero_valuation_rate=0, basic_rate=1581633
+				)
+			)
+			self.assertTrue(clear_sticky_native_outgoing_rate_for_riv(sle))
+			self.assertEqual(sle.outgoing_rate, 0)
+
+	def test_skips_manufacture_purpose(self):
+		from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+			clear_sticky_native_outgoing_rate_for_riv,
+		)
+
+		sle = frappe._dict(
+			actual_qty=-10,
+			voucher_type="Stock Entry",
+			voucher_no="STE-MFG",
+			voucher_detail_no="sed-2",
+			outgoing_rate=100,
+		)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.stock_entry_sync.frappe.db.get_value",
+			return_value="Manufacture",
+		):
+			self.assertFalse(clear_sticky_native_outgoing_rate_for_riv(sle))
+			self.assertEqual(sle.outgoing_rate, 100)

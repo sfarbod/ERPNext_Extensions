@@ -1085,6 +1085,14 @@ def _patch_stock_ledger_engine():
 					)
 
 					apply_authoritative_acquisition_incoming_rate(sle, company)
+					# Native-outgoing Material Issue/Transfer: drop DB-sticky
+					# SLE.outgoing_rate so Core MA uses wh_data.valuation_rate
+					# (poisoned SED stamps otherwise drive I3 on consume-to-zero).
+					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						clear_sticky_native_outgoing_rate_for_riv,
+					)
+
+					clear_sticky_native_outgoing_rate_for_riv(sle)
 					# Out-of-scope soft-skip: do not rewrite unrelated historical SLE.
 					# Still advance wh_data from the existing SLE so chronology continues.
 					if assert_sle_valuation_integrity_before_vanilla(self, sle) is False:

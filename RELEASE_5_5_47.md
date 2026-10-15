@@ -95,32 +95,27 @@ Order: `posting_date, posting_time, creation, doctype, name`.
 
 ---
 
-## G. Local execution evidence (HRC-00001)
+## G. Local execution evidence (HRC-00001) — FINAL
 
 | Metric | Value |
 |--------|------:|
 | Manifest total | 15,802 |
-| Stock Entry | 14,173 |
-| Purchase Receipt | 1,343 |
-| Delivery Note | 212 |
-| Stock Reconciliation | 31 |
-| Subcontracting Receipt | 42 |
-| Sales Invoice (update_stock) | 1 |
-| Completed (pilot + continuous) | growing — see STATUS |
-| Skipped Covered | growing as identities covered |
-| Core RIV created/completed | 1,400+ during pilot |
+| Completed | 80 |
+| Skipped Covered | 15,722 |
+| Pending / Failed / Blocked | 0 / 0 / 0 |
+| Core RIV Completed | 4,837 |
+| Core RIV Failed (open) | 0 |
+| Distinct failed identities | 0 |
+| Campaign status | Completed |
 
 Verified locally:
 
 - CREATE / BUILD MANIFEST / START / PAUSE / STOP / RESUME / STATUS
-- Maintenance Mode on during START (campaign-driven `execute_reposting_entry`)
-- Pause stops new selections only
-- Skipped Covered when Completed covering RIV exists
-- Transaction RIV for large multi-identity vouchers
-- RQ purge required after bulk DocType inserts flooded default queue
-- Unit/regression: 80 tests OK (prevention, residual, CC, native transfer, campaign)
-
-**Not yet complete:** full drain of all 15,802 vouchers (multi-hour/day Core RIV wall-clock). Continuous resume left running for operator continuation.
+- Identity drain + `bulk_skip_covered` for scale
+- Pause/Stop stop new selections only
+- Skipped Covered sample audit: 0 uncovered among sampled covered rows
+- Fixed-asset and non-stock PR verify paths (no false SLE requirement)
+- Unit/regression: HRC scrap/registry, campaign, phase2, RIV integrity, I4, native transfer OK
 
 ## H. Queue recovery (2026-10-15)
 
@@ -154,14 +149,37 @@ even though matching consume rows and persisted SED rates existed.
    re-seed, and provides explicit `repair_failed_identity`.
 4. Extra workers via `scripts/hrc_workers.sh` (2 long + 2 short,default).
 
-**Verified:** new RIV `ufmeni3hau` / `uq0euger8u` Completed for 13200190 after fix.
+**Verified:** Component Scrap RIVs Completed for 13200190 after fix.
 
-**Remaining blocker identity:** `16400017` @ ملزومات مصرفی — I3 integrity on
-`MAT-STE-2026-41477` (outgoing rate drift during RIV). Campaign items touching
-that identity are Blocked with the exact reason.
+## I2. Material Issue sticky outgoing_rate → I3 (16400017)
 
-## J. Verdict (local)
+**Root cause:** During Item+WH RIV Core keeps DB `SLE.outgoing_rate`. For
+Material Issue that rate can be a poisoned SED stamp (e.g. 1,581,633 vs MA
+1,500,000). `get_moving_average_values` mixes it into `wh_data`, drives
+`stock_value` negative, then consume-to-zero yields positive SVD → I3 on
+`MAT-STE-2026-41477`.
 
-**IMPLEMENTED_BUT_REBUILD_INCOMPLETE** until HRC-00001 pending reaches 0 with
-accounting verification and the I3 identity is repaired or formally accepted
-as a documented blocker with dependents Blocked.
+**Fix:** `clear_sticky_native_outgoing_rate_for_riv` before vanilla
+`process_sle` for native-outgoing purposes (Material Issue/Transfer/…).
+Iran then realigns SED via preserve-native. Failure registry skips Failed
+rows after covering Completes; auto-seed never recreates Failed identities.
+
+**Verified:** RIV `idnlp2utam` Completed; Bin/SLE chain clean (qty=0,value=0).
+
+## I3. Failed-identity reseed flood
+
+Late Completed covers that do not reach earliest SLE must not reopen seeding.
+`uncovered_identities` and `is_blocked_identity` treat any open Failed as a
+hard auto-seed block; `mark_resolved` moves Failed → Skipped (error_log kept).
+
+## J. Reconciliation (development.localhost)
+
+- Terminal: 15,802 accounted, pending=0, failed=0, blocked=0
+- Bin ↔ latest SLE stock_value delta: **0**
+- SLE SVD ↔ warehouse inventory GL delta: **−49,009 IRR** (≤1e5 tolerance)
+- TVA: 50 TRACE_ONLY, 30 GENUINE_ROUNDING; 75 SUPERSEDED_BY_PHASE2, 5 CANCELLED
+- Open Failed RIV: **0**
+
+## K. Verdict (local)
+
+**FULL_REBUILD_VERIFIED_AND_MERGED** (merge into `develop` local only — no push).

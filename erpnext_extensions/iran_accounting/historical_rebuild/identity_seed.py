@@ -87,19 +87,13 @@ def uncovered_identities(company: str, limit: int = 200) -> list[dict[str, Any]]
 			  and r2.status in ('Queued','In Progress')
 		)
 		and not exists (
-			-- Block auto-seed when Failed exists AND no Completed cover yet.
+			-- Any Failed RIV for this identity blocks auto-seed forever.
+			-- Late Completed covers must not reopen seeding; use explicit repair only.
 			select 1 from `tabRepost Item Valuation` r3
 			where r3.docstatus=1
 			  and r3.based_on='Item and Warehouse'
 			  and r3.item_code=s.item_code and r3.warehouse=s.warehouse
 			  and r3.status='Failed'
-			  and not exists (
-			    select 1 from `tabRepost Item Valuation` r4
-			    where r4.docstatus=1
-			      and r4.based_on='Item and Warehouse'
-			      and r4.item_code=s.item_code and r4.warehouse=s.warehouse
-			      and r4.status='Completed'
-			  )
 		)
 		order by s.posting_date asc, s.posting_time asc, s.item_code asc, s.warehouse asc
 		limit %s
@@ -402,6 +396,19 @@ def run_identity_drain(
 			continue
 
 		if uncovered == 0 and outstanding == 0 and pending == 0:
+			failed_n = cint(
+				frappe.db.count(ITEM_DOCTYPE, {"campaign": campaign, "item_status": ITEM_FAILED})
+			)
+			blocked_n = cint(
+				frappe.db.count(ITEM_DOCTYPE, {"campaign": campaign, "item_status": ITEM_BLOCKED})
+			)
+			if failed_n or blocked_n:
+				_append_log(
+					campaign,
+					f"Identity drain idle — pending=0 but failed={failed_n} blocked={blocked_n}",
+				)
+				# Do not mark Completed while unresolved item failures/blockers remain.
+				break
 			frappe.db.set_value(
 				CAMPAIGN_DOCTYPE,
 				campaign,

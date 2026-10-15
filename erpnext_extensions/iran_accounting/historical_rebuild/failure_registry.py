@@ -73,21 +73,14 @@ def get_failure(item_code: str, warehouse: str) -> dict | None:
 
 
 def is_blocked_identity(item_code: str, warehouse: str) -> bool:
-	"""True when identity has an open failure and must not seed a new RIV.
+	"""True when identity has an open Failed RIV and must not auto-create new RIV.
 
-	A later Completed Item+WH RIV for the same identity clears the block
-	(repair succeeded). Failed rows remain for audit.
+	A Failed row blocks auto-seed/create until :func:`repair_failed_identity`
+	succeeds and :func:`mark_resolved` moves Failed rows to Skipped.
+	Resolved registry state also clears the block.
 	"""
-	if frappe.db.exists(
-		"Repost Item Valuation",
-		{
-			"docstatus": 1,
-			"based_on": "Item and Warehouse",
-			"item_code": item_code,
-			"warehouse": warehouse,
-			"status": "Completed",
-		},
-	):
+	rec = get_failure(item_code, warehouse)
+	if rec and rec.get("resolution_state") == "resolved":
 		return False
 	if frappe.db.exists(
 		"Repost Item Valuation",
@@ -100,7 +93,6 @@ def is_blocked_identity(item_code: str, warehouse: str) -> bool:
 		},
 	):
 		return True
-	rec = get_failure(item_code, warehouse)
 	return bool(rec and rec.get("resolution_state") == "open")
 
 
@@ -114,6 +106,20 @@ def mark_resolved(item_code: str, warehouse: str, detail: str = "") -> None:
 	rec["resolved_at"] = str(now_datetime())
 	rec["resolution_detail"] = (detail or "")[:300]
 	frappe.cache().set_value(key, rec, expires_in_sec=60 * 60 * 24 * 30)
+	# Preserve failure history on the RIV row (error_log) but move status off
+	# Failed so auto-seed / distinct-failure queries stop treating the identity
+	# as an open blocker after a successful covering Completed RIV.
+	frappe.db.sql(
+		"""
+		update `tabRepost Item Valuation`
+		set status='Skipped'
+		where docstatus=1 and status='Failed'
+		  and based_on='Item and Warehouse'
+		  and item_code=%s and warehouse=%s
+		""",
+		(item_code, warehouse),
+	)
+	frappe.db.commit()
 
 
 def list_open_failures_from_db() -> list[dict[str, Any]]:
@@ -245,6 +251,27 @@ def repair_failed_identity(
 
 	if cat == "component_scrap":
 		actions.append(repair_component_scrap_for_item(item_code))
+	elif cat == "valuation_integrity_i3":
+		# Clear sticky Material Issue SLE.outgoing_rate so Core MA owns valuation.
+		cleared = frappe.db.sql(
+			"""
+			update `tabStock Ledger Entry` sle
+			inner join `tabStock Entry` se on se.name=sle.voucher_no
+			set sle.outgoing_rate=0
+			where sle.is_cancelled=0
+			  and sle.item_code=%s and sle.warehouse=%s
+			  and sle.voucher_type='Stock Entry'
+			  and sle.actual_qty < 0
+			  and se.purpose in (
+			    'Material Issue','Material Transfer',
+			    'Material Transfer for Manufacture','Send to Subcontractor'
+			  )
+			  and abs(sle.outgoing_rate) > 0
+			""",
+			(item_code, warehouse),
+		)
+		frappe.db.commit()
+		actions.append({"cleared_sticky_outgoing_rates": True, "sql": str(cleared)})
 	elif cat == "missing_repost_file":
 		# Drop broken file pointer so Core regenerates on next execute.
 		frappe.db.set_value(
@@ -335,11 +362,41 @@ def _outstanding_count() -> int:
 	)
 
 
+def resolve_covered_failures() -> dict:
+	"""Skip Failed RIVs whose identity now has a Completed cover at earliest SLE."""
+	rows = frappe.db.sql(
+		"""
+		select distinct f.item_code, f.warehouse
+		from `tabRepost Item Valuation` f
+		where f.docstatus=1 and f.status='Failed'
+		  and f.based_on='Item and Warehouse'
+		  and exists (
+		    select 1 from `tabRepost Item Valuation` c
+		    where c.docstatus=1 and c.status='Completed'
+		      and c.based_on='Item and Warehouse'
+		      and c.item_code=f.item_code and c.warehouse=f.warehouse
+		      and c.posting_date <= (
+		        select min(s.posting_date) from `tabStock Ledger Entry` s
+		        where s.is_cancelled=0 and s.item_code=f.item_code and s.warehouse=f.warehouse
+		      )
+		  )
+		""",
+		as_dict=True,
+	)
+	resolved = []
+	for r in rows or []:
+		mark_resolved(r.item_code, r.warehouse, detail="Completed cover at earliest SLE")
+		resolved.append({"item_code": r.item_code, "warehouse": r.warehouse})
+	return {"resolved": len(resolved), "identities": resolved}
+
+
 def repair_all_failed_identities(campaign: str = "HRC-00001") -> dict:
 	"""Attempt repair for every distinct Failed identity."""
 	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran
 
 	apply_iran()
+	# First close any that already have a covering Completed RIV.
+	covered = resolve_covered_failures()
 	ids = list_open_failures_from_db()
 	results = []
 	for rec in ids:
@@ -353,4 +410,4 @@ def repair_all_failed_identities(campaign: str = "HRC-00001") -> dict:
 				),
 			}
 		)
-	return {"identities": len(ids), "results": results}
+	return {"identities": len(ids), "covered_first": covered, "results": results}
