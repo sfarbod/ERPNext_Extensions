@@ -1,0 +1,307 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-10-14 22:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "company",
+  "status",
+  "column_break_meta",
+  "manifest_checksum",
+  "posting_boundary_from",
+  "section_counts",
+  "total_documents",
+  "completed",
+  "pending",
+  "failed",
+  "blocked",
+  "skipped_covered",
+  "column_break_riv",
+  "riv_created",
+  "riv_completed",
+  "riv_queued",
+  "riv_in_progress",
+  "riv_failed",
+  "section_cursor",
+  "last_ordinal",
+  "last_voucher_type",
+  "last_voucher_no",
+  "current_voucher_type",
+  "current_voucher_no",
+  "column_break_time",
+  "started_at",
+  "last_activity",
+  "completed_at",
+  "pause_requested",
+  "stop_requested",
+  "section_notes",
+  "remarks",
+  "section_logs",
+  "execution_logs"
+ ],
+ "fields": [
+  {
+   "default": "HRC-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "HRC-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nReady\nRunning\nPaused\nStopped\nCompleted\nFailed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manifest_checksum",
+   "fieldtype": "Data",
+   "label": "Manifest Checksum",
+   "length": 64,
+   "read_only": 1
+  },
+  {
+   "fieldname": "posting_boundary_from",
+   "fieldtype": "Date",
+   "label": "Posting Boundary From"
+  },
+  {
+   "fieldname": "section_counts",
+   "fieldtype": "Section Break",
+   "label": "Document Counters"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_documents",
+   "fieldtype": "Int",
+   "label": "Total Documents",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "completed",
+   "fieldtype": "Int",
+   "label": "Completed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "pending",
+   "fieldtype": "Int",
+   "label": "Pending",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "failed",
+   "fieldtype": "Int",
+   "label": "Failed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "blocked",
+   "fieldtype": "Int",
+   "label": "Blocked",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "skipped_covered",
+   "fieldtype": "Int",
+   "label": "Skipped Covered",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_riv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "riv_created",
+   "fieldtype": "Int",
+   "label": "Core RIV Created",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "riv_completed",
+   "fieldtype": "Int",
+   "label": "Core RIV Completed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "riv_queued",
+   "fieldtype": "Int",
+   "label": "Core RIV Queued",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "riv_in_progress",
+   "fieldtype": "Int",
+   "label": "Core RIV In Progress",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "riv_failed",
+   "fieldtype": "Int",
+   "label": "Core RIV Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_cursor",
+   "fieldtype": "Section Break",
+   "label": "Cursor"
+  },
+  {
+   "default": "0",
+   "fieldname": "last_ordinal",
+   "fieldtype": "Int",
+   "label": "Last Ordinal",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_voucher_type",
+   "fieldtype": "Data",
+   "label": "Last Voucher Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_voucher_no",
+   "fieldtype": "Data",
+   "label": "Last Voucher No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "current_voucher_type",
+   "fieldtype": "Data",
+   "label": "Current Voucher Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "current_voucher_no",
+   "fieldtype": "Data",
+   "label": "Current Voucher No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_time",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_activity",
+   "fieldtype": "Datetime",
+   "label": "Last Activity",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "pause_requested",
+   "fieldtype": "Check",
+   "label": "Pause Requested",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "stop_requested",
+   "fieldtype": "Check",
+   "label": "Stop Requested",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_notes",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  },
+  {
+   "fieldname": "section_logs",
+   "fieldtype": "Section Break",
+   "label": "Execution Logs"
+  },
+  {
+   "fieldname": "execution_logs",
+   "fieldtype": "Table",
+   "label": "Execution Logs",
+   "options": "Historical Rebuild Campaign Log"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-14 22:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Historical Rebuild Campaign",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

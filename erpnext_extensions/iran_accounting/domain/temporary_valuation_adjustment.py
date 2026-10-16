@@ -436,12 +436,18 @@ def resolve_fractional_batch_pool(
 
 
 def classify_historical_fractional_batch_row(doc, row, bal_qty: float, bal_value: float) -> dict | None:
-	"""Outgoing batch move whose historical batch average is fractional IRR."""
+	"""Outgoing batch move whose historical batch average is fractional IRR.
+
+	Includes Manufacture / Repack / Material Consumption for Manufacture **consume**
+	rows (``s_warehouse`` set). Document SED remains integer/authoritative for SLE
+	movement under manufacturing contracts; this only authorizes TRACE persistence
+	of Core's fractional SABE layer inherited from historical batch averages.
+	Full-depletion indivisible-MA Stock Adjustment bridging stays excluded for
+	those purposes via :func:`classify_indivisible_ma_row`.
+	"""
 	if not row.get("s_warehouse") or not row.get("batch_no") or not row.get("item_code"):
 		return None
 	purpose = doc.get("purpose") or ""
-	if purpose in ("Manufacture", "Repack", "Material Consumption for Manufacture"):
-		return None
 	if purpose not in ELIGIBLE_PURPOSES:
 		return None
 	move_qty = abs(
@@ -533,10 +539,10 @@ def classify_observed_native_fractional_sabe(doc) -> list[dict[str, Any]]:
 
 	Safety net when pre-submit pool classify missed corrupt warehouse SABE nets.
 	Does not invent Stock Adjustment GL — TRACE_ONLY for Phase 2 discovery.
+	Includes manufacturing purposes: consume SABE may inherit fractional historical
+	batch averages while SED/SLE stay on the integer manufacturing contract.
 	"""
 	if (doc.get("purpose") or "") not in ELIGIBLE_PURPOSES:
-		return []
-	if (doc.get("purpose") or "") in ("Manufacture", "Repack", "Material Consumption for Manufacture"):
 		return []
 	ccy = get_company_currency(doc.company)
 	sa_account = resolve_stock_adjustment_account(doc.company)

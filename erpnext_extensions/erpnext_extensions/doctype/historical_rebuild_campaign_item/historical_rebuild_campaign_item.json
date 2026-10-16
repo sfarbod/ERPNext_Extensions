@@ -1,0 +1,210 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-10-14 22:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "campaign",
+  "ordinal",
+  "company",
+  "column_break_id",
+  "voucher_type",
+  "voucher_no",
+  "item_status",
+  "section_chrono",
+  "posting_date",
+  "posting_time",
+  "creation_ts",
+  "section_source",
+  "source_rebuild_status",
+  "source_rebuild_detail",
+  "column_break_riv",
+  "riv_names",
+  "covering_riv",
+  "retry_count",
+  "section_result",
+  "tva_reconcile_status",
+  "error_message",
+  "last_processed_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "campaign",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Campaign",
+   "options": "Historical Rebuild Campaign",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "ordinal",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Ordinal",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_id",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "voucher_type",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Voucher Type",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "voucher_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Voucher No",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "item_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Item Status",
+   "options": "Pending\nProcessing\nSource Rebuild\nRIV Linked\nCompleted\nFailed\nBlocked\nSkipped Covered",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "section_chrono",
+   "fieldtype": "Section Break",
+   "label": "Chronology"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Posting Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "posting_time",
+   "fieldtype": "Data",
+   "label": "Posting Time"
+  },
+  {
+   "fieldname": "creation_ts",
+   "fieldtype": "Datetime",
+   "label": "Document Creation"
+  },
+  {
+   "fieldname": "section_source",
+   "fieldtype": "Section Break",
+   "label": "Source / RIV"
+  },
+  {
+   "default": "Not Required",
+   "fieldname": "source_rebuild_status",
+   "fieldtype": "Select",
+   "label": "Source Rebuild Status",
+   "options": "Not Required\nRequired\nDone\nFailed\nBlocked"
+  },
+  {
+   "fieldname": "source_rebuild_detail",
+   "fieldtype": "Small Text",
+   "label": "Source Rebuild Detail"
+  },
+  {
+   "fieldname": "column_break_riv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "riv_names",
+   "fieldtype": "Long Text",
+   "label": "Core RIV Names (JSON)"
+  },
+  {
+   "fieldname": "covering_riv",
+   "fieldtype": "Data",
+   "label": "Covering RIV"
+  },
+  {
+   "default": "0",
+   "fieldname": "retry_count",
+   "fieldtype": "Int",
+   "label": "Retry Count"
+  },
+  {
+   "fieldname": "section_result",
+   "fieldtype": "Section Break",
+   "label": "Result"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "tva_reconcile_status",
+   "fieldtype": "Select",
+   "label": "TVA Reconcile Status",
+   "options": "Pending\nNot Applicable\nSuperseded\nPreserved\nFailed"
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Long Text",
+   "label": "Error Message"
+  },
+  {
+   "fieldname": "last_processed_at",
+   "fieldtype": "Datetime",
+   "label": "Last Processed At"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-14 22:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Historical Rebuild Campaign Item",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "ordinal",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 0
+}

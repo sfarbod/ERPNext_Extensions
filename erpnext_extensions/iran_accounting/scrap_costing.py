@@ -518,12 +518,66 @@ def _consume_rows_for_item(doc, item_code: str) -> list:
 	return rows
 
 
+def _persisted_consume_rate(row) -> float:
+	"""Recover issued rate when in-memory SED amounts were cleared mid-RIV.
+
+	Order (never invents): persisted SED basic_rate/amount → SLE outgoing rate
+	for the same voucher_detail_no. Destination warehouse valuation is never used.
+	"""
+	name = row.get("name")
+	if not name:
+		return 0.0
+	try:
+		sed = frappe.db.get_value(
+			"Stock Entry Detail",
+			name,
+			["basic_rate", "basic_amount", "qty", "transfer_qty"],
+			as_dict=True,
+		)
+	except Exception:
+		sed = None
+	if sed:
+		qty = flt(sed.transfer_qty) if flt(sed.transfer_qty) else flt(sed.qty)
+		if flt(sed.basic_amount) > 0 and qty > 0:
+			return flt(sed.basic_amount) / qty
+		if flt(sed.basic_rate) > 0:
+			return flt(sed.basic_rate)
+	try:
+		sle_rate = frappe.db.sql(
+			"""
+			select abs(stock_value_difference / nullif(actual_qty, 0)) as rate
+			from `tabStock Ledger Entry`
+			where voucher_type='Stock Entry'
+			  and voucher_detail_no=%s
+			  and is_cancelled=0
+			  and actual_qty < 0
+			order by posting_datetime desc, creation desc
+			limit 1
+			""",
+			name,
+		)
+		if sle_rate and flt(sle_rate[0][0]) > 0:
+			return flt(sle_rate[0][0])
+	except Exception:
+		pass
+	return 0.0
+
+
 def _weighted_issued_rate(rows) -> float:
 	qty = 0.0
 	amount = 0.0
 	for row in rows:
-		qty += _row_qty(row)
-		amount += flt(row.get("basic_amount"))
+		q = _row_qty(row)
+		qty += q
+		amt = flt(row.get("basic_amount"))
+		if amt <= 0 and q > 0:
+			# Core RIV may clear basic_amount before Iran contract re-prices scrap.
+			# Prefer in-memory basic_rate, then persisted SED/SLE for this consume row.
+			rate = flt(row.get("basic_rate"))
+			if rate <= 0:
+				rate = _persisted_consume_rate(row)
+			amt = rate * q
+		amount += amt
 	return (amount / qty) if qty > 0 else 0.0
 
 
@@ -599,9 +653,24 @@ def apply_component_scrap_issued_rates(doc) -> bool:
 	classified = classify_manufacture_outputs(doc)
 	currency = get_company_currency(doc.company)
 	applied = False
+	through_riv = False
+	try:
+		through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
+	except Exception:
+		through_riv = False
 	for row in classified[CLASS_COMPONENT_SCRAP]:
 		rate = _issued_rate_for_component(doc, row)
 		if rate <= 0:
+			# Prefer already-persisted scrap issued rate (same voucher, same row).
+			rate = flt(row.get("basic_rate"))
+			if rate <= 0:
+				rate = _persisted_consume_rate(row)
+		if rate <= 0:
+			has_consume = bool(_consume_rows_for_item(doc, row.get("item_code")))
+			if through_riv and has_consume:
+				# Mid-RIV Core may have cleared consume amounts; do not abort the
+				# identity walk. Leave existing scrap economics on the row.
+				continue
 			frappe.throw(
 				_(
 					"Component Scrap {0} has no matching consumed material on this Manufacture. "
