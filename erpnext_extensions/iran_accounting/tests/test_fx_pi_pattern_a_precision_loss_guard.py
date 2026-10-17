@@ -429,9 +429,11 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 			with self.assertRaises(RuntimeError) as ctx:
 				assert_pattern_a_precision_loss_patch_supported(orig)
 		self.assertIn("16.38", str(ctx.exception))
+		with patch("erpnext.__version__", "16.51.1"), patch("frappe.__version__", "16.52.0"):
+			assert_pattern_a_precision_loss_patch_supported(orig)
 		with patch("erpnext.__version__", "16.37.0"), patch("frappe.__version__", "16.36.1"):
 			assert_pattern_a_precision_loss_patch_supported(orig)
-		with patch("erpnext.__version__", "16.37.0"), patch("frappe.__version__", "16.37.0"):
+		with patch("erpnext.__version__", "16.51.1"), patch("frappe.__version__", "16.37.0"):
 			with self.assertRaises(RuntimeError) as ctx:
 				assert_pattern_a_precision_loss_patch_supported(orig)
 			self.assertIn("16.37", str(ctx.exception))

@@ -25,6 +25,7 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 	collect_fingerprint_report,
 	is_valued_source_zero_outgoing,
 	make_update_rate_on_stock_entry_wrapper,
+	vanilla_recalculates_after_update_rate,
 	normalize_callable_signature,
 	normalize_function_source,
 	source_sha256,
@@ -98,11 +99,32 @@ class TestRivRateGuardUnit(unittest.TestCase):
 		report = collect_fingerprint_report()
 		self.assertIn(
 			report["erpnext_major_minor"],
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"},
+			{
+				"16.29",
+				"16.30",
+				"16.31",
+				"16.32",
+				"16.33",
+				"16.34",
+				"16.35",
+				"16.36",
+				"16.37",
+				"16.51",
+			},
 		)
 		self.assertIn(
 			report["frappe_major_minor"],
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36"},
+			{
+				"16.29",
+				"16.30",
+				"16.31",
+				"16.32",
+				"16.33",
+				"16.34",
+				"16.35",
+				"16.36",
+				"16.52",
+			},
 		)
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
@@ -110,7 +132,26 @@ class TestRivRateGuardUnit(unittest.TestCase):
 			accepted = {expected["source_sha256"], *expected.get("source_sha256_alternates", ())}
 			self.assertIn(got["source_sha256"], accepted, name)
 
-	def test_erpnext_16_37_x_allowed_16_38_blocked(self):
+	def test_vanilla_recalculate_gate_duck_types_generations(self):
+		"""16.51 sle_id gate vs legacy sabb helper."""
+		engine = mock.Mock()
+		engine.args = {"sle_id": "SLE-1"}
+		sle = mock.Mock()
+		sle.dependant_sle_voucher_detail_no = None
+		# No sabb / has_bundle → 16.51 semantics
+		del engine.is_manufacture_entry_with_sabb
+		del engine.has_bundle_picked_on_submit
+		self.assertFalse(vanilla_recalculates_after_update_rate(engine, sle))
+		engine.args = {}
+		self.assertTrue(vanilla_recalculates_after_update_rate(engine, sle))
+		# Legacy sabb path
+		engine.is_manufacture_entry_with_sabb = mock.Mock(return_value=True)
+		sle.dependant_sle_voucher_detail_no = "dep"
+		self.assertTrue(vanilla_recalculates_after_update_rate(engine, sle))
+		engine.is_manufacture_entry_with_sabb = mock.Mock(return_value=False)
+		self.assertFalse(vanilla_recalculates_after_update_rate(engine, sle))
+
+	def test_erpnext_16_51_x_allowed_unvalidated_minors_blocked(self):
 		import erpnext
 
 		from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
@@ -119,30 +160,41 @@ class TestRivRateGuardUnit(unittest.TestCase):
 		)
 
 		self.assertTrue(
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"}.issubset(
-				_SUPPORTED_ERPNEXT_MINOR
-			)
+			{
+				"16.29",
+				"16.30",
+				"16.31",
+				"16.32",
+				"16.33",
+				"16.34",
+				"16.35",
+				"16.36",
+				"16.37",
+				"16.51",
+			}.issubset(_SUPPORTED_ERPNEXT_MINOR)
 		)
-		self.assertIn("16.37", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.51", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertNotIn("16.38", _SUPPORTED_ERPNEXT_MINOR)
-		self.assertIn("16.36", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.52", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.52", _SUPPORTED_FRAPPE_MINOR)
 		self.assertNotIn("16.37", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.53", _SUPPORTED_FRAPPE_MINOR)
 
+		with mock.patch.object(erpnext, "__version__", "16.51.1"), mock.patch.object(
+			frappe, "__version__", "16.52.0"
+		):
+			assert_erpnext_riv_rate_patch_supported()
 		with mock.patch.object(erpnext, "__version__", "16.37.0"), mock.patch.object(
 			frappe, "__version__", "16.36.1"
 		):
 			assert_erpnext_riv_rate_patch_supported()
-		with mock.patch.object(erpnext, "__version__", "16.37.9"), mock.patch.object(
-			frappe, "__version__", "16.36.0"
-		):
-			assert_erpnext_riv_rate_patch_supported()
 		with mock.patch.object(erpnext, "__version__", "16.38.0"), mock.patch.object(
-			frappe, "__version__", "16.36.1"
+			frappe, "__version__", "16.52.0"
 		):
 			with self.assertRaises(RuntimeError) as ctx:
 				assert_erpnext_riv_rate_patch_supported()
 			self.assertIn("16.38.0", str(ctx.exception))
-		with mock.patch.object(erpnext, "__version__", "16.37.0"), mock.patch.object(
+		with mock.patch.object(erpnext, "__version__", "16.51.1"), mock.patch.object(
 			frappe, "__version__", "16.37.0"
 		):
 			with self.assertRaises(RuntimeError) as ctx:
@@ -365,7 +417,6 @@ class TestRivRateGuardUnit(unittest.TestCase):
 				"recalculate_amounts_in_stock_entry": _FN_FINGERPRINTS[
 					"recalculate_amounts_in_stock_entry"
 				],
-				"is_manufacture_entry_with_sabb": _FN_FINGERPRINTS["is_manufacture_entry_with_sabb"],
 			},
 			clear=False,
 		):

@@ -1,24 +1,25 @@
-"""Idempotent Cheque Management links under the Payments *module* sidebar (`Workspace Sidebar`).
+"""Idempotent Cheque Management links under Payments / Accounts navigation.
 
-Why this module exists
-----------------------
-Patches run **before** Frappe's migrate tail steps. In particular,
-``frappe.model.sync.remove_orphan_entities`` deletes **public** ``Workspace`` records whose
-``name`` is not backed by any ``**/workspace/**/*.json`` in installed apps. A patch that
-creates ``Workspace`` "Cheque Management" can therefore be undone later in the same migrate.
+Frappe ≤16.36 used ``Workspace Sidebar`` (module Payments). Frappe 16.52+ serves
+runtime navigation from ``Sidebar`` (ERPNext ships ``Accounts``) plus optional
+site ``Custom Sidebar`` layers. Extension code must **not** mutate ERPNext's
+standard ``Sidebar Accounts`` document (that exports into the erpnext app when
+developer_mode is on). Cheque / Guarantee links are applied via:
 
-Sidebar grouping is **sidebar-first** (not workspace-first). This module applies the same
-logic as ``update_payments_module_sidebar_add_pdc_items`` and is also invoked from
-``after_migrate`` so navigation is restored **after** orphan cleanup — without relying on
-Patch Log re-execution.
+1. Legacy ``Workspace Sidebar`` archive when still writable (migrate-safe), and/or
+2. Site-wide ``Custom Sidebar`` additions on module ``Accounts`` (16.52+).
 """
 
 from __future__ import annotations
 
 import frappe
 
+from erpnext_extensions.desk_navigation import has_modern_sidebar, workspace_sidebar_writable
 
-def _get_payments_sidebar():
+
+def _get_legacy_payments_sidebar():
+	if not frappe.db.exists("DocType", "Workspace Sidebar"):
+		return None
 	name = frappe.db.get_value("Workspace Sidebar", {"module": "Payments", "for_user": None}, "name")
 	if name:
 		return frappe.get_doc("Workspace Sidebar", name)
@@ -116,19 +117,7 @@ def _reindex_items(sidebar) -> None:
 		it.idx = i + 1
 
 
-def apply_payments_cheque_sidebar_groups() -> bool:
-	"""Ensure Cheque Operations / Reports / Configuration groups exist on Payments sidebar.
-
-	Returns True if the sidebar document was saved, False if nothing to do or sidebar missing.
-	"""
-	sidebar = _get_payments_sidebar()
-	if not sidebar:
-		frappe.logger("erpnext_extensions.cheque_management").warning(
-			"No public Workspace Sidebar for module Payments; skipping Cheque Management sidebar grouping "
-			"(ensure ERPNext Payments sidebar is installed/synced)."
-		)
-		return False
-
+def _cheque_block_items() -> list[dict]:
 	target_links: list[tuple[str, str, str]] = [
 		("DocType", "Post Dated Cheque", "Post Dated Cheque"),
 		("DocType", "Cheque Book", "Cheque Book"),
@@ -137,15 +126,7 @@ def apply_payments_cheque_sidebar_groups() -> bool:
 		("Report", "Cheque Maturity Report", "Cheque Maturity Report"),
 		("DocType", "PDC Settings", "PDC Settings"),
 	]
-	target_set = {(lt, to) for (lt, to, _lbl) in target_links}
-	section_labels = {"Cheque Operations", "Cheque Reports", "Cheque Configuration"}
-
-	changed = False
-	changed |= bool(_remove_existing_links(sidebar, target_set))
-	changed |= bool(_remove_section_breaks(sidebar, section_labels))
-
 	block: list[dict] = []
-
 	op_links: list[dict] = []
 	for lt, to, lbl in target_links[:4]:
 		if lt == "DocType" and frappe.db.exists("DocType", to):
@@ -153,7 +134,6 @@ def apply_payments_cheque_sidebar_groups() -> bool:
 	if op_links:
 		block.append(_native_section_break(label="Cheque Operations", icon="banknote", keep_closed=0))
 		block.extend(op_links)
-
 	if frappe.db.exists("Report", "Cheque Maturity Report"):
 		block.append(_native_section_break(label="Cheque Reports", icon="sheet", keep_closed=1))
 		block.append(
@@ -163,55 +143,104 @@ def apply_payments_cheque_sidebar_groups() -> bool:
 				label="Cheque Maturity Report",
 			)
 		)
-
 	if frappe.db.exists("DocType", "PDC Settings"):
 		block.append(_native_section_break(label="Cheque Configuration", icon="settings", keep_closed=0))
 		block.append(_native_child_link(link_type="DocType", link_to="PDC Settings", label="PDC Settings"))
+	return block
 
-	if block:
-		changed |= bool(_insert_block_before_first_section(sidebar, "Reports", block))
 
+def _guarantee_block_items() -> list[dict]:
+	if not frappe.db.exists("DocType", "Guarantee Document"):
+		return []
+	return [
+		_native_section_break(label="Guarantee Documents", icon="shield-check", keep_closed=0),
+		_native_child_link(link_type="DocType", link_to="Guarantee Document", label="Guarantee Document"),
+	]
+
+
+def _apply_block_to_legacy_sidebar(sidebar, block: list[dict], *, section_labels: set[str], target_set: set) -> bool:
+	if not sidebar or not block:
+		return False
+	if not workspace_sidebar_writable():
+		return False
+	changed = False
+	changed |= bool(_remove_existing_links(sidebar, target_set))
+	changed |= bool(_remove_section_breaks(sidebar, section_labels))
+	changed |= bool(_insert_block_before_first_section(sidebar, "Reports", block))
 	if changed:
 		_reindex_items(sidebar)
 		sidebar.save(ignore_permissions=True)
 		frappe.db.commit()
-		return True
+	return changed
 
-	return False
+
+def _ensure_site_custom_sidebar_items(module: str, items: list[dict]) -> bool:
+	"""Append missing rows to the site-wide Custom Sidebar (never touch base Sidebar)."""
+	if not has_modern_sidebar() or not items:
+		return False
+	from frappe.desk.doctype.custom_sidebar.custom_sidebar import add_site_sidebar_item
+
+	for item in items:
+		# Idempotent: skips when the linked identity is already present.
+		add_site_sidebar_item(module, dict(item))
+	return True
+
+
+def apply_payments_cheque_sidebar_groups() -> bool:
+	"""Ensure Cheque Operations / Reports / Configuration groups exist on Payments navigation."""
+	block = _cheque_block_items()
+	if not block:
+		return False
+
+	target_set = {
+		("DocType", "Post Dated Cheque"),
+		("DocType", "Cheque Book"),
+		("DocType", "Cheque Leaf"),
+		("DocType", "Cheque Opening Import"),
+		("Report", "Cheque Maturity Report"),
+		("DocType", "PDC Settings"),
+	}
+	section_labels = {"Cheque Operations", "Cheque Reports", "Cheque Configuration"}
+
+	changed = False
+	legacy = _get_legacy_payments_sidebar()
+	if legacy:
+		changed |= _apply_block_to_legacy_sidebar(
+			legacy, block, section_labels=section_labels, target_set=target_set
+		)
+	elif not has_modern_sidebar():
+		frappe.logger("erpnext_extensions.cheque_management").warning(
+			"No public Workspace Sidebar for module Payments; skipping Cheque Management sidebar grouping "
+			"(ensure ERPNext Payments sidebar is installed/synced)."
+		)
+
+	# Frappe 16.52+: site Custom Sidebar on Accounts (ERPNext base module).
+	changed |= _ensure_site_custom_sidebar_items("Accounts", block)
+	return changed
 
 
 def apply_payments_guarantee_document_sidebar() -> bool:
-	"""Idempotent **Guarantee Documents** section + list link on Payments `Workspace Sidebar`."""
-	sidebar = _get_payments_sidebar()
-	if not sidebar:
-		frappe.logger("erpnext_extensions.cheque_management").warning(
-			"No public Workspace Sidebar for module Payments; skipping Guarantee Document sidebar link."
-		)
-		return False
-
-	if not frappe.db.exists("DocType", "Guarantee Document"):
+	"""Idempotent Guarantee Documents section + list link on Payments / Accounts navigation."""
+	block = _guarantee_block_items()
+	if not block:
 		return False
 
 	target_set = {("DocType", "Guarantee Document")}
 	section_labels = {"Guarantee Documents"}
 
 	changed = False
-	changed |= bool(_remove_existing_links(sidebar, target_set))
-	changed |= bool(_remove_section_breaks(sidebar, section_labels))
+	legacy = _get_legacy_payments_sidebar()
+	if legacy:
+		changed |= _apply_block_to_legacy_sidebar(
+			legacy, block, section_labels=section_labels, target_set=target_set
+		)
+	elif not has_modern_sidebar():
+		frappe.logger("erpnext_extensions.cheque_management").warning(
+			"No public Workspace Sidebar for module Payments; skipping Guarantee Document sidebar link."
+		)
 
-	block = [
-		_native_section_break(label="Guarantee Documents", icon="shield-check", keep_closed=0),
-		_native_child_link(link_type="DocType", link_to="Guarantee Document", label="Guarantee Document"),
-	]
-	changed |= bool(_insert_block_before_first_section(sidebar, "Reports", block))
-
-	if changed:
-		_reindex_items(sidebar)
-		sidebar.save(ignore_permissions=True)
-		frappe.db.commit()
-		return True
-
-	return False
+	changed |= _ensure_site_custom_sidebar_items("Accounts", block)
+	return changed
 
 
 def after_migrate() -> None:

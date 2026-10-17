@@ -48,13 +48,36 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 # ERPNext 16.36.x–16.37.0: update_valuation_rate uses get_internal_transfer_qty
 # for internal PR sales_incoming_rate; still ends with regional hook. Regional
 # stub unchanged. Revalidated on ERPNext 16.37.0 / Frappe 16.36.1.
+# ERPNext 16.51.1 / Frappe 16.52.0: UVR uses get_stock_qty for stock-UOM qty;
+# regional stub + hook call site unchanged. Intermediate 16.38–16.50 not listed.
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_ERPNEXT_MINOR = frozenset(
-	{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"}
+	{
+		"16.29",
+		"16.30",
+		"16.31",
+		"16.32",
+		"16.33",
+		"16.34",
+		"16.35",
+		"16.36",
+		"16.37",
+		"16.51",
+	}
 )
 _SUPPORTED_FRAPPE_MINOR = frozenset(
-	{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36"}
+	{
+		"16.29",
+		"16.30",
+		"16.31",
+		"16.32",
+		"16.33",
+		"16.34",
+		"16.35",
+		"16.36",
+		"16.52",
+	}
 )
 
 _FN_FINGERPRINTS = {
@@ -69,6 +92,8 @@ _FN_FINGERPRINTS = {
 			"5e898d6e97ff7b39f56c0f710b83b9e69a7c0ae08a97dae10eaf32f0c12c7bac",
 			# ERPNext 16.36.x–16.37.0 (get_internal_transfer_qty for internal PR)
 			"8d254a90a2c0db491abada5742dfd5dfab2b6f847745d15cb052951e6dadca3e",
+			# ERPNext 16.51.1 (get_stock_qty for stock-UOM qty in UVR)
+			"a50a2116d80a2cbdf85cb228120a6eaa7169bbf4baafc376edb5e1c341f1c505",
 		),
 		"must_contain": ("update_regional_item_valuation_rate",),
 	},
