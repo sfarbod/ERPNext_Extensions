@@ -90,25 +90,39 @@ def scrap_asset(asset_name: str, scrap_date=None):
 	``**kwargs``. Matching the native fixed signature keeps RPC metadata out of
 	this wrapper and out of the core call, while still forwarding the business
 	arguments ``asset_name`` / ``scrap_date``.
+
+	After scrap, Asset and Finance Book VAD must remain in parity (core JE submit
+	normally keeps them aligned; we re-sync as a safety net).
 	"""
 	from erpnext.assets.doctype.asset import depreciation as depr_mod
+	from erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad import (
+		sync_asset_vad_from_finance_book,
+	)
 
 	result = depr_mod.scrap_asset(asset_name, scrap_date)
+	sync_asset_vad_from_finance_book(asset_name)
 	_reapply_for_asset(asset_name)
 	return result
 
 
 @frappe.whitelist()
 def restore_asset(asset_name: str):
-	"""Whitelist wrapper: run core restore, then re-apply usage factors.
+	"""Whitelist wrapper: core restore with cancel-first scrap-day unwind + VAD sync.
 
 	Same RPC-boundary contract as ``scrap_asset``: fixed signature so Frappe
-	strips ``cmd`` / other form_dict metadata before the wrapper runs, and only
-	``asset_name`` is forwarded to native ``depreciation.restore_asset``.
-	"""
-	from erpnext.assets.doctype.asset import depreciation as depr_mod
+	strips ``cmd`` / other form_dict metadata before the wrapper runs.
 
-	result = depr_mod.restore_asset(asset_name)
+	v5.5.53 hardened: ``restore_asset_accounting`` **calls core**
+	``depreciation.restore_asset`` after temporarily replacing only
+	``reverse_depreciation_entry_made_on_disposal`` with a cancel-first unwind
+	(period-lock → documented reverse fallback). Then syncs Asset header VAD
+	from the default Finance Book.
+	"""
+	from erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad import (
+		restore_asset_accounting,
+	)
+
+	result = restore_asset_accounting(asset_name)
 	_reapply_for_asset(asset_name)
 	return result
 

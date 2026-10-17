@@ -71,6 +71,10 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 				"erpnext.assets.doctype.asset.depreciation.scrap_asset",
 				side_effect=fake_native,
 			),
+			patch(
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
+				return_value={"skipped": "test"},
+			),
 			patch.object(integration_hooks, "_reapply_for_asset", side_effect=fake_reapply),
 		):
 			result = frappe.call(integration_hooks.scrap_asset, **form_dict)
@@ -96,6 +100,10 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 				"erpnext.assets.doctype.asset.depreciation.scrap_asset",
 				side_effect=fake_native,
 			),
+			patch(
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
+				return_value={"skipped": "test"},
+			),
 			patch.object(
 				integration_hooks,
 				"_reapply_for_asset",
@@ -107,13 +115,14 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 		self.assertEqual(native_calls, [("ASSET-1", "2026-01-15")])
 		self.assertEqual(reapply_calls, ["ASSET-1"])
 
-	def test_rpc_style_frappe_call_does_not_forward_cmd_to_native_restore(self):
-		native_calls = []
+	def test_rpc_style_frappe_call_does_not_forward_cmd_to_restore_accounting(self):
+		"""Desk/RPC path: wrapper never forwards cmd; uses cancel-based restore."""
+		restore_calls = []
 		reapply_calls = []
 
-		def fake_native(asset_name):
-			native_calls.append({"asset_name": asset_name})
-			return "ok-restore"
+		def fake_restore(asset_name):
+			restore_calls.append({"asset_name": asset_name})
+			return {"asset": asset_name, "cancelled_scrap_day_jes": []}
 
 		form_dict = {
 			"cmd": "erpnext.assets.doctype.asset.depreciation.restore_asset",
@@ -122,8 +131,8 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 
 		with (
 			patch(
-				"erpnext.assets.doctype.asset.depreciation.restore_asset",
-				side_effect=fake_native,
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.restore_asset_accounting",
+				side_effect=fake_restore,
 			),
 			patch.object(
 				integration_hooks,
@@ -133,9 +142,9 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 		):
 			result = frappe.call(integration_hooks.restore_asset, **form_dict)
 
-		self.assertEqual(result, "ok-restore")
-		self.assertEqual(len(native_calls), 1)
-		self.assertEqual(native_calls[0], {"asset_name": "2854"})
+		self.assertEqual(result["asset"], "2854")
+		self.assertEqual(len(restore_calls), 1)
+		self.assertEqual(restore_calls[0], {"asset_name": "2854"})
 		self.assertEqual(reapply_calls, ["2854"])
 
 	def test_override_whitelisted_methods_point_at_wrappers(self):
