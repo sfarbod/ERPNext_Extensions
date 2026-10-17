@@ -165,3 +165,122 @@ class TestScrapRestoreVadV5553(unittest.TestCase):
 	def test_07_sync_skips_missing_asset(self):
 		report = sync_asset_vad_from_finance_book("ASSET-DOES-NOT-EXIST-V5553")
 		self.assertEqual(report.get("skipped"), "missing_asset")
+
+	def test_08_restore_cancels_scrap_day_je_not_reverse(self):
+		"""Restore must cancel scrap-day Depreciation Entry; no reverse JE left submitted."""
+		self._ready()
+		before_jes = set(
+			frappe.get_all(
+				"Journal Entry Account",
+				filters={"reference_type": "Asset", "reference_name": ASSET},
+				pluck="parent",
+			)
+		)
+		integration_hooks.scrap_asset(ASSET, SCRAP_DATE)
+		frappe.db.commit()
+		scrap_day = frappe.db.sql(
+			"""
+			select je.name from `tabJournal Entry` je
+			inner join `tabJournal Entry Account` jea on jea.parent=je.name
+			where jea.reference_type='Asset' and jea.reference_name=%s
+			  and je.voucher_type='Depreciation Entry' and je.docstatus=1
+			  and ifnull(je.reversal_of,'')=''
+			  and je.posting_date=%s
+			order by je.creation desc limit 1
+			""",
+			(ASSET, SCRAP_DATE),
+		)
+		self.assertTrue(scrap_day, "scrap-day depreciation JE must exist after scrap")
+		scrap_day_name = scrap_day[0][0]
+
+		report = integration_hooks.restore_asset(ASSET)
+		frappe.db.commit()
+		self.assertIn(scrap_day_name, (report or {}).get("cancelled_scrap_day_jes") or [])
+		self.assertEqual(frappe.db.get_value("Journal Entry", scrap_day_name, "docstatus"), 2)
+
+		# No newly submitted reverse of that scrap-day JE
+		rev = frappe.get_all(
+			"Journal Entry",
+			filters={"reversal_of": scrap_day_name, "docstatus": 1},
+			pluck="name",
+		)
+		self.assertEqual(rev, [], f"unexpected submitted reverse JEs: {rev}")
+
+		# Legitimate monthly JEs untouched
+		for name in (
+			"ACC-JV-1405-166537",
+			"ACC-JV-1405-166538",
+			"ACC-JV-1405-166539",
+			"ACC-JV-1405-166540",
+			"ACC-JV-1405-166541",
+			"ACC-JV-1405-166542",
+		):
+			if frappe.db.exists("Journal Entry", name):
+				self.assertEqual(frappe.db.get_value("Journal Entry", name, "docstatus"), 1)
+
+		# Disposal scrap JE cancelled
+		self.assertFalse(frappe.db.get_value("Asset", ASSET, "journal_entry_for_scrap"))
+		new_submitted_reverses = frappe.db.sql(
+			"""
+			select je.name from `tabJournal Entry` je
+			inner join `tabJournal Entry Account` jea on jea.parent=je.name
+			where jea.reference_type='Asset' and jea.reference_name=%s
+			  and je.docstatus=1 and ifnull(je.reversal_of,'')!=''
+			  and je.name not in %s
+			""",
+			(ASSET, tuple(before_jes) or ("",)),
+		)
+		self.assertFalse(new_submitted_reverses, f"unexpected reverses: {new_submitted_reverses}")
+
+	def test_09_three_cycles_no_cumulative_gl(self):
+		"""Completed Scrap→Restore cycles must leave net scrap-cycle GL at zero."""
+		self._ready()
+		from collections import defaultdict
+
+		def scrap_cycle_net():
+			legit = {
+				"ACC-JV-1405-166537",
+				"ACC-JV-1405-166538",
+				"ACC-JV-1405-166539",
+				"ACC-JV-1405-166540",
+				"ACC-JV-1405-166541",
+				"ACC-JV-1405-166542",
+			}
+			all_sub = frappe.db.sql(
+				"""
+				select distinct je.name, je.voucher_type, je.reversal_of, je.creation
+				from `tabJournal Entry` je
+				inner join `tabJournal Entry Account` jea on jea.parent=je.name
+				where jea.reference_type='Asset' and jea.reference_name=%s and je.docstatus=1
+				""",
+				ASSET,
+				as_dict=1,
+			)
+			cycle = [r for r in all_sub if r.name not in legit]
+			net = defaultdict(float)
+			for r in cycle:
+				for g in frappe.get_all(
+					"GL Entry",
+					filters={"voucher_no": r.name, "is_cancelled": 0},
+					fields=["account", "debit", "credit"],
+				):
+					net[g.account] += flt(g.debit) - flt(g.credit)
+			return cycle, net
+
+		baseline_a, _ = _vad_pair(ASSET)
+		for i in range(3):
+			integration_hooks.scrap_asset(ASSET, SCRAP_DATE)
+			frappe.db.commit()
+			integration_hooks.restore_asset(ASSET)
+			frappe.db.commit()
+			ra, rf = _vad_pair(ASSET)
+			self.assertAlmostEqual(ra, baseline_a, places=2, msg=f"cycle {i+1} asset vad")
+			self.assertAlmostEqual(rf, baseline_a, places=2, msg=f"cycle {i+1} fb vad")
+			cycle, net = scrap_cycle_net()
+			# After cancel-based restore, no submitted scrap-cycle JEs should remain
+			self.assertEqual(
+				[c.name for c in cycle],
+				[],
+				f"cycle {i+1} left submitted scrap-cycle JEs: {cycle}",
+			)
+			self.assertTrue(all(abs(v) < 0.01 for v in net.values()), f"cycle {i+1} net={dict(net)}")

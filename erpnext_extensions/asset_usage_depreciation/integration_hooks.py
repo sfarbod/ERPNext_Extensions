@@ -107,24 +107,22 @@ def scrap_asset(asset_name: str, scrap_date=None):
 
 @frappe.whitelist()
 def restore_asset(asset_name: str):
-	"""Whitelist wrapper: run core restore, sync Asset VAD, re-apply usage factors.
+	"""Whitelist wrapper: core restore with cancel-first scrap-day unwind + VAD sync.
 
 	Same RPC-boundary contract as ``scrap_asset``: fixed signature so Frappe
-	strips ``cmd`` / other form_dict metadata before the wrapper runs, and only
-	``asset_name`` is forwarded to native ``depreciation.restore_asset``.
+	strips ``cmd`` / other form_dict metadata before the wrapper runs.
 
-	v5.5.53: Core restore updates Finance Book VAD when reversing disposal-day
-	depreciation but leaves Asset.value_after_depreciation reduced. Sync Asset
-	VAD from the Finance Book so repeated Scrap/Restore cycles are valuation-
-	neutral.
+	v5.5.53 hardened: ``restore_asset_accounting`` **calls core**
+	``depreciation.restore_asset`` after temporarily replacing only
+	``reverse_depreciation_entry_made_on_disposal`` with a cancel-first unwind
+	(period-lock → documented reverse fallback). Then syncs Asset header VAD
+	from the default Finance Book.
 	"""
-	from erpnext.assets.doctype.asset import depreciation as depr_mod
 	from erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad import (
-		sync_asset_vad_from_finance_book,
+		restore_asset_accounting,
 	)
 
-	result = depr_mod.restore_asset(asset_name)
-	sync_asset_vad_from_finance_book(asset_name)
+	result = restore_asset_accounting(asset_name)
 	_reapply_for_asset(asset_name)
 	return result
 
