@@ -94,11 +94,32 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 		report = collect_fingerprint_report()
 		self.assertIn(
 			report["erpnext_major_minor"],
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"},
+			{
+				"16.29",
+				"16.30",
+				"16.31",
+				"16.32",
+				"16.33",
+				"16.34",
+				"16.35",
+				"16.36",
+				"16.37",
+				"16.51",
+			},
 		)
 		self.assertIn(
 			report["frappe_major_minor"],
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36"},
+			{
+				"16.29",
+				"16.30",
+				"16.31",
+				"16.32",
+				"16.33",
+				"16.34",
+				"16.35",
+				"16.36",
+				"16.52",
+			},
 		)
 		for name, expected in _FN_FINGERPRINTS.items():
 			got = report["methods"][name]
@@ -107,7 +128,7 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 			self.assertIn(got["source_sha256"], accepted, name)
 		self.assertTrue(report["methods"]["update_valuation_rate"]["calls_regional_hook"])
 
-	def test_erpnext_16_37_x_allowed_16_38_blocked(self):
+	def test_erpnext_16_51_x_allowed_unvalidated_minors_blocked(self):
 		import erpnext
 
 		from erpnext_extensions.iran_accounting.domain.uvr_regional_guard import (
@@ -116,30 +137,41 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 		)
 
 		self.assertTrue(
-			{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"}.issubset(
-				_SUPPORTED_ERPNEXT_MINOR
-			)
+			{
+				"16.29",
+				"16.30",
+				"16.31",
+				"16.32",
+				"16.33",
+				"16.34",
+				"16.35",
+				"16.36",
+				"16.37",
+				"16.51",
+			}.issubset(_SUPPORTED_ERPNEXT_MINOR)
 		)
-		self.assertIn("16.37", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.51", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertNotIn("16.38", _SUPPORTED_ERPNEXT_MINOR)
-		self.assertIn("16.36", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.52", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.52", _SUPPORTED_FRAPPE_MINOR)
 		self.assertNotIn("16.37", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.53", _SUPPORTED_FRAPPE_MINOR)
 
+		with mock.patch.object(erpnext, "__version__", "16.51.1"), mock.patch.object(
+			frappe, "__version__", "16.52.0"
+		):
+			assert_erpnext_uvr_regional_patch_supported()
 		with mock.patch.object(erpnext, "__version__", "16.37.0"), mock.patch.object(
 			frappe, "__version__", "16.36.1"
 		):
 			assert_erpnext_uvr_regional_patch_supported()
-		with mock.patch.object(erpnext, "__version__", "16.37.9"), mock.patch.object(
-			frappe, "__version__", "16.36.0"
-		):
-			assert_erpnext_uvr_regional_patch_supported()
 		with mock.patch.object(erpnext, "__version__", "16.38.0"), mock.patch.object(
-			frappe, "__version__", "16.36.1"
+			frappe, "__version__", "16.52.0"
 		):
 			with self.assertRaises(RuntimeError) as ctx:
 				assert_erpnext_uvr_regional_patch_supported()
 			self.assertIn("16.38.0", str(ctx.exception))
-		with mock.patch.object(erpnext, "__version__", "16.37.0"), mock.patch.object(
+		with mock.patch.object(erpnext, "__version__", "16.51.1"), mock.patch.object(
 			frappe, "__version__", "16.37.0"
 		):
 			with self.assertRaises(RuntimeError) as ctx:

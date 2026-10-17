@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 
 import frappe
-from frappe.desk.doctype.workspace_sidebar.workspace_sidebar import (
-	create_workspace_sidebar_for_workspaces,
-)
 
+from erpnext_extensions.desk_navigation import (
+	create_workspace_sidebars_if_available,
+	sync_module_sidebar_items,
+	workspace_sidebar_writable,
+)
 from erpnext_extensions.petty_management.desk_workspace_config import (
 	SIDEBAR_HOME_ICON,
 	SIDEBAR_LINK_ICONS,
@@ -101,9 +103,9 @@ def _ensure_module_def():
 
 
 def _ensure_workspace_sidebar():
-	"""Ensure generic Workspace Sidebar rows exist (v16 also needs explicit items — see _sync_petty_workspace_sidebar)."""
+	"""Legacy factory when present (removed in Frappe 16.52 Sidebar rewrite)."""
 	try:
-		create_workspace_sidebar_for_workspaces()
+		create_workspace_sidebars_if_available()
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "petty_management_workspace_sidebar")
 
@@ -200,68 +202,42 @@ def _sidebar_item_signature(items) -> list[tuple]:
 			)
 	return sig
 def _sync_petty_workspace_sidebar():
-	"""Frappe v16: boot.get_sidebar_items reads Workspace Sidebar `items`; factory only adds Home + shortcuts.
+	"""Sync Petty Management left nav to Workspace Sidebar (archive) and/or Sidebar (16.52+).
 
-	Rebuild Petty Management sidebar with Home, grouped sections, and workspace links so /app/petty-management
-	left navigation is usable (center cards unchanged).
-
-	Idempotent: skip save/export when effective content already matches (avoids developer_mode
-	JSON churn of ``modified`` on every migrate).
+	Idempotent via signature compare against whichever store is writable/readable.
 	"""
 	if not frappe.db.exists("Workspace", MODULE_NAME):
 		return
-	meta_sb = frappe.get_meta("Workspace Sidebar")
-	if not meta_sb:
-		return
 
 	desired_items = _desired_sidebar_items()
-	is_new = not frappe.db.exists("Workspace Sidebar", MODULE_NAME)
 
-	if is_new:
-		sb = frappe.new_doc("Workspace Sidebar")
-		sb.title = MODULE_NAME
-	else:
-		sb = frappe.get_doc("Workspace Sidebar", MODULE_NAME)
+	# Skip when both stores already match (or the one that exists).
+	already = True
+	if workspace_sidebar_writable() or frappe.db.exists("Workspace Sidebar", MODULE_NAME):
+		if frappe.db.exists("Workspace Sidebar", MODULE_NAME):
+			sb = frappe.get_doc("Workspace Sidebar", MODULE_NAME)
+			already = _sidebar_item_signature(sb.items) == _sidebar_item_signature(desired_items)
+		else:
+			already = False
+	if already and frappe.db.exists("DocType", "Sidebar"):
+		from frappe.desk.doctype.sidebar.sidebar import get_sidebar
 
-	desired_header = "wallet" if meta_sb.has_field("header_icon") else None
-	desired_module = MODULE_NAME if meta_sb.has_field("module") else None
-	desired_standard = 1 if meta_sb.has_field("standard") else None
-	desired_app = APP_NAME if meta_sb.has_field("app") else None
+		modern = get_sidebar(MODULE_NAME)
+		if modern is None:
+			already = False
+		elif _sidebar_item_signature(modern.items) != _sidebar_item_signature(desired_items):
+			already = False
+	if already:
+		return
 
-	if not is_new:
-		same_items = _sidebar_item_signature(sb.items) == _sidebar_item_signature(desired_items)
-		same_meta = True
-		if meta_sb.has_field("header_icon") and _norm(sb.header_icon) != _norm(desired_header):
-			same_meta = False
-		if meta_sb.has_field("module") and _norm(sb.module) != _norm(desired_module):
-			same_meta = False
-		if meta_sb.has_field("standard") and int(sb.standard or 0) != int(desired_standard or 0):
-			same_meta = False
-		if meta_sb.has_field("app") and _norm(sb.app) != _norm(desired_app):
-			same_meta = False
-		if meta_sb.has_field("for_user") and sb.for_user:
-			same_meta = False
-		if same_items and same_meta:
-			return
-
-	if meta_sb.has_field("header_icon"):
-		sb.header_icon = desired_header
-	if meta_sb.has_field("module"):
-		sb.module = desired_module
-	if meta_sb.has_field("standard"):
-		sb.standard = desired_standard
-	if meta_sb.has_field("app"):
-		sb.app = desired_app
-	if meta_sb.has_field("for_user"):
-		sb.for_user = None
-
-	sb.items = []
-	for idx, row in enumerate(desired_items):
-		row = dict(row)
-		row["idx"] = idx
-		sb.append("items", row)
-
-	sb.save(ignore_permissions=True)
+	sync_module_sidebar_items(
+		MODULE_NAME,
+		desired_items,
+		title=MODULE_NAME,
+		header_icon="wallet",
+		app=APP_NAME,
+		standard=0,
+	)
 
 
 def _ensure_desktop_icon():

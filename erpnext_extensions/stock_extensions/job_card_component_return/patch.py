@@ -20,8 +20,8 @@ from erpnext_extensions.stock_extensions.job_card_component_return.eligibility i
 	decide_work_order_status_bypass,
 )
 
-# Measured on ERPNext 16.37.0 (identical method body on 16.36.x).
-_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.36", "16.37"})
+# Measured on ERPNext 16.37.0 (identical method body on 16.36.x and 16.51.1).
+_SUPPORTED_ERPNEXT_MINOR = frozenset({"16.36", "16.37", "16.51"})
 _SUPPORTED_METHOD_SHA256 = frozenset(
 	{
 		"9c50bb7b9d1972827bf8e168c5c7c8ee79aa5ff7bf27b80f9624a370604de911",

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 
 import frappe
-from frappe.desk.doctype.workspace_sidebar.workspace_sidebar import (
-	create_workspace_sidebar_for_workspaces,
+from erpnext_extensions.desk_navigation import (
+	create_workspace_sidebars_if_available,
+	sync_module_sidebar_items,
 )
 
 from erpnext_extensions.facility_management.desk_workspace_config import (
@@ -72,32 +73,8 @@ def _ensure_module_def():
 	).insert(ignore_permissions=True)
 
 
-def _sync_sidebar():
-	if not frappe.db.exists("Workspace", MODULE_NAME):
-		return
-	meta_sb = frappe.get_meta("Workspace Sidebar")
-	if not meta_sb:
-		return
-	sb = (
-		frappe.get_doc("Workspace Sidebar", MODULE_NAME)
-		if frappe.db.exists("Workspace Sidebar", MODULE_NAME)
-		else frappe.new_doc("Workspace Sidebar")
-	)
-	sb.title = MODULE_NAME
-	if meta_sb.has_field("module"):
-		sb.module = MODULE_NAME
-	if meta_sb.has_field("app"):
-		sb.app = APP_NAME
-	sb.items = []
-	idx = 0
-
-	def add_item(row):
-		nonlocal idx
-		row["idx"] = idx
-		idx += 1
-		sb.append("items", row)
-
-	add_item(
+def _desired_sidebar_items() -> list[dict]:
+	items: list[dict] = [
 		{
 			"label": "Home",
 			"type": "Link",
@@ -105,13 +82,13 @@ def _sync_sidebar():
 			"link_to": MODULE_NAME,
 			"icon": SIDEBAR_HOME_ICON,
 		}
-	)
+	]
 	for section, links in (
 		("Transactions", WORKSPACE_TRANSACTION_LINKS),
 		("Reports", WORKSPACE_REPORT_LINKS),
 		("Configuration", WORKSPACE_CONFIGURATION_LINKS),
 	):
-		add_item(
+		items.append(
 			{
 				"label": section,
 				"type": "Section Break",
@@ -120,7 +97,7 @@ def _sync_sidebar():
 			}
 		)
 		for label, link_type, link_to, extra in links:
-			add_item(
+			items.append(
 				{
 					"label": label,
 					"type": "Link",
@@ -131,14 +108,30 @@ def _sync_sidebar():
 					**{k: v for k, v in extra.items() if k != "icon"},
 				}
 			)
-	sb.save(ignore_permissions=True)
+	return items
+
+
+def _sync_sidebar():
+	if not frappe.db.exists("Workspace", MODULE_NAME):
+		return
+	sync_module_sidebar_items(
+		MODULE_NAME,
+		_desired_sidebar_items(),
+		title=MODULE_NAME,
+		header_icon="landmark",
+		app=APP_NAME,
+		standard=0,
+	)
 
 
 def _ensure_accounting_desktop_icon():
 	"""Tile under ERPNext Accounting module page (parent_icon = Accounting)."""
 	if not frappe.db.exists("Desktop Icon", "Accounting"):
 		return
-	if not frappe.db.exists("Workspace Sidebar", MODULE_NAME):
+	has_nav = frappe.db.exists("Workspace Sidebar", MODULE_NAME) or frappe.db.exists(
+		"Sidebar", MODULE_NAME
+	)
+	if not has_nav:
 		return
 
 	meta_di = frappe.get_meta("Desktop Icon")
@@ -150,6 +143,7 @@ def _ensure_accounting_desktop_icon():
 	)
 	icon.label = label
 	icon.icon_type = "Link"
+	# Desktop Icon still links via the Workspace Sidebar archive name on Frappe 16.52.
 	icon.link_type = "Workspace Sidebar"
 	icon.link_to = MODULE_NAME
 	icon.parent_icon = "Accounting"
@@ -225,7 +219,7 @@ def execute():
 		)
 	ws.save(ignore_permissions=True)
 	try:
-		create_workspace_sidebar_for_workspaces()
+		create_workspace_sidebars_if_available()
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "facility_management_workspace_sidebar")
 	_sync_sidebar()

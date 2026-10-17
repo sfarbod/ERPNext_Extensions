@@ -281,6 +281,36 @@ def consume_force_sle_restore_flag() -> bool:
 	return False
 
 
+def _engine_args_get(engine, key, default=None):
+	args = getattr(engine, "args", None)
+	if args is None:
+		return default
+	if hasattr(args, "get"):
+		return args.get(key, default)
+	return getattr(args, key, default)
+
+
+def vanilla_recalculates_after_update_rate(engine, sle) -> bool:
+	"""Mirror Core ``update_rate_on_stock_entry`` recalculate gate.
+
+	Duck-typed across ERPNext generations:
+
+	* 16.29–16.37: ``not dependant or is_manufacture_entry_with_sabb(sle)``
+	* brief ``has_bundle_picked_on_submit`` era: same pattern with that helper
+	* 16.51+ (``06fbc71``): ``not sle_id and not dependant`` — submit-path only;
+	  RIV (``sle_id`` set) never recalculates inside ``update_rate_on_stock_entry``
+	"""
+	if hasattr(engine, "is_manufacture_entry_with_sabb"):
+		return (not sle.dependant_sle_voucher_detail_no) or bool(
+			engine.is_manufacture_entry_with_sabb(sle)
+		)
+	if hasattr(engine, "has_bundle_picked_on_submit"):
+		return (not sle.dependant_sle_voucher_detail_no) or bool(
+			engine.has_bundle_picked_on_submit(sle)
+		)
+	return (not _engine_args_get(engine, "sle_id")) and (not sle.dependant_sle_voucher_detail_no)
+
+
 def apply_riv_rate_and_recalculate_atomically(
 	engine,
 	sle,
@@ -300,12 +330,14 @@ def apply_riv_rate_and_recalculate_atomically(
 	snapshot = snapshot_stock_entry_economics(voucher_no)
 	try:
 		original(engine, sle, outgoing_rate)
-		if force_recalculate_when_dependant:
-			if sle.dependant_sle_voucher_detail_no and not engine.is_manufacture_entry_with_sabb(sle):
-				engine.recalculate_amounts_in_stock_entry(voucher_no, sle.voucher_detail_no)
-		elif not sle.dependant_sle_voucher_detail_no or engine.is_manufacture_entry_with_sabb(sle):
-			# original() already recalculated when no dependant; still ensure Iran persist
-			pass
+		# When Core skipped recalculate (dependant row, or 16.51+ RIV sle_id),
+		# run it explicitly so FG/pool economics match the accepted rate before
+		# Iran contract persist. ``force_recalculate_when_dependant`` remains the
+		# call-site signal that Core's gate would have skipped recalculate.
+		if force_recalculate_when_dependant or not vanilla_recalculates_after_update_rate(
+			engine, sle
+		):
+			engine.recalculate_amounts_in_stock_entry(voucher_no, sle.voucher_detail_no)
 		persist_irr_contract_after_recalculate(voucher_no)
 		ok, reason = validate_propagated_stock_entry_economics(voucher_no)
 		if not ok:
@@ -325,10 +357,31 @@ def apply_riv_rate_and_recalculate_atomically(
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_ERPNEXT_MINOR = frozenset(
-	{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36", "16.37"}
+	{
+		"16.29",
+		"16.30",
+		"16.31",
+		"16.32",
+		"16.33",
+		"16.34",
+		"16.35",
+		"16.36",
+		"16.37",
+		"16.51",
+	}
 )
 _SUPPORTED_FRAPPE_MINOR = frozenset(
-	{"16.29", "16.30", "16.31", "16.32", "16.33", "16.34", "16.35", "16.36"}
+	{
+		"16.29",
+		"16.30",
+		"16.31",
+		"16.32",
+		"16.33",
+		"16.34",
+		"16.35",
+		"16.36",
+		"16.52",
+	}
 )
 
 # Fingerprints measured on ERPNext 16.30.0 / Frappe 16.29.0 (also valid for
@@ -339,22 +392,36 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 # ERPNext 16.35.0 / Frappe 16.34.0: guarded RIV bodies identical to 16.34.x.
 # ERPNext 16.36.x–16.37.0 / Frappe 16.35.x–16.36.1: guarded RIV bodies remain
 # identical (update_rate / recalculate / sabb fingerprints unchanged).
+# ERPNext 16.51.1 / Frappe 16.52.0: ``is_manufacture_entry_with_sabb`` removed;
+# update_rate recalculates only when ``not sle_id and not dependant``; recalculate
+# sets ``flags.via_repost = True``. Intermediate 16.38–16.50 not allow-listed.
 _FN_FINGERPRINTS = {
 	"update_rate_on_stock_entry": {
 		"signature": "(self, sle, outgoing_rate)",
-		"source_sha256": "4665fb8ed4681e52fca822e129105dbc4d9dcac22cc44ba592f0fe0bb3644810",
+		# ERPNext 16.51.1 — sle_id gate; no sabb / has_bundle helper
+		"source_sha256": "8f413ed88adb038edf752774fd9804303d08ceed9eefd0685708332e04b8afcc",
+		"source_sha256_alternates": (
+			# ERPNext 16.29–16.37 (dependant or is_manufacture_entry_with_sabb)
+			"4665fb8ed4681e52fca822e129105dbc4d9dcac22cc44ba592f0fe0bb3644810",
+		),
 		"must_contain": ("basic_rate", "recalculate_amounts_in_stock_entry"),
 	},
 	"recalculate_amounts_in_stock_entry": {
 		"signature": "(self, voucher_no, voucher_detail_no)",
-		# ERPNext 16.34.x — also db_update incoming rows when additional_costs
-		"source_sha256": "d54d175ca9c3a170df15362415fe230b63fe6a55f4ca52b0796fddb7a6e00247",
+		# ERPNext 16.51.1 — flags.via_repost = True before calculate
+		"source_sha256": "55cae6ec45d66989959be4567640a1e3370cb66c5d342c0a3dacafcb1402070b",
 		"source_sha256_alternates": (
+			# ERPNext 16.34.x–16.37 — also db_update incoming rows when additional_costs
+			"d54d175ca9c3a170df15362415fe230b63fe6a55f4ca52b0796fddb7a6e00247",
 			# ERPNext 16.29–16.33 (only voucher_detail_no / FG-scrap / Manufacture|Repack)
 			"62f15a743e48a8ed39d1a004c5c64e23e5a708bb07de82346f14ff39643de0ac",
 		),
 		"must_contain": ("reset_outgoing_rate=False", "calculate_rate_and_amount"),
 	},
+}
+
+# Present only on ERPNext ≤16.37. Validated when the attribute exists.
+_OPTIONAL_FN_FINGERPRINTS = {
 	"is_manufacture_entry_with_sabb": {
 		"signature": "(self, sle)",
 		"source_sha256": "7b6a23a3726b9f5254bf0dfd7a8c2d3d42bf863c7b08a1e90db108ebb68fe61f",
@@ -484,8 +551,10 @@ def collect_fingerprint_report() -> dict[str, Any]:
 		)
 		or cls.update_rate_on_stock_entry,
 		"recalculate_amounts_in_stock_entry": saved_recalc or live_recalc,
-		"is_manufacture_entry_with_sabb": cls.is_manufacture_entry_with_sabb,
 	}
+	sabb = getattr(cls, "is_manufacture_entry_with_sabb", None)
+	if sabb is not None:
+		fns["is_manufacture_entry_with_sabb"] = sabb
 	erp_mm, fr_mm = _version_pair()
 	methods = {}
 	for name, fn in fns.items():
@@ -539,16 +608,18 @@ def assert_erpnext_riv_rate_patch_supported() -> None:
 	targets = {
 		"update_rate_on_stock_entry": saved or live_rate,
 		"recalculate_amounts_in_stock_entry": saved_recalc or live_recalc,
-		"is_manufacture_entry_with_sabb": cls.is_manufacture_entry_with_sabb,
 	}
+	sabb = getattr(cls, "is_manufacture_entry_with_sabb", None)
+	if sabb is not None:
+		targets["is_manufacture_entry_with_sabb"] = sabb
 
 	errors: list[str] = []
-	for name, expected in _FN_FINGERPRINTS.items():
-		fn = targets[name]
+
+	def _check(name: str, fn, expected: dict[str, Any]) -> None:
 		sig = normalize_callable_signature(fn)
 		if sig != expected["signature"]:
 			errors.append(f"{name}: signature {sig!r} != {expected['signature']!r}")
-			continue
+			return
 		norm = normalize_function_source(fn)
 		digest = hashlib.sha256(norm.encode()).hexdigest()
 		accepted = {expected["source_sha256"], *(expected.get("source_sha256_alternates") or ())}
@@ -559,6 +630,13 @@ def assert_erpnext_riv_rate_patch_supported() -> None:
 		for token in expected.get("must_contain") or ():
 			if token not in norm:
 				errors.append(f"{name}: normalized source missing required token {token!r}")
+
+	for name, expected in _FN_FINGERPRINTS.items():
+		_check(name, targets[name], expected)
+	for name, expected in _OPTIONAL_FN_FINGERPRINTS.items():
+		fn = targets.get(name)
+		if fn is not None:
+			_check(name, fn, expected)
 
 	if errors:
 		raise RuntimeError(
@@ -667,9 +745,9 @@ def make_update_rate_on_stock_entry_wrapper(original):
 		# but vanilla already priced the consume from a valued warehouse layer.
 		# Document zero is corrupt, not a free receipt. Authority is this
 		# SLE's vanilla outgoing_rate, not a nearby rate.
-		force_dependant_recalc = bool(
-			sle.dependant_sle_voucher_detail_no and not self.is_manufacture_entry_with_sabb(sle)
-		)
+		# True when Core's update_rate gate would skip recalculate (dependant
+		# without sabb/bundle, or 16.51+ RIV with sle_id set).
+		force_dependant_recalc = not vanilla_recalculates_after_update_rate(self, sle)
 
 		if is_valued_source_zero_outgoing(
 			actual_qty=getattr(sle, "actual_qty", 0),
@@ -715,7 +793,7 @@ def make_update_rate_on_stock_entry_wrapper(original):
 		# Keep submitted / contract basic_rate (already integer for IRR).
 		# Non-RIV submit paths and idempotent RIV (rates already match) stay here.
 
-		if not sle.dependant_sle_voucher_detail_no or self.is_manufacture_entry_with_sabb(sle):
+		if vanilla_recalculates_after_update_rate(self, sle):
 			self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
 			persist_irr_contract_after_recalculate(sle.voucher_no)
 
