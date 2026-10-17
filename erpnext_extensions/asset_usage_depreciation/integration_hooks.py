@@ -90,25 +90,41 @@ def scrap_asset(asset_name: str, scrap_date=None):
 	``**kwargs``. Matching the native fixed signature keeps RPC metadata out of
 	this wrapper and out of the core call, while still forwarding the business
 	arguments ``asset_name`` / ``scrap_date``.
+
+	After scrap, Asset and Finance Book VAD must remain in parity (core JE submit
+	normally keeps them aligned; we re-sync as a safety net).
 	"""
 	from erpnext.assets.doctype.asset import depreciation as depr_mod
+	from erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad import (
+		sync_asset_vad_from_finance_book,
+	)
 
 	result = depr_mod.scrap_asset(asset_name, scrap_date)
+	sync_asset_vad_from_finance_book(asset_name)
 	_reapply_for_asset(asset_name)
 	return result
 
 
 @frappe.whitelist()
 def restore_asset(asset_name: str):
-	"""Whitelist wrapper: run core restore, then re-apply usage factors.
+	"""Whitelist wrapper: run core restore, sync Asset VAD, re-apply usage factors.
 
 	Same RPC-boundary contract as ``scrap_asset``: fixed signature so Frappe
 	strips ``cmd`` / other form_dict metadata before the wrapper runs, and only
 	``asset_name`` is forwarded to native ``depreciation.restore_asset``.
+
+	v5.5.53: Core restore updates Finance Book VAD when reversing disposal-day
+	depreciation but leaves Asset.value_after_depreciation reduced. Sync Asset
+	VAD from the Finance Book so repeated Scrap/Restore cycles are valuation-
+	neutral.
 	"""
 	from erpnext.assets.doctype.asset import depreciation as depr_mod
+	from erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad import (
+		sync_asset_vad_from_finance_book,
+	)
 
 	result = depr_mod.restore_asset(asset_name)
+	sync_asset_vad_from_finance_book(asset_name)
 	_reapply_for_asset(asset_name)
 	return result
 

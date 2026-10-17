@@ -71,6 +71,10 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 				"erpnext.assets.doctype.asset.depreciation.scrap_asset",
 				side_effect=fake_native,
 			),
+			patch(
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
+				return_value={"skipped": "test"},
+			),
 			patch.object(integration_hooks, "_reapply_for_asset", side_effect=fake_reapply),
 		):
 			result = frappe.call(integration_hooks.scrap_asset, **form_dict)
@@ -95,6 +99,10 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 			patch(
 				"erpnext.assets.doctype.asset.depreciation.scrap_asset",
 				side_effect=fake_native,
+			),
+			patch(
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
+				return_value={"skipped": "test"},
 			),
 			patch.object(
 				integration_hooks,
@@ -124,6 +132,10 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 			patch(
 				"erpnext.assets.doctype.asset.depreciation.restore_asset",
 				side_effect=fake_native,
+			),
+			patch(
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
+				return_value={"skipped": "test"},
 			),
 			patch.object(
 				integration_hooks,
