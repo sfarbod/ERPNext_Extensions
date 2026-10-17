@@ -37,7 +37,9 @@ def snapshot(name: str) -> dict:
 		"status": doc.status,
 		"workflow_state": doc.workflow_state,
 		"fulfillment_status": doc.fulfillment_status,
+		"requested_qty": getattr(doc, "requested_qty", None),
 		"delivered_qty": doc.delivered_qty,
+		"remaining_qty": getattr(doc, "remaining_qty", None),
 		"issued_qty": doc.issued_qty,
 		"items": [
 			{
@@ -49,6 +51,58 @@ def snapshot(name: str) -> dict:
 			for r in (doc.items or [])
 		],
 		"allocation_count": len(doc.get("allocations") or []),
+	}
+
+
+@frappe.whitelist()
+def prepare_visibility_fixtures() -> dict:
+	"""Create Waiting + Partially Fulfilled requests for Desk list/form checks."""
+	user = _ensure_e2e_user()
+	skip = h.skip_if_unready()
+	if skip:
+		frappe.throw(skip)
+	h.ensure_settings(
+		require_named_manager_approver=0,
+		prevent_duplicate_active_requests=0,
+		auto_create_asset_movement=0,
+	)
+	company = h.company()
+	employee = h.make_employee(company_name=company)
+	tag = random_string(6)
+
+	# Waiting — approved, no delivery
+	cat_w = h.make_isolated_category(f"W{tag}")
+	item_w = h.make_fixed_asset_item(code=f"AUD-AR-E2E-W-{tag}", category=cat_w)
+	waiting = h.make_request(company_name=company, employee=employee, item_code=item_w, qty=2)
+	h.submit_and_approve(waiting)
+	waiting.reload()
+
+	# Partial — approved, one of two Issued via submitted AM
+	cat_p = h.make_isolated_category(f"P{tag}")
+	item_p = h.make_fixed_asset_item(code=f"AUD-AR-E2E-P-{tag}", category=cat_p)
+	a1 = h.make_pool_asset(item_code=item_p, company_name=company)
+	h.make_pool_asset(item_code=item_p, company_name=company)
+	partial = h.make_request(company_name=company, employee=employee, item_code=item_p, qty=2)
+	h.submit_and_approve(partial)
+	partial.reload()
+	h.issue_from_pool(partial, selections=[{"item_row": partial.items[0].name, "asset": a1}])
+	partial.reload()
+	am_name = partial.allocations[0].asset_movement
+	am = frappe.get_doc("Asset Movement", am_name)
+	if cint(am.docstatus) == 0:
+		am.submit()
+	partial.reload()
+	waiting.reload()
+
+	frappe.db.commit()
+	return {
+		"waiting": waiting.name,
+		"partial": partial.name,
+		"user": user,
+		"waiting_fulfillment": waiting.fulfillment_status,
+		"partial_fulfillment": partial.fulfillment_status,
+		"partial_delivered": cint(partial.delivered_qty),
+		"waiting_remaining": cint(getattr(waiting, "remaining_qty", 0)),
 	}
 
 

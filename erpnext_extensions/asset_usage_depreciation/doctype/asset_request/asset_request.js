@@ -46,6 +46,7 @@ frappe.ui.form.on("Asset Request", {
 	refresh(frm) {
 		bind_header_dimension_propagation(frm);
 		frm.trigger("toggle_fulfillment_buttons");
+		render_delivery_summary(frm);
 		render_fulfillment_panel(frm);
 	},
 	company(frm) {
@@ -190,6 +191,99 @@ function can_fulfill(frm) {
 	);
 }
 
+function delivery_summary_html(frm) {
+	const fulfillment_label = fulfillment_status_label(frm.doc.fulfillment_status);
+	const requested = cint(frm.doc.requested_qty) || (frm.doc.items || []).reduce((s, r) => s + cint(r.qty), 0);
+	const delivered = cint(frm.doc.delivered_qty);
+	const remaining =
+		frm.doc.remaining_qty != null
+			? cint(frm.doc.remaining_qty)
+			: Math.max(0, requested - delivered);
+	const indicator = fulfillment_indicator_class(frm.doc.fulfillment_status);
+	const done_banner =
+		frm.doc.fulfillment_status === "Fulfilled"
+			? `<div class="alert alert-success" style="margin-bottom: 8px">
+				<strong>${__("Fully Fulfilled")} / ${__("تحویل کامل")}</strong>
+			</div>`
+			: "";
+	return `${done_banner}
+		<div class="ar-delivery-summary ${indicator}" style="margin-bottom: 8px; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border-color);">
+			<div style="display:flex; flex-wrap:wrap; gap:16px 28px; align-items:baseline;">
+				<div><span class="text-muted">${__("Approval Status")}</span><br>
+					<strong>${frappe.utils.escape_html(frm.doc.workflow_state || frm.doc.status || "")}</strong></div>
+				<div><span class="text-muted">${__("Fulfillment Status")}</span><br>
+					<strong>${frappe.utils.escape_html(fulfillment_label)}</strong></div>
+				<div><span class="text-muted">${__("Requested Quantity")}</span><br><strong>${requested}</strong></div>
+				<div><span class="text-muted">${__("Delivered Quantity")}</span><br><strong>${delivered}</strong></div>
+				<div><span class="text-muted">${__("Remaining Quantity")}</span><br><strong>${remaining}</strong></div>
+			</div>
+		</div>`;
+}
+
+function fulfillment_indicator_class(status) {
+	if (status === "Fulfilled") return "ar-ful-green";
+	if (status === "Partially Fulfilled" || status === "Issued from pool" || status === "Purchase requested") {
+		return "ar-ful-orange";
+	}
+	if (status === "Waiting for fulfillment") return "ar-ful-neutral";
+	return "";
+}
+
+function render_delivery_summary(frm) {
+	const paint = () => {
+		const wrap =
+			frm.get_field("fulfillment_summary_html") ||
+			(frm.fields_dict && frm.fields_dict.fulfillment_summary_html);
+		if (!wrap) {
+			return;
+		}
+		const html = !frm.doc.docstatus
+			? `<p class="text-muted">${__("Delivery status appears after the request is submitted.")}</p>`
+			: delivery_summary_html(frm);
+		// Prefer ControlHTML.html / set_value so Desk does not wipe custom markup.
+		if (typeof wrap.html === "function") {
+			wrap.html(html);
+		} else if (typeof wrap.set_value === "function") {
+			wrap.set_value(html);
+		} else if (wrap.$wrapper) {
+			wrap.$wrapper.html(html);
+		}
+	};
+	paint();
+	// Desk sometimes mounts HTML wrappers after the first refresh tick.
+	setTimeout(paint, 50);
+	setTimeout(paint, 250);
+
+	if (!document.getElementById("ar-ful-indicator-css")) {
+		const style = document.createElement("style");
+		style.id = "ar-ful-indicator-css";
+		style.textContent = `
+			.ar-ful-green { background: var(--green-50, #e8f5e9); border-color: var(--green-200, #a5d6a7) !important; }
+			.ar-ful-orange { background: var(--orange-50, #fff3e0); border-color: var(--orange-200, #ffcc80) !important; }
+			.ar-ful-neutral { background: var(--gray-50, #fafafa); }
+		`;
+		document.head.appendChild(style);
+	}
+
+	// Headline under the form title (set_headline_alert does not re-enter refresh).
+	if (frm.doc.docstatus === 1 && frm.dashboard && frm.dashboard.set_headline_alert) {
+		const ful = frm.doc.fulfillment_status || "";
+		const req = cint(frm.doc.requested_qty);
+		const del = cint(frm.doc.delivered_qty);
+		const rem =
+			frm.doc.remaining_qty != null ? cint(frm.doc.remaining_qty) : Math.max(0, req - del);
+		frm.dashboard.set_headline_alert(
+			`<div class="ar-delivery-headline">
+				<strong>${__("Approval")}:</strong> ${frappe.utils.escape_html(frm.doc.workflow_state || frm.doc.status || "")}
+				&nbsp;|&nbsp;
+				<strong>${__("Fulfillment")}:</strong> ${frappe.utils.escape_html(ful)}
+				&nbsp;|&nbsp;
+				${__("Requested")}: ${req}, ${__("Delivered")}: ${del}, ${__("Remaining")}: ${rem}
+			</div>`
+		);
+	}
+}
+
 function render_fulfillment_panel(frm) {
 	const wrap = frm.get_field("fulfillment_html");
 	if (!wrap) {
@@ -201,7 +295,6 @@ function render_fulfillment_panel(frm) {
 		);
 		return;
 	}
-	const fulfillment_label = fulfillment_status_label(frm.doc.fulfillment_status);
 	const qty_rows = (frm.doc.items || [])
 		.map((row) => {
 			const requested = cint(row.qty);
@@ -227,19 +320,7 @@ function render_fulfillment_panel(frm) {
 			<tbody>${qty_rows}</tbody>
 		</table>`
 		: "";
-	const done_banner =
-		frm.doc.fulfillment_status === "Fulfilled"
-			? `<div class="alert alert-success" style="margin-bottom: 12px">
-				<strong>${__("Fully Fulfilled")} / ${__("تحویل کامل")}</strong>
-				— ${__("All requested assets have been delivered via submitted Asset Movement.")}
-			</div>`
-			: "";
-	const status_html = `
-		<div class="ar-fulfillment-status" style="margin-bottom: 12px">
-			<p><strong>${__("Approval Status")}:</strong> ${frappe.utils.escape_html(frm.doc.workflow_state || frm.doc.status || "")}</p>
-			<p><strong>${__("Fulfillment Status")}:</strong> ${frappe.utils.escape_html(fulfillment_label)}</p>
-			<p><strong>${__("Delivered Qty")}:</strong> ${cint(frm.doc.delivered_qty)}</p>
-		</div>${done_banner}${qty_table}`;
+	const status_html = delivery_summary_html(frm) + qty_table;
 	if (!can_fulfill(frm) || frm.doc.workflow_state !== "Approved") {
 		wrap.$wrapper.html(
 			status_html +

@@ -19,6 +19,8 @@ from erpnext_extensions.asset_usage_depreciation.constants import (
 	WF_STATE_APPROVED,
 )
 from erpnext_extensions.asset_usage_depreciation.services.delivery_sync import (
+	demote_ineligible_transfer_allocations,
+	evaluate_delivery_eligibility,
 	is_delivery_movement,
 	on_asset_movement_submit,
 	reconcile_asset_request_fulfillment,
@@ -244,7 +246,7 @@ class TestAssetRequestFulfillmentSyncV5552(unittest.TestCase):
 		self.assertEqual(doc.fulfillment_status, FULFILLMENT_WAITING)
 		self.assertFalse(doc.allocations)
 
-	# 11 — Manual linked Transfer (AUD-class)
+	# 11 — Transfer to requesting employee (proven handover)
 	def test_11_manual_linked_transfer_syncs(self):
 		self._ready()
 		tag = random_string(6)
@@ -261,6 +263,7 @@ class TestAssetRequestFulfillmentSyncV5552(unittest.TestCase):
 					"asset": a,
 					"source_location": src,
 					"target_location": target,
+					"to_employee": self.employee,
 					"company": self.company,
 				}
 			)
@@ -281,7 +284,7 @@ class TestAssetRequestFulfillmentSyncV5552(unittest.TestCase):
 		self.assertEqual(doc.fulfillment_status, FULFILLMENT_FULFILLED)
 		self.assertEqual(cint(doc.delivered_qty), 3)
 		self.assertEqual(len([a for a in doc.allocations if a.fulfillment_status == ALLOC_ISSUED]), 3)
-		self.assertTrue(is_delivery_movement(am))
+		self.assertTrue(is_delivery_movement(am, ar_employee=self.employee))
 
 	# 12 — Repeated synchronization idempotent
 	def test_12_repeated_sync_idempotent(self):
@@ -301,7 +304,7 @@ class TestAssetRequestFulfillmentSyncV5552(unittest.TestCase):
 		self.assertEqual(len(doc.allocations), 1)
 		self.assertFalse(r2.get("created_allocations"))
 
-	# 13 — Historical reconciliation
+	# 13 — Historical reconciliation (Transfer + employee handover)
 	def test_13_historical_reconciliation(self):
 		self._ready()
 		tag = random_string(6)
@@ -323,6 +326,7 @@ class TestAssetRequestFulfillmentSyncV5552(unittest.TestCase):
 						"asset": a,
 						"source_location": frappe.db.get_value("Asset", a, "location"),
 						"target_location": target,
+						"to_employee": self.employee,
 						"company": self.company,
 					}
 					for a in assets
@@ -358,8 +362,216 @@ class TestAssetRequestFulfillmentSyncV5552(unittest.TestCase):
 		doc = frappe.get_doc("Asset Request", name)
 		self.assertEqual(doc.workflow_state, "Approved")
 		self.assertEqual(doc.status, "Approved")
-		# 10 chairs via ACC-ASM-2026-11731 Transfer
+		# 10 chairs via ACC-ASM-2026-11731 Transfer with to_employee handover
 		self.assertGreaterEqual(cint(doc.delivered_qty), 10)
 		self.assertEqual(doc.fulfillment_status, FULFILLMENT_FULFILLED)
 		self.assertEqual(cint(doc.items[0].remaining_qty), 0)
 		_ = summary
+
+	# 15 — Location-only Transfer with AR reference is NOT delivery
+	def test_15_location_only_transfer_not_delivery(self):
+		self._ready()
+		tag = random_string(6)
+		cat = h.make_isolated_category(tag)
+		item = h.make_fixed_asset_item(code=f"AUD-AR-F52-L-{tag}", category=cat)
+		asset = h.make_pool_asset(item_code=item, company_name=self.company)
+		doc = self._approved(item, qty=1)
+		target = h.ensure_location(f"AR LocOnly {tag}")
+		am = frappe.get_doc(
+			{
+				"doctype": "Asset Movement",
+				"company": self.company,
+				"purpose": "Transfer",
+				"transaction_date": now_datetime(),
+				"reference_doctype": "Asset Request",
+				"reference_name": doc.name,
+				"assets": [
+					{
+						"asset": asset,
+						"source_location": frappe.db.get_value("Asset", asset, "location"),
+						"target_location": target,
+						"company": self.company,
+					}
+				],
+			}
+		)
+		am.insert(ignore_permissions=True)
+		am.submit()
+		doc.reload()
+		elig = evaluate_delivery_eligibility(am, ar_employee=self.employee)
+		self.assertFalse(elig["eligible"])
+		self.assertEqual(elig["reason"], "transfer_without_employee_handover")
+		self.assertEqual(doc.fulfillment_status, FULFILLMENT_WAITING)
+		self.assertEqual(cint(doc.delivered_qty), 0)
+		self.assertFalse([a for a in (doc.allocations or []) if a.fulfillment_status == ALLOC_ISSUED])
+
+	# 16 — Transfer to a different employee is NOT delivery
+	def test_16_transfer_to_other_employee_not_delivery(self):
+		self._ready()
+		tag = random_string(6)
+		cat = h.make_isolated_category(tag)
+		item = h.make_fixed_asset_item(code=f"AUD-AR-F52-OE-{tag}", category=cat)
+		asset = h.make_pool_asset(item_code=item, company_name=self.company)
+		doc = self._approved(item, qty=1)
+		other_email = f"ar.other.{tag.lower()}@example.com"
+		h.make_user(email=other_email, roles=["Employee", "Desk User"])
+		other = h.make_employee(company_name=self.company, user_id=other_email)
+		self.assertNotEqual(other, self.employee)
+		target = h.ensure_location(f"AR OtherEmp {tag}")
+		am = frappe.get_doc(
+			{
+				"doctype": "Asset Movement",
+				"company": self.company,
+				"purpose": "Transfer",
+				"transaction_date": now_datetime(),
+				"reference_doctype": "Asset Request",
+				"reference_name": doc.name,
+				"assets": [
+					{
+						"asset": asset,
+						"source_location": frappe.db.get_value("Asset", asset, "location"),
+						"target_location": target,
+						"to_employee": other,
+						"company": self.company,
+					}
+				],
+			}
+		)
+		am.insert(ignore_permissions=True)
+		am.submit()
+		doc.reload()
+		self.assertFalse(is_delivery_movement(am, ar_employee=self.employee))
+		self.assertEqual(doc.fulfillment_status, FULFILLMENT_WAITING)
+		self.assertEqual(cint(doc.delivered_qty), 0)
+
+	# 17 — Demote previously Issued location-only Transfer allocations
+	def test_17_demote_ineligible_transfer_allocations(self):
+		self._ready()
+		tag = random_string(6)
+		cat = h.make_isolated_category(tag)
+		item = h.make_fixed_asset_item(code=f"AUD-AR-F52-DM-{tag}", category=cat)
+		asset = h.make_pool_asset(item_code=item, company_name=self.company)
+		doc = self._approved(item, qty=1)
+		target = h.ensure_location(f"AR Demote {tag}")
+		am = frappe.get_doc(
+			{
+				"doctype": "Asset Movement",
+				"company": self.company,
+				"purpose": "Transfer",
+				"transaction_date": now_datetime(),
+				"reference_doctype": "Asset Request",
+				"reference_name": doc.name,
+				"assets": [
+					{
+						"asset": asset,
+						"source_location": frappe.db.get_value("Asset", asset, "location"),
+						"target_location": target,
+						"company": self.company,
+					}
+				],
+			}
+		)
+		am.insert(ignore_permissions=True)
+		am.submit()
+		# Simulate pre-hardening Issued allocation from reference-only Transfer
+		doc.reload()
+		doc.append(
+			"allocations",
+			{
+				"asset_request_item": doc.items[0].name,
+				"requested_item_code": item,
+				"fulfilled_item_code": item,
+				"method": "Issue Existing",
+				"fulfillment_status": ALLOC_ISSUED,
+				"allocated_asset": asset,
+				"asset_movement": am.name,
+			},
+		)
+		doc.flags.ignore_validate_update_after_submit = True
+		doc.save(ignore_permissions=True)
+		refresh_header_fulfillment(doc)
+		doc.flags.ignore_validate_update_after_submit = True
+		doc.save(ignore_permissions=True)
+		doc.reload()
+		self.assertEqual(doc.fulfillment_status, FULFILLMENT_FULFILLED)
+		demote = demote_ineligible_transfer_allocations(asset_request=doc.name, dry_run=False)
+		doc.reload()
+		self.assertTrue(demote.get("demoted"))
+		self.assertEqual(cint(doc.delivered_qty), 0)
+		self.assertNotEqual(doc.fulfillment_status, FULFILLMENT_FULFILLED)
+
+	# 18 — Qty fields: requested / remaining after approve
+	def test_18_requested_remaining_qty_fields(self):
+		self._ready()
+		item = h.make_fixed_asset_item()
+		doc = self._approved(item, qty=5)
+		self.assertEqual(cint(doc.requested_qty), 5)
+		self.assertEqual(cint(doc.delivered_qty), 0)
+		self.assertEqual(cint(doc.remaining_qty), 5)
+		self.assertEqual(doc.fulfillment_status, FULFILLMENT_WAITING)
+
+	# 19 — Transfer and Issue still counts (purpose delivery)
+	def test_19_transfer_and_issue_counts(self):
+		self._ready()
+		tag = random_string(6)
+		cat = h.make_isolated_category(tag)
+		item = h.make_fixed_asset_item(code=f"AUD-AR-F52-TI-{tag}", category=cat)
+		asset = h.make_pool_asset(item_code=item, company_name=self.company)
+		# ERPNext requires from_employee matching current custodian for Transfer and Issue
+		cust_email = f"ar.cust.{tag.lower()}@example.com"
+		h.make_user(email=cust_email, roles=["Employee", "Desk User"])
+		custodian = h.make_employee(company_name=self.company, user_id=cust_email)
+		frappe.db.set_value("Asset", asset, "custodian", custodian)
+		doc = self._approved(item, qty=1)
+		src = frappe.db.get_value("Asset", asset, "location")
+		target = h.ensure_location(f"AR TI {tag}")
+		am = frappe.get_doc(
+			{
+				"doctype": "Asset Movement",
+				"company": self.company,
+				"purpose": "Transfer and Issue",
+				"transaction_date": now_datetime(),
+				"reference_doctype": "Asset Request",
+				"reference_name": doc.name,
+				"assets": [
+					{
+						"asset": asset,
+						"source_location": src,
+						"target_location": target,
+						"from_employee": custodian,
+						"to_employee": self.employee,
+						"company": self.company,
+					}
+				],
+			}
+		)
+		am.insert(ignore_permissions=True)
+		am.submit()
+		doc.reload()
+		self.assertTrue(is_delivery_movement(am, ar_employee=self.employee))
+		self.assertEqual(doc.fulfillment_status, FULFILLMENT_FULFILLED)
+		self.assertEqual(cint(doc.delivered_qty), 1)
+
+	# 20 — Reconciliation idempotent under hardened rules
+	def test_20_reconcile_idempotent(self):
+		self._ready()
+		name = "AUD-AR-2026-00008"
+		if not frappe.db.exists("Asset Request", name):
+			self.skipTest("AUD-AR-2026-00008 not on site")
+		r1 = reconcile_asset_request_fulfillment(asset_request=name, dry_run=False)
+		before = frappe.db.get_value(
+			"Asset Request",
+			name,
+			["fulfillment_status", "delivered_qty", "remaining_qty"],
+			as_dict=True,
+		)
+		r2 = reconcile_asset_request_fulfillment(asset_request=name, dry_run=False)
+		after = frappe.db.get_value(
+			"Asset Request",
+			name,
+			["fulfillment_status", "delivered_qty", "remaining_qty"],
+			as_dict=True,
+		)
+		self.assertEqual(before, after)
+		self.assertFalse(r2.get("demote", {}).get("demoted"))
+		_ = r1

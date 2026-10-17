@@ -399,6 +399,10 @@ def refresh_header_fulfillment(doc) -> None:
 
 	if hasattr(doc, "delivered_qty"):
 		doc.delivered_qty = header_delivered
+	if hasattr(doc, "requested_qty"):
+		doc.requested_qty = total
+	if hasattr(doc, "remaining_qty"):
+		doc.remaining_qty = max(0, total - header_delivered)
 
 	has_am = any(
 		a.asset_movement
