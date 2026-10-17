@@ -377,7 +377,7 @@ class TestJobCardComponentReturnV542(unittest.TestCase):
 			self.assertEqual(d.code, "WO_MISMATCH")
 
 	def test_N35_patch_fingerprint_enabled(self):
-		self.assertTrue(bypass_enabled(), "bypass must be enabled on ERPNext 16.37 fingerprint")
+		self.assertTrue(bypass_enabled(), "bypass must be enabled on ERPNext 16.51 fingerprint")
 
 	def test_N30_idempotent_decide(self):
 		with (

@@ -287,16 +287,43 @@ def enrich_candidate_dimensions(candidate: dict, row) -> dict:
 def purchase_receipt_valuation_stock_qty(row) -> float:
 	"""Stock-UOM qty used as the divisor in BuyingController.update_valuation_rate.
 
-	Mirrors erpnext.controllers.buying_controller.BuyingController.update_valuation_rate:
-	``qty_in_stock_uom = qty * conversion_factor`` (rejected_qty fallback when qty is 0).
-	ERPNext does not expose a reusable helper for this divisor.
+	ERPNext 16.51+ uses ``get_stock_qty(row, qty)`` which rounds to
+	``row.precision("stock_qty")`` (the ledger posting quantum). Prefer that
+	helper when present; fall back to the same rounding formula for stubs.
+	Rejected-qty fallback matches Core UVR when qty rounds to zero.
 	"""
-	conversion_factor = flt(row.get("conversion_factor"))
-	if not conversion_factor:
-		conversion_factor = 1.0
-	qty_in_stock_uom = flt(flt(row.get("qty")) * conversion_factor)
-	if not qty_in_stock_uom and row.get("rejected_qty"):
-		qty_in_stock_uom = flt(flt(row.get("rejected_qty")) * conversion_factor)
+	try:
+		from erpnext.controllers.buying_controller import get_stock_qty as _core_get_stock_qty
+	except ImportError:
+		_core_get_stock_qty = None
+
+	def _stock_qty(qty) -> float:
+		if _core_get_stock_qty is not None and hasattr(row, "precision"):
+			try:
+				return flt(_core_get_stock_qty(row, qty))
+			except Exception:
+				pass
+		conversion_factor = flt(
+			row.get("conversion_factor") if hasattr(row, "get") else getattr(row, "conversion_factor", None)
+		)
+		if not conversion_factor:
+			conversion_factor = 1.0
+		precision = 6
+		if hasattr(row, "precision"):
+			try:
+				precision = row.precision("stock_qty")
+			except Exception:
+				pass
+		return flt(flt(qty) * conversion_factor, precision)
+
+	qty_val = row.get("qty") if hasattr(row, "get") else getattr(row, "qty", None)
+	qty_in_stock_uom = _stock_qty(qty_val)
+	if not qty_in_stock_uom:
+		rejected = (
+			row.get("rejected_qty") if hasattr(row, "get") else getattr(row, "rejected_qty", None)
+		)
+		if rejected:
+			qty_in_stock_uom = _stock_qty(rejected)
 	return qty_in_stock_uom
 
 

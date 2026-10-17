@@ -502,17 +502,22 @@ def assert_manufacture_value_pool(doc) -> None:
 		)
 
 
-def assert_stock_entry_valuation_integrity(doc, engine=None) -> None:
+def assert_stock_entry_valuation_integrity(doc, engine=None) -> bool:
 	"""SE-level I2 + I5. Transfer/MTfM skip Manufacture pool rules.
 
 	During Item-scoped RIV, integrity failures on Stock Entries that do not
-	contain any declared target item are logged and non-blocking.
+	contain any declared target item are logged and non-blocking (soft-skip).
+
+	Returns:
+	  True  — asserts passed; caller may persist SE economics.
+	  False — out-of-scope soft anomaly; caller must NOT persist poisoned SE rows.
+	Raises ValuationIntegrityError when the failure is in blocking RIV scope.
 	"""
 	if not doc or _entry_get(doc, "doctype") != "Stock Entry":
-		return
+		return True
 	company = _entry_get(doc, "company")
 	if not company or not is_irr_company(company):
-		return
+		return True
 
 	def _run():
 		assert_manufacture_repack_incoming_amounts(doc)
@@ -523,13 +528,13 @@ def assert_stock_entry_valuation_integrity(doc, engine=None) -> None:
 
 	if engine is None:
 		_run()
-		return
+		return True
 
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_scope import (
 		run_integrity_assert_in_riv_scope,
 	)
 
-	run_integrity_assert_in_riv_scope(engine, sle=None, assert_fn=_run, doc=doc)
+	return bool(run_integrity_assert_in_riv_scope(engine, sle=None, assert_fn=_run, doc=doc))
 
 
 def assert_sle_valuation_integrity_before_vanilla(engine, sle) -> bool:
@@ -754,18 +759,54 @@ def ensure_iran_riv_recalculate_wrapper_active(*, bootstrap: bool = True) -> Non
 
 
 def make_recalculate_amounts_wrapper(original):
-	"""L1: apply Iran contract + integrity asserts before any SE row db_update."""
+	"""L1: apply Iran contract + integrity asserts before any SE row db_update.
+
+	ERPNext 16.51+ sets ``flags.via_repost = True`` on the vanilla path so
+	manufacture ``cost_left`` is floored at zero during RIV. Mirror that flag
+	on the Iran IRR path so Multi-FG / By-Product costing matches Core.
+
+	Persist gate (FIX B2 / 16.51): Core may call this from
+	``get_incoming_outgoing_rate_from_transaction`` *after* update_rate's atomic
+	restore. Item-scoped RIV soft-skip must not re-persist I2/I5-poisoned
+	economics (via_repost can zero FG while By-Product@VR still exceeds the
+	pool). Snapshot → mutate → hard I2/I5 → restore-without-persist on failure.
+	"""
 
 	def recalculate_amounts_in_stock_entry(self, voucher_no, voucher_detail_no):
 		company = frappe.db.get_value("Stock Entry", voucher_no, "company")
 		if not company or not is_irr_company(company):
 			return original(self, voucher_no, voucher_detail_no)
 
-		stock_entry = frappe.get_lazy_doc("Stock Entry", voucher_no, for_update=True)
-		stock_entry.calculate_rate_and_amount(
-			reset_outgoing_rate=False, raise_error_if_no_rate=False
+		from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+			record_riv_deferred_voucher,
+			restore_stock_entry_economics,
+			snapshot_stock_entry_economics,
 		)
-		apply_irr_stock_entry_contract_after_calculate(stock_entry)
+
+		stock_entry = frappe.get_lazy_doc("Stock Entry", voucher_no, for_update=True)
+		try:
+			snapshot = snapshot_stock_entry_economics(voucher_no)
+		except Exception:
+			# Unit fixtures / missing DB row: still refuse persist on I2/I5.
+			snapshot = None
+		if not hasattr(stock_entry, "flags") or stock_entry.flags is None:
+			stock_entry.flags = frappe._dict()
+		stock_entry.flags.via_repost = True
+		try:
+			stock_entry.calculate_rate_and_amount(
+				reset_outgoing_rate=False, raise_error_if_no_rate=False
+			)
+			apply_irr_stock_entry_contract_after_calculate(stock_entry)
+			# Hard I2/I5 for persist — ignore RIV soft-skip. Soft-skip means
+			# "do not invent SLE poison"; it must never mean "write SE poison".
+			assert_manufacture_repack_incoming_amounts(stock_entry)
+			assert_manufacture_value_pool(stock_entry)
+		except ValuationIntegrityError as exc:
+			if snapshot:
+				restore_stock_entry_economics(snapshot)
+			record_riv_deferred_voucher(voucher_no, str(exc))
+			return
+
 		persist_stock_entry_after_recalculate(stock_entry, voucher_detail_no)
 
 	recalculate_amounts_in_stock_entry._iran_riv_recalculate_wrapper = True
