@@ -31,6 +31,7 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 )
 from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 	assert_non_negative_magnitude,
+	enforce_zero_qty_terminal_stock_value,
 )
 
 # Purposes where ERPNext Core stock valuation (MA / batch / SABB) owns the
@@ -259,6 +260,45 @@ def _preserve_native_outgoing_and_align_sed(sle, row, ccy: str) -> None:
 		flt(_sle_rate_from_row(row, ccy)) - rate
 	) > 0.5:
 		align_sed_from_native_outgoing_sle(sle, row, rate, movement, ccy)
+	# Empty warehouse must not keep a residual layer after IRR rounding.
+	enforce_zero_qty_terminal_stock_value(sle)
+
+
+def _apply_document_authority_movement(sle, movement: float, rate: float, ccy: str) -> None:
+	"""Stamp SED movement onto SLE while preserving Core empty-warehouse value.
+
+	``stock_value_difference`` always mirrors signed SED.amount (document /
+	transfer conservation). ``stock_value`` is ``previous + movement`` only while
+	qty remains positive. When this SLE finishes a processed consume-to-zero,
+	Core requires ``stock_value = 0`` — never reintroduce a nonzero residual from
+	``previous + SED`` (MAT-STE-2026-40942 / I4 class).
+	"""
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		is_final_zero_qty_consume_state,
+	)
+
+	value_after = flt(sle.stock_value)
+	value_before = value_after - flt(sle.stock_value_difference)
+	sle.stock_value_difference = movement
+	if is_final_zero_qty_consume_state(sle):
+		# Keep SED SVD; clear terminal warehouse value (Core invariant).
+		sle.stock_value = float(round_currency(0, ccy))
+		enforce_zero_qty_terminal_stock_value(sle)
+	else:
+		# Insert/transient qty_after=0 still uses movement as stock_value so the
+		# engine can copy running balance later — do not clamp that shape.
+		sle.stock_value = round_currency(value_before + movement, ccy)
+
+	sle.valuation_rate = rate
+	if flt(sle.actual_qty) > 0:
+		sle.incoming_rate = rate
+		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
+	elif flt(sle.actual_qty) < 0:
+		sle.outgoing_rate = rate
+		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
+	else:
+		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
+		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
 
 
 def sync_irr_sle_from_stock_entry_row(sle) -> None:
@@ -267,6 +307,8 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	* Manufacturing purposes: SLE movement mirrors signed SED.amount (contracts).
 	* Native outgoing stock purposes: keep vanilla SLE movement (SABB/MA), IRR-round,
 	  and realign SED when it conflicts — never stamp a poisoned SED onto SLE.
+	* Consume-to-zero: never persist nonzero ``stock_value`` after Core emptied
+	  the warehouse (see :func:`enforce_zero_qty_terminal_stock_value`).
 
 	During Item-scoped RIV, out-of-scope legacy poison (different item_code than the
 	declared RIV target) must not abort the target repost — log and skip the Iran
@@ -339,6 +381,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 		):
 			if abs(flt(sle.outgoing_rate)) <= 1e-6 and abs(flt(sle.actual_qty)) > 1e-9:
 				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+			enforce_zero_qty_terminal_stock_value(sle)
 			return
 		movement = round_currency(
 			signed_movement_from_row_amount(
@@ -371,29 +414,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 		log_out_of_scope_integrity_anomaly(engine, sle=sle, exc=exc)
 		return
 
-	# Movement is the source of truth for SVD. stock_value is reconstructed as
-	# previous + movement. On insert, qty_after_transaction is still the default 0
-	# and stock_value/SVD are both 0, so this writes stock_value = movement. That
-	# is not a finished warehouse balance (and must not be clamped to 0 when
-	# qty_after is still uncomputed — that would hide real leftover-value I4).
-	value_after = flt(sle.stock_value)
-	value_before = value_after - flt(sle.stock_value_difference)
-	sle.stock_value_difference = movement
-	sle.stock_value = round_currency(value_before + movement, ccy)
-
-	# Integer IRR rates — amount remains source of truth for stock_value_difference.
-	# valuation_rate here is the movement rate. The next moving-average step
-	# reloads the carried stock value; it must not multiply qty by a stale rate.
-	sle.valuation_rate = rate
-	if flt(sle.actual_qty) > 0:
-		sle.incoming_rate = rate
-		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
-	elif flt(sle.actual_qty) < 0:
-		sle.outgoing_rate = rate
-		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
-	else:
-		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
-		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
+	_apply_document_authority_movement(sle, movement, rate, ccy)
 
 
 def gl_movement_from_row_only(item_row, sle, company: str) -> float:
