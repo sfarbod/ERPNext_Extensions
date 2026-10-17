@@ -53,15 +53,22 @@ class AssetRequest(Document):
 		from erpnext_extensions.asset_usage_depreciation.services.fulfillment_service import (
 			refresh_available_counts,
 		)
+		from erpnext_extensions.asset_usage_depreciation.services.request_service import (
+			refresh_header_fulfillment,
+		)
 
 		# Approval is not fulfillment: never create MR/AM and never reserve assets.
 		self.fulfillment_status = FULFILLMENT_WAITING
 		refresh_available_counts(self)
+		refresh_header_fulfillment(self)
 		self.db_set(
 			{
 				"status": self.status,
 				"fulfillment_status": self.fulfillment_status,
 				"issued_qty": self.issued_qty or 0,
+				"requested_qty": self.requested_qty or 0,
+				"delivered_qty": self.delivered_qty or 0,
+				"remaining_qty": self.remaining_qty or 0,
 				"purchase_qty": self.purchase_qty or 0,
 				"available_asset_count": self.available_asset_count or 0,
 				"material_request": None,
@@ -224,3 +231,22 @@ def request_purchase(name: str) -> dict:
 def create_material_request(name: str) -> dict:
 	"""Compatibility alias for Request Purchase."""
 	return request_purchase(name)
+
+
+@frappe.whitelist()
+def reconcile_fulfillment(asset_request: str | None = None, dry_run: int = 0) -> dict:
+	"""Idempotent reconciliation of submitted delivery Asset Movements → fulfillment.
+
+	System Manager / Asset Manager only. Does not create Asset Movements.
+	"""
+	roles = set(frappe.get_roles())
+	if not roles.intersection({"Asset Manager", "System Manager"}):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	from erpnext_extensions.asset_usage_depreciation.services.delivery_sync import (
+		reconcile_asset_request_fulfillment,
+	)
+
+	return reconcile_asset_request_fulfillment(
+		asset_request=asset_request or None,
+		dry_run=bool(int(dry_run or 0)),
+	)

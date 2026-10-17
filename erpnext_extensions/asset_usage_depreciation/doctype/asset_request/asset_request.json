@@ -26,6 +26,8 @@
   "section_purpose",
   "purpose",
   "remarks",
+  "section_fulfillment_summary",
+  "fulfillment_summary_html",
   "section_items",
   "items",
   "section_approval",
@@ -44,6 +46,9 @@
   "fulfillment_html",
   "section_fulfillment",
   "fulfillment_status",
+  "requested_qty",
+  "delivered_qty",
+  "remaining_qty",
   "available_asset_count",
   "issued_qty",
   "purchase_qty",
@@ -71,7 +76,6 @@
   {
    "fieldname": "company",
    "fieldtype": "Link",
-   "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Company",
    "options": "Company",
@@ -81,7 +85,6 @@
   {
    "fieldname": "employee",
    "fieldtype": "Link",
-   "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Requested By",
    "options": "Employee",
@@ -91,7 +94,6 @@
    "fetch_from": "employee.employee_name",
    "fieldname": "employee_name",
    "fieldtype": "Data",
-   "in_list_view": 1,
    "label": "Employee Name",
    "read_only": 1
   },
@@ -112,14 +114,12 @@
    "default": "Today",
    "fieldname": "transaction_date",
    "fieldtype": "Date",
-   "in_list_view": 1,
    "label": "Transaction Date",
    "reqd": 1
   },
   {
    "fieldname": "required_date",
    "fieldtype": "Date",
-   "in_list_view": 1,
    "label": "Required Date",
    "reqd": 1
   },
@@ -196,13 +196,25 @@
    "label": "Approval"
   },
   {
+   "fieldname": "section_fulfillment_summary",
+   "fieldtype": "Section Break",
+   "label": "Delivery Status"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "fulfillment_summary_html",
+   "fieldtype": "HTML",
+   "label": "Delivery Summary",
+   "read_only": 1
+  },
+  {
    "allow_on_submit": 1,
    "default": "Draft",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Status",
+   "label": "Approval Status",
    "no_copy": 1,
    "options": "Draft\nPending Manager Approval\nPending Planning Approval\nPending CEO Approval\nApproved\nPartially Fulfilled\nFulfilled\nClosed\nRejected\nCancelled",
    "read_only": 1
@@ -312,10 +324,37 @@
    "default": "Waiting for fulfillment",
    "fieldname": "fulfillment_status",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Fulfillment Status",
-   "options": "Waiting for fulfillment\nIssued from pool\nPurchase requested\nFulfilled",
-   "permlevel": 1,
+   "options": "Waiting for fulfillment\nIssued from pool\nPurchase requested\nPartially Fulfilled\nFulfilled",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "requested_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Requested Qty",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "delivered_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Delivered Qty",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "remaining_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Remaining Qty",
    "read_only": 1
   },
   {

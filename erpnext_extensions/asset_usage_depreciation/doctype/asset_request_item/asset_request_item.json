@@ -27,6 +27,8 @@
   "preferred_asset",
   "section_status",
   "available_qty",
+  "delivered_qty",
+  "remaining_qty",
   "fulfillment_method",
   "column_break_st",
   "line_status",
@@ -185,6 +187,26 @@
    "fieldname": "available_qty",
    "fieldtype": "Int",
    "label": "Available Qty",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "delivered_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Delivered Qty",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "remaining_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Remaining Qty",
+   "permlevel": 1,
    "read_only": 1
   },
   {
