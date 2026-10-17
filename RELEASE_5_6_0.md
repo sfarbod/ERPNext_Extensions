@@ -78,19 +78,46 @@ Site `list-apps` after migrate matches package versions above.
 | Area | Status |
 |------|--------|
 | TYPE A/B/C residual classification | Unchanged |
-| Rate-first RIV preserve | Guard + wrapper updated for 16.51 gate; unit/integration preserve suite **PASS** |
+| Rate-first RIV preserve | Guard + wrapper updated for 16.51 gate; suite **PASS** |
 | UVR regional Iran binding | Fingerprint updated; suite **PASS** |
 | Pattern A FX PI precision-loss skip | **PASS** on 16.51.1 / 16.52.0 |
 | Asset Scrap/Restore VAD | Suites **PASS** |
-| Manufacture residual / pool asserts | Unchanged code paths |
-| Historical valuation transitional guards | Unchanged |
+| Manufacture residual / pool asserts | Suites **PASS** |
+| Historical valuation transitional guards | Suites **PASS** |
+| RIV FIX B2 atomic restore (by-product@VR) | **PASS** after post-restore sync ordering fix |
 
-**Documented Core behavioral difference (not silently papered over):**  
-ERPNext 16.51 sets `via_repost` inside `recalculate_amounts_in_stock_entry` and always
-recalculates Stock Entry economics from `get_incoming_outgoing_rate_from_transaction`.
-One atomicity-chain scenario
-(`test_corrupted_manufacture_byproduct_vr_restores_atomic_on_riv`) **fails** under that
-Core path; see Known limitations.
+### RIV atomicity (FIX B2) — 16.51.1 findings
+
+**Contract:** if RIV-propagated Manufacture/Repack economics fail I2/I5, SE valuation
+state must match the pre-operation snapshot (no partial poison). Exceptions are not
+suppressed into a successful persist; item-scoped RIV soft-skips with deferred recording.
+
+**Root cause under Core 16.51.1:**
+
+1. Core `update_rate_on_stock_entry` no longer recalculates when `sle_id` is set; Iran
+   runs recalculate explicitly. `via_repost` can zero FG while By-Product@VR still
+   exceeds the pool → I5.
+2. Atomic `update_rate` correctly restored SE to the pre-propagation snapshot and set
+   `iran_riv_force_sle_restore`.
+3. **Bug:** `process_sle` then ran `sync_irr_sle_from_stock_entry_row` *before* consuming
+   that flag. At consume-to-zero, `apply_zero_qty_movement_contract` →
+   `align_sed_from_native_outgoing_sle` rewrote SED from the rejected SLE rates
+   (e.g. consume `basic_rate` 40M → 1e6), undoing the SE restore. A later
+   `get_incoming_outgoing_rate_from_transaction` recalculate then snapshotted the
+   already-poisoned state.
+
+**Fix (erpnext_extensions only):**
+
+1. Consume `iran_riv_force_sle_restore` and restore SLE/`wh_data` **immediately after**
+   vanilla `process_sle`, **before** any Iran SE/SLE sync.
+2. When Iran recalculate soft-fails (deferred I2/I5) inside
+   `apply_riv_rate_and_recalculate_atomically`, roll back to the *outer*
+   pre-propagation snapshot and skip `persist_irr_contract_after_recalculate`.
+3. Recalculate persist gate: snapshot → mutate → hard I2/I5 → restore-without-persist
+   on failure (no SE poison write).
+
+**Integrity:** guards unchanged; Core unmodified; exception path still records
+`INVALID_PROPAGATED_ECONOMICS` and does not persist rejected economics.
 
 ---
 
@@ -102,7 +129,8 @@ Core path; see Known limitations.
 | `bench --site development.localhost migrate` | **Success** (after Desk navigation fix) |
 | Installed apps metadata | erpnext 16.51.1, frappe 16.52.0, erpnext_extensions 5.6.0 |
 
-No production site touched. No destructive DB ops.
+No production site touched. No destructive DB ops. No production/historical accounting
+data modified during JC canary investigation.
 
 ---
 
@@ -110,23 +138,47 @@ No production site touched. No destructive DB ops.
 
 | Suite | Result |
 |-------|--------|
-| `test_riv_rate_first_preserve` (19+1) | **OK** |
+| `test_riv_propagated_rate_v5524` (15) | **OK** (atomicity canary **PASS**) |
+| `test_riv_valuation_integrity` (33) | **OK** |
+| `test_riv_rate_first_preserve` (20) | **OK** |
+| `test_riv_valuation_scope` (17) | **OK** |
 | `test_uvr_regional_guard` (30) | **OK** (1 skipped) |
 | `test_fx_pi_pattern_a_precision_loss_guard` (20) | **OK** (6 skipped) |
-| `test_scrap_restore_vad_v5553` / `test_scrap_restore_rpc_boundary` | **OK** |
-| `test_riv_propagated_rate_v5524` | 14 OK / **1 FAIL** (see below) |
-| JC component return v542 | Unit/fingerprint **OK**; 3 live canary fails (data) |
+| `test_manufacture_residual_submit_v5330` (14) | **OK** |
+| `test_historical_residual_v5551` (13) | **OK** |
+| `test_i4_zero_qty_terminal_residual` (6) | **OK** |
+| `test_zero_qty_stock_value_v5550` (15) | **OK** |
+| `test_i4_material_transfer_lifecycle` (10) | **OK** |
+| `test_equal_rate_byproduct_v5336` (7) | **OK** |
+| `test_stock_entry_capitalization_amount` (9) | **OK** |
+| `test_stock_entry_transfer_gl` (3) | **OK** |
+| `test_repost_accounting_ledger_compat` (12) | **OK** |
+| `test_multi_fg_riv_wrapper_v5529` (4) | **OK** |
+| `test_acquisition_incoming_rate_v5526` (8) | **OK** |
+| Asset scrap/restore VAD + RPC boundary | **OK** |
+| JC component return v542 unit/fingerprint | **OK** (`N35` enabled) |
+| JC live canaries (PO-JOB10492) | **3 FAIL — historical data** (see §H) |
+| `test_stage_equivalent_byproduct_bridge_v5335` | 38 OK / **2 FAIL** (~372 IRR on ~2.27e9 canary matrix; pre-existing allocation rounding, not FIX B2) |
 
 ---
 
 ## H. Known limitations / untested
 
 1. **ERPNext 16.38–16.50** not allow-listed (fingerprints not measured).  
-2. **`test_corrupted_manufacture_byproduct_vr_restores_atomic_on_riv`** — fails on 16.51.1;
-   likely interaction with Core `via_repost` / always-recalculate SE path. Needs dedicated
-   follow-up before relying on that edge restore in production RIV campaigns.  
-3. **JC canary `PO-JOB-10492`** live returnable/report asserts — environment/data drift;
-   `test_N35_patch_fingerprint_enabled` **passes**.  
+2. **JC live canaries on `PO-JOB10492` / `MFG-WO-2026-00837`** — classified **historical data /
+   environment drift**, not Core 16.51 regression and not an extension return-patch
+   regression (`test_N35_patch_fingerprint_enabled` **PASS**). Evidence:
+
+   | Test | Expected | Actual | Classification |
+   |------|----------|--------|----------------|
+   | `test_live_returnable_report` | item `18000001` `returnable > 0` | `issued=100, consumed=100, returnable=0, still_in_wip=0` | Manufacture `MAT-STE-2026-40453` fully consumed WIP; nothing left to return |
+   | `test_N24_canary_validate_bypass_savepoint` | same returnable > 0 | same zero returnable map | Same historical consume state |
+   | `test_N31_N32_secondary_unchanged` | draft readiness `classified` includes `COMPONENT_SCRAP` | only `MAIN_FG` qty 3858 (`manufactured_qty already covers for_quantity`) | Post-manufacture simulation path; scrap exists on SE evidence / JC secondary but not re-emitted into draft classified map |
+
+   No production or historical accounting rows were modified to force these green.  
+3. **`test_stage_equivalent_byproduct_bridge_v5335`** — 2 matrix asserts off by **372 IRR**
+   on ~2.27e9 pool (`test_b02_b03`, `test_b18`). Equal-rate by-product suite **PASS**.
+   Track separately from FIX B2.  
 4. Full regression of all iran_accounting / petty / cheque modules not re-run in this cut.  
 5. Intermediate Frappe minors 16.37–16.51 not allow-listed (only 16.52 added with 16.36).
 
@@ -165,10 +217,12 @@ when those Core fingerprints match.
 ## L. Modified files (high level)
 
 - `erpnext_extensions/__init__.py` — version 5.6.0  
-- `iran_accounting/domain/riv_rate_guard.py` — allow-list, fingerprints, duck-typed recalc gate  
+- `iran_accounting/domain/riv_rate_guard.py` — allow-list, fingerprints, duck-typed recalc gate; atomic outer restore when recalculate defers  
+- `iran_accounting/domain/riv_valuation_guard.py` — `via_repost` + hard I2/I5 persist gate (restore-without-persist)  
+- `iran_accounting/integration/monkey_patches.py` — FIX B2: force-SLE restore **before** Iran sync  
 - `iran_accounting/domain/uvr_regional_guard.py` — allow-list, UVR fingerprint alternate  
-- `iran_accounting/domain/riv_valuation_guard.py` — Iran recalculate sets `flags.via_repost` (16.51 parity)  
 - `iran_accounting/domain/irr_residual_classification.py` — UVR stock qty mirrors Core `get_stock_qty`  
+- `iran_accounting/scrap_costing.py` — `getattr(doc, "purpose")` for non-Document fixtures  
 - `stock_extensions/job_card_component_return/patch.py` — 16.51 allow  
 - `desk_navigation.py` — **new** Sidebar dual-write helpers  
 - `cheque_management/payments_sidebar.py` — Custom Sidebar (Accounts), no Core export  
@@ -179,10 +233,12 @@ when those Core fingerprints match.
 
 ## M. Post-audit follow-up (same release)
 
-Addressed remaining items from the Core API audit ([Audit ERPNext 16.51.1 API diffs](b5010fb4-1f53-4cfa-9bbe-f711d4f49bdb)):
+Addressed remaining items from the Core API audit and the RIV atomicity canary:
 
-1. Iran `make_recalculate_amounts_wrapper` now sets `via_repost` before `calculate_rate_and_amount`.  
+1. Iran `make_recalculate_amounts_wrapper` sets `via_repost` before `calculate_rate_and_amount`.  
 2. Residual classifier stock-qty divisor aligned with Core `get_stock_qty`.  
+3. **FIX B2 atomicity closed:** force-SLE restore before sync; outer SE restore when
+   recalculate defers; `test_corrupted_manufacture_byproduct_vr_restores_atomic_on_riv` **PASS**.
 
-Still open (non-blocking for guard install):  
-`test_corrupted_manufacture_byproduct_vr_restores_atomic_on_riv` under Core’s always-recalculate SE path.
+Remaining non-blocking: JC live-data canaries (§H.2); stage-equivalent by-product matrix
+372 IRR drift (§H.3).

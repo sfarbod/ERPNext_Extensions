@@ -160,7 +160,7 @@ def snapshot_stock_entry_economics(voucher_no: str) -> dict[str, Any]:
 		["name", *_SE_HEADER_ECONOMIC_FIELDS],
 		as_dict=True,
 	)
-	if not header:
+	if not header or not isinstance(header, dict):
 		frappe.throw(
 			_("IRR RIV rate guard: Stock Entry {0} missing for economic snapshot").format(voucher_no),
 			title=_("IRR Rate Guard"),
@@ -337,7 +337,18 @@ def apply_riv_rate_and_recalculate_atomically(
 		if force_recalculate_when_dependant or not vanilla_recalculates_after_update_rate(
 			engine, sle
 		):
+			deferred_before = len(frappe.flags.get("iran_riv_deferred_vouchers") or [])
 			engine.recalculate_amounts_in_stock_entry(voucher_no, sle.voucher_detail_no)
+			# Recalculate soft-fails (I2/I5) restore to a snapshot taken *after*
+			# original() already wrote the propagated rate. Roll back to the
+			# pre-propagation snapshot and skip persist so SE stays consistent.
+			deferred_after = frappe.flags.get("iran_riv_deferred_vouchers") or []
+			if len(deferred_after) > deferred_before and (
+				deferred_after[-1] or {}
+			).get("voucher_no") == voucher_no:
+				restore_stock_entry_economics(snapshot)
+				mark_force_sle_restore_after_rejected_propagation()
+				return RESULT_INVALID_PROPAGATED_ECONOMICS
 		persist_irr_contract_after_recalculate(voucher_no)
 		ok, reason = validate_propagated_stock_entry_economics(voucher_no)
 		if not ok:

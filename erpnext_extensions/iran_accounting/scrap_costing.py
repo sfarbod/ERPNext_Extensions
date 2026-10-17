@@ -765,7 +765,11 @@ def row_is_component_scrap_fg_pool_residual(doc, row) -> bool:
 	- ``basic_rate`` equals ``round(pool / qty)``
 	- ``round(qty × that rate)`` differs from the pool
 	"""
-	if not doc or getattr(doc, "doctype", None) != "Stock Entry" or doc.purpose != "Manufacture":
+	if (
+		not doc
+		or getattr(doc, "doctype", None) != "Stock Entry"
+		or getattr(doc, "purpose", None) != "Manufacture"
+	):
 		return False
 	if not is_irr_company(getattr(doc, "company", None)):
 		return False

@@ -348,6 +348,9 @@ class TestRecalculateWrapperNoPersist(unittest.TestCase):
 		wrapped = make_recalculate_amounts_wrapper(original)
 		engine = mock.Mock()
 
+		# FIX B2 / 16.51: I2/I5 during recalculate must not persist (restore +
+		# deferred soft-skip). Exception is recorded, not re-raised, so item-
+		# scoped RIV can continue without writing poisoned SE economics.
 		with (
 			mock.patch("frappe.db.get_value", return_value="اسپاد فارمد دارو"),
 			mock.patch(
@@ -355,6 +358,13 @@ class TestRecalculateWrapperNoPersist(unittest.TestCase):
 				return_value=True,
 			),
 			mock.patch("frappe.get_lazy_doc", return_value=doc),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.snapshot_stock_entry_economics",
+				return_value={"voucher_no": "STE-POISON", "header": {}, "items": []},
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.riv_rate_guard.restore_stock_entry_economics",
+			) as restore,
 			mock.patch(
 				"erpnext_extensions.iran_accounting.scrap_costing.apply_iran_manufacture_output_contract",
 				return_value=False,
@@ -366,10 +376,10 @@ class TestRecalculateWrapperNoPersist(unittest.TestCase):
 				"erpnext_extensions.iran_accounting.manufacture_rounding.align_manufacture_finished_good_residual",
 			),
 		):
-			with self.assertRaises(ValuationIntegrityError):
-				wrapped(engine, "STE-POISON", "row-FG-1")
+			wrapped(engine, "STE-POISON", "row-FG-1")
 		doc.db_update.assert_not_called()
 		original.assert_not_called()
+		restore.assert_called_once()
 		for row in doc.items:
 			row.db_update.assert_not_called()
 
