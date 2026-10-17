@@ -46,6 +46,78 @@ def apply_monkey_patches():
 	_patch_stock_entry_jc_component_return()
 	# Idempotent: ERPNext #59476 compat — PR Additional Discount × PI landed cost.
 	_patch_pr_pi_landed_cost_compat()
+	# Idempotent: Core get_reposting_data must not JSONDecodeError on empty/shared files.
+	_patch_reposting_data_json_safety()
+
+
+def _patch_reposting_data_json_safety():
+	"""Harden Core get_reposting_data against empty gzip / content-hash URL collisions.
+
+	ERPNext v16.37.0 looks up File by file_url alone. Frappe File deduplicates
+	identical progress JSON by content_hash, so many RIVs share one URL. When
+	get_content() returns empty bytes, gzip.decompress yields b'' and
+	json.loads('') raises — aborting GL repost after SLE already ran.
+
+	Patch: prefer newest attached File for that URL; treat empty/invalid payload
+	as empty dict (same as Core's gzip-failure path) so GL repost can continue
+	via directly_dependent vouchers.
+	"""
+	import gzip
+	import json
+
+	import erpnext.stock.stock_ledger as sl
+	from frappe.utils import parse_json
+
+	if getattr(sl, "_iran_patched_get_reposting_data", None):
+		return
+
+	_orig = sl.get_reposting_data
+	sl._iran_original_get_reposting_data = _orig
+
+	def get_reposting_data(file_path) -> dict:
+		if not file_path:
+			return frappe._dict()
+
+		# Prefer the most recently modified File row for this URL (attachment-aware).
+		file_name = frappe.db.get_value(
+			"File",
+			{"file_url": file_path, "attached_to_field": "reposting_data_file"},
+			"name",
+			order_by="modified desc",
+		)
+		if not file_name:
+			return frappe._dict()
+
+		attached_file = frappe.get_doc("File", file_name)
+		try:
+			content = attached_file.get_content()
+		except Exception:
+			return frappe._dict()
+
+		if isinstance(content, str):
+			content = content.encode("utf-8")
+		if not content:
+			return frappe._dict()
+
+		try:
+			data = gzip.decompress(content)
+		except Exception:
+			return frappe._dict()
+
+		if not data:
+			return frappe._dict()
+
+		try:
+			parsed = json.loads(data.decode("utf-8"))
+		except Exception:
+			return frappe._dict()
+
+		if not parsed:
+			return frappe._dict()
+		return parse_json(parsed)
+
+	sl.get_reposting_data = get_reposting_data
+	sl._iran_patched_get_reposting_data = True
 
 
 def _patch_pr_pi_landed_cost_compat():
