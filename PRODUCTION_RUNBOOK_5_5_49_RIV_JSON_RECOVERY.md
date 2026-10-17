@@ -57,13 +57,19 @@ Do not proceed without a restore point independent of the 20261017 investigation
 
 ## 2. Maintenance / scheduler / workers
 
+**Current Production posture (as of this task):** Maintenance Mode is **OFF**, users are online.
+Enable MM only for the mutating recovery window (not for Dry Run / audits).
+
 ```bash
+# Only when starting actual recovery (after backup + dry-run OK):
 docker compose exec backend bench --site $SITE set-maintenance-mode on
 docker compose exec backend bench --site $SITE disable-scheduler
 
 # Workers MUST remain running (long queue executes RIV if enqueue path used;
 # this recovery uses sync execute_reposting_entry by default).
 docker compose ps queue-long queue-short backend
+# Equivalent container name on many hosts: erp-backend-1
+# docker exec erp-backend-1 bench --site $SITE ...
 ```
 
 ---
