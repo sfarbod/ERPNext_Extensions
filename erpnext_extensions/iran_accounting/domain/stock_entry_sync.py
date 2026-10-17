@@ -31,6 +31,7 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 )
 from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 	assert_non_negative_magnitude,
+	enforce_zero_qty_terminal_stock_value,
 )
 
 # Purposes where ERPNext Core stock valuation (MA / batch / SABB) owns the
@@ -259,6 +260,163 @@ def _preserve_native_outgoing_and_align_sed(sle, row, ccy: str) -> None:
 		flt(_sle_rate_from_row(row, ccy)) - rate
 	) > 0.5:
 		align_sed_from_native_outgoing_sle(sle, row, rate, movement, ccy)
+	# Empty warehouse must not keep a residual layer after IRR rounding.
+	enforce_zero_qty_terminal_stock_value(sle)
+	# If Core/SABB emptied qty but SVD did not clear the previous layer
+	# (historical sticky residual vs rate×qty), absorb into movement so the
+	# value remains capitalized on transfer / expensed on issue — not ghosted.
+	_absorb_native_zero_qty_historical_residual(sle, row, ccy)
+
+
+def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
+	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
+		ABSORB_INTO_MOVEMENT,
+		apply_zero_qty_movement_contract,
+		classify_zero_qty_ghost,
+	)
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		is_final_zero_qty_consume_state,
+	)
+
+	if not is_final_zero_qty_consume_state(sle):
+		return
+	# Reconstruct previous layer from the post-Core SLE identity.
+	value_before = flt(sle.stock_value) - flt(sle.stock_value_difference)
+	# When stock_value was already forced to 0, value_before == -svd. Prefer the
+	# engine/DB previous layer when it is larger (sticky residual case).
+	true_prev = _lookup_previous_stock_value(sle)
+	if true_prev is not None and abs(true_prev) + 0.5 > abs(value_before):
+		value_before = true_prev
+	movement = flt(sle.stock_value_difference)
+	purpose = frappe.db.get_value("Stock Entry", sle.voucher_no, "purpose")
+	# Temporarily present value_before via synthetic svd reset for classifier.
+	classification = classify_zero_qty_ghost(
+		sle=sle,
+		purpose=purpose,
+		value_before=value_before,
+		movement=movement,
+		company=sle.company,
+	)
+	if classification.get("disposition") != ABSORB_INTO_MOVEMENT:
+		return
+	if abs(flt(classification.get("ghost_amount"))) <= 0.5:
+		return
+	# Reset stock_value_difference reference so apply sees value_before correctly.
+	sle.stock_value = float(round_currency(value_before, ccy))
+	sle.stock_value_difference = 0.0
+	apply_zero_qty_movement_contract(
+		sle,
+		movement=movement,
+		rate=flt(sle.outgoing_rate) or flt(sle.valuation_rate),
+		ccy=ccy,
+		purpose=purpose,
+		row=row,
+	)
+	enforce_zero_qty_terminal_stock_value(sle)
+
+
+def _lookup_previous_stock_value(sle) -> float | None:
+	item_code = sle.get("item_code") if hasattr(sle, "get") else getattr(sle, "item_code", None)
+	warehouse = sle.get("warehouse") if hasattr(sle, "get") else getattr(sle, "warehouse", None)
+	if not item_code or not warehouse:
+		return None
+	# After Core emptied, wh_data.stock_value is 0; prev_stock_value was overwritten.
+	# Prefer the latest prior SLE on this identity, excluding the current voucher.
+	posting_datetime = (
+		sle.get("posting_datetime") if hasattr(sle, "get") else getattr(sle, "posting_datetime", None)
+	)
+	creation = sle.get("creation") if hasattr(sle, "get") else getattr(sle, "creation", None)
+	name = sle.get("name") if hasattr(sle, "get") else getattr(sle, "name", None)
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	params: list = [item_code, warehouse]
+	clauses = ["item_code=%s", "warehouse=%s", "is_cancelled=0"]
+	if name:
+		clauses.append("name != %s")
+		params.append(name)
+	if voucher_no:
+		clauses.append("voucher_no != %s")
+		params.append(voucher_no)
+	if posting_datetime:
+		clauses.append(
+			"(posting_datetime < %s or (posting_datetime = %s and creation < %s))"
+		)
+		params.extend([posting_datetime, posting_datetime, creation or posting_datetime])
+	row = frappe.db.sql(
+		f"""
+		select stock_value from `tabStock Ledger Entry`
+		where {' and '.join(clauses)}
+		order by posting_datetime desc, creation desc
+		limit 1
+		""",
+		tuple(params),
+	)
+	if not row:
+		# Fallback without datetime (in-memory SLE may lack posting_datetime).
+		row = frappe.db.sql(
+			"""
+			select stock_value from `tabStock Ledger Entry`
+			where item_code=%s and warehouse=%s and is_cancelled=0
+			  and (%s is null or voucher_no != %s)
+			order by posting_datetime desc, creation desc
+			limit 1
+			""",
+			(item_code, warehouse, voucher_no, voucher_no),
+		)
+	if not row:
+		return None
+	return flt(row[0][0])
+
+
+def _apply_document_authority_movement(
+	sle, movement: float, rate: float, ccy: str, *, purpose: str | None = None, row=None
+) -> None:
+	"""Stamp SED movement onto SLE while preserving Core empty-warehouse value.
+
+	While qty remains positive, ``stock_value = previous + movement``.
+	At final consume-to-zero, never persist nonzero ``stock_value`` (I4).
+	Historical residuals are classified (v5.5.51):
+
+	* Transfer/Issue — absorb residual into SVD (inventory stays capitalized /
+	  correctly expensed); SED realigned; TVA TRACE for campaign discovery.
+	* Manufacture/Repack — keep SED SVD; queue controlled Stock Adjustment when
+	  the ghost is a proven historical residual; fail closed when undetermined.
+	"""
+	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
+		apply_zero_qty_movement_contract,
+	)
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		is_final_zero_qty_consume_state,
+	)
+
+	if is_final_zero_qty_consume_state(sle):
+		apply_zero_qty_movement_contract(
+			sle,
+			movement=movement,
+			rate=rate,
+			ccy=ccy,
+			purpose=purpose,
+			row=row,
+		)
+		enforce_zero_qty_terminal_stock_value(sle)
+		return
+
+	value_after = flt(sle.stock_value)
+	value_before = value_after - flt(sle.stock_value_difference)
+	sle.stock_value_difference = movement
+	# Insert/transient qty_after=0 still uses movement as stock_value so the
+	# engine can copy running balance later — do not clamp that shape.
+	sle.stock_value = round_currency(value_before + movement, ccy)
+
+	sle.valuation_rate = rate
+	if flt(sle.actual_qty) > 0:
+		sle.incoming_rate = rate
+		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
+	elif flt(sle.actual_qty) < 0:
+		sle.outgoing_rate = rate
+		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
+	else:
+		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
+		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
 
 
 def sync_irr_sle_from_stock_entry_row(sle) -> None:
@@ -267,6 +425,8 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	* Manufacturing purposes: SLE movement mirrors signed SED.amount (contracts).
 	* Native outgoing stock purposes: keep vanilla SLE movement (SABB/MA), IRR-round,
 	  and realign SED when it conflicts — never stamp a poisoned SED onto SLE.
+	* Consume-to-zero: never persist nonzero ``stock_value`` after Core emptied
+	  the warehouse (see :func:`enforce_zero_qty_terminal_stock_value`).
 
 	During Item-scoped RIV, out-of-scope legacy poison (different item_code than the
 	declared RIV target) must not abort the target repost — log and skip the Iran
@@ -339,6 +499,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 		):
 			if abs(flt(sle.outgoing_rate)) <= 1e-6 and abs(flt(sle.actual_qty)) > 1e-9:
 				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+			enforce_zero_qty_terminal_stock_value(sle)
 			return
 		movement = round_currency(
 			signed_movement_from_row_amount(
@@ -371,29 +532,9 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 		log_out_of_scope_integrity_anomaly(engine, sle=sle, exc=exc)
 		return
 
-	# Movement is the source of truth for SVD. stock_value is reconstructed as
-	# previous + movement. On insert, qty_after_transaction is still the default 0
-	# and stock_value/SVD are both 0, so this writes stock_value = movement. That
-	# is not a finished warehouse balance (and must not be clamped to 0 when
-	# qty_after is still uncomputed — that would hide real leftover-value I4).
-	value_after = flt(sle.stock_value)
-	value_before = value_after - flt(sle.stock_value_difference)
-	sle.stock_value_difference = movement
-	sle.stock_value = round_currency(value_before + movement, ccy)
-
-	# Integer IRR rates — amount remains source of truth for stock_value_difference.
-	# valuation_rate here is the movement rate. The next moving-average step
-	# reloads the carried stock value; it must not multiply qty by a stale rate.
-	sle.valuation_rate = rate
-	if flt(sle.actual_qty) > 0:
-		sle.incoming_rate = rate
-		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
-	elif flt(sle.actual_qty) < 0:
-		sle.outgoing_rate = rate
-		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
-	else:
-		sle.incoming_rate = round_monetary_rate(sle.incoming_rate or 0, ccy)
-		sle.outgoing_rate = round_monetary_rate(sle.outgoing_rate or 0, ccy)
+	_apply_document_authority_movement(
+		sle, movement, rate, ccy, purpose=purpose, row=row
+	)
 
 
 def gl_movement_from_row_only(item_row, sle, company: str) -> float:

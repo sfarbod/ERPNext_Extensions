@@ -36,7 +36,7 @@ from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 	NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES,
 )
 
-HOTFIX_VERSION = "5.5.46"
+HOTFIX_VERSION = "5.5.51"
 DOCTYPE = "Temporary Valuation Adjustment"
 
 # In-memory stamp on Stock Entry during submit (not a DocType field).
@@ -52,6 +52,7 @@ REASON_HISTORICAL_ZERO_VALUE_STOCK = "HISTORICAL_ZERO_VALUE_STOCK"
 REASON_SOURCE_RATE_MISMATCH = "SOURCE_RATE_MISMATCH"
 REASON_MANUFACTURING_VALUATION_RESIDUAL = "MANUFACTURING_VALUATION_RESIDUAL"
 REASON_TRANSFER_VALUATION_RESIDUAL = "TRANSFER_VALUATION_RESIDUAL"
+REASON_HISTORICAL_ZERO_QTY_RESIDUAL = "HISTORICAL_ZERO_QTY_RESIDUAL"
 
 ELIGIBLE_PURPOSES = frozenset(
 	{
@@ -987,6 +988,33 @@ def apply_on_submit_bridge(doc) -> list[str]:
 		append_pending(doc, adj)
 	pending = pending_adjustments(doc)
 
+	# v5.5.51: zero-qty historical residuals queued during process_sle.
+	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
+		build_tva_from_zero_qty_residual,
+		consume_pending_zero_qty_residuals,
+	)
+
+	sa_gl_needed = False
+	for rec in consume_pending_zero_qty_residuals(doc):
+		adj = build_tva_from_zero_qty_residual(doc, rec)
+		if not adj:
+			continue
+		append_pending(doc, adj)
+		if adj.get("posting_mode") == "STOCK_ADJUSTMENT_GL":
+			sa_gl_needed = True
+	pending = pending_adjustments(doc)
+
+	if sa_gl_needed:
+		from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
+			rebuild_irr_rate_rounding_residual_after_repost,
+		)
+
+		# Ensure header value_difference / remake path can host inventory SA.
+		# Manufacture already exposes TYPE C via value_difference; for explicit
+		# historical zero-qty SA we rely on remake + TVA audit row.
+		rebuild_actions = rebuild_irr_rate_rounding_residual_after_repost(doc)
+		actions.extend(rebuild_actions or ["remade_gl_for_historical_zero_qty_sa"])
+
 	if pending:
 		names = persist_adjustments(doc, pending, repair_status="SUBMITTED")
 		actions.append(f"persisted_tva={len(names)}")
@@ -997,6 +1025,7 @@ def apply_on_submit_bridge(doc) -> list[str]:
 			REASON_HISTORICAL_BATCH_RATE_MISMATCH,
 			REASON_TRANSFER_VALUATION_RESIDUAL,
 			REASON_SLE_SABE_VALUE_MISMATCH,
+			REASON_HISTORICAL_ZERO_QTY_RESIDUAL,
 		):
 			mark_fractional_allowed(doc)
 
