@@ -754,7 +754,12 @@ def ensure_iran_riv_recalculate_wrapper_active(*, bootstrap: bool = True) -> Non
 
 
 def make_recalculate_amounts_wrapper(original):
-	"""L1: apply Iran contract + integrity asserts before any SE row db_update."""
+	"""L1: apply Iran contract + integrity asserts before any SE row db_update.
+
+	ERPNext 16.51+ sets ``flags.via_repost = True`` on the vanilla path so
+	manufacture ``cost_left`` is floored at zero during RIV. Mirror that flag
+	on the Iran IRR path so Multi-FG / By-Product costing matches Core.
+	"""
 
 	def recalculate_amounts_in_stock_entry(self, voucher_no, voucher_detail_no):
 		company = frappe.db.get_value("Stock Entry", voucher_no, "company")
@@ -762,6 +767,7 @@ def make_recalculate_amounts_wrapper(original):
 			return original(self, voucher_no, voucher_detail_no)
 
 		stock_entry = frappe.get_lazy_doc("Stock Entry", voucher_no, for_update=True)
+		stock_entry.flags.via_repost = True
 		stock_entry.calculate_rate_and_amount(
 			reset_outgoing_rate=False, raise_error_if_no_rate=False
 		)

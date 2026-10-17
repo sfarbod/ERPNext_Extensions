@@ -167,8 +167,22 @@ when those Core fingerprints match.
 - `erpnext_extensions/__init__.py` — version 5.6.0  
 - `iran_accounting/domain/riv_rate_guard.py` — allow-list, fingerprints, duck-typed recalc gate  
 - `iran_accounting/domain/uvr_regional_guard.py` — allow-list, UVR fingerprint alternate  
+- `iran_accounting/domain/riv_valuation_guard.py` — Iran recalculate sets `flags.via_repost` (16.51 parity)  
+- `iran_accounting/domain/irr_residual_classification.py` — UVR stock qty mirrors Core `get_stock_qty`  
 - `stock_extensions/job_card_component_return/patch.py` — 16.51 allow  
 - `desk_navigation.py` — **new** Sidebar dual-write helpers  
 - `cheque_management/payments_sidebar.py` — Custom Sidebar (Accounts), no Core export  
 - Petty/Facility workspace patches — import/sync for 16.52  
 - Related unit tests + `RELEASE_5_6_0.md`
+
+---
+
+## M. Post-audit follow-up (same release)
+
+Addressed remaining items from the Core API audit ([Audit ERPNext 16.51.1 API diffs](b5010fb4-1f53-4cfa-9bbe-f711d4f49bdb)):
+
+1. Iran `make_recalculate_amounts_wrapper` now sets `via_repost` before `calculate_rate_and_amount`.  
+2. Residual classifier stock-qty divisor aligned with Core `get_stock_qty`.  
+
+Still open (non-blocking for guard install):  
+`test_corrupted_manufacture_byproduct_vr_restores_atomic_on_riv` under Core’s always-recalculate SE path.
