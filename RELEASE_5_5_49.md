@@ -3,7 +3,7 @@
 **Version:** 5.5.49  
 **Date:** 2026-10-17  
 **Previous:** 5.5.48  
-**Branch:** `feature/5.5.49-riv-json-filesize-recovery` → merge `develop` (local only; **not pushed**)  
+**Branch:** `feature/5.5.49-riv-json-inplace-recovery` → merge `develop` (local only; **not pushed**)  
 **Validated stack:** Frappe **16.36.1**, ERPNext **16.37.0**, Iran Accounting **5.5.49**  
 **Site:** `development.localhost` only — **no Production mutate**, **no push**, **no deploy**
 
