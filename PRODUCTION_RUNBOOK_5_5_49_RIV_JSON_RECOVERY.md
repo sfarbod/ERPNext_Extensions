@@ -209,3 +209,20 @@ Live Production may have:
 - Different temporary files on disk
 
 Recovery validates each Failed RIV’s preconditions at runtime. It only clears/re-executes recoverable JSON/file failures. Newer Completed RIVs are untouched.
+
+---
+
+## 11. Business-hours classification (MM currently OFF)
+
+| Operation | Classification | Reason |
+|-----------|----------------|--------|
+| Deploy 5.5.49 app image / bench migrate | **CONDITIONALLY SAFE** | Code swap alone does not mutate stock; migrate may briefly lock schema. Prefer low-traffic deploy; avoid mid-submit windows. |
+| Dry Run `recover_campaign_json_failures(dry_run=True)` | **SAFE ONLINE** | Read-only list of Failed RIVs; no RIV execute. |
+| Actual recovery `execute=True` | **REQUIRES MAINTENANCE WINDOW** (recommended) / **CONDITIONALLY SAFE** only if Failed count stays ≈3 and identities are narrow | Sync `execute_reposting_entry` holds stock/GL locks for each identity; concurrent submits on same item+WH can fail or wait. Dev wall-clock for 3 RIVs was **~1s**, but Production may have deeper SLE chains → budget **1–15 min**. |
+| Coverage Audit `fix=False` | **SAFE ONLINE** | Read-only SQL. |
+| Full Reconciliation | **SAFE ONLINE** | Read-only aggregates; may be CPU-heavy (~few seconds to ~1 min) but non-mutating. |
+
+**Recommendation:** Deploy after hours if possible; Dry Run anytime; run actual recovery with Maintenance Mode ON and scheduler disabled; keep workers up.
+
+**Docker note:** Compose service is `backend` (container typically `erp-backend-1`). Prefer `docker compose exec backend …`. If your host only exposes the container name, `docker exec erp-backend-1 …` is equivalent.
+

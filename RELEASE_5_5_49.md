@@ -3,7 +3,7 @@
 **Version:** 5.5.49  
 **Date:** 2026-10-17  
 **Previous:** 5.5.48  
-**Branch:** `feature/5.5.49-riv-json-inplace-recovery` (not merged; not pushed)  
+**Branch:** `feature/5.5.49-riv-json-filesize-recovery` → merge `develop` (local only; **not pushed**)  
 **Validated stack:** Frappe **16.36.1**, ERPNext **16.37.0**, Iran Accounting **5.5.49**  
 **Site:** `development.localhost` only — **no Production mutate**, **no push**, **no deploy**
 
@@ -76,9 +76,10 @@ Blocked solely because Failed identities blocked new RIV; resolved by recovering
    - `recover_campaign_json_failures` (idempotent, dry_run supported)
 
 2. **Monkey patch** `erpnext.stock.stock_ledger.get_reposting_data`:
-   - Empty / invalid payload → empty dict (same as Core gzip-failure path)
-   - Prefer newest File row for shared URL
-   - Prevents GL abort on empty content
+   - Probe **all** File rows for the shared URL (newest first) until valid JSON is read
+   - Successfully parsed JSON (including non-empty `repost_affected_transaction`) is returned as-is — never suppressed
+   - Only when every candidate is missing/unreadable/empty/invalid → empty dict (Core gzip-failure equivalent) + warning log
+   - Prevents GL abort on empty content without hiding readable accounting data
 
 Does **not** restore Production DB, recreate campaign/manifest, delete Completed RIVs, or edit SLE/GL by hand.
 
@@ -109,4 +110,4 @@ See `PRODUCTION_RUNBOOK_5_5_49_RIV_JSON_RECOVERY.md`.
 
 ## F. Tests
 
-`test_riv_file_recovery_v5549.py` — classify, empty content safety, empty gzip, valid skeleton, missing RIV precondition.
+`test_riv_file_recovery_v5549.py` — classify, empty content safety, empty gzip, valid skeleton, non-suppression of affected transactions, empty-newest→readable-sibling fallthrough, missing RIV precondition.

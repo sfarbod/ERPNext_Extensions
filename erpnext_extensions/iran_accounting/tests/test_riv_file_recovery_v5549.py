@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import gzip
-import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -13,7 +12,6 @@ from frappe.tests.utils import FrappeTestCase
 
 from erpnext_extensions.iran_accounting.historical_rebuild.riv_file_recovery import (
 	_is_json_file_failure,
-	list_recoverable_failed_rivs,
 	recover_failed_riv,
 )
 from erpnext_extensions.iran_accounting.integration.monkey_patches import (
@@ -53,7 +51,7 @@ class TestGetRepostingDataPatch(FrappeTestCase):
 
 		fake_file = MagicMock()
 		fake_file.get_content.return_value = b""
-		with patch("frappe.db.get_value", return_value="FILE-1"), patch(
+		with patch("frappe.get_all", return_value=["FILE-1"]), patch(
 			"frappe.get_doc", return_value=fake_file
 		):
 			out = sl.get_reposting_data("/private/files/repost_item_valuation-x.json.gz")
@@ -64,7 +62,7 @@ class TestGetRepostingDataPatch(FrappeTestCase):
 
 		fake_file = MagicMock()
 		fake_file.get_content.return_value = gzip.compress(b"")
-		with patch("frappe.db.get_value", return_value="FILE-1"), patch(
+		with patch("frappe.get_all", return_value=["FILE-1"]), patch(
 			"frappe.get_doc", return_value=fake_file
 		):
 			out = sl.get_reposting_data("/private/files/repost_item_valuation-x.json.gz")
@@ -78,11 +76,62 @@ class TestGetRepostingDataPatch(FrappeTestCase):
 		fake_file.get_content.return_value = gzip.compress(
 			frappe.safe_encode(frappe.as_json(payload))
 		)
-		with patch("frappe.db.get_value", return_value="FILE-1"), patch(
+		with patch("frappe.get_all", return_value=["FILE-1"]), patch(
 			"frappe.get_doc", return_value=fake_file
 		):
 			out = sl.get_reposting_data("/private/files/repost_item_valuation-x.json.gz")
 		self.assertEqual(out.get("repost_affected_transaction"), [])
+
+	def test_valid_affected_transactions_are_not_suppressed(self):
+		"""Successfully parsed accounting data must never be replaced with {}."""
+		import erpnext.stock.stock_ledger as sl
+
+		payload = {
+			"item_wh_wise_last_posted_sle": {},
+			"repost_affected_transaction": [
+				{"voucher_type": "Stock Entry", "voucher_no": "MAT-STE-1"},
+			],
+		}
+		fake_file = MagicMock()
+		fake_file.get_content.return_value = gzip.compress(
+			frappe.safe_encode(frappe.as_json(payload))
+		)
+		with patch("frappe.get_all", return_value=["FILE-1"]), patch(
+			"frappe.get_doc", return_value=fake_file
+		):
+			out = sl.get_reposting_data("/private/files/repost_item_valuation-x.json.gz")
+		self.assertEqual(len(out.get("repost_affected_transaction")), 1)
+		self.assertEqual(
+			out.get("repost_affected_transaction")[0]["voucher_no"], "MAT-STE-1"
+		)
+
+	def test_empty_newest_file_falls_through_to_readable_sibling(self):
+		"""Content-hash collisions: empty newest File must not mask a readable older File."""
+		import erpnext.stock.stock_ledger as sl
+
+		payload = {
+			"item_wh_wise_last_posted_sle": {},
+			"repost_affected_transaction": [
+				{"voucher_type": "Purchase Receipt", "voucher_no": "MAT-PRE-1"},
+			],
+		}
+		empty_file = MagicMock()
+		empty_file.get_content.return_value = b""
+		good_file = MagicMock()
+		good_file.get_content.return_value = gzip.compress(
+			frappe.safe_encode(frappe.as_json(payload))
+		)
+
+		def _get_doc(doctype, name):
+			return empty_file if name == "FILE-NEW" else good_file
+
+		with patch("frappe.get_all", return_value=["FILE-NEW", "FILE-OLD"]), patch(
+			"frappe.get_doc", side_effect=_get_doc
+		):
+			out = sl.get_reposting_data("/private/files/repost_item_valuation-x.json.gz")
+		self.assertEqual(
+			out.get("repost_affected_transaction")[0]["voucher_no"], "MAT-PRE-1"
+		)
 
 
 class TestRecoverFailedRivPreconditions(FrappeTestCase):

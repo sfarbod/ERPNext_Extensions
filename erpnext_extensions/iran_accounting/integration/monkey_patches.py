@@ -58,9 +58,14 @@ def _patch_reposting_data_json_safety():
 	get_content() returns empty bytes, gzip.decompress yields b'' and
 	json.loads('') raises — aborting GL repost after SLE already ran.
 
-	Patch: prefer newest attached File for that URL; treat empty/invalid payload
-	as empty dict (same as Core's gzip-failure path) so GL repost can continue
-	via directly_dependent vouchers.
+	Patch behaviour:
+	- Try every File row for that URL (newest first) until valid JSON is read.
+	- Valid JSON (including the empty skeleton Core writes) is returned as-is —
+	  never replaced with a synthetic empty dict when parse succeeds.
+	- Only when every candidate is missing/unreadable/empty/invalid do we return
+	  ``{}``, matching Core's existing gzip-failure path (not a silent hide of
+	  successfully-parsed accounting data).
+	- Empty fallback is logged once per call via ``frappe.logger``.
 	"""
 	import gzip
 	import json
@@ -74,47 +79,64 @@ def _patch_reposting_data_json_safety():
 	_orig = sl.get_reposting_data
 	sl._iran_original_get_reposting_data = _orig
 
+	def _try_parse_file_content(content) -> dict | None:
+		if isinstance(content, str):
+			content = content.encode("utf-8")
+		if not content:
+			return None
+		try:
+			data = gzip.decompress(content)
+		except Exception:
+			return None
+		if not data:
+			return None
+		try:
+			parsed = json.loads(data.decode("utf-8"))
+		except Exception:
+			return None
+		# Successfully parsed JSON — including empty skeleton — is authoritative.
+		if parsed is None:
+			return None
+		return parse_json(parsed)
+
 	def get_reposting_data(file_path) -> dict:
 		if not file_path:
 			return frappe._dict()
 
-		# Prefer the most recently modified File row for this URL (attachment-aware).
-		file_name = frappe.db.get_value(
+		# Content-hash collisions create many File rows for one URL. Probe all
+		# (newest first) so an empty/broken row cannot mask a readable sibling.
+		file_names = frappe.get_all(
 			"File",
-			{"file_url": file_path, "attached_to_field": "reposting_data_file"},
-			"name",
+			filters={"file_url": file_path, "attached_to_field": "reposting_data_file"},
+			pluck="name",
 			order_by="modified desc",
+			limit_page_length=50,
 		)
-		if not file_name:
+		if not file_names:
 			return frappe._dict()
 
-		attached_file = frappe.get_doc("File", file_name)
-		try:
-			content = attached_file.get_content()
-		except Exception:
-			return frappe._dict()
+		last_err = None
+		for file_name in file_names:
+			try:
+				attached_file = frappe.get_doc("File", file_name)
+				content = attached_file.get_content()
+			except Exception as e:
+				last_err = e
+				continue
+			parsed = _try_parse_file_content(content)
+			if parsed is not None:
+				return parsed
 
-		if isinstance(content, str):
-			content = content.encode("utf-8")
-		if not content:
-			return frappe._dict()
-
-		try:
-			data = gzip.decompress(content)
-		except Exception:
-			return frappe._dict()
-
-		if not data:
-			return frappe._dict()
-
-		try:
-			parsed = json.loads(data.decode("utf-8"))
-		except Exception:
-			return frappe._dict()
-
-		if not parsed:
-			return frappe._dict()
-		return parse_json(parsed)
+		# Same outcome as Core gzip-failure path — GL continues via
+		# directly_dependent vouchers. Do not raise: that left SLE done / GL Failed.
+		frappe.logger("iran_accounting").warning(
+			"get_reposting_data: no readable payload for %s (%s candidates); "
+			"returning empty dict (Core gzip-failure equivalent). last_err=%s",
+			file_path,
+			len(file_names),
+			last_err,
+		)
+		return frappe._dict()
 
 	sl.get_reposting_data = get_reposting_data
 	sl._iran_patched_get_reposting_data = True
