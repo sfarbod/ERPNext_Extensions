@@ -102,15 +102,26 @@ ALLOC_ORDERED = "Ordered"
 ALLOC_RECEIVED = "Received"
 ALLOC_CANCELLED = "Cancelled"
 
-# Fulfillment lifecycle (independent of workflow status)
+# Fulfillment lifecycle (independent of workflow / approval status)
+# Quantity semantics:
+#   Waiting for fulfillment  ≡ Not Fulfilled (delivered_qty == 0, no in-progress docs)
+#   Partially Fulfilled      ≡ 0 < delivered < requested (any line)
+#   Fulfilled                ≡ Fully Fulfilled (every line delivered_qty >= qty)
 FULFILLMENT_WAITING = "Waiting for fulfillment"
 FULFILLMENT_ISSUED_FROM_POOL = "Issued from pool"
 FULFILLMENT_PURCHASE_REQUESTED = "Purchase requested"
+FULFILLMENT_PARTIALLY_FULFILLED = "Partially Fulfilled"
 FULFILLMENT_FULFILLED = "Fulfilled"
 FULFILLMENT_STATUS_OPTIONS = (
 	f"{FULFILLMENT_WAITING}\n{FULFILLMENT_ISSUED_FROM_POOL}\n"
-	f"{FULFILLMENT_PURCHASE_REQUESTED}\n{FULFILLMENT_FULFILLED}"
+	f"{FULFILLMENT_PURCHASE_REQUESTED}\n{FULFILLMENT_PARTIALLY_FULFILLED}\n"
+	f"{FULFILLMENT_FULFILLED}"
 )
+
+# Asset Movement purposes that count as delivery to an Asset Request.
+# Plain "Transfer" counts only when reference_doctype == Asset Request (proven linkage).
+DELIVERY_MOVEMENT_PURPOSES = frozenset({"Issue", "Transfer and Issue"})
+LINKED_TRANSFER_PURPOSE = "Transfer"
 
 UNAVAILABLE_ASSET_STATUSES = (
 	"Draft",

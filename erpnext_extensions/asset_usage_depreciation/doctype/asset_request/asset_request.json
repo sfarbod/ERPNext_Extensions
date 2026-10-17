@@ -46,6 +46,7 @@
   "fulfillment_status",
   "available_asset_count",
   "issued_qty",
+  "delivered_qty",
   "purchase_qty",
   "column_break_ful",
   "allocations",
@@ -314,7 +315,7 @@
    "fieldtype": "Select",
    "in_standard_filter": 1,
    "label": "Fulfillment Status",
-   "options": "Waiting for fulfillment\nIssued from pool\nPurchase requested\nFulfilled",
+   "options": "Waiting for fulfillment\nIssued from pool\nPurchase requested\nPartially Fulfilled\nFulfilled",
    "permlevel": 1,
    "read_only": 1
   },
@@ -333,6 +334,15 @@
    "fieldname": "issued_qty",
    "fieldtype": "Int",
    "label": "Issued Qty",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "delivered_qty",
+   "fieldtype": "Int",
+   "label": "Delivered Qty",
    "permlevel": 1,
    "read_only": 1
   },

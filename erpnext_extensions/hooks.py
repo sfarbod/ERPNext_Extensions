@@ -295,6 +295,7 @@ doc_events = {
 		"before_submit": "erpnext_extensions.asset_usage_depreciation.ads_hooks.before_submit",
 	},
 	"Asset Movement": {
+		"on_submit": "erpnext_extensions.asset_usage_depreciation.integration_hooks.on_asset_movement_submit",
 		"on_cancel": "erpnext_extensions.asset_usage_depreciation.integration_hooks.on_asset_movement_cancel",
 	},
 	"Material Request": {

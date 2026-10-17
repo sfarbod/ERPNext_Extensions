@@ -70,6 +70,7 @@ frappe.ui.form.on("Asset Request", {
 		const fulfilled = frm.doc.fulfillment_status === "Fulfilled";
 		const can_fulfill =
 			frappe.user_roles.includes("Asset Manager") || frappe.user_roles.includes("System Manager");
+		// Fully Fulfilled requests hide Issue/Purchase; partial may still fulfill remainder.
 		if (!can_fulfill || !approved || fulfilled) {
 			return;
 		}
@@ -200,11 +201,45 @@ function render_fulfillment_panel(frm) {
 		);
 		return;
 	}
+	const fulfillment_label = fulfillment_status_label(frm.doc.fulfillment_status);
+	const qty_rows = (frm.doc.items || [])
+		.map((row) => {
+			const requested = cint(row.qty);
+			const delivered = cint(row.delivered_qty);
+			const remaining =
+				row.remaining_qty != null ? cint(row.remaining_qty) : Math.max(0, requested - delivered);
+			return `<tr>
+				<td>${frappe.utils.escape_html(row.requested_item_code || "")}</td>
+				<td>${requested}</td>
+				<td>${delivered}</td>
+				<td>${remaining}</td>
+			</tr>`;
+		})
+		.join("");
+	const qty_table = qty_rows
+		? `<table class="table table-bordered" style="max-width: 640px; margin-bottom: 12px">
+			<thead><tr>
+				<th>${__("Item")}</th>
+				<th>${__("Requested Quantity")}</th>
+				<th>${__("Delivered Quantity")}</th>
+				<th>${__("Remaining Quantity")}</th>
+			</tr></thead>
+			<tbody>${qty_rows}</tbody>
+		</table>`
+		: "";
+	const done_banner =
+		frm.doc.fulfillment_status === "Fulfilled"
+			? `<div class="alert alert-success" style="margin-bottom: 12px">
+				<strong>${__("Fully Fulfilled")} / ${__("تحویل کامل")}</strong>
+				— ${__("All requested assets have been delivered via submitted Asset Movement.")}
+			</div>`
+			: "";
 	const status_html = `
 		<div class="ar-fulfillment-status" style="margin-bottom: 12px">
-			<p><strong>${__("Request Status")}:</strong> ${frappe.utils.escape_html(frm.doc.workflow_state || "")}</p>
-			<p><strong>${__("Fulfillment Status")}:</strong> ${frappe.utils.escape_html(frm.doc.fulfillment_status || "")}</p>
-		</div>`;
+			<p><strong>${__("Approval Status")}:</strong> ${frappe.utils.escape_html(frm.doc.workflow_state || frm.doc.status || "")}</p>
+			<p><strong>${__("Fulfillment Status")}:</strong> ${frappe.utils.escape_html(fulfillment_label)}</p>
+			<p><strong>${__("Delivered Qty")}:</strong> ${cint(frm.doc.delivered_qty)}</p>
+		</div>${done_banner}${qty_table}`;
 	if (!can_fulfill(frm) || frm.doc.workflow_state !== "Approved") {
 		wrap.$wrapper.html(
 			status_html +
@@ -219,6 +254,21 @@ function render_fulfillment_panel(frm) {
 			wrap.$wrapper.html(status_html + pool_table_html(r.message || {}));
 		},
 	});
+}
+
+function fulfillment_status_label(status) {
+	if (status === "Fulfilled") {
+		return `${__("Fully Fulfilled")} (${__("Fulfilled")})`;
+	}
+	if (status === "Waiting for fulfillment") {
+		return `${__("Not Fulfilled")} (${__("Waiting for fulfillment")})`;
+	}
+	return __(status || "");
+}
+
+function cint(v) {
+	const n = parseInt(v, 10);
+	return Number.isFinite(n) ? n : 0;
 }
 
 function pool_table_html(data) {

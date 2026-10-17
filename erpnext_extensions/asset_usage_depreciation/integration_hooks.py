@@ -122,6 +122,14 @@ def on_asset_submit(doc, method=None):
 	link_purchased_asset(doc)
 
 
+def on_asset_movement_submit(doc, method=None):
+	from erpnext_extensions.asset_usage_depreciation.services.delivery_sync import (
+		on_asset_movement_submit as _on_submit,
+	)
+
+	_on_submit(doc)
+
+
 def on_asset_movement_cancel(doc, method=None):
 	from erpnext_extensions.asset_usage_depreciation.services.fulfillment_service import (
 		on_asset_movement_cancel as _on_cancel,

@@ -21,6 +21,7 @@ from erpnext_extensions.asset_usage_depreciation.constants import (
 	COMPANY_FIELD_AR_REQUIRE_PLANNING,
 	FULFILLMENT_FULFILLED,
 	FULFILLMENT_ISSUED_FROM_POOL,
+	FULFILLMENT_PARTIALLY_FULFILLED,
 	FULFILLMENT_PURCHASE_REQUESTED,
 	FULFILLMENT_WAITING,
 	LINE_CANCELLED,
@@ -350,7 +351,16 @@ def validate_cancel(doc) -> None:
 
 
 def refresh_header_fulfillment(doc) -> None:
-	"""Recompute header qty/status from allocations. Does not save."""
+	"""Recompute header qty / fulfillment_status from allocations. Does not save.
+
+	Never mutates approval ``status`` or ``workflow_state``.
+	``delivered_qty`` counts Issued (and Issued-after-purchase) units only —
+	draft movements and cancelled allocations do not count.
+	"""
+	from erpnext_extensions.asset_usage_depreciation.services.delivery_sync import (
+		_delivered_by_item,
+	)
+
 	issued = 0
 	purchase = 0
 	open_units = 0
@@ -369,7 +379,27 @@ def refresh_header_fulfillment(doc) -> None:
 
 	doc.issued_qty = issued
 	doc.purchase_qty = purchase
-	done = issued + purchase
+	delivered_by_item = _delivered_by_item(doc)
+	header_delivered = 0
+	all_lines_full = bool(doc.items) and total > 0
+	any_delivered = False
+
+	for row in doc.items:
+		delivered = cint(delivered_by_item.get(row.name, 0))
+		requested = cint(row.qty)
+		if hasattr(row, "delivered_qty"):
+			row.delivered_qty = delivered
+		if hasattr(row, "remaining_qty"):
+			row.remaining_qty = max(0, requested - delivered)
+		header_delivered += delivered
+		if delivered > 0:
+			any_delivered = True
+		if delivered < requested:
+			all_lines_full = False
+
+	if hasattr(doc, "delivered_qty"):
+		doc.delivered_qty = header_delivered
+
 	has_am = any(
 		a.asset_movement
 		for a in (doc.get("allocations") or [])
@@ -381,9 +411,11 @@ def refresh_header_fulfillment(doc) -> None:
 		if a.fulfillment_status != ALLOC_CANCELLED
 	) or bool(doc.material_request)
 
-	# Workflow status stays Approved. Fulfillment is a separate lifecycle.
-	if total > 0 and done >= total and open_units == 0:
+	# Quantity-based fulfillment (approval status unchanged).
+	if total > 0 and all_lines_full:
 		doc.fulfillment_status = FULFILLMENT_FULFILLED
+	elif any_delivered:
+		doc.fulfillment_status = FULFILLMENT_PARTIALLY_FULFILLED
 	elif has_mr:
 		doc.fulfillment_status = FULFILLMENT_PURCHASE_REQUESTED
 	elif has_am:
