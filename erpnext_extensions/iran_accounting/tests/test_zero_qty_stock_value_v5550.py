@@ -127,43 +127,71 @@ class TestZeroQtyEnforceUnit(unittest.TestCase):
 		self.assertEqual(flt(sle.stock_value), LEFTOVER)
 
 	def _run_sync(self, sle, row, purpose: str):
-		def _get_value(doctype, name, *args, **kwargs):
+		real_get_value = frappe.db.get_value
+
+		def _get_value_safe(*args, **kwargs):
+			doctype = kwargs.get("doctype")
+			if args:
+				doctype = args[0]
 			if doctype == "Stock Entry Detail":
 				return row
 			if doctype == "Stock Entry":
 				return purpose
-			return mock.DEFAULT
+			return real_get_value(*args, **kwargs)
 
 		with (
 			_sync_ctx(row, purpose),
 			mock.patch(
 				"erpnext_extensions.iran_accounting.domain.stock_entry_sync.frappe.db.get_value",
-				side_effect=_get_value,
+				side_effect=_get_value_safe,
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.frappe.db.get_value",
+				side_effect=_get_value_safe,
 			),
 			mock.patch(
 				"erpnext_extensions.iran_accounting.domain.stock_entry_sync.frappe.db.set_value",
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.stock_entry_sync._lookup_previous_stock_value",
+				return_value=None,
 			),
 		):
 			sync_irr_sle_from_stock_entry_row(sle)
 
 	def test_document_manufacture_stamp_does_not_reintroduce_leftover(self):
-		"""TEST C/D: Manufacture SED stamp on consume-to-zero must leave sv=0."""
+		"""TEST C/D: Manufacture absorb residual into SVD; sv stays 0 (v5.5.51)."""
 		sle = _incident_sle()
 		mark_sle_running_balance_processed(sle)
-		self._run_sync(sle, _sed_row(), "Manufacture")
-		self.assertEqual(flt(sle.stock_value_difference), -SED_AMOUNT)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.prior_type_a_on_identity",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual._quantum",
+			return_value=1.0,
+		):
+			self._run_sync(sle, _sed_row(), "Manufacture")
 		self.assertEqual(flt(sle.stock_value), 0)
+		# Residual absorbed: full previous layer cleared (not SED-only ghost).
+		self.assertEqual(flt(sle.stock_value_difference), -PREV_VALUE)
 		assert_zero_qty_stock_value(sle)
 
 	def test_mtfm_manual_document_path_clears_terminal_value(self):
-		"""TEST A: MTfM forced onto document path (manual rate) must not leave leftover."""
+		"""TEST A: MTfM document path absorbs residual; sv=0; full clear SVD."""
 		sle = _incident_sle()
 		mark_sle_running_balance_processed(sle)
-		self._run_sync(
-			sle, _sed_row(set_basic_rate_manually=1), "Material Transfer for Manufacture"
-		)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.prior_type_a_on_identity",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual._quantum",
+			return_value=1.0,
+		):
+			self._run_sync(
+				sle, _sed_row(set_basic_rate_manually=1), "Material Transfer for Manufacture"
+			)
 		self.assertEqual(flt(sle.stock_value), 0)
-		self.assertEqual(flt(sle.stock_value_difference), -SED_AMOUNT)
+		self.assertEqual(flt(sle.stock_value_difference), -PREV_VALUE)
 
 	def test_native_mtfm_preserves_vanilla_clear(self):
 		"""TEST A/H: native MTfM keeps Core empty-warehouse clear + full SVD."""
@@ -205,12 +233,20 @@ class TestZeroQtyEnforceUnit(unittest.TestCase):
 		"""TEST B: Serial and Batch Bundle row on document path clears terminal value."""
 		sle = _incident_sle(serial_and_batch_bundle="SABB-1")
 		mark_sle_running_balance_processed(sle)
-		self._run_sync(
-			sle,
-			_sed_row(serial_and_batch_bundle="SABB-1", set_basic_rate_manually=1),
-			"Material Transfer for Manufacture",
-		)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.prior_type_a_on_identity",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual._quantum",
+			return_value=1.0,
+		):
+			self._run_sync(
+				sle,
+				_sed_row(serial_and_batch_bundle="SABB-1", set_basic_rate_manually=1),
+				"Material Transfer for Manufacture",
+			)
 		self.assertEqual(flt(sle.stock_value), 0)
+		self.assertEqual(flt(sle.stock_value_difference), -PREV_VALUE)
 
 
 class TestZeroQtyIntegrationV5550(unittest.TestCase):
