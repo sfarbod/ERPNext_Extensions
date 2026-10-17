@@ -1,30 +1,47 @@
-# Release 5.5.51 — Non-blocking historical residual absorb + TVA discoverability
+# Release 5.5.51 — Transitional Non-Blocking historical valuation guard
 
 **Version:** 5.5.51  
 **Date:** 2026-10-17  
 **Previous:** 5.5.50  
-**Branch:** `feature/5.5.50-zero-qty-stock-value-integrity` (do **not** merge/push without approval)  
+**Branch:** `feature/5.5.50-zero-qty-stock-value-integrity` → merge `develop` (local only; **user pushes manually**)  
 **Validated stack:** Frappe **16.36.1**, ERPNext **16.37.0**, Iran Accounting **5.5.51**  
 **Sites:** `development.localhost` (tests); `i3-sandbox.localhost` (40942 RIV evidence retained)  
-**Production:** **untouched**
+**Production:** **untouched** — no deploy, no mutate, no push from this task
 
 ---
 
-## A. Root cause and design
+## A. Transitional Non-Blocking policy (temporary)
 
-5.5.50 prevented dirty `stock_value` at `qty_after=0` but could still **ghost** a historical residual when SVD stayed at SED amount while `stock_value` was forced to 0 (inventory value vanished without transfer/expense GL).
+Historical SLE/GL valuation is **not yet fully clean**. Until the Historical
+Reposting Campaign has repaired and verified the ledger, ERP must keep
+operating.
 
-**5.5.51 contract:**
+**Active policy constant:**
 
-| Classification | Behavior |
-|----------------|----------|
-| `HISTORICAL_RESIDUAL` + Transfer/Issue/MTfM | **Absorb** residual into outgoing SVD (Core empty-warehouse clear); realign SED; TVA TRACE for campaign discovery. **No fabricated SA expense** — value stays capitalized on transfer. |
-| `HISTORICAL_RESIDUAL` + Manufacture/Repack (modest) | Absorb into consume SVD; FG SED unchanged → header `value_difference` can post Company Stock Adjustment via Core. |
-| `UNDETERMINED` + Manufacture ghost ≳ 500M (40436-class) | **Fail closed** — never auto-expense billions. |
-| `CURRENT_TRANSACTION_BUG` | Not compensated by historical bridge. |
-| Clean / legitimate | Noop. |
+`ACTIVE_HISTORICAL_VALUATION_GUARD = TRANSITIONAL_NON_BLOCKING`
 
-**I3/I4 remain enabled.** Non-blocking ≠ disable guards.
+in `iran_accounting/domain/historical_valuation_residual.py`.
+
+| Classification | Behavior under TRANSITIONAL_NON_BLOCKING |
+|----------------|------------------------------------------|
+| `HISTORICAL_RESIDUAL` + Transfer/Issue/MTfM | **Absorb** into outgoing SVD; SED realign; TVA TRACE. **Do not expense** inventory that must stay capitalized on transfer. |
+| `HISTORICAL_RESIDUAL` + Manufacture/Repack (modest) | Absorb into consume SVD; FG SED unchanged → Core `value_difference` → Company Stock Adjustment (configured). |
+| `UNDETERMINED` / Manufacture ghost ≳ 500M (40436-class) | **Fail closed** — no fabricated amount. |
+| `CURRENT_TRANSACTION_BUG` | Not compensated — fix calculation. |
+| `LEGITIMATE_VALUATION_ADJUSTMENT` | Preserve normal ERPNext behavior. |
+
+**I3/I4 remain enabled** in transitional mode. Non-blocking ≠ disable integrity.
+
+5.5.50 zero-qty `stock_value=0` protection is permanent and independent of this
+policy.
+
+---
+
+## A2. Root cause addressed
+
+5.5.50 prevented dirty `stock_value` at `qty_after=0` but could still **ghost** a
+historical residual when SVD stayed at SED amount while `stock_value` was forced
+to 0. 5.5.51 classifies and accounts for that residual without silent write-off.
 
 ---
 
@@ -124,12 +141,42 @@ Manufacture consume `30200012` @ پایکار: `qa=0`, `sv≈3,303,599,398`, `sv
 
 ---
 
-## K. Release gate
+## K. Technical debt — Future Strict Guard (MANDATORY)
+
+**Marker:** `TODO(HISTORICAL-REBUILD-STRICT-GUARD)` in:
+
+- `historical_valuation_residual.py` (policy constant + comment block)
+- `riv_valuation_guard.py` (cross-reference at `enforce_zero_qty_terminal_stock_value`)
+
+After Historical Rebuild Campaign has completed and all historical SLE/GL
+valuation inconsistencies are verified and reconciled:
+
+1. Historical residuals must no longer be automatically tolerated.
+2. Unexpected zero-quantity residuals must fail before persistence.
+3. Invalid SVD direction must fail (I3 — already active; keep enabled).
+4. Unexpected valuation differences must not be automatically posted to Stock Adjustment.
+5. Transitional adjustment behavior must be disabled or removed.
+
+**Preferred transition (no engine rewrite):**
+
+```python
+ACTIVE_HISTORICAL_VALUATION_GUARD = STRICT_AFTER_HISTORICAL_REBUILD
+```
+
+Do **not** activate strict mode in 5.5.51. No user-facing toggle.
+
+**Dependency:** Historical campaign must finish before flipping the policy.
+
+---
+
+## L. Release gate
 
 | Gate | Status |
 |------|--------|
-| 5.5.50 protections retained | PASS |
-| Absorb + classify + TVA discoverability | PASS |
-| Tests | PASS |
-| Merge / push | **WAIT for approval** |
-| Production | **FORBIDDEN** |
+| Version remains **5.5.51** | PASS |
+| TRANSITIONAL_NON_BLOCKING active | PASS |
+| 5.5.50 zero-qty + I3/I4 retained | PASS |
+| Absorb / SA / TVA discoverability | PASS |
+| Future Strict Guard TODO documented | PASS |
+| Merge to local `develop` | this task |
+| Push / Production | **user only / FORBIDDEN here** |

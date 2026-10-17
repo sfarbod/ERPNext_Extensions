@@ -349,6 +349,15 @@ def _align_engine_empty_warehouse_stock_value(cleared: float = 0.0) -> None:
 		wh.stock_value = cleared
 
 
+# TODO(HISTORICAL-REBUILD-STRICT-GUARD):
+# Empty-warehouse stock_value=0 (this function) and I3/I4 assertions stay
+# permanent. The *transitional* tolerance of historical residuals lives in
+# ``historical_valuation_residual.ACTIVE_HISTORICAL_VALUATION_GUARD``.
+# After Historical Rebuild Campaign verification, flip that policy to
+# STRICT_AFTER_HISTORICAL_REBUILD so unexpected residuals fail before
+# persistence instead of being absorbed / SA-posted. Do not disable I3/I4.
+
+
 def enforce_zero_qty_terminal_stock_value(sle) -> bool:
 	"""Core empty-warehouse contract: final consume-to-zero ⇒ ``stock_value == 0``.
 

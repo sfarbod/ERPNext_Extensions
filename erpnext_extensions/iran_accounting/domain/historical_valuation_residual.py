@@ -16,6 +16,12 @@ either:
 
 I3/I4 remain enabled. Non-blocking means accounting for proven historical
 residuals — not disabling integrity guards.
+
+Policy boundary
+---------------
+``ACTIVE_HISTORICAL_VALUATION_GUARD`` selects transitional vs future-strict
+behavior without rewriting the valuation engine. Flip only after Historical
+Rebuild Campaign verification.
 """
 
 from __future__ import annotations
@@ -36,6 +42,48 @@ from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 	is_final_zero_qty_consume_state,
 	throw_valuation_integrity,
 )
+
+# ---------------------------------------------------------------------------
+# Historical valuation guard policy (named boundary — no user-facing toggle)
+# ---------------------------------------------------------------------------
+TRANSITIONAL_NON_BLOCKING = "TRANSITIONAL_NON_BLOCKING"
+STRICT_AFTER_HISTORICAL_REBUILD = "STRICT_AFTER_HISTORICAL_REBUILD"
+
+# Temporary business policy while historical SLE/GL cleanup is incomplete.
+# Operations must continue; proven historical residuals are accounted for
+# (absorb / configured Stock Adjustment) instead of blocking valid submits.
+ACTIVE_HISTORICAL_VALUATION_GUARD = TRANSITIONAL_NON_BLOCKING
+
+# TODO(HISTORICAL-REBUILD-STRICT-GUARD):
+# The current non-blocking historical valuation adjustment behavior is
+# temporary.
+#
+# After Historical Rebuild Campaign has completed and all historical
+# SLE/GL valuation inconsistencies have been verified and reconciled,
+# restore strict valuation enforcement.
+#
+# At that point:
+# 1. Historical residuals must no longer be automatically tolerated.
+# 2. Unexpected zero-quantity residuals must fail before persistence.
+# 3. Invalid SVD direction must fail.  (I3 — already active; keep enabled.)
+# 4. Unexpected valuation differences must not be automatically posted
+#    to Stock Adjustment.
+# 5. Transitional adjustment behavior must be disabled or removed.
+#
+# Transition: set ACTIVE_HISTORICAL_VALUATION_GUARD =
+# STRICT_AFTER_HISTORICAL_REBUILD (do not rewrite the valuation engine).
+# Do not activate strict mode now.
+
+
+def is_transitional_non_blocking() -> bool:
+	"""True while temporary non-blocking historical residual policy is active."""
+	return ACTIVE_HISTORICAL_VALUATION_GUARD == TRANSITIONAL_NON_BLOCKING
+
+
+def is_strict_historical_valuation_guard() -> bool:
+	"""True after HRC cleanup — historical residuals are no longer auto-tolerated."""
+	return ACTIVE_HISTORICAL_VALUATION_GUARD == STRICT_AFTER_HISTORICAL_REBUILD
+
 
 # Mirrored purpose sets (avoid import cycle with stock_entry_sync).
 _NATIVE_OUTGOING = frozenset(
@@ -168,12 +216,26 @@ def classify_zero_qty_ghost(
 	ancestor = prior_type_a_on_identity(item_code, warehouse, sle)
 	has_historical_proof = ancestor is not None or abs(ghost) > quantum
 
+	# Future-strict: after HRC verification, do not auto-tolerate historical ghosts.
+	# I3/I4 remain active in both modes; this only gates transitional absorb/SA.
+	if is_strict_historical_valuation_guard():
+		return {
+			**base,
+			"category": HISTORICAL_RESIDUAL,
+			"disposition": FAIL_CLOSED,
+			"detail": "strict_guard_rejects_historical_residual",
+			"guard": STRICT_AFTER_HISTORICAL_REBUILD,
+			"historical_source_voucher": (ancestor or {}).get("voucher_no"),
+			"historical_source_sle": (ancestor or {}).get("name"),
+		}
+
 	# Transfer / issue: residual is inventory movement, not P&L plug.
 	if purpose in _NATIVE_OUTGOING:
 		return {
 			**base,
 			"category": HISTORICAL_RESIDUAL,
 			"disposition": ABSORB_INTO_MOVEMENT,
+			"guard": TRANSITIONAL_NON_BLOCKING,
 			"historical_source_voucher": (ancestor or {}).get("voucher_no"),
 			"historical_source_sle": (ancestor or {}).get("name"),
 			"detail": "absorb_residual_into_outgoing_svd",
@@ -194,6 +256,7 @@ def classify_zero_qty_ghost(
 				"disposition": FAIL_CLOSED,
 				"detail": "manufacture_ghost_exceeds_auto_sa_ceiling",
 				"ceiling": MANUFACTURE_AUTO_SA_MAX,
+				"guard": TRANSITIONAL_NON_BLOCKING,
 				"historical_source_voucher": (ancestor or {}).get("voucher_no"),
 				"historical_source_sle": (ancestor or {}).get("name"),
 			}
@@ -204,12 +267,14 @@ def classify_zero_qty_ghost(
 				"category": UNDETERMINED,
 				"disposition": FAIL_CLOSED,
 				"detail": "manufacture_ghost_without_historical_proof",
+				"guard": TRANSITIONAL_NON_BLOCKING,
 			}
 
 		return {
 			**base,
 			"category": HISTORICAL_RESIDUAL,
 			"disposition": ABSORB_INTO_MOVEMENT,
+			"guard": TRANSITIONAL_NON_BLOCKING,
 			"historical_source_voucher": (ancestor or {}).get("voucher_no"),
 			"historical_source_sle": (ancestor or {}).get("name"),
 			"detail": "manufacture_absorb_residual_value_difference_sa",
@@ -220,6 +285,7 @@ def classify_zero_qty_ghost(
 		"category": UNDETERMINED,
 		"disposition": FAIL_CLOSED,
 		"detail": "unsupported_purpose_for_ghost_residual",
+		"guard": TRANSITIONAL_NON_BLOCKING,
 	}
 
 

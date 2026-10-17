@@ -11,11 +11,15 @@ from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
 	ABSORB_INTO_MOVEMENT,
+	ACTIVE_HISTORICAL_VALUATION_GUARD,
 	FAIL_CLOSED,
 	HISTORICAL_RESIDUAL,
+	STRICT_AFTER_HISTORICAL_REBUILD,
+	TRANSITIONAL_NON_BLOCKING,
 	UNDETERMINED,
 	classify_zero_qty_ghost,
 	ghost_residual_amount,
+	is_transitional_non_blocking,
 	list_campaign_discoverable_residuals,
 	reconcile_tva_after_riv,
 )
@@ -70,6 +74,37 @@ def _sle(**extra):
 
 
 class TestHistoricalResidualUnit(unittest.TestCase):
+	def test_transitional_policy_is_active(self):
+		"""v5.5.51 ships TRANSITIONAL_NON_BLOCKING; strict is deferred."""
+		self.assertEqual(ACTIVE_HISTORICAL_VALUATION_GUARD, TRANSITIONAL_NON_BLOCKING)
+		self.assertTrue(is_transitional_non_blocking())
+
+	def test_strict_guard_would_fail_closed(self):
+		sle = _sle()
+		mark_sle_running_balance_processed(sle)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.ACTIVE_HISTORICAL_VALUATION_GUARD",
+			STRICT_AFTER_HISTORICAL_REBUILD,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.is_strict_historical_valuation_guard",
+			return_value=True,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual.prior_type_a_on_identity",
+			return_value=None,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.historical_valuation_residual._quantum",
+			return_value=1.0,
+		):
+			c = classify_zero_qty_ghost(
+				sle=sle,
+				purpose="Material Transfer for Manufacture",
+				value_before=PREV,
+				movement=-SED,
+				company="ESPAD",
+			)
+		self.assertEqual(c["disposition"], FAIL_CLOSED)
+		self.assertEqual(c["detail"], "strict_guard_rejects_historical_residual")
+
 	def test_a_clean_no_ghost(self):
 		self.assertEqual(ghost_residual_amount(100, -100, None), 0)
 
