@@ -341,6 +341,60 @@ def assert_zero_qty_stock_value(sle, **context) -> None:
 	)
 
 
+def _align_engine_empty_warehouse_stock_value(cleared: float = 0.0) -> None:
+	"""Keep RIV/submit engine warehouse state empty when qty is empty."""
+	engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
+	wh = getattr(engine, "wh_data", None) if engine is not None else None
+	if wh is not None and flt(getattr(wh, "qty_after_transaction", None)) == 0:
+		wh.stock_value = cleared
+
+
+# TODO(HISTORICAL-REBUILD-STRICT-GUARD):
+# Empty-warehouse stock_value=0 (this function) and I3/I4 assertions stay
+# permanent. The *transitional* tolerance of historical residuals lives in
+# ``historical_valuation_residual.ACTIVE_HISTORICAL_VALUATION_GUARD``.
+# After Historical Rebuild Campaign verification, flip that policy to
+# STRICT_AFTER_HISTORICAL_REBUILD so unexpected residuals fail before
+# persistence instead of being absorbed / SA-posted. Do not disable I3/I4.
+
+
+def enforce_zero_qty_terminal_stock_value(sle) -> bool:
+	"""Core empty-warehouse contract: final consume-to-zero ⇒ ``stock_value == 0``.
+
+	Iran ``sync_irr_sle_from_stock_entry_row`` may rebuild
+	``stock_value = previous + SED.movement``. When previous already carried a
+	historical residual, that rewrite leaves qty_after=0 with nonzero
+	``stock_value`` (I4). Clearing ``stock_value`` restores the Core invariant
+	without rewriting ``stock_value_difference`` (SED / transfer-pair
+	conservation stays intact).
+
+	Returns True when ``stock_value`` was cleared. No-op on unprocessed /
+	incoming-transient SLEs (see :func:`is_final_zero_qty_consume_state`).
+	Also keeps engine ``wh_data.stock_value`` at 0 when qty is empty so the
+	next SLE in the same ``process_sle`` chain cannot inherit a ghost layer.
+	"""
+	if sle is None:
+		return False
+	if not is_final_zero_qty_consume_state(sle):
+		return False
+	# Fast path: already empty — avoid Company currency lookup in unit tests.
+	if abs(flt(_entry_get(sle, "stock_value"))) <= 1e-9:
+		_align_engine_empty_warehouse_stock_value(0.0)
+		return False
+	company = _entry_get(sle, "company")
+	quantum = _quantum(company)
+	if abs(flt(_entry_get(sle, "stock_value"))) <= quantum:
+		_align_engine_empty_warehouse_stock_value(0.0)
+		return False
+	ccy = get_company_currency(company) if company else "IRR"
+	cleared = float(round_currency(0, ccy))
+	if isinstance(sle, dict):
+		sle["stock_value"] = cleared
+	else:
+		sle.stock_value = cleared
+	_align_engine_empty_warehouse_stock_value(cleared)
+	return True
+
 def restore_vanilla_zero_qty_terminal_stock_value(sle, vanilla_stock_value, vanilla_qty_after) -> None:
 	"""Keep vanilla's empty-warehouse value after Iran Stock Entry sync.
 
@@ -354,24 +408,20 @@ def restore_vanilla_zero_qty_terminal_stock_value(sle, vanilla_stock_value, vani
 	Do not touch ``stock_value_difference`` (row movement / transfer conservation).
 	Do not restore when vanilla itself left material leftover — I4 must still fire.
 	Do not apply on unprocessed / incoming-transient SLEs.
+
+	Primary prevention now lives in :func:`enforce_zero_qty_terminal_stock_value`
+	(called from Iran sync). This restore remains the monkey-patch belt that
+	only undoes Iran reintroduction after a clean vanilla empty-warehouse.
 	"""
 	if sle is None:
 		return
 	if flt(vanilla_qty_after) != 0:
 		return
-	if not is_final_zero_qty_consume_state(sle):
-		return
 	company = _entry_get(sle, "company")
 	quantum = _quantum(company)
 	if abs(flt(vanilla_stock_value)) > quantum:
 		return
-	if abs(flt(_entry_get(sle, "stock_value"))) <= quantum:
-		return
-	ccy = get_company_currency(company) if company else "IRR"
-	if isinstance(sle, dict):
-		sle["stock_value"] = float(round_currency(0, ccy))
-		return
-	sle.stock_value = float(round_currency(0, ccy))
+	enforce_zero_qty_terminal_stock_value(sle)
 
 
 def _incoming_se_row(row) -> bool:
