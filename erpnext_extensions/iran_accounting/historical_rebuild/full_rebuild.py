@@ -430,14 +430,51 @@ def clear_failed_blockers_for_precision(limit: int = 500) -> dict[str, Any]:
 	return {"cleared": cleared, "count": len(cleared)}
 
 
+def _session_cover_index() -> dict[tuple[str, str], tuple[str, str, str]]:
+	"""Map (item, warehouse) → (riv_name, posting_date, posting_time) for session Completed RIVs.
+
+	Uses the earliest session Completed RIV per identity (best chronological cover).
+	"""
+	sess = get_session() or {}
+	names = list(dict.fromkeys(sess.get("riv_completed") or []))
+	if not names:
+		return {}
+	placeholders = ",".join(["%s"] * len(names))
+	rows = frappe.db.sql(
+		f"""
+		select name, item_code, warehouse, posting_date, posting_time
+		from `tabRepost Item Valuation`
+		where docstatus=1 and status='Completed'
+		  and based_on='Item and Warehouse'
+		  and name in ({placeholders})
+		order by posting_date asc, posting_time asc, creation asc
+		""",
+		tuple(names),
+		as_dict=True,
+	) or []
+	index: dict[tuple[str, str], tuple[str, str, str]] = {}
+	for r in rows:
+		key = (r.item_code, r.warehouse)
+		if key not in index:
+			index[key] = (r.name, str(r.posting_date), str(r.posting_time or "00:00:00"))
+	return index
+
+
+def _ts_tuple(date_val, time_val) -> tuple:
+	return (str(date_val), str(time_val or "00:00:00"))
+
+
 def _uncovered_identities(campaign: str) -> list[dict[str, Any]]:
 	"""Campaign identities still lacking a session Completed chronological cover."""
+	index = _session_cover_index()
 	out = []
 	for row in campaign_identities(campaign):
-		if _session_cover_for_identity(
-			row.item_code, row.warehouse, row.posting_date, row.posting_time
-		):
-			continue
+		key = (row.item_code, row.warehouse)
+		cover = index.get(key)
+		if cover:
+			# cover posting <= identity earliest campaign posting
+			if _ts_tuple(cover[1], cover[2]) <= _ts_tuple(row.posting_date, row.posting_time):
+				continue
 		out.append(row)
 	return out
 
