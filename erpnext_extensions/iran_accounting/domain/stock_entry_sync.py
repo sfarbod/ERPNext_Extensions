@@ -316,31 +316,38 @@ def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
 
 
 def _lookup_previous_stock_value(sle) -> float | None:
+	"""Stock value of the chronologically previous SLE on the same identity.
+
+	Must include same-voucher prior rows. Excluding the whole voucher (old
+	behaviour) made multi-row Material Transfer consume-to-zero absorb against
+	the pre-voucher balance (e.g. MAT-STE-2026-25926 / item 13100028),
+	re-poisoning a correct BatchNoValuation SVD with a stale layer.
+	"""
 	item_code = sle.get("item_code") if hasattr(sle, "get") else getattr(sle, "item_code", None)
 	warehouse = sle.get("warehouse") if hasattr(sle, "get") else getattr(sle, "warehouse", None)
 	if not item_code or not warehouse:
 		return None
 	# After Core emptied, wh_data.stock_value is 0; prev_stock_value was overwritten.
-	# Prefer the latest prior SLE on this identity, excluding the current voucher.
+	# Prefer the latest prior SLE on this identity (same voucher allowed).
 	posting_datetime = (
 		sle.get("posting_datetime") if hasattr(sle, "get") else getattr(sle, "posting_datetime", None)
 	)
 	creation = sle.get("creation") if hasattr(sle, "get") else getattr(sle, "creation", None)
 	name = sle.get("name") if hasattr(sle, "get") else getattr(sle, "name", None)
-	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
 	params: list = [item_code, warehouse]
 	clauses = ["item_code=%s", "warehouse=%s", "is_cancelled=0"]
 	if name:
 		clauses.append("name != %s")
 		params.append(name)
-	if voucher_no:
-		clauses.append("voucher_no != %s")
-		params.append(voucher_no)
 	if posting_datetime:
 		clauses.append(
 			"(posting_datetime < %s or (posting_datetime = %s and creation < %s))"
 		)
 		params.extend([posting_datetime, posting_datetime, creation or posting_datetime])
+	elif creation:
+		# In-memory SLE may lack posting_datetime; still order by creation.
+		clauses.append("creation < %s")
+		params.append(creation)
 	row = frappe.db.sql(
 		f"""
 		select stock_value from `tabStock Ledger Entry`
@@ -350,18 +357,6 @@ def _lookup_previous_stock_value(sle) -> float | None:
 		""",
 		tuple(params),
 	)
-	if not row:
-		# Fallback without datetime (in-memory SLE may lack posting_datetime).
-		row = frappe.db.sql(
-			"""
-			select stock_value from `tabStock Ledger Entry`
-			where item_code=%s and warehouse=%s and is_cancelled=0
-			  and (%s is null or voucher_no != %s)
-			order by posting_datetime desc, creation desc
-			limit 1
-			""",
-			(item_code, warehouse, voucher_no, voucher_no),
-		)
 	if not row:
 		return None
 	return flt(row[0][0])

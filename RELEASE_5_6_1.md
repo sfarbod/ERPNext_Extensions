@@ -32,6 +32,15 @@ Mass pre-creation / parallel RIV queues are **rejected**. The supported path is:
 
 Module: `historical_rebuild/sequential_rebuild.py`
 
+### Multi-row Material Transfer absorb fix
+
+`_lookup_previous_stock_value` previously excluded the entire current voucher when
+resolving the previous stock layer for zero-qty residual absorb. On multi-row
+Material Transfers (e.g. `MAT-STE-2026-25926` / item `13100028`) that skipped the
+same-voucher prior SLE and re-poisoned a correct BatchNoValuation SVD against the
+pre-voucher balance. Lookup now uses chronological prior SLE on the identity
+(same voucher allowed).
+
 Production historical reposting remains a separately controlled operation.
 This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.
 

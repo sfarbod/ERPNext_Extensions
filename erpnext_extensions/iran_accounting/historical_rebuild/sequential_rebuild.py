@@ -208,6 +208,31 @@ def get_seq_session() -> dict | None:
 	return frappe.cache().get_value(CACHE_SEQ)
 
 
+def restore_session_from_file(session_id: str | None = None) -> dict[str, Any]:
+	"""Reload sequential session JSON into cache (survives process restarts)."""
+	directory = _session_dir()
+	path = None
+	if session_id:
+		path = os.path.join(directory, f"session_{session_id}.json")
+	else:
+		candidates = sorted(
+			(
+				os.path.join(directory, name)
+				for name in os.listdir(directory)
+				if name.startswith("session_") and name.endswith(".json")
+			),
+			key=os.path.getmtime,
+			reverse=True,
+		)
+		path = candidates[0] if candidates else None
+	if not path or not os.path.exists(path):
+		frappe.throw(f"No sequential session file found (session_id={session_id})")
+	with open(path, encoding="utf-8") as fh:
+		payload = json.load(fh)
+	_save_seq(payload)
+	return {"ok": True, "session_id": payload.get("session_id"), "path": path, "payload": payload}
+
+
 def chronological_identities(campaign: str) -> list[dict[str, Any]]:
 	"""Distinct Item+WH ordered by earliest campaign SLE posting."""
 	return (
