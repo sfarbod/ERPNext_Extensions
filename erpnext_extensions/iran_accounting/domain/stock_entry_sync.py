@@ -513,6 +513,12 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 				sle=sle,
 				row=row,
 			)
+		# Document-authority apply (incl. zero-qty FAIL_CLOSED) must soft-skip
+		# out-of-scope cascade rows during Item+WH RIV — otherwise an unrelated
+		# Manufacture residual aborts the target identity (13100057 → 30100298).
+		_apply_document_authority_movement(
+			sle, movement, rate, ccy, purpose=purpose, row=row
+		)
 	except ValuationIntegrityError as exc:
 		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
 		if engine is None:
@@ -526,10 +532,6 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			raise
 		log_out_of_scope_integrity_anomaly(engine, sle=sle, exc=exc)
 		return
-
-	_apply_document_authority_movement(
-		sle, movement, rate, ccy, purpose=purpose, row=row
-	)
 
 
 def gl_movement_from_row_only(item_row, sle, company: str) -> float:

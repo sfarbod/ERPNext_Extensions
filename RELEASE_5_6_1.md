@@ -41,6 +41,13 @@ same-voucher prior SLE and re-poisoned a correct BatchNoValuation SVD against th
 pre-voucher balance. Lookup now uses chronological prior SLE on the identity
 (same voucher allowed).
 
+### Out-of-scope Manufacture FAIL_CLOSED soft-skip
+
+Document-authority zero-qty `FAIL_CLOSED` (e.g. manufacture ghost above the auto
+SA ceiling) raised during Item+WH RIV cascades on unrelated FG/WIP rows and
+aborted the target identity. The throw is now inside the same out-of-scope
+soft-skip handler as other integrity errors.
+
 Production historical reposting remains a separately controlled operation.
 This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.
 
