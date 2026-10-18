@@ -307,7 +307,10 @@ def create_session_riv(
 	status = frappe.db.get_value("Repost Item Valuation", name, "status")
 	if execute and status in ("Queued", "In Progress"):
 		try:
-			execute_reposting_entry(name)
+			# Never continue_reposting — that enqueues parallel RQ jobs and floods
+			# the default queue on worker-less maintenance sites.
+			_ensure_rq_room()
+			execute_reposting_entry(name, continue_reposting=False)
 			frappe.db.commit()
 		except Exception as e:
 			frappe.db.rollback()
@@ -349,10 +352,28 @@ def create_session_riv(
 	return {"ok": False, "riv": name, "status": status, "item_code": item_code, "warehouse": warehouse}
 
 
-def clear_failed_blockers_for_precision(limit: int = 50) -> dict[str, Any]:
-	"""Mark Failed RIVs that are pure ±1 IRR GL imbalance as Skipped so seed can retry.
+def _ensure_rq_room(*, max_default: int = 50) -> None:
+	"""Drop flooded default RQ jobs on maintenance/dev sites (no workers)."""
+	try:
+		from frappe.utils.background_jobs import get_queue
 
-	Root cause is handled by IRR GL precision absorb on re-execute with bootstrap.
+		q = get_queue("default")
+		if q.count > max_default:
+			q.empty()
+		lq = get_queue("long")
+		# Keep long short — we execute sync
+		if lq.count > max_default:
+			lq.empty()
+	except Exception:
+		pass
+
+
+def clear_failed_blockers_for_precision(limit: int = 500) -> dict[str, Any]:
+	"""Mark Failed RIVs that are recoverable (precision / RQ flood) as Skipped for retry.
+
+	- ±1 IRR GL imbalance: re-execute with IRR absorb + bootstrap
+	- Too many queued background jobs: infrastructure, not valuation
+	Does NOT clear genuine I3/I4 Failed rows.
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -360,10 +381,13 @@ def clear_failed_blockers_for_precision(limit: int = 50) -> dict[str, Any]:
 		from `tabRepost Item Valuation`
 		where docstatus=1 and status='Failed'
 		  and based_on='Item and Warehouse'
-		  and error_log like '%%Debit and Credit not equal%%Difference is%%1.0%%'
+		  and (
+		    error_log like '%%Debit and Credit not equal%%Difference is%%1.0%%'
+		    or error_log like '%%Too many queued background jobs%%'
+		  )
 		limit %s
 		""",
-		cint(limit) or 50,
+		cint(limit) or 500,
 		as_dict=True,
 	) or []
 	cleared = []
@@ -371,10 +395,22 @@ def clear_failed_blockers_for_precision(limit: int = 50) -> dict[str, Any]:
 		mark_resolved(
 			r.item_code,
 			r.warehouse,
-			detail=f"v5.6.1: clear ±1 IRR GL blocker {r.name} for session re-execute",
+			detail=f"v5.6.1: clear recoverable Failed {r.name} for session re-execute",
 		)
 		cleared.append(r.name)
 	return {"cleared": cleared, "count": len(cleared)}
+
+
+def _uncovered_identities(campaign: str) -> list[dict[str, Any]]:
+	"""Campaign identities still lacking a session Completed chronological cover."""
+	out = []
+	for row in campaign_identities(campaign):
+		if _session_cover_for_identity(
+			row.item_code, row.warehouse, row.posting_date, row.posting_time
+		):
+			continue
+		out.append(row)
+	return out
 
 
 def seed_and_execute_batch(
@@ -382,12 +418,14 @@ def seed_and_execute_batch(
 	*,
 	limit: int = 20,
 	offset: int = 0,
+	only_uncovered: bool = True,
 ) -> dict[str, Any]:
 	"""Create+execute session RIVs for a slice of campaign identities."""
 	_ensure_bootstrap()
+	_ensure_rq_room()
 	sess = get_session() or start_session(campaign)
 	company = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "company")
-	idents = campaign_identities(campaign)
+	idents = _uncovered_identities(campaign) if only_uncovered else campaign_identities(campaign)
 	slice_ = idents[cint(offset) : cint(offset) + (cint(limit) or 20)]
 	results = []
 	completed = 0
@@ -395,6 +433,7 @@ def seed_and_execute_batch(
 	blocked = 0
 	t0 = time.time()
 	for row in slice_:
+		_ensure_rq_room()
 		out = create_session_riv(
 			row.item_code,
 			row.warehouse,
@@ -410,7 +449,6 @@ def seed_and_execute_batch(
 			blocked += 1
 		else:
 			failed += 1
-		# Soft backpressure pause if too many Queued (should be rare in sync mode)
 		if _outstanding() >= MAX_OUTSTANDING_RIV:
 			break
 	stats = frappe.cache().get_value(CACHE_STATS) or {}
@@ -636,12 +674,19 @@ def run_full_rebuild(
 
 	idents = campaign_identities(campaign)
 	batches = []
-	offset = 0
-	while offset < len(idents) and len(batches) < cint(max_batches):
-		batch = seed_and_execute_batch(campaign, limit=batch_size, offset=offset)
+	# always drain uncovered set from offset 0 (list shrinks as covers complete)
+	while len(batches) < cint(max_batches):
+		clear_failed_blockers_for_precision(limit=200)
+		_ensure_rq_room()
+		remaining = len(_uncovered_identities(campaign))
+		if remaining == 0:
+			break
+		batch = seed_and_execute_batch(
+			campaign, limit=batch_size, offset=0, only_uncovered=True
+		)
 		batches.append(
 			{
-				"offset": offset,
+				"remaining_before": remaining,
 				"attempted": batch["attempted"],
 				"completed": batch["completed"],
 				"failed": batch["failed"],
@@ -651,10 +696,9 @@ def run_full_rebuild(
 		)
 		if batch["attempted"] == 0:
 			break
-		offset += batch["attempted"]
 		# Periodically mark coverage for progress visibility
-		if len(batches) % 5 == 0:
-			verify_and_mark_covered_batch(campaign, limit=2000)
+		if len(batches) % 3 == 0:
+			verify_and_mark_covered_batch(campaign, limit=3000)
 
 	# Final coverage mark for all pending
 	cover = verify_and_mark_covered_batch(campaign, limit=20000)
