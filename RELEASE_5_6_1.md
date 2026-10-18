@@ -11,15 +11,26 @@
 
 This release corrects false **Skipped Covered** decisions in the Historical Rebuild
 Campaign (HRC), adds a full historical stock valuation integrity scanner, and
-executes a **no-skip full historical valuation rebuild** in development/test:
+executes a **no-skip full historical valuation rebuild** in development/test.
 
-- Every campaign entry must be recalculated via a **session-scoped** Core RIV
-  (or proven covered by one), not merely inspected as clean.
-- Final success classes are only:
+### Execution strategy (updated)
+
+Mass pre-creation / parallel RIV queues are **rejected**. The supported path is:
+
+- Restore a clean development baseline from the authorized Production backup.
+- Delete **all** development `Repost Item Valuation` rows (RIV only — not SLE/GL).
+- Reset every campaign entry to `REPOST_PLANNED`.
+- Process Item+Warehouse identities in chronological order.
+- **`MAX_ACTIVE_RIV = 1`** — create → execute sync (`continue_reposting=False`) →
+  verify SLE continuity → then next identity.
+- Empty RQ queues between steps; no uncontrolled background flood.
+- Final success classes only:
   - `DIRECT_REPOSTED_AND_VERIFIED`
   - `COVERED_BY_REPOSTED_AND_VERIFIED`
 - Inspect-only `VERIFIED_CLEAN` and historical Production Completed RIVs are
   **never** final success.
+
+Module: `historical_rebuild/sequential_rebuild.py`
 
 Production historical reposting remains a separately controlled operation.
 This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.

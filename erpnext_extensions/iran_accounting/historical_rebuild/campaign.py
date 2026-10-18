@@ -810,3 +810,30 @@ def full_rebuild_progress(campaign: str = "HRC-00001") -> dict:
 	)
 
 	return campaign_progress(campaign)
+
+
+def prepare_sequential_rebuild(campaign: str = "HRC-00001") -> dict:
+	"""Delete all RIVs, reset campaign to REPOST_PLANNED, open sequential session."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
+		prepare_clean_start,
+	)
+
+	return prepare_clean_start(campaign)
+
+
+def run_sequential_rebuild(
+	campaign: str = "HRC-00001",
+	*,
+	max_identities: int | None = None,
+	stop_on_failure: bool = True,
+) -> dict:
+	"""Chronological single-RIV rebuild (MAX_ACTIVE_RIV=1)."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
+		run_sequential,
+	)
+
+	return run_sequential(
+		campaign,
+		max_identities=max_identities,
+		stop_on_failure=stop_on_failure,
+	)
