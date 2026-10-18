@@ -30,6 +30,10 @@ from erpnext_extensions.iran_accounting.historical_rebuild.constants import (
 	ITEM_FAILED,
 	ITEM_PENDING,
 	ITEM_SKIPPED,
+	STATUS_COMPLETED,
+	STATUS_FAILED,
+	STATUS_PAUSED,
+	STATUS_RUNNING,
 )
 from erpnext_extensions.iran_accounting.historical_rebuild.coverage_verify import (
 	inspect_sle_chain,
@@ -48,7 +52,9 @@ from erpnext_extensions.iran_accounting.historical_rebuild.processor import (
 
 MAX_ACTIVE_RIV = 1
 CACHE_SEQ = "hrc561_sequential_session"
+CACHE_SEQ_LOCK = "hrc561_sequential_executor_lock"
 STOP_FLAG_NAME = "STOP_SEQUENTIAL_REBUILD"
+SEQ_REMARK_PREFIX = "SEQ_SESSION="
 
 
 def _stop_flag_path() -> str:
@@ -203,6 +209,101 @@ def reset_campaign_planned(campaign: str = "HRC-00001") -> dict[str, Any]:
 	return {"campaign": campaign, "total": total, "pending": pending, "snapshot": path}
 
 
+def _campaign_remarks_with_session(campaign: str, session_id: str) -> str:
+	"""Keep SEQ_SESSION=… discoverable on the campaign row without a migration."""
+	existing = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "remarks") or ""
+	lines = [
+		ln
+		for ln in str(existing).splitlines()
+		if ln.strip() and not ln.strip().startswith(SEQ_REMARK_PREFIX)
+	]
+	lines.insert(0, f"{SEQ_REMARK_PREFIX}{session_id}")
+	return "\n".join(lines)[:1000]
+
+
+def parse_campaign_session_id(campaign: str) -> str | None:
+	remarks = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "remarks") or ""
+	for ln in str(remarks).splitlines():
+		s = ln.strip()
+		if s.startswith(SEQ_REMARK_PREFIX):
+			return s[len(SEQ_REMARK_PREFIX) :].strip() or None
+	return None
+
+
+def sync_campaign_execution_state(
+	campaign: str,
+	*,
+	status: str | None = None,
+	session_id: str | None = None,
+	current_riv: str | None = None,
+	current_item: str | None = None,
+	current_warehouse: str | None = None,
+	failure: dict | None = None,
+	touch_started: bool = False,
+) -> None:
+	"""Keep HRC-00001 aligned with the active sequential execution session."""
+	if not frappe.db.exists(CAMPAIGN_DOCTYPE, campaign):
+		return
+	fields: dict[str, Any] = {"last_activity": now_datetime()}
+	if status:
+		fields["status"] = status
+	if touch_started:
+		started = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "started_at")
+		if not started:
+			fields["started_at"] = now_datetime()
+	if session_id:
+		fields["remarks"] = _campaign_remarks_with_session(campaign, session_id)
+	if current_riv is not None:
+		fields["current_voucher_type"] = "Repost Item Valuation" if current_riv else None
+		fields["current_voucher_no"] = current_riv
+	if current_item or current_warehouse:
+		fields["last_voucher_type"] = current_item or ""
+		fields["last_voucher_no"] = current_warehouse or ""
+	if status == STATUS_COMPLETED:
+		fields["completed_at"] = now_datetime()
+		fields["current_voucher_type"] = None
+		fields["current_voucher_no"] = None
+	frappe.db.set_value(CAMPAIGN_DOCTYPE, campaign, fields, update_modified=True)
+	if failure:
+		try:
+			from erpnext_extensions.iran_accounting.historical_rebuild.campaign import (
+				_append_log,
+			)
+
+			_append_log(
+				campaign,
+				(
+					f"sequential fail-fast riv={failure.get('riv')} "
+					f"item={failure.get('item_code')} wh={failure.get('warehouse')} "
+					f"err={(str(failure.get('error') or ''))[:240]}"
+				),
+				level="ERROR",
+				voucher_type="Repost Item Valuation",
+				voucher_no=failure.get("riv"),
+			)
+		except Exception:
+			pass
+
+
+def _acquire_executor_lock(campaign: str, session_id: str) -> None:
+	"""Only one sequential executor may operate on a campaign at a time."""
+	key = f"{CACHE_SEQ_LOCK}:{campaign}"
+	held = frappe.cache().get_value(key)
+	if held and held != session_id:
+		frappe.throw(
+			f"Sequential executor already active for {campaign} "
+			f"(session={held}); refuse duplicate start"
+		)
+	frappe.cache().set_value(key, session_id, expires_in_sec=60 * 60 * 6)
+
+
+def _release_executor_lock(campaign: str, session_id: str) -> None:
+	key = f"{CACHE_SEQ_LOCK}:{campaign}"
+	held = frappe.cache().get_value(key)
+	if held == session_id:
+		frappe.cache().delete_value(key)
+
+
 def start_sequential_session(campaign: str = "HRC-00001") -> dict[str, Any]:
 	sid = now_datetime().strftime("%Y%m%d%H%M%S")
 	payload = {
@@ -210,14 +311,23 @@ def start_sequential_session(campaign: str = "HRC-00001") -> dict[str, Any]:
 		"campaign": campaign,
 		"remark": f"{SESSION_RIV_REMARK_PREFIX}SEQ:{sid}",
 		"started_at": str(now_datetime()),
+		"status": "Ready",
 		"riv_created": [],
 		"riv_completed": [],
 		"riv_failed": [],
 		"identities_done": [],
 		"max_active_riv": MAX_ACTIVE_RIV,
 		"strategy": "sequential_chronological",
+		"last_failure": None,
 	}
 	_save_seq(payload)
+	sync_campaign_execution_state(
+		campaign,
+		status=STATUS_PAUSED,
+		session_id=sid,
+		touch_started=True,
+	)
+	frappe.db.commit()
 	return payload
 
 
@@ -539,6 +649,8 @@ def run_sequential(
 	_ensure_bootstrap()
 	_empty_rq()
 	sess = get_seq_session() or start_sequential_session(campaign)
+	session_id = sess.get("session_id")
+	_acquire_executor_lock(campaign, session_id)
 	company = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "company")
 	idents = chronological_identities(campaign)
 	done_keys = set(sess.get("identities_done") or [])
@@ -547,100 +659,172 @@ def run_sequential(
 		todo = todo[: cint(max_identities)]
 
 	clear_sequential_stop()
+	sess["status"] = "Running"
+	_save_seq(sess)
+	sync_campaign_execution_state(
+		campaign,
+		status=STATUS_RUNNING,
+		session_id=session_id,
+		touch_started=True,
+	)
+	frappe.db.commit()
+
 	results = []
 	completed = 0
 	failed = 0
 	blocked_at = None
 	stopped_by_flag = False
-	for i, row in enumerate(todo):
-		if _stop_requested():
-			stopped_by_flag = True
-			blocked_at = {
-				"index": i,
-				"reason": "STOP_FLAG",
-				"detail": "halted before creating next RIV",
-			}
-			break
-		_empty_rq()
-		out = execute_one_identity(
-			row.item_code,
-			row.warehouse,
-			row.posting_date,
-			row.posting_time,
-			company=company,
-		)
-		results.append(out)
-		if out.get("ok"):
-			completed += 1
-		else:
-			failed += 1
-			# FAIL-FAST: persist evidence on session and stop scheduling.
-			sess = get_seq_session() or sess
-			sess["last_failure"] = {
-				"at": str(now_datetime()),
-				"item_code": row.item_code,
-				"warehouse": row.warehouse,
-				"riv": out.get("riv"),
-				"error": out.get("error") or out.get("issues_sample"),
-			}
-			_save_seq(sess)
-			if stop_on_failure and (out.get("stop_chain") or not out.get("ok")):
+	try:
+		for i, row in enumerate(todo):
+			if _stop_requested():
+				stopped_by_flag = True
 				blocked_at = {
 					"index": i,
+					"reason": "STOP_FLAG",
+					"detail": "halted before creating next RIV",
+				}
+				break
+			_empty_rq()
+			sync_campaign_execution_state(
+				campaign,
+				status=STATUS_RUNNING,
+				session_id=session_id,
+				current_item=row.item_code,
+				current_warehouse=row.warehouse,
+			)
+			out = execute_one_identity(
+				row.item_code,
+				row.warehouse,
+				row.posting_date,
+				row.posting_time,
+				company=company,
+			)
+			if out.get("riv"):
+				sync_campaign_execution_state(
+					campaign,
+					status=STATUS_RUNNING,
+					session_id=session_id,
+					current_riv=out.get("riv"),
+					current_item=row.item_code,
+					current_warehouse=row.warehouse,
+				)
+			results.append(out)
+			if out.get("ok"):
+				completed += 1
+			else:
+				failed += 1
+				# FAIL-FAST: persist evidence on session and stop scheduling.
+				sess = get_seq_session() or sess
+				failure = {
+					"at": str(now_datetime()),
 					"item_code": row.item_code,
 					"warehouse": row.warehouse,
 					"riv": out.get("riv"),
 					"error": out.get("error") or out.get("issues_sample"),
 				}
+				sess["last_failure"] = failure
+				sess["status"] = "Failed"
+				_save_seq(sess)
+				sync_campaign_execution_state(
+					campaign,
+					status=STATUS_FAILED,
+					session_id=session_id,
+					current_riv=out.get("riv"),
+					current_item=row.item_code,
+					current_warehouse=row.warehouse,
+					failure=failure,
+				)
+				frappe.db.commit()
+				if stop_on_failure and (out.get("stop_chain") or not out.get("ok")):
+					blocked_at = {
+						"index": i,
+						"item_code": row.item_code,
+						"warehouse": row.warehouse,
+						"riv": out.get("riv"),
+						"error": out.get("error") or out.get("issues_sample"),
+					}
+					break
+			if mark_every and (i + 1) % cint(mark_every) == 0:
+				mark_campaign_coverage(campaign, limit=20000)
+				sync_campaign_execution_state(
+					campaign, status=STATUS_RUNNING, session_id=session_id
+				)
+				frappe.db.commit()
+			if _stop_requested():
+				stopped_by_flag = True
+				blocked_at = {
+					"index": i,
+					"reason": "STOP_FLAG",
+					"detail": "halted after terminal RIV; no further creations",
+					"last_riv": out.get("riv"),
+				}
 				break
-		if mark_every and (i + 1) % cint(mark_every) == 0:
-			mark_campaign_coverage(campaign, limit=20000)
-		if _stop_requested():
-			stopped_by_flag = True
-			blocked_at = {
-				"index": i,
-				"reason": "STOP_FLAG",
-				"detail": "halted after terminal RIV; no further creations",
-				"last_riv": out.get("riv"),
-			}
-			break
 
-	cover = mark_campaign_coverage(campaign, limit=20000)
-	# Direct-mark remaining no-SLE
-	cover2 = mark_campaign_coverage(campaign, limit=20000)
+		cover = mark_campaign_coverage(campaign, limit=20000)
+		# Direct-mark remaining no-SLE
+		cover2 = mark_campaign_coverage(campaign, limit=20000)
 
-	vc = frappe.db.sql(
-		"""
-		select verification_class, count(*) c
-		from `tabHistorical Rebuild Campaign Item`
-		where campaign=%s group by verification_class
-		""",
-		campaign,
-		as_dict=True,
-	)
-	success = sum(cint(r.c) for r in vc if r.verification_class in FINAL_SUCCESS_CLASSES)
-	total = sum(cint(r.c) for r in vc)
-	sess = get_seq_session() or sess
-	return {
-		"session_id": sess.get("session_id"),
-		"runtime_seconds": round(time.time() - t0, 3),
-		"identities_total": len(idents),
-		"identities_attempted": len(results),
-		"identities_completed": completed,
-		"identities_failed": failed,
-		"blocked_at": blocked_at,
-		"cover": cover,
-		"cover2": cover2,
-		"verification_class_counts": {r.verification_class: cint(r.c) for r in vc},
-		"session_riv_created": len(sess.get("riv_created") or []),
-		"session_riv_completed": len(sess.get("riv_completed") or []),
-		"session_riv_failed": len(sess.get("riv_failed") or []),
-		"success_entries": success,
-		"total_entries": total,
-		"gates_ok": success == total and total > 0 and not blocked_at,
-		"stopped_by_flag": stopped_by_flag,
-		"results_sample": results[:20],
-	}
+		vc = frappe.db.sql(
+			"""
+			select verification_class, count(*) c
+			from `tabHistorical Rebuild Campaign Item`
+			where campaign=%s group by verification_class
+			""",
+			campaign,
+			as_dict=True,
+		)
+		success = sum(cint(r.c) for r in vc if r.verification_class in FINAL_SUCCESS_CLASSES)
+		total = sum(cint(r.c) for r in vc)
+		sess = get_seq_session() or sess
+
+		if blocked_at and blocked_at.get("reason") == "STOP_FLAG":
+			sess["status"] = "Paused"
+			_save_seq(sess)
+			sync_campaign_execution_state(
+				campaign, status=STATUS_PAUSED, session_id=session_id
+			)
+		elif blocked_at:
+			# fail-fast already set Failed
+			pass
+		elif success == total and total > 0:
+			sess["status"] = "Completed"
+			_save_seq(sess)
+			sync_campaign_execution_state(
+				campaign, status=STATUS_COMPLETED, session_id=session_id
+			)
+		else:
+			sess["status"] = "Paused"
+			_save_seq(sess)
+			sync_campaign_execution_state(
+				campaign, status=STATUS_PAUSED, session_id=session_id
+			)
+		frappe.db.commit()
+
+		return {
+			"session_id": sess.get("session_id"),
+			"campaign": campaign,
+			"campaign_status": frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "status"),
+			"runtime_seconds": round(time.time() - t0, 3),
+			"identities_total": len(idents),
+			"identities_attempted": len(results),
+			"identities_completed": completed,
+			"identities_failed": failed,
+			"blocked_at": blocked_at,
+			"cover": cover,
+			"cover2": cover2,
+			"verification_class_counts": {r.verification_class: cint(r.c) for r in vc},
+			"session_riv_created": len(sess.get("riv_created") or []),
+			"session_riv_completed": len(sess.get("riv_completed") or []),
+			"session_riv_failed": len(sess.get("riv_failed") or []),
+			"last_failure": sess.get("last_failure"),
+			"success_entries": success,
+			"total_entries": total,
+			"gates_ok": success == total and total > 0 and not blocked_at,
+			"stopped_by_flag": stopped_by_flag,
+			"results_sample": results[:20],
+		}
+	finally:
+		_release_executor_lock(campaign, session_id)
 
 
 def prepare_clean_start(campaign: str = "HRC-00001") -> dict[str, Any]:

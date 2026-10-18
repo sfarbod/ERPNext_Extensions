@@ -55,6 +55,40 @@ and honors `request_sequential_stop()` so an operator can halt after the current
 RIV reaches a terminal state without killing an in-flight DB transaction.
 Failure evidence is stored on the session JSON (`last_failure`).
 
+### CASE A I3 guard (MAT-STE-2026-40942 / item 13200244)
+
+Full Item+WH RIV on WIP `13200244` / پایکار failed at Material Transfer for
+Manufacture `MAT-STE-2026-40942` with outbound `stock_value_difference > 0` (I3).
+Root chain:
+
+1. Mid-chain Manufacture SED stamps left `qty=1` with a sticky negative layer
+   (~−95.9M).
+2. Soft-skip / dependant expansion desynced `wh_data` to a future balance
+   (qty≈15721) before the chronological previous SLE (qty=1).
+3. Zero-qty absorb preferred the poisoned negative DB previous and set
+   `effective_movement = −value_before` → positive SVD on an outbound SLE.
+
+Fixes (I3/I4 remain enabled; no artificial Stock Adjustment):
+
+- Reseed desynced `wh_data` from the chronological previous SLE before vanilla
+  (`sle_persistence.reseed_wh_data_from_chronological_previous`); refuse to
+  install a negative previous layer.
+- Restore `wh_data.prev_stock_value` on out-of-scope soft-skip.
+- Refuse document-authority SED stamps that would leave `qty>0` with negative
+  `stock_value` (keep vanilla MA).
+- Absorb must not adopt a negative DB previous that would flip outbound SVD
+  positive; `apply_zero_qty_movement_contract` skips that absorb candidate.
+
+### Campaign ↔ sequential session source of truth
+
+`HRC-00001` is the canonical campaign. Sequential sessions are execution
+attempts (`SEQ_SESSION=…` on campaign remarks + session JSON). `run_sequential`
+sets campaign status Running / Failed / Paused / Completed, updates
+`last_activity` / current RIV identity, records fail-fast in campaign logs, and
+enforces a single-executor lock. `campaign.status` reports active session id,
+session counters, last failure, elapsed/avg/ETA, and verified coverage without
+counting old-session Completed RIVs as current coverage.
+
 Production historical reposting remains a separately controlled operation.
 This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.
 

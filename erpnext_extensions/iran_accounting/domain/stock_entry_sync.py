@@ -286,7 +286,17 @@ def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
 	# engine/DB previous layer when it is larger (sticky residual case).
 	true_prev = _lookup_previous_stock_value(sle)
 	if true_prev is not None and abs(true_prev) + 0.5 > abs(value_before):
-		value_before = true_prev
+		# CASE A (MAT-STE-2026-40942): mid-chain RIV can persist a negative
+		# previous layer (~−95.9M at qty=1). Adopting that for absorb yields
+		# effective_movement = −value_before > 0 on an outbound SLE → I3.
+		# Prefer the reconstructed non-negative layer; never adopt a negative
+		# DB previous that would flip outbound SVD positive.
+		if flt(sle.actual_qty) < 0 and flt(true_prev) < 0:
+			if value_before < 0:
+				value_before = 0.0
+			# else keep reconstructed value_before (>= 0)
+		else:
+			value_before = true_prev
 	movement = flt(sle.stock_value_difference)
 	purpose = frappe.db.get_value("Stock Entry", sle.voucher_no, "purpose")
 	# Temporarily present value_before via synthetic svd reset for classifier.
@@ -397,6 +407,16 @@ def _apply_document_authority_movement(
 
 	value_after = flt(sle.stock_value)
 	value_before = value_after - flt(sle.stock_value_difference)
+	qty_after = flt(sle.qty_after_transaction)
+	projected = value_before + flt(movement)
+	# Refuse SED stamps that poison a remaining warehouse layer (qty>0 with
+	# negative stock_value). Mid-chain Manufacture overshoots (e.g. STE-41443 /
+	# 24872-2 on item 13200244) wrote ~−95.9M at qty=1; later absorb of that
+	# layer on MAT-STE-2026-40942 produced positive outbound SVD (I3). Keep
+	# vanilla MA economics already on the SLE.
+	if qty_after > 1e-9 and projected < -0.5:
+		return
+
 	sle.stock_value_difference = movement
 	# Insert/transient qty_after=0 still uses movement as stock_value so the
 	# engine can copy running balance later — do not clamp that shape.

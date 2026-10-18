@@ -1187,6 +1187,13 @@ def _patch_stock_ledger_engine():
 					)
 
 					clear_sticky_native_outgoing_rate_for_riv(sle)
+					# CASE A: consume-to-zero with desynced wh_data (future balance)
+					# yields positive SVD / I3. Reseed from chronological previous.
+					from erpnext_extensions.iran_accounting.domain.sle_persistence import (
+						reseed_wh_data_from_chronological_previous,
+					)
+
+					reseed_wh_data_from_chronological_previous(self, sle)
 					# Out-of-scope soft-skip: do not rewrite unrelated historical SLE.
 					# Still advance wh_data from the existing SLE so chronology continues.
 					if assert_sle_valuation_integrity_before_vanilla(self, sle) is False:

@@ -611,11 +611,114 @@ def resume_identity_drain(
 	)
 
 
+def _sequential_status_block(campaign: str) -> dict:
+	"""Active sequential session progress (canonical under HRC-00001)."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
+		get_seq_session,
+		parse_campaign_session_id,
+		restore_session_from_file,
+	)
+
+	sess = get_seq_session()
+	active_sid = parse_campaign_session_id(campaign)
+	if not sess and active_sid:
+		try:
+			restore_session_from_file(active_sid)
+			sess = get_seq_session()
+		except Exception:
+			sess = None
+	# Never attribute an unrelated session to this campaign.
+	if sess and sess.get("campaign") and sess.get("campaign") != campaign:
+		sess = None
+	if not sess:
+		return {
+			"active_session_id": active_sid,
+			"session_status": None,
+			"session_riv_completed": 0,
+			"session_riv_failed": 0,
+			"session_riv_created": 0,
+			"identities_done": 0,
+			"last_failure": None,
+			"elapsed_seconds": None,
+			"avg_riv_seconds": None,
+			"estimated_remaining_seconds": None,
+		}
+
+	completed = list(sess.get("riv_completed") or [])
+	failed = list(sess.get("riv_failed") or [])
+	created = list(sess.get("riv_created") or [])
+	done = list(sess.get("identities_done") or [])
+	started_at = sess.get("started_at")
+	elapsed = None
+	avg = None
+	eta = None
+	try:
+		from frappe.utils import get_datetime
+
+		if started_at:
+			elapsed = max((now_datetime() - get_datetime(started_at)).total_seconds(), 0)
+			n = len(completed)
+			if n > 0 and elapsed is not None:
+				avg = elapsed / n
+				# Remaining distinct identities from chronological plan.
+				from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
+					chronological_identities,
+				)
+
+				total_id = len(chronological_identities(campaign) or [])
+				remaining_id = max(total_id - len(done), 0)
+				eta = avg * remaining_id
+	except Exception:
+		pass
+
+	vc = frappe.db.sql(
+		"""
+		select verification_class, count(*) c
+		from `tabHistorical Rebuild Campaign Item`
+		where campaign=%s group by verification_class
+		""",
+		campaign,
+		as_dict=True,
+	)
+	from erpnext_extensions.iran_accounting.historical_rebuild.integrity_types import (
+		COVERED_BY_REPOSTED_AND_VERIFIED,
+		DIRECT_REPOSTED_AND_VERIFIED,
+		REPOST_PLANNED,
+	)
+
+	direct = covered = pending_v = 0
+	for r in vc or []:
+		if r.verification_class == DIRECT_REPOSTED_AND_VERIFIED:
+			direct = cint(r.c)
+		elif r.verification_class == COVERED_BY_REPOSTED_AND_VERIFIED:
+			covered = cint(r.c)
+		elif r.verification_class in (REPOST_PLANNED, None, ""):
+			pending_v += cint(r.c)
+
+	return {
+		"active_session_id": sess.get("session_id") or active_sid,
+		"session_status": sess.get("status"),
+		"session_riv_completed": len(completed),
+		"session_riv_failed": len(failed),
+		"session_riv_created": len(created),
+		"identities_done": len(done),
+		"last_failure": sess.get("last_failure"),
+		"elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
+		"avg_riv_seconds": round(avg, 3) if avg is not None else None,
+		"estimated_remaining_seconds": round(eta, 3) if eta is not None else None,
+		"direct_verified": direct,
+		"covered_verified": covered,
+		"pending_verification": pending_v,
+		"current_riv": created[-1] if created else None,
+	}
+
+
 def status(campaign: str) -> dict:
 	"""Read-only campaign progress + recent logs."""
 	doc = _require_campaign(campaign)
 	counters = _refresh_counters(campaign)
 	doc.reload()
+	seq = _sequential_status_block(campaign)
 	logs = []
 	for row in reversed(list(doc.execution_logs or [])[-15:]):
 		logs.append(
@@ -634,6 +737,8 @@ def status(campaign: str) -> dict:
 		limit_page_length=10,
 	)
 	# Distinct Failed Item+WH identities (not RIV row count).
+	# Prefer current-session failures when a sequential session is active.
+	sess_failed = (seq.get("last_failure") and [seq["last_failure"]]) or []
 	distinct_failed = frappe.db.sql(
 		"""
 		select item_code, warehouse, count(*) as riv_count,
@@ -657,6 +762,9 @@ def status(campaign: str) -> dict:
 		- cint(counters.get("completed", 0))
 		- cint(counters.get("skipped_covered", 0))
 	)
+	# Session-aware RIV counters (do not treat old-session Completed as coverage).
+	session_completed = cint(seq.get("session_riv_completed") or 0)
+	session_failed = cint(seq.get("session_riv_failed") or 0)
 	text = f"""
 HISTORICAL REBUILD CAMPAIGN
 
@@ -665,6 +773,12 @@ Campaign:
 
 Status:
 {doc.status}
+
+Active Session:
+{seq.get('active_session_id') or '—'}
+
+Session Status:
+{seq.get('session_status') or '—'}
 
 Total Documents:
 {counters.get('total', 0):,}
@@ -686,6 +800,18 @@ Blocked:
 
 Skipped Covered:
 {counters.get('skipped_covered', 0):,}
+
+Direct Verified:
+{seq.get('direct_verified', 0):,}
+
+Covered Verified:
+{seq.get('covered_verified', 0):,}
+
+Session RIV Completed:
+{session_completed:,}
+
+Session RIV Failed:
+{session_failed:,}
 
 Core RIV Created:
 {counters.get('riv_created', 0):,}
@@ -711,8 +837,14 @@ Queue Pressure (outstanding RIV):
 Current:
 {(doc.current_voucher_type or '')} {(doc.current_voucher_no or '')}
 
-Last Processed:
-{(doc.last_voucher_type or '')} {(doc.last_voucher_no or '')}
+Current Item / Warehouse:
+{(doc.last_voucher_type or '')} / {(doc.last_voucher_no or '')}
+
+Last Failure:
+{json.dumps(seq.get('last_failure'), default=str)}
+
+Elapsed / Avg RIV / ETA (s):
+{seq.get('elapsed_seconds')} / {seq.get('avg_riv_seconds')} / {seq.get('estimated_remaining_seconds')}
 
 Last Activity:
 {doc.last_activity}
@@ -727,9 +859,17 @@ Recent Logs:
 		"campaign": doc.name,
 		"status": doc.status,
 		"counters": counters,
+		"sequential": seq,
+		"active_session_id": seq.get("active_session_id"),
+		"session_status": seq.get("session_status"),
 		"distinct_failed_identities": distinct_failed,
+		"session_last_failure": seq.get("last_failure") or (sess_failed[0] if sess_failed else None),
 		"queue_pressure": {"outstanding": outstanding_riv, "cap": MAX_OUTSTANDING_RIV},
 		"current": {"type": doc.current_voucher_type, "name": doc.current_voucher_no},
+		"current_identity": {
+			"item_code": doc.last_voucher_type,
+			"warehouse": doc.last_voucher_no,
+		},
 		"last": {
 			"ordinal": doc.last_ordinal,
 			"type": doc.last_voucher_type,
