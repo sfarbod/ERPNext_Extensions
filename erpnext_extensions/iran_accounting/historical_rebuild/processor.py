@@ -571,7 +571,8 @@ def process_campaign_item(item_name: str, *, stop_check=None) -> dict[str, Any]:
 			out["final_status"] = ITEM_RIV_LINKED
 			return out
 
-	# 4) Verify
+	# 4) Basic voucher presence + 5) evidence-based accounting coverage
+	# Completed / chronologically covering RIV alone is NEVER enough for Skipped Covered.
 	ver = verify_voucher_basic(voucher_type, voucher_no)
 	out["verify"] = ver
 	if not ver.get("ok"):
@@ -588,20 +589,75 @@ def process_campaign_item(item_name: str, *, stop_check=None) -> dict[str, Any]:
 		out["final_status"] = ITEM_FAILED
 		return out
 
-	# 5) TVA
+	from erpnext_extensions.iran_accounting.historical_rebuild.coverage_verify import (
+		apply_verified_skip,
+		evidence_payload,
+		verify_voucher_coverage,
+	)
+
+	cov = verify_voucher_coverage(voucher_type, voucher_no, company=item.company)
+	out["coverage"] = {
+		"ok": cov.get("ok"),
+		"reason": cov.get("reason"),
+		"verification_class": cov.get("verification_class"),
+	}
 	tva = reconcile_tva_for_voucher(voucher_type, voucher_no)
 	frappe.db.commit()
 
-	final = ITEM_SKIPPED if link.get("skipped_covered") else ITEM_COMPLETED
+	if cov.get("ok"):
+		apply_verified_skip(item_name, cov)
+		frappe.db.commit()
+		out["final_status"] = ITEM_SKIPPED
+		out["tva"] = tva
+		out["source"] = src
+		out["link"] = link
+		return out
+
+	# RIV ran (or linked) but accounting evidence still dirty — Completed pending re-verify
+	# or Failed when no RIV progress was made under false skipped_covered pretence.
+	if link.get("skipped_covered") and not riv_names:
+		# Previously would have marked Skipped Covered on Completed RIV alone — refuse.
+		fields = {
+			"item_status": ITEM_PENDING,
+			"covering_riv": None,
+			"tva_reconcile_status": tva.get("status") or TVA_NA,
+			"error_message": f"coverage_insufficient:{cov.get('reason')}"[:1000],
+			"last_processed_at": now_datetime(),
+		}
+		meta = frappe.get_meta("Historical Rebuild Campaign Item")
+		if meta.has_field("verification_class"):
+			fields["verification_class"] = cov.get("verification_class") or "REPOST_REQUIRED"
+		if meta.has_field("verification_detail"):
+			fields["verification_detail"] = evidence_payload(cov)
+		frappe.db.set_value(
+			"Historical Rebuild Campaign Item",
+			item_name,
+			fields,
+			update_modified=False,
+		)
+		frappe.db.commit()
+		out["final_status"] = ITEM_PENDING
+		out["tva"] = tva
+		out["source"] = src
+		out["link"] = link
+		return out
+
+	final = ITEM_COMPLETED
+	fields = {
+		"item_status": final,
+		"tva_reconcile_status": tva.get("status") or TVA_NA,
+		"error_message": f"pending_verification:{cov.get('reason')}"[:1000],
+		"last_processed_at": now_datetime(),
+	}
+	meta = frappe.get_meta("Historical Rebuild Campaign Item")
+	if meta.has_field("verification_class"):
+		fields["verification_class"] = "REPOST_COMPLETED_PENDING_VERIFICATION"
+	if meta.has_field("verification_detail"):
+		fields["verification_detail"] = evidence_payload(cov)
 	frappe.db.set_value(
 		"Historical Rebuild Campaign Item",
 		item_name,
-		{
-			"item_status": final,
-			"tva_reconcile_status": tva.get("status") or TVA_NA,
-			"error_message": "",
-			"last_processed_at": now_datetime(),
-		},
+		fields,
 		update_modified=False,
 	)
 	frappe.db.commit()

@@ -1,5 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Bulk mark campaign items Skipped Covered when Core RIV already covers identities."""
+"""Bulk mark campaign items Skipped Covered only after evidence-based verification.
+
+v5.6.1: A Completed Core RIV is NOT sufficient. Coverage requires identity match,
+chronological scope, SLE continuity, no Failed RIV / open TVA, and voucher checks.
+"""
 
 from __future__ import annotations
 
@@ -9,28 +13,25 @@ from frappe.utils import cint, now_datetime
 from erpnext_extensions.iran_accounting.historical_rebuild.constants import (
 	ITEM_DOCTYPE,
 	ITEM_PENDING,
-	ITEM_SKIPPED,
-	TVA_NA,
 )
-from erpnext_extensions.iran_accounting.historical_rebuild.processor import (
-	find_covering_riv,
-	verify_voucher_basic,
-)
-from erpnext_extensions.iran_accounting.historical_rebuild.tva_reconcile import (
-	reconcile_tva_for_voucher,
+from erpnext_extensions.iran_accounting.historical_rebuild.coverage_verify import (
+	apply_repost_required,
+	apply_verified_skip,
+	find_completed_covering_riv,
+	verify_voucher_coverage,
 )
 
 
-def _covered_pending_candidates(campaign: str, limit: int) -> list[dict]:
-	"""Pending campaign items whose every SLE identity already has Completed cover.
+def _candidate_pending(campaign: str, limit: int) -> list[dict]:
+	"""Pending items that have at least a Completed chronological RIV per SLE identity.
 
-	Uses a set-oriented anti-join so early multi-identity Opening SRs do not
-	block discovery of later vouchers that are already fully covered.
+	This is only a candidate pre-filter. Evidence verification still decides
+	Skipped Covered vs remain Pending.
 	"""
 	cap = cint(limit) or 500
 	return frappe.db.sql(
 		"""
-		select i.name, i.voucher_type, i.voucher_no, i.ordinal
+		select i.name, i.voucher_type, i.voucher_no, i.ordinal, i.company
 		from `tabHistorical Rebuild Campaign Item` i
 		where i.campaign=%s
 		  and i.item_status=%s
@@ -65,21 +66,19 @@ def _covered_pending_candidates(campaign: str, limit: int) -> list[dict]:
 
 
 def bulk_skip_covered(campaign: str, limit: int = 500) -> dict:
-	"""Mark Skipped Covered when every SLE identity has Completed cover.
+	"""Mark Skipped Covered only when evidence-based verification passes.
 
-	Prefers SQL candidates that are already fully covered so early Opening
-	Stock Reconciliations do not monopolize the scan window. Falls back to
-	ordinal Pending scan for no-SLE / edge vouchers.
+	Prefers SQL candidates that already have Completed chronological cover so
+	early Opening Stock Reconciliations do not monopolize the scan window.
+	Falls back to ordinal Pending scan for no-SLE / edge vouchers.
 	"""
 	cap = cint(limit) or 500
-	items = _covered_pending_candidates(campaign, cap)
-	# Also pick up no-SLE pending vouchers (fixed asset / non-stock) via a
-	# small ordinal scan — they never appear in the SLE anti-join as covered.
+	items = _candidate_pending(campaign, cap)
 	if len(items) < cap:
 		extra = frappe.get_all(
 			ITEM_DOCTYPE,
 			filters={"campaign": campaign, "item_status": ITEM_PENDING},
-			fields=["name", "voucher_type", "voucher_no", "ordinal"],
+			fields=["name", "voucher_type", "voucher_no", "ordinal", "company"],
 			order_by="ordinal asc",
 			limit_page_length=min(200, cap - len(items)),
 		)
@@ -91,78 +90,46 @@ def bulk_skip_covered(campaign: str, limit: int = 500) -> dict:
 
 	skipped = 0
 	left = 0
+	rejected_dirty = 0
 	for it in items:
-		# Do not use limit_page_length=0 — Frappe treats 0 as "return no rows".
-		sles = frappe.db.sql(
-			"""
-			select item_code, warehouse, posting_date, posting_time
-			from `tabStock Ledger Entry`
-			where is_cancelled=0 and voucher_type=%s and voucher_no=%s
-			  and item_code is not null and item_code!=''
-			  and warehouse is not null and warehouse!=''
-			""",
-			(it.voucher_type, it.voucher_no),
-			as_dict=True,
-		) or []
-		if not sles:
-			# Fixed-asset / non-stock vouchers: verify without SLE cover.
-			ver = verify_voucher_basic(it.voucher_type, it.voucher_no)
-			if ver.get("ok"):
-				tva = reconcile_tva_for_voucher(it.voucher_type, it.voucher_no)
+		result = verify_voucher_coverage(
+			it.voucher_type, it.voucher_no, company=getattr(it, "company", None)
+		)
+		if result.get("ok"):
+			apply_verified_skip(it.name, result)
+			skipped += 1
+		else:
+			# Keep Pending; record why Completed RIV was insufficient
+			frappe.db.set_value(
+				ITEM_DOCTYPE,
+				it.name,
+				{
+					"error_message": f"fast_cover_reject:{result.get('reason')}"[:1000],
+					"last_processed_at": now_datetime(),
+				},
+				update_modified=False,
+			)
+			# Touch verification fields when present
+			meta = frappe.get_meta(ITEM_DOCTYPE)
+			if meta.has_field("verification_class"):
 				frappe.db.set_value(
 					ITEM_DOCTYPE,
 					it.name,
-					{
-						"item_status": ITEM_SKIPPED,
-						"covering_riv": None,
-						"tva_reconcile_status": tva.get("status") or TVA_NA,
-						"last_processed_at": now_datetime(),
-						"error_message": f"no_sle:{ver.get('detail')}",
-					},
+					{"verification_class": result.get("verification_class") or "REPOST_REQUIRED"},
 					update_modified=False,
 				)
-				skipped += 1
-			else:
-				left += 1
-			continue
-		seen = set()
-		covers = []
-		ok = True
-		for sle in sles:
-			key = (sle.item_code, sle.warehouse)
-			if key in seen:
-				continue
-			seen.add(key)
-			cov = find_covering_riv(sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time)
-			if not cov:
-				ok = False
-				break
-			covers.append(cov)
-		if not ok:
 			left += 1
-			continue
-		ver = verify_voucher_basic(it.voucher_type, it.voucher_no)
-		if not ver.get("ok"):
-			left += 1
-			continue
-		tva = reconcile_tva_for_voucher(it.voucher_type, it.voucher_no)
-		frappe.db.set_value(
-			ITEM_DOCTYPE,
-			it.name,
-			{
-				"item_status": ITEM_SKIPPED,
-				"covering_riv": covers[0] if covers else None,
-				"tva_reconcile_status": tva.get("status") or TVA_NA,
-				"last_processed_at": now_datetime(),
-				"error_message": "",
-			},
-			update_modified=False,
-		)
-		skipped += 1
+			rejected_dirty += 1
 	frappe.db.commit()
 	return {
 		"campaign": campaign,
 		"skipped_covered": skipped,
 		"still_pending_in_batch": left,
+		"rejected_insufficient_evidence": rejected_dirty,
 		"scanned": len(items),
+		"evidence_based": True,
 	}
+
+
+# Re-export for callers that previously imported chronological finder via fast_cover
+__all__ = ["bulk_skip_covered", "find_completed_covering_riv", "apply_repost_required"]

@@ -743,3 +743,42 @@ Recent Logs:
 		"recent_logs": logs,
 		"text": text,
 	}
+
+
+def scan_integrity(company: str | None = None, campaign: str = "HRC-00001") -> dict:
+	"""Phase-2 historical integrity scanner (bench-callable)."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.integrity_scanner import (
+		run_full_scan,
+	)
+
+	co = company or frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "company")
+	return run_full_scan(co, campaign=campaign)
+
+
+def reevaluate(campaign: str = "HRC-00001", limit: int | None = None) -> dict:
+	"""Re-evaluate campaign entries with evidence-based coverage (v5.6.1)."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.reevaluate import (
+		reevaluate_campaign,
+	)
+
+	return reevaluate_campaign(campaign, limit=limit)
+
+
+def execute_phase3(
+	campaign: str = "HRC-00001",
+	*,
+	batch_size: int = 10,
+	max_batches: int = 100,
+	pilot_first: bool = True,
+) -> dict:
+	"""Dependency-aware Phase-3 executor (development only)."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.executor import (
+		run_until_idle,
+	)
+
+	return run_until_idle(
+		campaign,
+		batch_size=batch_size,
+		max_batches=max_batches,
+		pilot_first=pilot_first,
+	)
