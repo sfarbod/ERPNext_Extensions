@@ -266,6 +266,8 @@ def _preserve_native_outgoing_and_align_sed(sle, row, ccy: str) -> None:
 	# (historical sticky residual vs rate×qty), absorb into movement so the
 	# value remains capitalized on transfer / expensed on issue — not ghosted.
 	_absorb_native_zero_qty_historical_residual(sle, row, ccy)
+	# Sticky outgoing / batch rate overshoot can leave qty>0 with sv<0.
+	reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
 
 
 def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
@@ -372,6 +374,50 @@ def _lookup_previous_stock_value(sle) -> float | None:
 	return flt(row[0][0])
 
 
+def reconstruct_nonnegative_remaining_layer(sle, *, ccy: str, row=None) -> bool:
+	"""Reconstruct SLE when qty_after > 0 but stock_value is negative.
+
+	CASE D (item 30100023 / MAT-STE-2026-24815): Manufacture SED rate 608892
+	vs prior Material Transfer incoming 608890 → overshoot 2060×2 = 4120 and
+	leave qty=32 with stock_value=-4120 (NEGATIVE_STOCK_VALUE).
+
+	Reconstruction (not an arbitrary clamp):
+	* previous layer value = stock_value − stock_value_difference
+	* outbound may expense at most that available layer
+	* remaining positive qty keeps stock_value = 0 (same pattern as clean
+	  sibling STE-24813 which left qty=32 / sv=0)
+	* SED is realigned to the reconstructed movement
+
+	Returns True when the SLE was rewritten.
+	"""
+	qty_after = flt(sle.qty_after_transaction)
+	if qty_after <= 1e-9:
+		return False
+	if flt(sle.actual_qty) >= 0:
+		return False
+	if flt(sle.stock_value) >= -0.5:
+		return False
+
+	value_before = flt(sle.stock_value) - flt(sle.stock_value_difference)
+	available = max(value_before, 0.0)
+	movement = float(round_currency(-available, ccy))
+	if movement > 0.5:
+		# Would flip SVD positive on outbound (I3) — refuse.
+		return False
+
+	sle.stock_value_difference = movement
+	sle.stock_value = float(round_currency(0, ccy))
+	qty = abs(flt(sle.actual_qty))
+	rate = 0.0
+	if qty > 1e-9:
+		rate = float(round_monetary_rate(abs(movement) / qty, ccy))
+	sle.outgoing_rate = rate
+	sle.valuation_rate = rate
+	if row is not None and getattr(sle, "voucher_detail_no", None):
+		align_sed_from_native_outgoing_sle(sle, row, rate, movement, ccy)
+	return True
+
+
 def _apply_document_authority_movement(
 	sle, movement: float, rate: float, ccy: str, *, purpose: str | None = None, row=None
 ) -> None:
@@ -409,12 +455,21 @@ def _apply_document_authority_movement(
 	value_before = value_after - flt(sle.stock_value_difference)
 	qty_after = flt(sle.qty_after_transaction)
 	projected = value_before + flt(movement)
-	# Refuse SED stamps that poison a remaining warehouse layer (qty>0 with
-	# negative stock_value). Mid-chain Manufacture overshoots (e.g. STE-41443 /
-	# 24872-2 on item 13200244) wrote ~−95.9M at qty=1; later absorb of that
-	# layer on MAT-STE-2026-40942 produced positive outbound SVD (I3). Keep
-	# vanilla MA economics already on the SLE.
-	if qty_after > 1e-9 and projected < -0.5:
+	# Manufacture/Repack SED rate can exceed the capitalized prior layer by a
+	# few IRR/unit (30100023: transfer 608890 vs consume 608892). Stamping the
+	# full SED then leaves qty>0 with negative stock_value. Reconstruct by
+	# expensing only the available layer and leaving remaining qty at 0 value.
+	if qty_after > 1e-9 and projected < -0.5 and flt(sle.actual_qty) < 0:
+		available = max(value_before, 0.0)
+		movement = float(round_currency(-available, ccy))
+		qty = abs(flt(sle.actual_qty))
+		rate = float(round_monetary_rate(abs(movement) / qty, ccy)) if qty > 1e-9 else rate
+		sle.stock_value_difference = movement
+		sle.stock_value = float(round_currency(0, ccy))
+		sle.outgoing_rate = rate
+		sle.valuation_rate = rate
+		if row is not None and sle.voucher_detail_no:
+			align_sed_from_native_outgoing_sle(sle, row, rate, movement, ccy)
 		return
 
 	sle.stock_value_difference = movement
@@ -515,6 +570,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			if abs(flt(sle.outgoing_rate)) <= 1e-6 and abs(flt(sle.actual_qty)) > 1e-9:
 				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
 			enforce_zero_qty_terminal_stock_value(sle)
+			reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
 			return
 		movement = round_currency(
 			signed_movement_from_row_amount(
@@ -539,6 +595,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 		_apply_document_authority_movement(
 			sle, movement, rate, ccy, purpose=purpose, row=row
 		)
+		reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
 	except ValuationIntegrityError as exc:
 		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
 		if engine is None:

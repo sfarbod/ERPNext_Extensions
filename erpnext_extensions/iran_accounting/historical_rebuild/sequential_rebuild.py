@@ -501,15 +501,32 @@ def execute_one_identity(
 		item_code, warehouse, company=company, from_date=posting_date, from_time=posting_time
 	)
 	if chain.get("dirty"):
+		# RIV engine may have set status=Completed while leaving confirmed
+		# corruption (e.g. qty>0 with stock_value<0). Align DB status with
+		# session fail-fast so campaign counters do not disagree.
+		issues = (chain.get("issues") or [])[:10]
+		try:
+			frappe.db.set_value(
+				"Repost Item Valuation",
+				name,
+				{
+					"status": "Failed",
+					"error_log": json.dumps(issues, ensure_ascii=False, default=str)[:4000],
+				},
+				update_modified=True,
+			)
+			frappe.db.commit()
+		except Exception:
+			frappe.db.rollback()
 		sess.setdefault("riv_failed", []).append(name)
 		_save_seq(sess)
 		return {
 			"ok": False,
 			"riv": name,
-			"status": "Completed",
+			"status": "Failed",
 			"verify_failed": True,
 			"issue_count": chain.get("issue_count"),
-			"issues_sample": (chain.get("issues") or [])[:5],
+			"issues_sample": issues[:5],
 			"item_code": item_code,
 			"warehouse": warehouse,
 			"duration": duration,

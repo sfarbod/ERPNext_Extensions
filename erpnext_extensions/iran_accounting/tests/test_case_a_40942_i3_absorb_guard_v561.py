@@ -130,21 +130,21 @@ class TestCaseA40942I3AbsorbGuard(unittest.TestCase):
 		self.assertEqual(captured["value_before"], 58983128.0)
 		self.assertEqual(captured["movement"], -58983128.0)
 
-	def test_document_authority_refuses_negative_remaining_layer(self):
+	def test_document_authority_reconstructs_negative_remaining_layer(self):
 		from erpnext_extensions.iran_accounting.domain import stock_entry_sync as ses
 
+		# value_before = 187146099 (vanilla sv - svd identity with svd=0 pre-stamp)
 		sle = frappe._dict(
 			stock_value=187146099.0,
-			stock_value_difference=-283128000.0,  # vanilla already computed
+			stock_value_difference=0.0,
 			qty_after_transaction=1.0,
 			actual_qty=-753.0,
 			outgoing_rate=376000.0,
 			incoming_rate=0.0,
 			valuation_rate=376000.0,
+			voucher_detail_no=None,
 		)
 		# SED movement would poison: 187146099 + (-283128000) < 0
-		before_sv = flt(sle.stock_value)
-		before_svd = flt(sle.stock_value_difference)
 		ses._apply_document_authority_movement(
 			sle,
 			movement=-283128000.0,
@@ -153,9 +153,10 @@ class TestCaseA40942I3AbsorbGuard(unittest.TestCase):
 			purpose="Manufacture",
 			row=None,
 		)
-		# Must keep vanilla (no SED overwrite when projected layer is negative).
-		self.assertEqual(flt(sle.stock_value), before_sv)
-		self.assertEqual(flt(sle.stock_value_difference), before_svd)
+		# Reconstruct: expense only available layer; leave qty=1 at sv=0.
+		self.assertEqual(flt(sle.stock_value), 0.0)
+		self.assertEqual(flt(sle.stock_value_difference), -187146099.0)
+		self.assertLess(flt(sle.stock_value_difference), 0)
 
 
 if __name__ == "__main__":

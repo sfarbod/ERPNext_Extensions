@@ -79,6 +79,25 @@ Fixes (I3/I4 remain enabled; no artificial Stock Adjustment):
 - Absorb must not adopt a negative DB previous that would flip outbound SVD
   positive; `apply_zero_qty_movement_contract` skips that absorb candidate.
 
+### CASE D nonnegative remaining-layer reconstruction (item 30100023)
+
+Manufacture SED rates can exceed the capitalized prior layer by a few IRR/unit
+(e.g. Material Transfer incoming 608890 vs Manufacture consume 608892 on
+`MAT-STE-2026-24815`). Stamping the full SED then leaves `qty_after > 0` with
+`stock_value < 0` (`NEGATIVE_STOCK_VALUE` / `CONFIRMED_CORRUPTION`).
+
+Reconstruction (I3/I4 kept):
+
+- Available layer = `stock_value − stock_value_difference` (floored at 0).
+- Outbound movement expenses at most that available layer.
+- Remaining positive qty keeps `stock_value = 0` (same pattern as clean sibling
+  `MAT-STE-2026-24813`).
+- SED is realigned to the reconstructed movement.
+
+Also: when post-RIV SLE chain verify finds confirmed corruption, the sequential
+executor now marks that RIV `Failed` so DB counters match session fail-fast
+(avoids Completed-in-DB / Failed-in-session disagreement).
+
 ### Campaign ↔ sequential session source of truth
 
 `HRC-00001` is the canonical campaign. Sequential sessions are execution
