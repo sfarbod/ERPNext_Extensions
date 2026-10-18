@@ -11,8 +11,15 @@
 
 This release corrects false **Skipped Covered** decisions in the Historical Rebuild
 Campaign (HRC), adds a full historical stock valuation integrity scanner, and
-provides a dependency-aware Phase 3 executor for real historical reposting in
-**development / test** environments only.
+executes a **no-skip full historical valuation rebuild** in development/test:
+
+- Every campaign entry must be recalculated via a **session-scoped** Core RIV
+  (or proven covered by one), not merely inspected as clean.
+- Final success classes are only:
+  - `DIRECT_REPOSTED_AND_VERIFIED`
+  - `COVERED_BY_REPOSTED_AND_VERIFIED`
+- Inspect-only `VERIFIED_CLEAN` and historical Production Completed RIVs are
+  **never** final success.
 
 Production historical reposting remains a separately controlled operation.
 This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.
@@ -33,29 +40,30 @@ This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.
 
 ---
 
-## Campaign coverage corrections
+## Campaign coverage corrections / no-skip policy
 
-Coverage (Skipped Covered) is allowed **only** when all of the following hold:
+**Absolute rule:** no campaign entry may be skipped merely because current SLE/GL
+looks healthy. Coverage means **actual recalculation** by a RIV created in the
+current controlled rebuild session (durable JSON registry under
+`private/files/hrc_full_rebuild/`).
 
-1. Correct Item/Warehouse identity on the covering RIV  
-2. Correct chronological coverage (RIV posting ≤ SLE posting)  
-3. Successful Completed RIV execution  
-4. No unresolved Failed RIV on the same identity  
-5. Valid SLE quantity continuity (from RIV anchor forward)  
-6. Valid SLE valuation continuity  
-7. No unresolved I3 / I4-class violations on the covered chain  
-8. Basic voucher verification still passes  
-9. Correct Bin state vs final SLE  
-10. No open relevant TVA on the identity  
-11. Verification evidence recorded (`verification_class` / `verification_detail`)  
+Final classifications:
+
+| Class | Meaning |
+|-------|---------|
+| `DIRECT_REPOSTED_AND_VERIFIED` | Entry itself had no SLE (FA/non-stock) or was directly linked after session rebuild + verify |
+| `COVERED_BY_REPOSTED_AND_VERIFIED` | Every SLE identity has a **session** Completed RIV at ≤ posting, chain clean after anchor |
+
+A Completed RIV from the restored Production backup alone is **rejected**.
 
 Modules:
 
+- `historical_rebuild/full_rebuild.py` — reset → session RIV seed/execute → mark cover  
 - `historical_rebuild/coverage_verify.py` — evidence engine  
 - `historical_rebuild/fast_cover.py` — bulk skip uses evidence only  
 - `historical_rebuild/coverage_audit.py` — re-audit Skipped Covered  
 - `historical_rebuild/processor.py` — refuses false skip after process  
-- `historical_rebuild/reevaluate.py` — full manifest re-evaluation  
+- `historical_rebuild/reevaluate.py` — integrity re-evaluation (not final success alone)  
 
 ---
 

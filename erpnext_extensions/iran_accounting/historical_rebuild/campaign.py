@@ -782,3 +782,31 @@ def execute_phase3(
 		max_batches=max_batches,
 		pilot_first=pilot_first,
 	)
+
+
+def run_full_historical_rebuild(
+	campaign: str = "HRC-00001",
+	*,
+	batch_size: int = 25,
+	max_batches: int = 500,
+	reset: bool = True,
+) -> dict:
+	"""No-skip full historical valuation rebuild (v5.6.1). Development only."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.full_rebuild import (
+		run_full_rebuild,
+	)
+
+	return run_full_rebuild(
+		campaign,
+		batch_size=batch_size,
+		max_batches=max_batches,
+		reset=reset,
+	)
+
+
+def full_rebuild_progress(campaign: str = "HRC-00001") -> dict:
+	from erpnext_extensions.iran_accounting.historical_rebuild.full_rebuild import (
+		campaign_progress,
+	)
+
+	return campaign_progress(campaign)
