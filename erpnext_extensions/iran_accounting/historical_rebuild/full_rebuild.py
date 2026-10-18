@@ -107,6 +107,35 @@ def start_session(campaign: str = "HRC-00001") -> dict[str, Any]:
 	return payload
 
 
+def restore_session_from_file(session_id: str) -> dict[str, Any]:
+	"""Reload a durable session JSON and reconcile Completed/Failed against DB."""
+	path = _session_path(session_id)
+	if not os.path.isfile(path):
+		frappe.throw(f"Session file not found: {session_id}")
+	with open(path, encoding="utf-8") as fh:
+		payload = json.load(fh)
+	names = list(
+		dict.fromkeys((payload.get("riv_created") or []) + (payload.get("riv_completed") or []))
+	)
+	completed = []
+	failed = []
+	for n in names:
+		st = frappe.db.get_value("Repost Item Valuation", n, "status")
+		if st == "Completed":
+			completed.append(n)
+		elif st == "Failed":
+			failed.append(n)
+	payload["riv_completed"] = completed
+	payload["riv_failed"] = failed
+	_save_session(payload)
+	return {
+		"session_id": payload.get("session_id"),
+		"riv_created": len(payload.get("riv_created") or []),
+		"riv_completed": len(completed),
+		"riv_failed": len(failed),
+	}
+
+
 def get_session() -> dict | None:
 	cached = frappe.cache().get_value(CACHE_SESSION)
 	if cached:
@@ -668,8 +697,11 @@ def run_full_rebuild(
 	"""End-to-end: reset → clear ±1IRR blockers → seed/execute all identities → mark cover."""
 	t0 = time.time()
 	_ensure_bootstrap()
-	session = start_session(campaign)
-	reset_out = reset_campaign_for_full_repost(campaign) if reset else {"skipped": True}
+	if reset or not get_session():
+		session = start_session(campaign)
+	else:
+		session = get_session()
+	reset_out = reset_campaign_for_full_repost(campaign) if reset else {"skipped_reset": True}
 	clear_out = clear_failed_blockers_for_precision() if clear_precision_failures else {}
 
 	idents = campaign_identities(campaign)
