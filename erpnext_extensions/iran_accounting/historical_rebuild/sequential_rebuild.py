@@ -48,6 +48,30 @@ from erpnext_extensions.iran_accounting.historical_rebuild.processor import (
 
 MAX_ACTIVE_RIV = 1
 CACHE_SEQ = "hrc561_sequential_session"
+STOP_FLAG_NAME = "STOP_SEQUENTIAL_REBUILD"
+
+
+def _stop_flag_path() -> str:
+	return os.path.join(_session_dir(), STOP_FLAG_NAME)
+
+
+def request_sequential_stop(*, reason: str = "operator") -> dict[str, Any]:
+	"""Ask run_sequential to halt after the current RIV reaches a terminal state."""
+	path = _stop_flag_path()
+	os.makedirs(os.path.dirname(path), exist_ok=True)
+	with open(path, "w", encoding="utf-8") as fh:
+		json.dump({"reason": reason, "at": str(now_datetime())}, fh)
+	return {"ok": True, "path": path, "reason": reason}
+
+
+def clear_sequential_stop() -> None:
+	path = _stop_flag_path()
+	if os.path.exists(path):
+		os.remove(path)
+
+
+def _stop_requested() -> bool:
+	return os.path.exists(_stop_flag_path())
 
 
 def _ensure_bootstrap() -> None:
@@ -522,11 +546,21 @@ def run_sequential(
 	if max_identities is not None:
 		todo = todo[: cint(max_identities)]
 
+	clear_sequential_stop()
 	results = []
 	completed = 0
 	failed = 0
 	blocked_at = None
+	stopped_by_flag = False
 	for i, row in enumerate(todo):
+		if _stop_requested():
+			stopped_by_flag = True
+			blocked_at = {
+				"index": i,
+				"reason": "STOP_FLAG",
+				"detail": "halted before creating next RIV",
+			}
+			break
 		_empty_rq()
 		out = execute_one_identity(
 			row.item_code,
@@ -540,7 +574,17 @@ def run_sequential(
 			completed += 1
 		else:
 			failed += 1
-			if stop_on_failure and out.get("stop_chain"):
+			# FAIL-FAST: persist evidence on session and stop scheduling.
+			sess = get_seq_session() or sess
+			sess["last_failure"] = {
+				"at": str(now_datetime()),
+				"item_code": row.item_code,
+				"warehouse": row.warehouse,
+				"riv": out.get("riv"),
+				"error": out.get("error") or out.get("issues_sample"),
+			}
+			_save_seq(sess)
+			if stop_on_failure and (out.get("stop_chain") or not out.get("ok")):
 				blocked_at = {
 					"index": i,
 					"item_code": row.item_code,
@@ -551,6 +595,15 @@ def run_sequential(
 				break
 		if mark_every and (i + 1) % cint(mark_every) == 0:
 			mark_campaign_coverage(campaign, limit=20000)
+		if _stop_requested():
+			stopped_by_flag = True
+			blocked_at = {
+				"index": i,
+				"reason": "STOP_FLAG",
+				"detail": "halted after terminal RIV; no further creations",
+				"last_riv": out.get("riv"),
+			}
+			break
 
 	cover = mark_campaign_coverage(campaign, limit=20000)
 	# Direct-mark remaining no-SLE
@@ -585,6 +638,7 @@ def run_sequential(
 		"success_entries": success,
 		"total_entries": total,
 		"gates_ok": success == total and total > 0 and not blocked_at,
+		"stopped_by_flag": stopped_by_flag,
 		"results_sample": results[:20],
 	}
 

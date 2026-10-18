@@ -48,6 +48,13 @@ SA ceiling) raised during Item+WH RIV cascades on unrelated FG/WIP rows and
 aborted the target identity. The throw is now inside the same out-of-scope
 soft-skip handler as other integrity errors.
 
+### Fail-fast sequential halt
+
+`run_sequential` stops scheduling after any non-ok RIV (`stop_on_failure=True`)
+and honors `request_sequential_stop()` so an operator can halt after the current
+RIV reaches a terminal state without killing an in-flight DB transaction.
+Failure evidence is stored on the session JSON (`last_failure`).
+
 Production historical reposting remains a separately controlled operation.
 This release does **not** activate `STRICT_AFTER_HISTORICAL_REBUILD`.
 
