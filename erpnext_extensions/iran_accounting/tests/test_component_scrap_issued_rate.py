@@ -11,16 +11,20 @@ import frappe
 from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.scrap_costing import (
+	CLASS_BULK_SCRAP,
 	CLASS_COMPONENT_SCRAP,
 	CLASS_MAIN_FG,
 	CLASS_MAIN_PRODUCT_REJECT,
+	COMPONENT_SCRAP_BRIDGE_FLAG,
 	_component_scrap_matches_issued_rate,
 	_erpnext_manufacture_state_is_valid,
 	_issued_rate,
 	_issued_rate_for_component,
 	allocate_scrap_absorbed_cost,
 	apply_iran_manufacture_output_contract,
+	assert_bridged_component_scrap_priced,
 	classify_manufacture_outputs,
+	permit_component_scrap_zero_valuation,
 	permit_scrap_zero_valuation,
 )
 
@@ -286,11 +290,18 @@ class TestComponentScrapIssuedRateContract(unittest.TestCase):
 		doc = self._doc_zero_scrap()
 		with _irr():
 			permit_scrap_zero_valuation(doc)
+			permit_component_scrap_zero_valuation(doc)
 			apply_iran_manufacture_output_contract(doc)
-			# ERPNext would zero the rate only while the flag is still set.
 			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 0)
+			# Re-save path: component bridge re-arms allow_zero even with a rate.
 			permit_scrap_zero_valuation(doc)
-			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 0)
+			permit_component_scrap_zero_valuation(doc)
+			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 1)
+			# Simulate Core temporarily zeroing under allow_zero.
+			doc.items[3].basic_rate = 0
+			doc.items[3].basic_amount = 0
+			doc.items[3].valuation_rate = 0
+			doc.items[3].amount = 0
 			apply_iran_manufacture_output_contract(doc)
 		self.assertEqual(flt(doc.items[3].basic_rate), 35297)
 		self.assertEqual(doc.items[3].allow_zero_valuation_rate, 0)
@@ -523,6 +534,226 @@ class TestSourceSideNotDestination(unittest.TestCase):
 			apply_iran_manufacture_output_contract(doc)
 		self.assertEqual(flt(doc.items[3].basic_rate), 500)
 		self.assertNotEqual(246100, 500)
+
+
+class TestComponentScrapPreCoreBridgeV562(unittest.TestCase):
+	"""v5.6.2 Temporary Zero-Valuation Bridge for COMPONENT_SCRAP (non-Manual)."""
+
+	ISSUED = 1266402
+	POISON_DEST = 2000000
+
+	def _priced_component_scrap_doc(self, scrap_rate=None, t_warehouse="Reject-WH"):
+		rate = self.ISSUED if scrap_rate is None else scrap_rate
+		scrap = _output(
+			"13100060",
+			25,
+			secondary_item_type="Scrap",
+			rate=rate,
+			t_warehouse=t_warehouse,
+			valuation_type="Valuation Rate",
+			set_basic_rate_manually=0,
+			custom_output_class=CLASS_COMPONENT_SCRAP,
+		)
+		stopper = _output(
+			"13100061",
+			26,
+			secondary_item_type="Scrap",
+			rate=148500,
+			t_warehouse=t_warehouse,
+			valuation_type="Valuation Rate",
+			set_basic_rate_manually=0,
+			custom_output_class=CLASS_COMPONENT_SCRAP,
+		)
+		fg = _output("30100255", 1255, is_fg=1, rate=2347291, t_warehouse="FG")
+		return _Doc(
+			items=[
+				_consumed("13100060", 960, self.ISSUED, s_warehouse="WIP"),
+				_consumed("13100061", 1281, 148500, s_warehouse="WIP"),
+				fg,
+				scrap,
+				stopper,
+			]
+		)
+
+	def test_bridge_arms_even_when_rate_nonzero(self):
+		doc = self._priced_component_scrap_doc()
+		with _irr():
+			permit_scrap_zero_valuation(doc)
+			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 0)
+			permit_component_scrap_zero_valuation(doc)
+			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 1)
+			self.assertTrue(getattr(doc.items[3], COMPONENT_SCRAP_BRIDGE_FLAG, False))
+			self.assertEqual(doc.items[4].allow_zero_valuation_rate, 1)
+
+	def test_bridge_idempotent(self):
+		doc = self._priced_component_scrap_doc()
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			permit_component_scrap_zero_valuation(doc)
+			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 1)
+			self.assertEqual(doc.items[3].valuation_type, "Valuation Rate")
+			self.assertEqual(doc.items[3].set_basic_rate_manually, 0)
+
+	def test_target_warehouse_change_preserves_issued_not_dest(self):
+		doc = self._priced_component_scrap_doc(t_warehouse="Quarantine-FG")
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			# Simulate Core allow_zero short-circuit / empty WH lookup.
+			doc.items[3].t_warehouse = "Technical-WH-No-SLE"
+			doc.items[3].basic_rate = 0
+			doc.items[3].basic_amount = 0
+			doc.items[3].valuation_rate = 0
+			doc.items[3].amount = 0
+			doc.items[4].t_warehouse = "Technical-WH-No-SLE"
+			doc.items[4].basic_rate = 0
+			doc.items[4].basic_amount = 0
+			doc.items[4].valuation_rate = 0
+			doc.items[4].amount = 0
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(doc.items[3].basic_rate), self.ISSUED)
+		self.assertEqual(flt(doc.items[4].basic_rate), 148500)
+		self.assertEqual(doc.items[3].allow_zero_valuation_rate, 0)
+		self.assertEqual(doc.items[3].valuation_type, "Valuation Rate")
+		self.assertEqual(doc.items[3].set_basic_rate_manually, 0)
+
+	def test_poison_destination_sle_rate_ignored(self):
+		doc = self._priced_component_scrap_doc(scrap_rate=self.POISON_DEST, t_warehouse="Poison-WH")
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			# Even if Core briefly wrote destination valuation, Iran overwrites.
+			doc.items[3].basic_rate = self.POISON_DEST
+			doc.items[3].basic_amount = 25 * self.POISON_DEST
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(doc.items[3].basic_rate), self.ISSUED)
+		self.assertNotEqual(flt(doc.items[3].basic_rate), self.POISON_DEST)
+
+	def test_source_issued_rate_change_recalculates(self):
+		doc = self._priced_component_scrap_doc()
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			apply_iran_manufacture_output_contract(doc)
+			self.assertEqual(flt(doc.items[3].basic_rate), self.ISSUED)
+			# Source consumption rate changes on the voucher.
+			doc.items[0].basic_rate = 1500000
+			doc.items[0].basic_amount = 960 * 1500000
+			doc.items[0].amount = doc.items[0].basic_amount
+			permit_component_scrap_zero_valuation(doc)
+			doc.items[3].basic_rate = 0
+			doc.items[3].basic_amount = 0
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(doc.items[3].basic_rate), 1500000)
+
+	def test_assert_fail_closed_when_unpriced(self):
+		doc = self._priced_component_scrap_doc()
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			doc.items[3].basic_rate = 0
+			doc.items[3].basic_amount = 0
+			doc.items[3].valuation_rate = 0
+			# Remove consume so issued rate cannot be recovered.
+			doc.items = [doc.items[2], doc.items[3], doc.items[4]]
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				assert_bridged_component_scrap_priced(doc)
+			self.assertIn("COMPONENT_SCRAP", str(ctx.exception))
+
+	def test_assert_fail_closed_on_dest_mismatch(self):
+		doc = self._priced_component_scrap_doc(scrap_rate=self.POISON_DEST)
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			# Skip apply_component — leave poison rate — assert must throw.
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				assert_bridged_component_scrap_priced(doc)
+			self.assertIn("does not match issued", str(ctx.exception))
+
+	def test_product_reject_not_bridged_by_component_permit(self):
+		doc = _Doc(
+			items=[
+				_consumed("RM", 100, 1000),
+				_output("FG", 90, is_fg=1, t_warehouse="FG"),
+				_output("FG", 10, secondary_item_type="Scrap", rate=5000),
+			]
+		)
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			self.assertFalse(getattr(doc.items[2], COMPONENT_SCRAP_BRIDGE_FLAG, False))
+			# Product reject may still get allow_zero from other permits; component
+			# permit must not classify FG scrap as COMPONENT_SCRAP.
+			classified = classify_manufacture_outputs(doc)
+			self.assertEqual(len(classified[CLASS_COMPONENT_SCRAP]), 0)
+			self.assertEqual(len(classified[CLASS_MAIN_PRODUCT_REJECT]), 1)
+
+	def test_bulk_scrap_not_bridged_as_component(self):
+		scrap = _output(
+			"BULK",
+			5,
+			secondary_item_type="Scrap",
+			rate=0,
+			custom_output_class=CLASS_BULK_SCRAP,
+			valuation_type="Manual",
+			allow_zero_valuation_rate=1,
+			set_basic_rate_manually=1,
+		)
+		doc = _Doc(
+			items=[
+				_consumed("RM", 10, 100),
+				_output("FG", 8, is_fg=1, t_warehouse="FG"),
+				scrap,
+			]
+		)
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			self.assertFalse(getattr(scrap, COMPONENT_SCRAP_BRIDGE_FLAG, False))
+			classified = classify_manufacture_outputs(doc)
+			self.assertEqual(len(classified[CLASS_COMPONENT_SCRAP]), 0)
+
+	def test_rm_and_fg_valuation_fields_untouched_by_bridge(self):
+		doc = self._priced_component_scrap_doc()
+		fg_rate_before = flt(doc.items[2].basic_rate)
+		rm_rate_before = flt(doc.items[0].basic_rate)
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+		self.assertEqual(flt(doc.items[2].basic_rate), fg_rate_before)
+		self.assertEqual(flt(doc.items[0].basic_rate), rm_rate_before)
+		self.assertEqual(doc.items[0].allow_zero_valuation_rate, 0)
+
+	def test_late_server_script_row_pre_core_bridge(self):
+		"""Rows appended after before_validate still get the component bridge."""
+		doc = _Doc(
+			items=[
+				_consumed("13100060", 100, self.ISSUED),
+				_output("FG", 90, is_fg=1, rate=1000, t_warehouse="FG"),
+			]
+		)
+		late = _output(
+			"13100060",
+			5,
+			secondary_item_type="Scrap",
+			rate=self.ISSUED,
+			valuation_type="Valuation Rate",
+			set_basic_rate_manually=0,
+		)
+		doc.items.append(late)
+		with _irr():
+			# Mimic pre-Core wrap (Server Script already appended the row).
+			permit_component_scrap_zero_valuation(doc)
+			self.assertTrue(getattr(late, COMPONENT_SCRAP_BRIDGE_FLAG, False))
+			self.assertEqual(late.allow_zero_valuation_rate, 1)
+			late.basic_rate = 0
+			late.basic_amount = 0
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(flt(late.basic_rate), self.ISSUED)
+		self.assertEqual(late.allow_zero_valuation_rate, 0)
+		self.assertEqual(late.valuation_type, "Valuation Rate")
+		self.assertEqual(late.set_basic_rate_manually, 0)
+
+	def test_contract_assert_clears_allow_zero_after_pricing(self):
+		doc = self._priced_component_scrap_doc()
+		with _irr():
+			permit_component_scrap_zero_valuation(doc)
+			self.assertEqual(doc.items[3].allow_zero_valuation_rate, 1)
+			apply_iran_manufacture_output_contract(doc)
+		self.assertEqual(doc.items[3].allow_zero_valuation_rate, 0)
+		self.assertEqual(flt(doc.items[3].basic_rate), self.ISSUED)
 
 
 if __name__ == "__main__":

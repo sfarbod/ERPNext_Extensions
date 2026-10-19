@@ -22,6 +22,7 @@ from erpnext_extensions.iran_accounting.rounding import (
 )
 from erpnext_extensions.iran_accounting.scrap_costing import (
 	apply_iran_manufacture_output_contract,
+	permit_component_scrap_zero_valuation,
 	permit_product_reject_zero_valuation,
 	permit_scrap_zero_valuation,
 )
@@ -72,6 +73,10 @@ def before_validate_stock_entry(doc, method=None):
 	# Unpriced scrap is otherwise rejected inside ERPNext's own validate(),
 	# before the absorbed cost can be computed at all. See scrap_costing.
 	permit_scrap_zero_valuation(doc)
+	# COMPONENT_SCRAP with an already-issued rate (re-save / Target Warehouse
+	# change): Temporary Zero-Valuation Bridge so Core t_warehouse VR cannot
+	# throw before apply_component_scrap_issued_rates. See scrap_costing.
+	permit_component_scrap_zero_valuation(doc)
 	# Qualifying stage-equivalent Co/By-Product / Additional FG: same pattern —
 	# survive Core Valuation Rate Missing so allocate_stage_output_cost can run.
 	from erpnext_extensions.iran_accounting.manufacture_stage_costing import (
