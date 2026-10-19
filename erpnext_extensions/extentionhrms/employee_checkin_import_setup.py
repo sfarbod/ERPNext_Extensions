@@ -75,9 +75,16 @@ def ensure_duplicate_index() -> str:
 		"""
 	)[0][0]
 	if duplicates:
-		frappe.throw(
-			f"Cannot add the checkin duplicate key because {duplicates} duplicate groups already exist."
+		# Do not delete rows and do not abort migrate. Imports still reject
+		# duplicates in application code; the index is added only on a clean table.
+		frappe.log_error(
+			title="Employee Checkin duplicate index skipped",
+			message=(
+				f"{duplicates} Employee Checkin groups share employee, time and log type. "
+				"The unique index was not created. No rows were deleted."
+			),
 		)
+		return "skipped_duplicates"
 	frappe.db.add_unique("Employee Checkin", ["employee", "time", "log_type"], constraint)
 	return "created"
 
