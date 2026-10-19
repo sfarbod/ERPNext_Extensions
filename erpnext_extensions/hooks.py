@@ -321,10 +321,14 @@ doc_events = {
 			"erpnext_extensions.petty_management.journal_entry_hooks.on_journal_entry_before_cancel",
 			"erpnext_extensions.consignment_stock.journal_entry_hooks.before_cancel",
 			"erpnext_extensions.consignment_stock.material_loan.journal_entry_hooks.before_cancel",
+			# v5.6.3: Facility Management receipt/repayment dependency protection
+			"erpnext_extensions.facility_management.journal_entry_hooks.before_cancel",
 		],
 		"on_cancel": [
 			"erpnext_extensions.consignment_stock.journal_entry_hooks.on_cancel",
 			"erpnext_extensions.consignment_stock.material_loan.journal_entry_hooks.on_cancel",
+			# v5.6.3: restore Facility / repayment refs after receipt or repayment JE cancel
+			"erpnext_extensions.facility_management.journal_entry_hooks.on_cancel",
 		],
 		"on_trash": [
 			"erpnext_extensions.petty_management.journal_entry_hooks.on_journal_entry_on_trash",
