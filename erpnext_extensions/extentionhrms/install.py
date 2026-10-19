@@ -46,4 +46,11 @@ def after_migrate() -> None:
 	ensure_module_def()
 	create_payroll_round_off_department_field()
 	create_hourly_leave_custom_fields()
+	# Device-import role, retirement of the sandboxed manual-limit script,
+	# and sync of the Excel import Client Script from the app file.
+	from erpnext_extensions.extentionhrms.employee_checkin_import_setup import (
+		ensure_device_import_setup,
+	)
+
+	ensure_device_import_setup()
 	frappe.db.commit()
