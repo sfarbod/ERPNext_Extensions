@@ -84,12 +84,23 @@ class Facility(Document):
 			frappe.throw(_("Opening paid profit cannot exceed profit amount."))
 
 	def _validate_status_rules(self):
-		if self.status == "Active" and not cint(self.is_opening_facility) and not self.receipt_journal_entry:
-			frappe.throw(
-				_(
-					"Active status requires a Receipt Journal Entry unless this is an Opening / Migrated facility."
+		if self.status == "Active" and not cint(self.is_opening_facility):
+			je_name = (self.receipt_journal_entry or "").strip()
+			if not je_name:
+				frappe.throw(
+					_(
+						"Active status requires a Receipt Journal Entry unless this is an Opening / Migrated facility."
+					)
 				)
-			)
+			else:
+				ds = frappe.db.get_value("Journal Entry", je_name, "docstatus")
+				if ds is None or cint(ds) != 1:
+					frappe.throw(
+						_(
+							"Active status requires a submitted Receipt Journal Entry. "
+							"Referenced {0} is missing or not submitted (docstatus={1})."
+						).format(je_name, ds),
+					)
 		if self.status == "Closed":
 			bal = get_facility_balance_row(self)
 			if flt(bal["remaining_principal"]) > 0 or flt(bal["remaining_profit"]) > 0:
