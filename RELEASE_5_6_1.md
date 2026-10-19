@@ -2,8 +2,64 @@
 
 **App:** `erpnext_extensions`  
 **Version:** `5.6.1`  
-**Branch:** `feature/5.6.1-historical-valuation-rebuild`  
+**Branch:** `develop` (merged from `feature/5.6.1-historical-valuation-rebuild`)  
 **Policy:** `ACTIVE_HISTORICAL_VALUATION_GUARD = TRANSITIONAL_NON_BLOCKING` (unchanged)
+
+---
+
+## HISTORICAL REBUILD STATUS: PAUSED / INCOMPLETE
+
+**HRC-00001 has not completed its 15,968-entry historical rebuild.**
+
+| Field | Value |
+|-------|-------|
+| Campaign | `HRC-00001` |
+| Status | **Paused** |
+| Session | `20261019000943` |
+| Session status | **Paused** |
+| Manifest entries | 15,968 |
+| Distinct identities (approx.) | 4,517 |
+| Session RIV completed | 2,338 |
+| Session RIV failed | 0 |
+| Direct verified | 65 |
+| Covered verified | 4,512 |
+| Pending verification | 11,391 |
+
+The development database contains **partial** historical SLE/GL recalculation
+from this sequential session. Full SLE/GL/TVA reconciliation and the full-scope
+integrity scan have **not** passed. Do **not** treat development.localhost as a
+clean or fully reconciled accounting baseline.
+
+Strict historical guard activation remains deferred:
+
+- `ACTIVE_HISTORICAL_VALUATION_GUARD = TRANSITIONAL_NON_BLOCKING`
+- `TODO(HISTORICAL-REBUILD-STRICT-GUARD)` preserved
+- I3/I4 remain enabled
+
+Remaining rebuild work will continue in a **future development task**. Do not
+resume the campaign unless that task explicitly authorizes it.
+
+### Resume later (do not run now)
+
+```bash
+# Only when a future task authorizes resume of the same session:
+bench --site development.localhost execute \
+  erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild.restore_session_from_file \
+  --kwargs '{"session_id":"20261019000943"}'
+
+bench --site development.localhost execute \
+  erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild.clear_sequential_stop
+
+# Clear pause_requested on HRC-00001 if set, then:
+bench --site development.localhost execute \
+  erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild.run_sequential \
+  --kwargs '{"campaign":"HRC-00001","max_identities":None,"stop_on_failure":True,"mark_every":25}'
+```
+
+Resuming the **existing** session is supported: `identities_done` / session
+`riv_completed` skip already-finished identities. Requires code ≥ 5.6.1 on
+`develop` after this merge. Do **not** create a new session unless a future
+task explicitly resets the campaign.
 
 ---
 
@@ -11,7 +67,8 @@
 
 This release corrects false **Skipped Covered** decisions in the Historical Rebuild
 Campaign (HRC), adds a full historical stock valuation integrity scanner, and
-executes a **no-skip full historical valuation rebuild** in development/test.
+introduces a **no-skip sequential** historical valuation rebuild path for
+development/test. The campaign itself remains paused/incomplete (see above).
 
 ### Execution strategy (updated)
 
