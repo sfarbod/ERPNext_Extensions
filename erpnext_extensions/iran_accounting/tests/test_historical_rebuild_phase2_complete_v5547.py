@@ -95,9 +95,10 @@ class TestFastCoverRequiresVerification(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.historical_rebuild import fast_cover as fc
 
 		src = Path(fc.__file__).read_text()
-		self.assertIn("find_covering_riv", src)
-		self.assertIn("verify_voucher_basic", src)
-		self.assertIn("reconcile_tva_for_voucher", src)
+		# v5.6.1: evidence-based verify_voucher_coverage (Completed RIV alone insufficient)
+		self.assertIn("verify_voucher_coverage", src)
+		self.assertIn("apply_verified_skip", src)
+		self.assertIn("evidence_based", src)
 
 
 class TestRecoverUnscheduledScoped(unittest.TestCase):

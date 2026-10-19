@@ -381,23 +381,39 @@ def apply_zero_qty_movement_contract(
 
 	if disposition == ABSORB_INTO_MOVEMENT and abs(ghost) > _quantum(company):
 		# Core empty-warehouse identity: SVD clears the entire previous layer.
-		effective_movement = float(round_currency(-value_before, ccy))
-		sle.stock_value_difference = effective_movement
-		sle.stock_value = float(round_currency(0, ccy))
-		if row is not None and _entry_get(sle, "voucher_detail_no"):
-			from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
-				align_sed_from_native_outgoing_sle,
+		candidate = float(round_currency(-value_before, ccy))
+		# CASE A / I3 guard: absorbing a negative previous layer on an outbound
+		# consume yields positive SVD (MAT-STE-2026-40942 / item 13200244).
+		# Keep the caller-supplied movement and clear terminal stock_value.
+		if flt(_entry_get(sle, "actual_qty")) < 0 and candidate > _quantum(company):
+			sle.stock_value_difference = effective_movement
+			sle.stock_value = float(round_currency(0, ccy))
+			queue_pending_zero_qty_residual(
+				sle,
+				{
+					**classification,
+					"detail": "absorb_skipped_negative_prev_would_i3",
+					"skipped_absorb_candidate": candidate,
+				},
 			)
+		else:
+			effective_movement = candidate
+			sle.stock_value_difference = effective_movement
+			sle.stock_value = float(round_currency(0, ccy))
+			if row is not None and _entry_get(sle, "voucher_detail_no"):
+				from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+					align_sed_from_native_outgoing_sle,
+				)
 
-			qty = abs(flt(_entry_get(sle, "actual_qty")))
-			absorbed_rate = (
-				float(round_currency(abs(effective_movement) / qty, ccy)) if qty else rate
-			)
-			align_sed_from_native_outgoing_sle(
-				sle, row, absorbed_rate, effective_movement, ccy
-			)
-			rate = absorbed_rate
-		queue_pending_zero_qty_residual(sle, classification)
+				qty = abs(flt(_entry_get(sle, "actual_qty")))
+				absorbed_rate = (
+					float(round_currency(abs(effective_movement) / qty, ccy)) if qty else rate
+				)
+				align_sed_from_native_outgoing_sle(
+					sle, row, absorbed_rate, effective_movement, ccy
+				)
+				rate = absorbed_rate
+			queue_pending_zero_qty_residual(sle, classification)
 	elif disposition == POST_STOCK_ADJUSTMENT and abs(ghost) > _quantum(company):
 		# Keep document SED movement; clear terminal stock_value; SA later.
 		sle.stock_value_difference = effective_movement

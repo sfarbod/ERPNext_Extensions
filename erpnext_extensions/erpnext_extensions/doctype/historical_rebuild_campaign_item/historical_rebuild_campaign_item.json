@@ -26,6 +26,8 @@
   "retry_count",
   "section_result",
   "tva_reconcile_status",
+  "verification_class",
+  "verification_detail",
   "error_message",
   "last_processed_at"
  ],
@@ -157,6 +159,19 @@
    "fieldtype": "Select",
    "label": "TVA Reconcile Status",
    "options": "Pending\nNot Applicable\nSuperseded\nPreserved\nFailed"
+  },
+  {
+   "description": "Evidence-based verification class (v5.6.1). Not a substitute for item_status.",
+   "fieldname": "verification_class",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Verification Class",
+   "options": "\nVERIFIED_CLEAN\nREPOST_REQUIRED\nREPOST_PLANNED\nREPOST_RUNNING\nREPOST_IN_PROGRESS\nREPOST_COMPLETED_PENDING_VERIFICATION\nREPOST_FAILED\nMANUAL_REVIEW\nDIRECT_REPOSTED_AND_VERIFIED\nCOVERED_BY_REPOSTED_AND_VERIFIED"
+  },
+  {
+   "fieldname": "verification_detail",
+   "fieldtype": "Long Text",
+   "label": "Verification Detail (JSON)"
   },
   {
    "fieldname": "error_message",

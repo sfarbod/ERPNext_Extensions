@@ -60,7 +60,88 @@ def _assign_sle_field(sle, field, val) -> None:
 	setattr(sle, field, val)
 
 
+def reseed_wh_data_from_chronological_previous(engine, sle, *, qty_tol: float = 1e-6) -> bool:
+	"""Align ``engine.wh_data`` to the chronologically previous SLE when desynced.
+
+	During Item+WH RIV, dependant expansion / soft-skip can leave ``wh_data`` at a
+	future warehouse balance while the next SLE still expects the true previous
+	layer (CASE A: MAT-STE-2026-40942 arrived with wh_qty≈15721 instead of 1).
+	Consuming to the SLE's frozen qty_after=0 then yields a positive SVD (I3).
+
+	Reseed only when this SLE is a consume-to-zero outward move and the running
+	qty disagrees with the DB previous SLE on the same identity.
+	"""
+	if engine is None or sle is None:
+		return False
+	wh = getattr(engine, "wh_data", None)
+	if wh is None:
+		return False
+	aq = flt(_get_entry_value(sle, "actual_qty"))
+	qa = _get_entry_value(sle, "qty_after_transaction")
+	if aq >= -qty_tol:
+		return False
+	if qa in (None, ""):
+		return False
+	if abs(flt(qa)) > qty_tol:
+		return False
+
+	item_code = _get_entry_value(sle, "item_code")
+	warehouse = _get_entry_value(sle, "warehouse")
+	name = _get_entry_value(sle, "name")
+	if not item_code or not warehouse or not name:
+		return False
+
+	posting_datetime = _get_entry_value(sle, "posting_datetime")
+	creation = _get_entry_value(sle, "creation")
+	params: list = [item_code, warehouse, name]
+	clauses = ["item_code=%s", "warehouse=%s", "is_cancelled=0", "name != %s"]
+	if posting_datetime:
+		clauses.append(
+			"(posting_datetime < %s or (posting_datetime = %s and creation < %s))"
+		)
+		params.extend([posting_datetime, posting_datetime, creation or posting_datetime])
+	elif creation:
+		clauses.append("creation < %s")
+		params.append(creation)
+
+	row = frappe.db.sql(
+		f"""
+		select qty_after_transaction, stock_value, valuation_rate
+		from `tabStock Ledger Entry`
+		where {' and '.join(clauses)}
+		order by posting_datetime desc, creation desc
+		limit 1
+		""",
+		tuple(params),
+		as_dict=True,
+	)
+	if not row:
+		return False
+	prev = row[0]
+	expected_qty = flt(prev.qty_after_transaction)
+	if abs(flt(wh.qty_after_transaction) - expected_qty) <= qty_tol:
+		return False
+
+	sv = flt(prev.stock_value)
+	rate = flt(prev.valuation_rate)
+	# Mid-chain RIV can persist a negative layer at qty>0. Reseeding that
+	# poison into wh_data makes the next consume-to-zero absorb produce
+	# positive outbound SVD (I3 / CASE A). Reconstruct a non-negative layer.
+	if sv < 0:
+		if rate > 0 and expected_qty > qty_tol:
+			sv = rate * expected_qty
+		else:
+			sv = 0.0
+
+	wh.qty_after_transaction = expected_qty
+	wh.stock_value = sv
+	wh.valuation_rate = rate
+	wh.prev_stock_value = sv
+	return True
+
+
 def restore_out_of_scope_sle_ledger_state(engine, sle, pre) -> bool:
+
 	"""Restore SLE + warehouse running state after out-of-scope soft-skip.
 
 	Vanilla ``process_sle`` already mutated ``sle`` and ``engine.wh_data``. Put
@@ -78,6 +159,10 @@ def restore_out_of_scope_sle_ledger_state(engine, sle, pre) -> bool:
 		wh.qty_after_transaction = flt(pre.get("qty_after_transaction"))
 		wh.stock_value = flt(pre.get("stock_value"))
 		wh.valuation_rate = flt(pre.get("valuation_rate"))
+		# Keep prev_stock_value aligned. Leaving a stale prev (e.g. from an earlier
+		# SLE) makes the next SVD = stock_value - stale_prev and can flip sign (I3)
+		# on a later consume-to-zero (CASE A / MAT-STE-2026-40942).
+		wh.prev_stock_value = flt(pre.get("stock_value"))
 	return True
 
 

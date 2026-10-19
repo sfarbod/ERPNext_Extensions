@@ -1,5 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""100% Skipped Covered verification for Historical Rebuild Campaign."""
+"""100% Skipped Covered verification for Historical Rebuild Campaign (v5.6.1).
+
+Evidence-based: Completed RIV alone is insufficient. Invalid Skipped Covered
+rows are returned to Pending when ``fix=True``.
+"""
 
 from __future__ import annotations
 
@@ -14,36 +18,17 @@ from erpnext_extensions.iran_accounting.historical_rebuild.constants import (
 	ITEM_PENDING,
 	ITEM_SKIPPED,
 )
-from erpnext_extensions.iran_accounting.historical_rebuild.processor import (
-	find_covering_riv,
-	verify_voucher_basic,
+from erpnext_extensions.iran_accounting.historical_rebuild.coverage_verify import (
+	apply_repost_required,
+	verify_voucher_coverage,
 )
 
 
-def _sle_identities(voucher_type: str, voucher_no: str) -> list[dict]:
-	return frappe.db.sql(
-		"""
-		select distinct item_code, warehouse, posting_date, posting_time
-		from `tabStock Ledger Entry`
-		where is_cancelled=0 and voucher_type=%s and voucher_no=%s
-		  and item_code is not null and item_code!=''
-		  and warehouse is not null and warehouse!=''
-		""",
-		(voucher_type, voucher_no),
-		as_dict=True,
-	) or []
-
-
 def audit_skipped_covered(campaign: str, *, fix: bool = False, limit: int | None = None) -> dict[str, Any]:
-	"""Verify every Skipped Covered item; optionally return invalid ones to Pending.
-
-	Coverage requires:
-	- verify_voucher_basic ok (SLE or FA/non-stock PR rules)
-	- every SLE identity has a Completed covering RIV at earlier/equal posting
-	"""
+	"""Verify every Skipped Covered item with full accounting evidence checks."""
 	kwargs: dict[str, Any] = {
 		"filters": {"campaign": campaign, "item_status": ITEM_SKIPPED},
-		"fields": ["name", "voucher_type", "voucher_no", "ordinal"],
+		"fields": ["name", "voucher_type", "voucher_no", "ordinal", "company"],
 		"order_by": "ordinal asc",
 	}
 	if limit is not None:
@@ -54,54 +39,36 @@ def audit_skipped_covered(campaign: str, *, fix: bool = False, limit: int | None
 	invalid = []
 	no_sle_ok = 0
 	for row in names:
-		ver = verify_voucher_basic(row.voucher_type, row.voucher_no)
-		if not ver.get("ok"):
-			invalid.append(
-				{
-					"name": row.name,
-					"ordinal": row.ordinal,
-					"voucher": f"{row.voucher_type}/{row.voucher_no}",
-					"reason": f"verify:{ver.get('detail')}",
-				}
-			)
-			continue
-		idents = _sle_identities(row.voucher_type, row.voucher_no)
-		if not idents:
-			# FA / non-stock verified without SLE
-			no_sle_ok += 1
+		result = verify_voucher_coverage(
+			row.voucher_type, row.voucher_no, company=getattr(row, "company", None)
+		)
+		if result.get("ok"):
+			if not (result.get("covering_rivs") or []) and "no_sle" in (result.get("reason") or ""):
+				no_sle_ok += 1
 			verified += 1
 			continue
-		missing = []
-		for sle in idents:
-			cov = find_covering_riv(
-				sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time
-			)
-			if not cov:
-				missing.append(f"{sle.item_code}|{sle.warehouse}|{sle.posting_date}")
-		if missing:
-			invalid.append(
-				{
-					"name": row.name,
-					"ordinal": row.ordinal,
-					"voucher": f"{row.voucher_type}/{row.voucher_no}",
-					"reason": f"uncovered:{len(missing)}",
-					"sample": missing[:5],
-				}
-			)
-			continue
-		verified += 1
+		invalid.append(
+			{
+				"name": row.name,
+				"ordinal": row.ordinal,
+				"voucher": f"{row.voucher_type}/{row.voucher_no}",
+				"reason": result.get("reason") or "coverage_failed",
+				"verification_class": result.get("verification_class"),
+			}
+		)
 
 	requeued = 0
 	if fix and invalid:
 		for inv in invalid:
-			frappe.db.set_value(
-				ITEM_DOCTYPE,
+			apply_repost_required(
 				inv["name"],
 				{
-					"item_status": ITEM_PENDING,
-					"error_message": f"coverage_audit:{inv.get('reason')}",
+					"ok": False,
+					"verification_class": inv.get("verification_class") or "REPOST_REQUIRED",
+					"reason": inv.get("reason"),
+					"covering_rivs": [],
+					"identity_results": [],
 				},
-				update_modified=False,
 			)
 			requeued += 1
 		frappe.db.set_value(
@@ -121,4 +88,5 @@ def audit_skipped_covered(campaign: str, *, fix: bool = False, limit: int | None
 		"invalid_sample": invalid[:50],
 		"requeued_to_pending": requeued,
 		"ok": len(invalid) == 0 and len(names) > 0,
+		"evidence_based": True,
 	}
