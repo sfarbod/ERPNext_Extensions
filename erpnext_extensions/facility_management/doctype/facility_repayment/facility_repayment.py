@@ -157,47 +157,57 @@ class FacilityRepayment(Document):
 		#   2) cancel settlement JE
 		#   3) only then remove Settlement journal ref, restore Assigned, clear links
 		# If JE cancel fails: PDC/links/refs must remain Settled (no partial rollback).
+		# FLAG_IN_REPAYMENT_CANCEL lets Journal Entry hooks know this cancel is owned
+		# by Facility Repayment (avoid blocking JE cancel / double reconciliation).
+		from erpnext_extensions.facility_management.facility_je_reconciliation import (
+			FLAG_IN_REPAYMENT_CANCEL,
+		)
+
 		je_name = self.journal_entry
-		if is_debt_purchase_cheque_method(self):
-			from frappe.utils.synchronization import filelock
-
-			from erpnext_extensions.cheque_management.pdc_workflow_state_machine import (
-				WORKFLOW_DEBT_PURCHASE_SETTLED,
-				normalize_workflow_state_value,
-			)
-			from erpnext_extensions.facility_management.facility_debt_purchase import (
-				restore_pdc_after_debt_purchase_cancel,
-			)
-
-			pdc_name = (self.post_dated_cheque or "").strip()
-			lock_name = f"pdc_debt_purchase_settle_{pdc_name}"
-			with filelock(lock_name, timeout=120):
-				pdc = frappe.get_doc("Post Dated Cheque", pdc_name)
-				if normalize_workflow_state_value(pdc.workflow_state) != WORKFLOW_DEBT_PURCHASE_SETTLED:
-					frappe.throw(
-						_("Linked cheque is not in Debt Purchase Settled state."),
-						title=_("Debt Purchase Cancel"),
-					)
-				if (pdc.debt_purchase_repayment or "").strip() != self.name:
-					frappe.throw(
-						_("Cheque is not settled by this Facility Repayment."),
-						title=_("Debt Purchase Cancel"),
-					)
-				try:
-					cancel_journal_entry(je_name)
-				except Exception:
-					raise
-				self.db_set("journal_entry", None, update_modified=False)
-				restore_pdc_after_debt_purchase_cancel(pdc, self, settlement_je=je_name)
-			refresh_facility_paid_fields(self.facility)
-			return
-
+		frappe.flags[FLAG_IN_REPAYMENT_CANCEL] = True
 		try:
-			cancel_journal_entry(je_name)
-		except Exception:
-			raise
-		self.db_set("journal_entry", None, update_modified=False)
-		refresh_facility_paid_fields(self.facility)
+			if is_debt_purchase_cheque_method(self):
+				from frappe.utils.synchronization import filelock
+
+				from erpnext_extensions.cheque_management.pdc_workflow_state_machine import (
+					WORKFLOW_DEBT_PURCHASE_SETTLED,
+					normalize_workflow_state_value,
+				)
+				from erpnext_extensions.facility_management.facility_debt_purchase import (
+					restore_pdc_after_debt_purchase_cancel,
+				)
+
+				pdc_name = (self.post_dated_cheque or "").strip()
+				lock_name = f"pdc_debt_purchase_settle_{pdc_name}"
+				with filelock(lock_name, timeout=120):
+					pdc = frappe.get_doc("Post Dated Cheque", pdc_name)
+					if normalize_workflow_state_value(pdc.workflow_state) != WORKFLOW_DEBT_PURCHASE_SETTLED:
+						frappe.throw(
+							_("Linked cheque is not in Debt Purchase Settled state."),
+							title=_("Debt Purchase Cancel"),
+						)
+					if (pdc.debt_purchase_repayment or "").strip() != self.name:
+						frappe.throw(
+							_("Cheque is not settled by this Facility Repayment."),
+							title=_("Debt Purchase Cancel"),
+						)
+					try:
+						cancel_journal_entry(je_name)
+					except Exception:
+						raise
+					self.db_set("journal_entry", None, update_modified=False)
+					restore_pdc_after_debt_purchase_cancel(pdc, self, settlement_je=je_name)
+				refresh_facility_paid_fields(self.facility)
+				return
+
+			try:
+				cancel_journal_entry(je_name)
+			except Exception:
+				raise
+			self.db_set("journal_entry", None, update_modified=False)
+			refresh_facility_paid_fields(self.facility)
+		finally:
+			frappe.flags[FLAG_IN_REPAYMENT_CANCEL] = False
 
 
 @frappe.whitelist()

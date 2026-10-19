@@ -650,12 +650,62 @@ def _je_preview_payload_from_plan(
 	}
 
 
-def preview_receipt_journal_entry(facility) -> dict[str, Any]:
-	if facility.receipt_journal_entry:
+def _active_receipt_journal_entry(facility) -> str | None:
+	"""Return receipt JE name only when it exists and is submitted (docstatus=1)."""
+	je_name = (getattr(facility, "receipt_journal_entry", None) or "").strip() or None
+	if not je_name:
+		return None
+	ds = frappe.db.get_value("Journal Entry", je_name, "docstatus")
+	if ds is None:
+		return None
+	if cint(ds) == 1:
+		return je_name
+	return None
+
+
+def _assert_no_duplicate_receipt(facility) -> None:
+	active = _active_receipt_journal_entry(facility)
+	if active:
 		frappe.throw(
-			frappe._("Receipt Journal Entry already exists: {0}").format(facility.receipt_journal_entry),
+			frappe._("Receipt Journal Entry already exists: {0}").format(active),
 			title=frappe._("Facility Receipt"),
 		)
+	# Stale cancelled/missing pointer must be cleared before creating a replacement
+	stale = (getattr(facility, "receipt_journal_entry", None) or "").strip()
+	if stale and not active:
+		frappe.throw(
+			frappe._(
+				"Facility still references cancelled or missing Receipt Journal Entry {0}. "
+				"Run Facility JE reconciliation (or cancel-path restore) before creating a replacement."
+			).format(stale),
+			title=frappe._("Facility Receipt"),
+		)
+	# Conflicting submitted receipt-like JEs (cheque_no = facility)
+	from erpnext_extensions.facility_management.facility_je_reconciliation import (
+		_candidate_replacement_receipt_jes,
+	)
+
+	candidates = _candidate_replacement_receipt_jes(facility.name)
+	if len(candidates) > 1:
+		frappe.throw(
+			frappe._(
+				"Multiple submitted receipt Journal Entries found for Facility {0}: {1}. "
+				"Manual review required."
+			).format(facility.name, ", ".join(candidates)),
+			title=frappe._("Facility Receipt"),
+		)
+	if len(candidates) == 1:
+		frappe.throw(
+			frappe._(
+				"A submitted receipt Journal Entry already exists for Facility {0}: {1}. "
+				"Link it via reconciliation instead of creating a duplicate."
+			).format(facility.name, candidates[0]),
+			title=frappe._("Facility Receipt"),
+		)
+
+
+def preview_receipt_journal_entry(facility) -> dict[str, Any]:
+	_assert_no_duplicate_receipt(facility)
 	plan = build_receipt_je_plan(facility)
 	settings = get_facility_settings_doc(facility.company)
 	ctx = build_template_context(facility)
@@ -671,11 +721,7 @@ def preview_receipt_journal_entry(facility) -> dict[str, Any]:
 
 
 def create_and_submit_receipt_je(facility) -> str:
-	if facility.receipt_journal_entry:
-		frappe.throw(
-			frappe._("Receipt Journal Entry already exists: {0}").format(facility.receipt_journal_entry),
-			title=frappe._("Facility Receipt"),
-		)
+	_assert_no_duplicate_receipt(facility)
 	principal, profit = _facility_receipt_amounts(facility)
 	plan = build_receipt_je_plan(facility)
 	settings = get_facility_settings_doc(facility.company)
@@ -974,8 +1020,12 @@ def refresh_facility_paid_fields(facility_name: str) -> None:
 		"remaining_profit_amount": bal["remaining_profit"],
 		"remaining_total_amount": bal["remaining_total"],
 	}
-	if frappe.db.get_value("Facility", facility_name, "receipt_journal_entry"):
-		updates["received_amount"] = flt(bal["principal_amount"])
+	# Only treat submitted receipt JEs as valid for received_amount
+	receipt_je = frappe.db.get_value("Facility", facility_name, "receipt_journal_entry")
+	if receipt_je:
+		ds = frappe.db.get_value("Journal Entry", receipt_je, "docstatus")
+		if cint(ds) == 1:
+			updates["received_amount"] = flt(bal["principal_amount"])
 	frappe.db.set_value("Facility", facility_name, updates, update_modified=False)
 
 
