@@ -22,17 +22,22 @@ no valuation history in the target warehouse. A Server Script bound to
 ``before_submit`` therefore never executes on exactly the documents that need
 it, and one bound to ``before_validate`` runs too early to see any prices.
 
-Two application hooks close that gap:
+Three application hooks close that gap:
 
-``before_validate``
-    :func:`permit_scrap_zero_valuation` marks unpriced scrap rows so ERPNext's
-    own check lets the document through. Nothing is valued here.
+``before_validate`` / pre-Core ``StockEntry.validate`` wrap
+    :func:`permit_scrap_zero_valuation` marks *unpriced* scrap rows so ERPNext's
+    own check lets the document through. :func:`permit_component_scrap_zero_valuation`
+    additionally bridges already-priced ``COMPONENT_SCRAP`` rows on re-save /
+    Target Warehouse change (same Temporary Zero-Valuation Bridge pattern as
+    stage-equivalent outputs). Nothing is economically valued here.
 
 ``validate``
-    :func:`allocate_scrap_absorbed_cost` runs after the controller's
-    ``validate()`` (doc_events hooks are composed after the class method), so
-    the consumed rows carry real amounts. It splits the pool and clears the
-    permission flag again, so nothing zero-valued ever reaches the ledger.
+    :func:`apply_iran_manufacture_output_contract` (via
+    :func:`apply_component_scrap_issued_rates` / absorbed-cost allocators) runs
+    after the controller's ``validate()``, so consumed rows carry real amounts.
+    It applies issued rates and clears the temporary allow-zero flag;
+    :func:`assert_bridged_component_scrap_priced` fails closed if a bridged row
+    would still reach the ledger unpriced.
 
 What absorbs the product's cost
 -------------------------------
@@ -97,6 +102,8 @@ LEGACY_MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.3"
 MANUFACTURE_COSTING_CONTRACT_VERSION = "5.3.43"
 # In-memory only: marks a Product Reject row bridged past Core Valuation Rate.
 PRODUCT_REJECT_BRIDGE_FLAG = "_iran_product_reject_bridge"
+# In-memory only: marks COMPONENT_SCRAP bridged past Core t_warehouse VR lookup.
+COMPONENT_SCRAP_BRIDGE_FLAG = "_iran_component_scrap_bridge"
 
 
 def _is_incoming(row) -> bool:
@@ -259,7 +266,12 @@ def permit_scrap_zero_valuation(doc, method=None) -> None:
 
 	Without this the document dies inside ``validate()`` and the absorbed cost
 	is never computed. The flag is removed again by
-	:func:`allocate_scrap_absorbed_cost` once a real rate exists.
+	:func:`allocate_scrap_absorbed_cost` / :func:`apply_component_scrap_issued_rates`
+	once a real rate exists.
+
+	Already-priced ``COMPONENT_SCRAP`` rows are handled by
+	:func:`permit_component_scrap_zero_valuation` (re-save / Target Warehouse
+	change). This helper stays narrow: rate-empty scrap only.
 	"""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
 		return
@@ -269,6 +281,116 @@ def permit_scrap_zero_valuation(doc, method=None) -> None:
 		if flt(row.get("basic_rate")) or flt(row.get("valuation_rate")):
 			continue
 		row.allow_zero_valuation_rate = 1
+
+
+def is_component_scrap_bridge_candidate(doc, row) -> bool:
+	"""True when ``row`` classifies as COMPONENT_SCRAP under the Iran contract.
+
+	Eligibility follows :func:`classify_manufacture_outputs` — never idx, item
+	code, or warehouse name alone.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if not is_irr_company(getattr(doc, "company", None)):
+		return False
+	if not _is_incoming(row) or _row_qty(row) <= 0:
+		return False
+	classified = classify_manufacture_outputs(doc)
+	return row in classified[CLASS_COMPONENT_SCRAP]
+
+
+def permit_component_scrap_zero_valuation(doc, method=None) -> None:
+	"""Pre-Core Temporary Zero-Valuation Bridge for COMPONENT_SCRAP.
+
+	Mirrors :func:`permit_stage_equivalent_zero_valuation`: set
+	``allow_zero_valuation_rate`` even when the Draft already carries an issued
+	rate. On re-save / Target Warehouse change, Core ``set_basic_rate`` would
+	otherwise call ``get_valuation_rate(t_warehouse)`` and throw (or temporarily
+	adopt destination warehouse economics). With allow_zero, Core may zero the
+	row; :func:`apply_component_scrap_issued_rates` restores the issued rate and
+	:func:`assert_bridged_component_scrap_priced` fails closed if it cannot.
+
+	Does **not** change ``valuation_type`` or ``set_basic_rate_manually``.
+	Idempotent.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return
+	if not is_irr_company(doc.company):
+		return
+	classified = classify_manufacture_outputs(doc)
+	for row in classified[CLASS_COMPONENT_SCRAP]:
+		setattr(row, COMPONENT_SCRAP_BRIDGE_FLAG, True)
+		row.allow_zero_valuation_rate = 1
+
+
+def assert_bridged_component_scrap_priced(doc) -> None:
+	"""Fail closed if the bridge allowed Core through but issued-rate pricing did not.
+
+	Ensures temporary zero valuation cannot reach Stock Ledger / GL. Bridged rows
+	must still classify as COMPONENT_SCRAP and match
+	:func:`_issued_rate_for_component` within :data:`ISSUED_RATE_TOLERANCE`.
+	"""
+	bridged = [
+		row
+		for row in (doc.get("items") or [])
+		if getattr(row, COMPONENT_SCRAP_BRIDGE_FLAG, False)
+	]
+	if not bridged:
+		return
+	classified = classify_manufacture_outputs(doc)
+	component_rows = classified[CLASS_COMPONENT_SCRAP]
+	currency = get_company_currency(doc.company)
+	through_riv = False
+	try:
+		through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
+	except Exception:
+		through_riv = False
+	for row in bridged:
+		if row not in component_rows:
+			frappe.throw(
+				_(
+					"{0}: Component Scrap bridge was activated but the row is not "
+					"classified as COMPONENT_SCRAP; temporary Core bridge value "
+					"must not reach the ledger."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		expected = _issued_rate_for_component(doc, row)
+		if expected <= 0:
+			# Prefer in-memory / persisted scrap economics mid-RIV only.
+			existing = flt(row.get("basic_rate"))
+			if existing <= 0:
+				existing = _persisted_consume_rate(row)
+			if through_riv and existing > 0:
+				row.allow_zero_valuation_rate = 0
+				continue
+			frappe.throw(
+				_(
+					"{0}: COMPONENT_SCRAP has no matching issued/consumption rate "
+					"on this Manufacture; temporary Core bridge value must not "
+					"reach the ledger. Destination warehouse valuation is not used."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		expected = round_monetary_rate(expected, currency)
+		if abs(flt(row.get("basic_rate")) - expected) > ISSUED_RATE_TOLERANCE:
+			frappe.throw(
+				_(
+					"{0}: COMPONENT_SCRAP rate {1} does not match issued component "
+					"rate {2}; temporary Core / Target Warehouse valuation must not "
+					"reach the ledger."
+				).format(_row_label(row), flt(row.get("basic_rate")), expected),
+				frappe.ValidationError,
+			)
+		if flt(row.get("basic_rate")) <= 0 or flt(row.get("basic_amount")) <= 0:
+			frappe.throw(
+				_(
+					"{0}: COMPONENT_SCRAP was not priced by Iran issued-rate "
+					"allocator; temporary Core bridge value must not reach the ledger."
+				).format(_row_label(row)),
+				frappe.ValidationError,
+			)
+		row.allow_zero_valuation_rate = 0
 
 
 def _has_explicit_independent_reject_valuation(row) -> bool:
@@ -1097,12 +1219,14 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 			claim_stage_co_ownership(doc)
 		assert_bridged_stage_outputs_priced(doc)
 		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
 		return True
 	assert_bridged_stage_outputs_priced(doc)
 	# Priority 2a: same-item multi-FG + same-item product reject (retain sample stays FG).
 	if same_item_output_family_supported(doc):
 		applied = apply_same_item_output_family(doc) or component_applied
 		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
 		return applied
 	# Priority 2: Product Reject (existing absorbed-cost path).
 	if _has_product_reject(doc):
@@ -1112,10 +1236,12 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 		if applied:
 			claim_product_reject_ownership(doc)
 		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
 		return applied
 	# Priority 3: SAME_ITEM_MULTI_FG (unified contract Phase 1).
 	if apply_same_item_multi_fg(doc):
 		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
 		return True
 	# Ambiguous Multi-FG that no strategy claimed → BLOCK.
 	assert_multi_fg_fail_closed(doc)
@@ -1129,10 +1255,13 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 		if len(good_rows) == 1:
 			_restore_finished_good_as_residual(doc, good_rows[0])
 		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
 		return True
 	if _erpnext_manufacture_state_is_valid(doc):
 		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
 		return False
 	applied = allocate_scrap_absorbed_cost(doc, method)
 	assert_bridged_product_reject_priced(doc)
+	assert_bridged_component_scrap_priced(doc)
 	return applied

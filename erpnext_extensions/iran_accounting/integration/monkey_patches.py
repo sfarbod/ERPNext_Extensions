@@ -594,12 +594,14 @@ def _patch_stock_entry_pre_core_bridge():
 			permit_stage_equivalent_zero_valuation,
 		)
 		from erpnext_extensions.iran_accounting.scrap_costing import (
+			permit_component_scrap_zero_valuation,
 			permit_product_reject_zero_valuation,
 		)
 
 		# Late-added Iran-controlled outputs (Server Scripts) need the bridge now.
 		permit_product_reject_zero_valuation(self)
 		permit_stage_equivalent_zero_valuation(self)
+		permit_component_scrap_zero_valuation(self)
 		return current(self)
 
 	validate._iran_pre_core_bridge = True
