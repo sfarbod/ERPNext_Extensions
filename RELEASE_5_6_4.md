@@ -19,10 +19,13 @@ Standard HRMS has **no physical attendance-device registry**. Offline punches be
 
 ## 2. Manual limit (HR Settings)
 
-| Setting | Fieldname | Default |
-|---|---|---|
-| Enable Manual Checkin Limit | `espad_enable_manual_checkin_limit` | Enabled (1) |
-| Maximum Manual Checkins per Period | `espad_max_manual_checkins` | 5 |
+Desk path: **HR → HR Settings → tab Shift and Attendance → heading Manual Attendance Checkin Policy**
+(immediately under Allow Geolocation Tracking).
+
+| Setting | Fieldname | Type | Default |
+|---|---|---|---|
+| Enable Manual Checkin Limit | `espad_enable_manual_checkin_limit` | Check | 1 |
+| Maximum Manual Checkins per Period | `espad_max_manual_checkins` | Int | 5 |
 
 - Period: Jalali **26th → 25th** (unchanged).
 - Counted per **employee**.
@@ -30,10 +33,10 @@ Standard HRMS has **no physical attendance-device registry**. Offline punches be
 - Existing rows count as manual when `DATE(creation) ≠ DATE(time)`.
 - Missing / null / invalid maximum **never** means unlimited: runtime falls back to enabled + 5.
 - Explicit Enable = 0 disables only this quota (not HRMS validations).
-- Fields are permlevel 1; **only System Manager** may change them (Custom DocPerm + validate hook).
-- Policy is cached in `frappe.cache` and cleared on HR Settings update.
-
-Desk path: **HR → HR Settings → Manual Checkin Limit (Espad)**.
+- Fields use **permlevel 0** so they remain visible on Desk. **Only System Manager** may change them (server `validate` on HR Settings). HR Manager / HR User can see but not save policy changes.
+- A Heading is used instead of a Section Break: Frappe places custom Section Breaks after the next tab when `insert_after` is the last field of Shift and Attendance.
+- Request-local policy cache; cleared on HR Settings update.
+- Assign / repair: `bench migrate` runs `ensure_hr_settings_fields()` idempotently.
 
 ---
 
