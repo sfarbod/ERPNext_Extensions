@@ -12,10 +12,12 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_days, getdate, nowdate
 
 from erpnext_extensions.extentionhrms.employee_checkin_import import (
+	find_existing_checkin_keys,
 	import_device_checkins,
 	report_employee_code_stored_as_device_id,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_import_setup import (
+	IMPORT_ROLE,
 	ensure_device_import_setup,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
@@ -357,13 +359,64 @@ class TestDeviceCheckinImport(FrappeTestCase):
 	def test_import_role_without_create_permission_is_rejected(self):
 		employee = self._employee()
 		user = self._user(["Attendance Device Importer"])
-		if frappe.has_permission("Employee Checkin", "create", user=user):
-			self.skipTest("Attendance Device Importer unexpectedly has create permission")
+		perm_name = frappe.db.get_value(
+			"Custom DocPerm",
+			{"parent": "Employee Checkin", "role": IMPORT_ROLE, "permlevel": 0},
+			"name",
+		)
+		self.assertTrue(perm_name, "setup should grant Custom DocPerm for the import role")
+		frappe.db.set_value("Custom DocPerm", perm_name, {"create": 0, "read": 1, "select": 1}, update_modified=False)
+		frappe.clear_cache(doctype="Employee Checkin")
+		try:
+			frappe.set_user(user)
+			self.assertFalse(frappe.has_permission("Employee Checkin", "create"))
+			with self.assertRaises(frappe.PermissionError):
+				import_device_checkins([self._record(employee, self._past(0), "IN")])
+			frappe.set_user("Administrator")
+			self.assertEqual(self._count(employee), 0)
+		finally:
+			frappe.set_user("Administrator")
+			ensure_device_import_setup()
+			frappe.clear_cache(doctype="Employee Checkin")
+
+	def test_find_existing_checkin_keys_reports_duplicates_only(self):
+		employee = self._employee()
+		when = self._past(0)
+		self._manual(employee, when)
+		before = frappe.db.count("Employee Checkin")
+		result = find_existing_checkin_keys(
+			[
+				{"employee": employee, "time": when, "log_type": "IN"},
+				{"employee": employee, "time": self._past(1), "log_type": "OUT"},
+			]
+		)
+		self.assertEqual(result["checked"], 2)
+		self.assertEqual(result["existing"], 1)
+		self.assertEqual(len(result["keys"]), 1)
+		self.assertEqual(result["keys"][0]["employee"], employee)
+		self.assertEqual(result["keys"][0]["log_type"], "IN")
+		self.assertEqual(frappe.db.count("Employee Checkin"), before)
+
+	def test_find_existing_checkin_keys_requires_import_authorization(self):
+		employee = self._employee()
+		user = self._user(["HR User"])
 		frappe.set_user(user)
 		with self.assertRaises(frappe.PermissionError):
-			import_device_checkins([self._record(employee, self._past(0), "IN")])
+			find_existing_checkin_keys([{"employee": employee, "time": self._past(0), "log_type": "IN"}])
 		frappe.set_user("Administrator")
-		self.assertEqual(self._count(employee), 0)
+
+	def test_import_role_can_use_existing_key_lookup_after_setup(self):
+		employee = self._employee()
+		when = self._past(0)
+		self._manual(employee, when)
+		user = self._user(["Attendance Device Importer"])
+		frappe.set_user(user)
+		self.assertTrue(frappe.has_permission("Employee Checkin", "create"))
+		result = find_existing_checkin_keys(
+			[{"employee": employee, "time": when, "log_type": "IN"}]
+		)
+		frappe.set_user("Administrator")
+		self.assertEqual(result["existing"], 1)
 
 	def test_inactive_employee_is_rejected_and_status_is_unchanged(self):
 		employee = self._employee(status="Inactive")

@@ -32,6 +32,7 @@ from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
 
 IMPORT_ROLES = ("System Manager", "Attendance Device Importer")
 MAX_RECORDS = 200
+MAX_EXISTING_LOOKUP = 2000
 MAX_ASSIGNMENTS = 500
 MAX_DEVICE_ID_LEN = 140
 _LOG_TYPES = {"IN", "OUT"}
@@ -113,6 +114,70 @@ def report_employee_code_stored_as_device_id(limit=500):
 		"""
 	)[0][0]
 	return {"total": total, "returned": len(rows), "rows": rows}
+
+
+@frappe.whitelist()
+def find_existing_checkin_keys(records=None):
+	"""Return which punch keys already exist (pre-import duplicate detection).
+
+	Authorized import callers only. Accepts a list of
+	``{employee, time, log_type}`` (at most ``MAX_EXISTING_LOOKUP`` per call).
+	Returns only matching keys — never full Employee Checkin documents.
+
+	Uses the same identity as HRMS / :func:`import_device_checkins`
+	(employee + second-precision time + log_type). Employee User Permissions
+	are enforced: keys for unreadable employees are omitted.
+	"""
+	_authorize()
+	raw = _load_json_list(records, "records")
+	if len(raw) > MAX_EXISTING_LOOKUP:
+		frappe.throw(
+			_("An existing-check lookup accepts at most {0} records.").format(MAX_EXISTING_LOOKUP),
+			frappe.ValidationError,
+		)
+
+	normalized = []
+	employees = []
+	for index, item in enumerate(raw):
+		if not isinstance(item, dict):
+			frappe.throw(_("Record {0} is not an object.").format(index + 1), frappe.ValidationError)
+		employee = cstr(item.get("employee")).strip()
+		log_type = cstr(item.get("log_type")).strip()
+		if not employee or log_type not in _LOG_TYPES:
+			continue
+		try:
+			when = get_datetime(item.get("time")).replace(microsecond=0)
+		except Exception:
+			continue
+		if employee not in employees:
+			employees.append(employee)
+		normalized.append(
+			{
+				"employee": employee,
+				"time": when,
+				"time_key": when.strftime("%Y-%m-%d %H:%M:%S"),
+				"log_type": log_type,
+			}
+		)
+
+	if not normalized:
+		return {"keys": [], "checked": 0, "existing": 0}
+
+	readable = _readable_employees(employees)
+	normalized = [row for row in normalized if readable.get(row["employee"])]
+	if not normalized:
+		return {"keys": [], "checked": 0, "existing": 0}
+
+	found = _existing_keys(normalized)
+	requested = {
+		(row["employee"], row["time_key"], row["log_type"]) for row in normalized
+	}
+	keys = [
+		{"employee": employee, "time": time_key, "log_type": log_type}
+		for (employee, time_key, log_type) in found
+		if (employee, time_key, log_type) in requested
+	]
+	return {"keys": keys, "checked": len(normalized), "existing": len(keys)}
 
 
 def _assign_empty_attendance_device_ids(assignments) -> dict:
@@ -317,11 +382,7 @@ def _insert_records(parsed: list[dict]) -> dict:
 		):
 			employee_rows[row.name] = row
 
-	readable = {}
-	for employee in employees:
-		readable[employee] = bool(employee_rows.get(employee)) and bool(
-			frappe.has_permission("Employee", "read", employee)
-		)
+	readable = _readable_employees(employees, employee_rows=employee_rows)
 
 	normalized = []
 	for row in parsed:
@@ -455,6 +516,27 @@ def _row_problem(row, employee_rows, readable) -> dict | None:
 	if row["log_type"] not in _LOG_TYPES:
 		return {**base, "error": "Invalid log_type. Expected IN or OUT.", "category": "Validation error"}
 	return None
+
+
+def _readable_employees(employees: list[str], employee_rows: dict | None = None) -> dict:
+	"""Map employee name → whether the caller may read that Employee."""
+	readable = {}
+	rows = employee_rows
+	if rows is None:
+		rows = {}
+		if employees:
+			for row in frappe.get_all(
+				"Employee",
+				filters={"name": ["in", employees]},
+				fields=["name"],
+				limit_page_length=len(employees),
+			):
+				rows[row.name] = row
+	for employee in employees:
+		readable[employee] = bool(rows.get(employee)) and bool(
+			frappe.has_permission("Employee", "read", employee)
+		)
+	return readable
 
 
 def _existing_keys(rows: list[dict]) -> dict:
