@@ -559,3 +559,153 @@ def test_randomised_entries_always_balance_and_are_dimension_complete(seed):
 	# 4) no row has both a debit and a credit
 	for r in result.rows:
 		assert not (r.debit and r.credit)
+
+
+# ---------------------------------------------------------------------------
+# IRR / per-employee years accrual (regression for 18 IRR imbalance)
+# ---------------------------------------------------------------------------
+
+YEARS_EXP = "EXP-YEARS"
+YEARS_LIAB = "LIA-YEARS"
+
+
+def _years_config(precision: int) -> AccrualConfig:
+	accounts = dict(COMPONENT_ACCOUNTS)
+	accounts["Years Expense"] = YEARS_EXP
+	accounts["Years Liability"] = YEARS_LIAB
+	roots = dict(ACCOUNT_ROOT_TYPE)
+	roots[YEARS_EXP] = "Expense"
+	roots[YEARS_LIAB] = "Liability"
+	return AccrualConfig(
+		component_accounts=accounts,
+		account_root_type=roots,
+		payable_account=PAYROLL_PAYABLE,
+		round_off_account=ROUND_OFF,
+		round_off_cost_center=ROUND_OFF_COST_CENTER,
+		round_off_department=ROUND_OFF_DEPARTMENT,
+		per_employee_components=frozenset({"Years Liability"}),
+		precision=precision,
+	)
+
+
+def test_fractional_years_per_employee_liability_balances_at_irr_precision():
+	"""Aggregated expense + per-employee liability must balance at precision 0 (IRR)."""
+	config = _years_config(precision=0)
+	# Reproduce the two edge fractions that previously broke under precision-2→0 re-round
+	amounts = [
+		Decimal("75278633.49811949"),
+		Decimal("22851855.49942466"),
+		Decimal("102382012.43835616"),
+		Decimal("23756501.588770803"),
+	]
+	slips = []
+	for i, amt in enumerate(amounts):
+		slips.append(
+			slip(
+				f"SS-Y{i}",
+				f"Dept-{i % 2}",
+				[("CC-PROD" if i % 2 == 0 else "CC-ADMIN", 100)],
+				earnings=[("Basic Salary", 1_000_000), ("Years Expense", amt)],
+				deductions=[("Years Liability", amt)],
+				employee=f"E{i}",
+			)
+		)
+	result = build_accrual_journal_accounts(slips, config)
+	assert result.is_balanced()
+	assert result.round_off_amount == 0
+	exp_total = sum(r.debit for r in result.rows_for(YEARS_EXP))
+	liab_total = sum(r.credit for r in result.rows_for(YEARS_LIAB))
+	assert exp_total == liab_total
+	# liability is one row per employee
+	assert len(result.rows_for(YEARS_LIAB)) == len(amounts)
+	assert all(r.party_type == "Employee" for r in result.rows_for(YEARS_LIAB))
+
+
+def test_fractional_years_also_balances_at_two_decimal_precision():
+	config = _years_config(precision=2)
+	amounts = [Decimal("100.333"), Decimal("200.666"), Decimal("50.001")]
+	slips = [
+		slip(
+			f"SS-U{i}",
+			"Finance",
+			[("CC-ADMIN", 100)],
+			earnings=[("Basic Salary", 1000), ("Years Expense", a)],
+			deductions=[("Years Liability", a)],
+			employee=f"U{i}",
+		)
+		for i, a in enumerate(amounts)
+	]
+	result = build_accrual_journal_accounts(slips, config)
+	assert result.is_balanced()
+	assert sum(r.debit for r in result.rows_for(YEARS_EXP)) == sum(
+		r.credit for r in result.rows_for(YEARS_LIAB)
+	)
+
+
+def test_multi_cost_center_fractional_accrual_balances_with_round_off():
+	config = _years_config(precision=0)
+	slips = [
+		slip(
+			"SS-M0",
+			"Production",
+			[("CC-PROD", 60), ("CC-ADMIN", 40)],
+			earnings=[("Basic Salary", 10_000), ("Years Expense", Decimal("100.4"))],
+			deductions=[("Years Liability", Decimal("100.4"))],
+			employee="M0",
+		),
+		slip(
+			"SS-M1",
+			"Finance",
+			[("CC-ADMIN", 33), ("CC-PROD", 67)],
+			earnings=[("Basic Salary", 20_000), ("Years Expense", Decimal("99.6"))],
+			deductions=[("Years Liability", Decimal("99.6"))],
+			employee="M1",
+		),
+	]
+	result = build_accrual_journal_accounts(slips, config)
+	assert result.is_balanced()
+	assert sum(r.debit for r in result.rows_for(YEARS_EXP)) == sum(
+		r.credit for r in result.rows_for(YEARS_LIAB)
+	)
+
+
+def test_eidi_style_integer_accrual_with_asymmetric_per_employee_flag():
+	"""عیدی-style: integer amounts, expense aggregated, liability per-employee."""
+	config = _years_config(precision=0)
+	slips = [
+		slip(
+			f"SS-EIDI{i}",
+			"Finance",
+			[("CC-ADMIN", 100)],
+			earnings=[("Basic Salary", 5_000_000), ("Years Expense", 42_360_990)],
+			deductions=[("Years Liability", 42_360_990)],
+			employee=f"EE{i}",
+		)
+		for i in range(5)
+	]
+	result = build_accrual_journal_accounts(slips, config)
+	assert result.is_balanced()
+	assert result.round_off_amount == 0
+	assert len(result.rows_for(YEARS_LIAB)) == 5
+	assert len(result.rows_for(YEARS_EXP)) == 1  # same dept+cc aggregated
+
+
+def test_employer_insurance_style_both_aggregated_balances():
+	config = make_config(precision=0)
+	slips = [
+		slip(
+			f"SS-INS{i}",
+			"Finance",
+			[("CC-ADMIN", 100)],
+			earnings=[
+				("Basic Salary", 10_000_000),
+				("Employer Insurance (Expense)", 2_000_000),
+			],
+			deductions=[("Employee Insurance", 700_000)],
+			employee=f"I{i}",
+		)
+		for i in range(3)
+	]
+	result = build_accrual_journal_accounts(slips, config)
+	assert result.is_balanced()
+	assert sum(r.debit for r in result.rows_for(EMPLOYER_INS_EXP)) == Decimal(6_000_000)
