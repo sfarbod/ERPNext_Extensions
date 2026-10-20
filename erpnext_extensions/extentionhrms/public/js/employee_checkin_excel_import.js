@@ -8,7 +8,7 @@
 // XLSX: loads SheetJS community build xlsx@0.18.5 (Apache-2.0) from a
 // version-pinned CDN URL when window.XLSX is not already present. Verifies
 // readiness before parse. Does not use site /files or erpnext_extensions assets.
-// Version: V1.3.0 (Client Script — authorized device import API)
+// Version: V1.3.2 (Client Script — authorized existing-key lookup + clearer errors)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_import");
@@ -1081,14 +1081,21 @@ espad.attendance_import.open = function () {
 				.call({
 					method: "frappe.desk.reportview.get_list",
 					args: Object.assign({ doctype: doctype }, args || {}),
-					type: "GET",
+					// POST avoids URI-too-large failures when filters include many employees.
+					type: "POST",
 				})
 				.then((r) => {
 					if (!r) return reject(new Error(__("Empty response from server")));
 					if (r.exc) return reject(new Error(String(r.exc).split("\n")[0]));
 					resolve(Array.isArray(r.message) ? r.message : []);
 				})
-				.catch((e) => reject(e || new Error(__("Request failed"))));
+				.catch((e) => {
+					const msg =
+						(e && e.message) ||
+						(e && e.exc && String(e.exc).split("\n")[0]) ||
+						__("Request failed");
+					reject(new Error(msg));
+				});
 		});
 	}
 
@@ -1329,7 +1336,21 @@ espad.attendance_import.open = function () {
 				line("muted", `Matching time: ${state.timings.match.toFixed(2)}s | Methods: ${JSON.stringify(method_counts)}`),
 			]);
 			paint_panel();
-			await refresh_ready(true);
+			try {
+				await refresh_ready(true);
+			} catch (dup_err) {
+				console.error(dup_err);
+				term_append([
+					line(
+						"err",
+						`[ERROR] ${__("Existing-record check failed")}: ${
+							(dup_err && dup_err.message) || __("Request failed")
+						}`
+					),
+				]);
+				dialog.get_primary_btn().prop("disabled", true);
+				paint_panel();
+			}
 		} catch (err) {
 			console.error(err);
 			term_append([line("err", `[ERROR] ${(err && err.message) || __("Employee matching failed.")}`)]);
@@ -1377,7 +1398,19 @@ espad.attendance_import.open = function () {
 				term_append([
 					line("ok", `[OK] Manual: ${person.code_normalized || person.code} -> ${values.employee}`),
 				]);
-				refresh_ready(true);
+				refresh_ready(true).catch((err) => {
+					console.error(err);
+					term_append([
+						line(
+							"err",
+							`[ERROR] ${__("Existing-record check failed")}: ${
+								(err && err.message) || __("Request failed")
+							}`
+						),
+					]);
+					dialog.get_primary_btn().prop("disabled", true);
+					paint_panel();
+				});
 			},
 		});
 		d.show();
@@ -1394,26 +1427,48 @@ espad.attendance_import.open = function () {
 	}
 
 	async function fetch_existing(checkins) {
-		const employees = Array.from(new Set(checkins.map((c) => c.employee).filter(Boolean)));
-		if (!employees.length) return { set: new Set(), rows: [] };
+		const payloads = (checkins || [])
+			.filter((c) => c && c.employee && c.time && c.log_type)
+			.map((c) => ({
+				employee: c.employee,
+				time: canon_time(c.time),
+				log_type: c.log_type,
+			}));
+		if (!payloads.length) return { set: new Set(), rows: [] };
+
+		const set = new Set();
 		const rows = [];
-		const page = 500;
-		let start = 0;
-		for (let guard = 0; guard < 200; guard++) {
-			const batch = await get_list_safe("Employee Checkin", {
-				filters: [["employee", "in", employees]],
-				fields: ["employee", "time", "creation", "log_type"],
-				limit: page,
-				limit_start: start,
-				order_by: "time asc",
+		const page = 2000;
+		for (let start = 0; start < payloads.length; start += page) {
+			const chunk = payloads.slice(start, start + page);
+			const message = await new Promise((resolve, reject) => {
+				frappe
+					.call({
+						method:
+							"erpnext_extensions.extentionhrms.employee_checkin_import.find_existing_checkin_keys",
+						args: { records: chunk },
+						type: "POST",
+					})
+					.then((r) => {
+						if (!r) return reject(new Error(__("Empty response from server")));
+						if (r.exc) return reject(new Error(String(r.exc).split("\n")[0]));
+						resolve(r.message || { keys: [] });
+					})
+					.catch((e) => {
+						const msg =
+							(e && e.message) ||
+							(e && e.exc && String(e.exc).split("\n")[0]) ||
+							__("Existing-record check failed");
+						reject(new Error(msg));
+					});
 			});
-			rows.push.apply(rows, batch);
-			if (batch.length < page) break;
-			start += page;
+			(message.keys || []).forEach((r) => {
+				const key = dup_key(r.employee, r.time, r.log_type);
+				set.add(key);
+				rows.push(r);
+			});
 			await yield_ui();
 		}
-		const set = new Set();
-		rows.forEach((r) => set.add(dup_key(r.employee, r.time, r.log_type)));
 		return { set: set, rows: rows };
 	}
 
@@ -1546,7 +1601,18 @@ espad.attendance_import.open = function () {
 
 		term_append([line("info", `[INFO] ${__("Checking existing records")}…`)]);
 		const t_dup = performance.now();
-		const existing = await fetch_existing(state.checkins);
+		let existing;
+		try {
+			existing = await fetch_existing(state.checkins);
+		} catch (err) {
+			state.duplicates = 0;
+			state.checkins.forEach((c) => {
+				c._duplicate = false;
+			});
+			dialog.get_primary_btn().prop("disabled", true);
+			paint_panel();
+			throw err;
+		}
 		state.timings.dup_check = (performance.now() - t_dup) / 1000;
 		state.checkins.forEach((c) => {
 			c._duplicate = existing.set.has(dup_key(c.employee, c.time, c.log_type));
