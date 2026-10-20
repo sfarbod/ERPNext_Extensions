@@ -94,6 +94,7 @@ def after_migrate():
 def ensure_device_import_setup() -> dict:
 	result = {
 		"role": ensure_import_role(),
+		"role_permissions": ensure_import_role_permissions(),
 		"hr_settings_fields": ensure_hr_settings_fields(),
 		"hr_settings_permlevel": ensure_hr_settings_permlevel(),
 		"server_script": retire_legacy_server_script(),
@@ -276,6 +277,54 @@ def ensure_import_role() -> str:
 		}
 	)
 	role.insert(ignore_permissions=True)
+	return "created"
+
+
+def ensure_import_role_permissions() -> str:
+	"""Grant the import role Create + Read on Employee Checkin only.
+
+	Without Read, Desk ``get_list`` duplicate detection fails after matching
+	succeeds. Without Create, :func:`_authorize` rejects the import API.
+	Does not grant delete/write/submit or rights on other DocTypes.
+	"""
+	existing = frappe.db.get_value(
+		"Custom DocPerm",
+		{"parent": "Employee Checkin", "role": IMPORT_ROLE, "permlevel": 0},
+		"name",
+	)
+	values = {
+		"read": 1,
+		"write": 0,
+		"create": 1,
+		"delete": 0,
+		"submit": 0,
+		"cancel": 0,
+		"amend": 0,
+		"report": 0,
+		"export": 0,
+		"import": 0,
+		"share": 0,
+		"print": 0,
+		"email": 0,
+		"select": 1,
+	}
+	if existing:
+		frappe.db.set_value("Custom DocPerm", existing, values, update_modified=False)
+		frappe.clear_cache(doctype="Employee Checkin")
+		return "updated"
+	doc = frappe.get_doc(
+		{
+			"doctype": "Custom DocPerm",
+			"parent": "Employee Checkin",
+			"parenttype": "DocType",
+			"parentfield": "permissions",
+			"role": IMPORT_ROLE,
+			"permlevel": 0,
+			**values,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	frappe.clear_cache(doctype="Employee Checkin")
 	return "created"
 
 
