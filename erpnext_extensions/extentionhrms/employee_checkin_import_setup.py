@@ -23,12 +23,68 @@ import hashlib
 import os
 
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
+from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
+	DEFAULT_MAX_MANUAL_CHECKINS,
+	ENABLE_FIELD,
+	MAX_FIELD,
+	clear_manual_checkin_policy_cache,
+)
 
 LEGACY_SERVER_SCRIPT = "# Employee Checkin - Outside Shift Day Limit"
 LEGACY_SHA256 = "0f5676dcf01eea441343adee8043eab76a377a625602beae9b4d6438e3042c2e"
 RETIRED_MARK = "RETIRED BY erpnext_extensions.extentionhrms.employee_checkin_manual_limit"
 IMPORT_ROLE = "Attendance Device Importer"
 CLIENT_SCRIPT_NAME = "Employee Checkin Excel Import V1.0.1"
+
+# Frappe's Meta.sort_fields() walks past Tab Breaks when placing a custom
+# Section Break after the last field of a tab, so a Section after
+# ``allow_geolocation_tracking`` lands under Tenure. A Heading field does not
+# trigger that rule and stays on Shift and Attendance.
+HR_SETTINGS_HEADING = "espad_manual_checkin_heading"
+OBSOLETE_HR_SETTINGS_FIELDS = ("espad_manual_checkin_section",)
+HR_SETTINGS_CUSTOM_FIELDS = {
+	"HR Settings": [
+		{
+			"fieldname": HR_SETTINGS_HEADING,
+			"label": "Manual Attendance Checkin Policy",
+			"fieldtype": "Heading",
+			"insert_after": "allow_geolocation_tracking",
+		},
+		{
+			"fieldname": ENABLE_FIELD,
+			"label": "Enable Manual Checkin Limit",
+			"fieldtype": "Check",
+			"default": "1",
+			"insert_after": HR_SETTINGS_HEADING,
+			"permlevel": 0,
+			"description": (
+				"Cap historical manual Employee Checkins per employee. The counting "
+				"period is Jalali: from the 26th of one month through the 25th of the "
+				"next. Check-ins dated today are not counted. Authorized attendance "
+				"device imports (Excel importer or native add_log with the Attendance "
+				"Device Importer role) do not consume this quota. Only a System "
+				"Manager can change this policy."
+			),
+		},
+		{
+			"fieldname": MAX_FIELD,
+			"label": "Maximum Manual Checkins per Period",
+			"fieldtype": "Int",
+			"default": str(DEFAULT_MAX_MANUAL_CHECKINS),
+			"insert_after": ENABLE_FIELD,
+			"permlevel": 0,
+			"mandatory_depends_on": f"eval:doc.{ENABLE_FIELD}",
+			"depends_on": f"eval:doc.{ENABLE_FIELD}",
+			"description": (
+				f"Default {DEFAULT_MAX_MANUAL_CHECKINS}. Maximum historical manual "
+				"check-ins allowed per employee in each Jalali 26–25 period while "
+				"the limit is enabled."
+			),
+		},
+	]
+}
 
 
 def after_migrate():
@@ -38,11 +94,129 @@ def after_migrate():
 def ensure_device_import_setup() -> dict:
 	result = {
 		"role": ensure_import_role(),
+		"hr_settings_fields": ensure_hr_settings_fields(),
+		"hr_settings_permlevel": ensure_hr_settings_permlevel(),
 		"server_script": retire_legacy_server_script(),
 		"client_script": sync_client_script(),
 		"duplicate_index": ensure_duplicate_index(),
 	}
+	clear_manual_checkin_policy_cache()
 	return result
+
+
+def ensure_hr_settings_fields() -> str:
+	"""Install/repair Manual Attendance Checkin Policy fields on HR Settings.
+
+	Removes the obsolete Section Break that Desk rendered under the Tenure tab
+	and recreates a Heading + fields after ``allow_geolocation_tracking``.
+	"""
+	_remove_obsolete_hr_settings_fields()
+	create_custom_fields(HR_SETTINGS_CUSTOM_FIELDS, ignore_validate=True, update=True)
+	_repair_hr_settings_field_placement()
+	_ensure_hr_settings_defaults()
+	frappe.clear_cache(doctype="HR Settings")
+	return "ensured"
+
+
+def _remove_obsolete_hr_settings_fields() -> None:
+	for fieldname in OBSOLETE_HR_SETTINGS_FIELDS:
+		name = f"HR Settings-{fieldname}"
+		if frappe.db.exists("Custom Field", name):
+			frappe.delete_doc("Custom Field", name, ignore_permissions=True, force=1)
+
+
+def _ensure_hr_settings_defaults() -> None:
+	def _stored(fieldname: str) -> bool:
+		return bool(
+			frappe.db.sql(
+				"select 1 from tabSingles where doctype=%s and field=%s limit 1",
+				("HR Settings", fieldname),
+			)
+		)
+
+	if not _stored(ENABLE_FIELD):
+		frappe.db.set_single_value("HR Settings", ENABLE_FIELD, 1, update_modified=False)
+	if not _stored(MAX_FIELD):
+		frappe.db.set_single_value(
+			"HR Settings", MAX_FIELD, DEFAULT_MAX_MANUAL_CHECKINS, update_modified=False
+		)
+	else:
+		current_max = frappe.db.get_single_value("HR Settings", MAX_FIELD, cache=False)
+		if current_max in (None, "") or int(current_max or 0) < 1:
+			frappe.db.set_single_value(
+				"HR Settings", MAX_FIELD, DEFAULT_MAX_MANUAL_CHECKINS, update_modified=False
+			)
+
+
+def _repair_hr_settings_field_placement() -> None:
+	"""Keep Heading/fields anchored after geolocation with permlevel 0."""
+	specs = [
+		(HR_SETTINGS_HEADING, "allow_geolocation_tracking", "Manual Attendance Checkin Policy"),
+		(ENABLE_FIELD, HR_SETTINGS_HEADING, "Enable Manual Checkin Limit"),
+		(MAX_FIELD, ENABLE_FIELD, "Maximum Manual Checkins per Period"),
+	]
+	for fieldname, insert_after, label in specs:
+		name = f"HR Settings-{fieldname}"
+		if not frappe.db.exists("Custom Field", name):
+			continue
+		doc = frappe.get_doc("Custom Field", name)
+		doc.insert_after = insert_after
+		doc.label = label
+		if fieldname in (ENABLE_FIELD, MAX_FIELD):
+			doc.permlevel = 0
+		doc.flags.ignore_permissions = True
+		doc.save(ignore_permissions=True)
+
+
+def ensure_hr_settings_permlevel() -> str:
+	"""Ensure System Manager can open/edit HR Settings when Custom DocPerm is active.
+
+	This site already uses Custom DocPerm for HR Settings. A prior setup step
+	added only permlevel-1 rights for System Manager, which can hide ordinary
+	form fields. Policy fields are now permlevel 0; write access is still
+	restricted to System Manager in ``validate_hr_settings_manual_limit``.
+	"""
+	# Remove the obsolete permlevel-1-only Custom DocPerm we may have created.
+	obsolete = frappe.db.get_value(
+		"Custom DocPerm",
+		{"parent": "HR Settings", "role": "System Manager", "permlevel": 1},
+		"name",
+	)
+	if obsolete:
+		frappe.delete_doc("Custom DocPerm", obsolete, ignore_permissions=True, force=1)
+
+	existing = frappe.db.get_value(
+		"Custom DocPerm",
+		{"parent": "HR Settings", "role": "System Manager", "permlevel": 0},
+		"name",
+	)
+	values = {
+		"read": 1,
+		"write": 1,
+		"create": 1,
+		"delete": 0,
+		"share": 1,
+		"email": 1,
+		"print": 1,
+	}
+	if existing:
+		frappe.db.set_value("Custom DocPerm", existing, values, update_modified=False)
+		frappe.clear_cache(doctype="HR Settings")
+		return "updated"
+	doc = frappe.get_doc(
+		{
+			"doctype": "Custom DocPerm",
+			"parent": "HR Settings",
+			"parenttype": "DocType",
+			"parentfield": "permissions",
+			"role": "System Manager",
+			"permlevel": 0,
+			**values,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	frappe.clear_cache(doctype="HR Settings")
+	return "created"
 
 
 def ensure_duplicate_index() -> str:
