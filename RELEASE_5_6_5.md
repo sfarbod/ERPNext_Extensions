@@ -13,7 +13,13 @@ The custom Payroll Entry accrual Journal Entry builder used `frappe.get_precisio
 
 When an accrual pair books **aggregated** expense rows and **per-employee** liability rows (e.g. ذخیره سنوات), that second rounding produced a debit/credit imbalance (observed: **18 IRR** on شهریور 1405).
 
-This release resolves accounting precision from the company currency the same way Journal Entry Account fields do, quantizes emitted rows before round-off, and keeps the company Round Off account only for genuine residuals.
+This release:
+
+- Resolves accounting precision from the company currency the same way Journal Entry Account fields do (IRR → **0** decimals).
+- Quantizes emitted debit/credit rows **before** Round Off, preventing unintended double rounding.
+- Preserves employee-level payable amounts and cost-center / department expense allocations.
+- Uses the company Round Off account only for legitimate residuals — never to hide formula or mapping errors.
+- Remains compatible with ERPNext / HRMS **v16** without modifying ERPNext or HRMS core.
 
 ---
 
@@ -21,26 +27,47 @@ This release resolves accounting precision from the company currency the same wa
 
 | File | Change |
 |------|--------|
-| `extentionhrms/payroll_entry_override.py` | `_currency_precision()` uses System Settings / currency number format (IRR → 0) |
+| `extentionhrms/payroll_entry_override.py` | `_currency_precision()` uses System Settings / currency number format (IRR → 0); accrual JE saved as Draft |
 | `extentionhrms/payroll_accrual_grouping.py` | `_quantize_emitted_rows()` before `_append_round_off()` |
-| `extentionhrms/tests/test_payroll_accrual_grouping.py` | Regression tests for fractional years, per-employee liability, multi-CC, عیدی-style, insurance-style, precision 0 and 2 |
+| `extentionhrms/tests/test_payroll_accrual_grouping.py` | Regression tests for fractional سنوات, per-employee liability, multi-CC, عیدی-style, insurance-style, precision 0 and 2, JE balance |
 
 ---
 
-## 3. Recommended Salary Component configuration (site data)
+## 3. Site-level configuration (not deployed by Git merge)
 
-Not shipped as a patch; apply on each site as needed:
+Payroll data corrections and Salary Component / Salary Structure settings are **site-level** changes. Merging or installing this app version does **not** automatically apply them.
 
-- `ذخیره سنوات (هزینه)` / `ذخیره سنوات (پرداختنی)`: `round_to_the_nearest_integer = 1`
-- `ذخیره عیدی (هزینه)` / `ذخیره عیدی (پرداختنی)`: `round_to_the_nearest_integer = 1`
-- Align بیمه بیکاری پرداختنی Salary Structure formula to `EmploymentInsurance` when the structure overrides the component master
+Apply on each site as needed:
+
+| Change | Detail |
+|--------|--------|
+| ذخیره سنوات (هزینه) / (پرداختنی) | `round_to_the_nearest_integer = 1` (preserve employee-process flags) |
+| ذخیره عیدی (هزینه) / (پرداختنی) | `round_to_the_nearest_integer = 1` |
+| بیمه بیکاری سهم کارفرما پرداختنی (Salary Structure) | Align formula to `EmploymentInsurance` when the structure overrides the component master (expense side already includes `TRANSPORTE2`) |
+| Server Script `محاسبه تسری سنوات` | Round `total_zakhire` with `int(round(...))` so Before Save does not overwrite component integer rounding |
 
 ---
 
-## 4. Tests
+## 4. Verified payroll recreation result (`development.localhost`)
+
+Target Payroll Entry: **شهریور 1405**
+
+| Item | Result |
+|------|--------|
+| Salary Slips | **267** submitted |
+| Accrual Journal Entry | `ACC-JV-1405-169090` — Debit = Credit = **284,850,182,887** IRR, Difference = **0**, status = **Draft** |
+| Net salary vs baseline | **−36,300,000** IRR — supplemental insurance deductions (`بیمه تکمیلی کارمند` + `بیمه تکمیلی افراد تحت تکفل`) for **HR-EMP-0540** and **HR-EMP-0542** |
+| Acceptance | This net difference has been **accepted by the user** |
+| Journal Entry | Remains **Draft** — not submitted by this release process |
+
+---
+
+## 5. Tests
 
 ```bash
 bench --site development.localhost run-tests --app erpnext_extensions --module erpnext_extensions.extentionhrms.tests.test_payroll_accrual_grouping
 # or
 pytest apps/erpnext_extensions/erpnext_extensions/extentionhrms/tests/test_payroll_accrual_grouping.py -q
 ```
+
+Expected: **60** tests passed.
