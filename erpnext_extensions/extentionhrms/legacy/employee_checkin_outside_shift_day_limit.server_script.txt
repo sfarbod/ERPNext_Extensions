@@ -1,0 +1,888 @@
+# ============================================================
+# ESPAD - Employee Checkin Manual/Delayed Entry Limit
+#
+# DocType : Employee Checkin
+# Event   : Before Insert
+#
+# Version : 2.0
+#
+# ============================================================
+#
+# RULE
+#
+# A Checkin is considered MANUAL / DELAYED when:
+#
+#     DATE(time) != TODAY
+#
+# Time of day is NOT important.
+#
+# Examples:
+#
+# Today = 2026-09-30
+#
+# time = 2026-09-30 08:00
+#     -> Normal
+#     -> Unlimited
+#
+# time = 2026-09-29 08:00
+#     -> Manual / Delayed
+#     -> Counts toward quota
+#
+# Each IN  = 1
+# Each OUT = 1
+#
+# Maximum:
+#     5 delayed Checkins
+#
+# Period:
+#     Jalali 26 -> 25
+#
+# The period is determined from the CHECKIN DATE (doc.time).
+#
+# No Shift / Rotation / Work / Rest logic is used.
+#
+# No custom def/function is used because of safe_exec.
+# ============================================================
+
+
+MAX_MANUAL_CHECKINS = 5
+
+
+# ============================================================
+# 1. BASIC VALIDATION
+# ============================================================
+
+if not doc.employee:
+    frappe.throw(
+        "Employee is required."
+    )
+
+if not doc.time:
+    frappe.throw(
+        "Check-in Time is required."
+    )
+
+
+checkin_datetime = frappe.utils.get_datetime(
+    doc.time
+)
+
+checkin_date = frappe.utils.getdate(
+    checkin_datetime
+)
+
+
+today_date = frappe.utils.getdate(
+    frappe.utils.nowdate()
+)
+
+
+# ============================================================
+# 2. IS CURRENT CHECKIN MANUAL / DELAYED?
+#
+# DATE ONLY.
+#
+# Same date = normal.
+# Different date = manual/delayed.
+# ============================================================
+
+is_manual_entry = (
+    checkin_date != today_date
+)
+
+
+# ============================================================
+# 3. ONLY DELAYED ENTRIES NEED LIMIT VALIDATION
+# ============================================================
+
+if is_manual_entry:
+
+    # ========================================================
+    # 4. GREGORIAN CHECKIN DATE -> JALALI
+    # ========================================================
+
+    gy = checkin_date.year
+    gm = checkin_date.month
+    gd = checkin_date.day
+
+
+    g_days_in_month = [
+        31, 28, 31, 30, 31, 30,
+        31, 31, 30, 31, 30, 31
+    ]
+
+
+    j_days_in_month = [
+        31, 31, 31, 31, 31, 31,
+        30, 30, 30, 30, 30, 29
+    ]
+
+
+    gy2 = gy - 1600
+    gm2 = gm - 1
+    gd2 = gd - 1
+
+
+    g_day_no = (
+        365 * gy2
+        + ((gy2 + 3) // 4)
+        - ((gy2 + 99) // 100)
+        + ((gy2 + 399) // 400)
+    )
+
+
+    i = 0
+
+    while i < gm2:
+
+        g_day_no = (
+            g_day_no
+            + g_days_in_month[i]
+        )
+
+        i = i + 1
+
+
+    leap_g = (
+        (
+            gy2 % 4 == 0
+            and gy2 % 100 != 0
+        )
+        or
+        gy2 % 400 == 0
+    )
+
+
+    if gm2 > 1 and leap_g:
+
+        g_day_no = (
+            g_day_no + 1
+        )
+
+
+    g_day_no = (
+        g_day_no + gd2
+    )
+
+
+    j_day_no = (
+        g_day_no - 79
+    )
+
+
+    j_np = (
+        j_day_no // 12053
+    )
+
+
+    j_day_no = (
+        j_day_no % 12053
+    )
+
+
+    jalali_year = (
+        979
+        + 33 * j_np
+        + 4 * (
+            j_day_no // 1461
+        )
+    )
+
+
+    j_day_no = (
+        j_day_no % 1461
+    )
+
+
+    if j_day_no >= 366:
+
+        jalali_year = (
+            jalali_year
+            + (
+                (j_day_no - 1)
+                // 365
+            )
+        )
+
+        j_day_no = (
+            (j_day_no - 1)
+            % 365
+        )
+
+
+    i = 0
+
+    while (
+        i < 11
+        and
+        j_day_no
+        >= j_days_in_month[i]
+    ):
+
+        j_day_no = (
+            j_day_no
+            - j_days_in_month[i]
+        )
+
+        i = i + 1
+
+
+    jalali_month = (
+        i + 1
+    )
+
+    jalali_day = (
+        j_day_no + 1
+    )
+
+
+    # ========================================================
+    # 5. DETERMINE JALALI PERIOD
+    #
+    # Example:
+    #
+    # 1405/07/10
+    #     -> 1405/06/26 - 1405/07/25
+    #
+    # 1405/07/27
+    #     -> 1405/07/26 - 1405/08/25
+    # ========================================================
+
+    if jalali_day >= 26:
+
+        period_start_jy = (
+            jalali_year
+        )
+
+        period_start_jm = (
+            jalali_month
+        )
+
+
+        if jalali_month == 12:
+
+            period_end_jy = (
+                jalali_year + 1
+            )
+
+            period_end_jm = 1
+
+        else:
+
+            period_end_jy = (
+                jalali_year
+            )
+
+            period_end_jm = (
+                jalali_month + 1
+            )
+
+
+    else:
+
+        period_end_jy = (
+            jalali_year
+        )
+
+        period_end_jm = (
+            jalali_month
+        )
+
+
+        if jalali_month == 1:
+
+            period_start_jy = (
+                jalali_year - 1
+            )
+
+            period_start_jm = 12
+
+        else:
+
+            period_start_jy = (
+                jalali_year
+            )
+
+            period_start_jm = (
+                jalali_month - 1
+            )
+
+
+    # ========================================================
+    # 6. JALALI PERIOD START -> GREGORIAN
+    #
+    # period_start_jy / period_start_jm / 26
+    # ========================================================
+
+    jy = period_start_jy
+    jm = period_start_jm
+    jd = 26
+
+
+    jy2 = jy - 979
+    jm2 = jm - 1
+    jd2 = jd - 1
+
+
+    j_day_no = (
+        365 * jy2
+        + (jy2 // 33) * 8
+        + (
+            (
+                (jy2 % 33) + 3
+            )
+            // 4
+        )
+    )
+
+
+    i = 0
+
+    while i < jm2:
+
+        j_day_no = (
+            j_day_no
+            + j_days_in_month[i]
+        )
+
+        i = i + 1
+
+
+    j_day_no = (
+        j_day_no + jd2
+    )
+
+
+    g_day_no = (
+        j_day_no + 79
+    )
+
+
+    period_start_gy = (
+        1600
+        + 400
+        * (
+            g_day_no // 146097
+        )
+    )
+
+
+    g_day_no = (
+        g_day_no % 146097
+    )
+
+
+    leap = True
+
+
+    if g_day_no >= 36525:
+
+        g_day_no = (
+            g_day_no - 1
+        )
+
+
+        period_start_gy = (
+            period_start_gy
+            + 100
+            * (
+                g_day_no // 36524
+            )
+        )
+
+
+        g_day_no = (
+            g_day_no % 36524
+        )
+
+
+        if g_day_no >= 365:
+
+            g_day_no = (
+                g_day_no + 1
+            )
+
+        else:
+
+            leap = False
+
+
+    period_start_gy = (
+        period_start_gy
+        + 4
+        * (
+            g_day_no // 1461
+        )
+    )
+
+
+    g_day_no = (
+        g_day_no % 1461
+    )
+
+
+    if g_day_no >= 366:
+
+        leap = False
+
+        g_day_no = (
+            g_day_no - 1
+        )
+
+
+        period_start_gy = (
+            period_start_gy
+            + (
+                g_day_no // 365
+            )
+        )
+
+
+        g_day_no = (
+            g_day_no % 365
+        )
+
+
+    i = 0
+
+
+    while i < 12:
+
+        month_days = (
+            g_days_in_month[i]
+        )
+
+
+        if (
+            i == 1
+            and leap
+        ):
+
+            month_days = (
+                month_days + 1
+            )
+
+
+        if g_day_no < month_days:
+            break
+
+
+        g_day_no = (
+            g_day_no
+            - month_days
+        )
+
+        i = i + 1
+
+
+    period_start_gm = (
+        i + 1
+    )
+
+    period_start_gd = (
+        g_day_no + 1
+    )
+
+
+    period_start = (
+        frappe.utils.getdate(
+            "%04d-%02d-%02d"
+            % (
+                period_start_gy,
+                period_start_gm,
+                period_start_gd
+            )
+        )
+    )
+
+
+    # ========================================================
+    # 7. JALALI PERIOD END -> GREGORIAN
+    #
+    # period_end_jy / period_end_jm / 25
+    # ========================================================
+
+    jy = period_end_jy
+    jm = period_end_jm
+    jd = 25
+
+
+    jy2 = jy - 979
+    jm2 = jm - 1
+    jd2 = jd - 1
+
+
+    j_day_no = (
+        365 * jy2
+        + (jy2 // 33) * 8
+        + (
+            (
+                (jy2 % 33) + 3
+            )
+            // 4
+        )
+    )
+
+
+    i = 0
+
+    while i < jm2:
+
+        j_day_no = (
+            j_day_no
+            + j_days_in_month[i]
+        )
+
+        i = i + 1
+
+
+    j_day_no = (
+        j_day_no + jd2
+    )
+
+
+    g_day_no = (
+        j_day_no + 79
+    )
+
+
+    period_end_gy = (
+        1600
+        + 400
+        * (
+            g_day_no // 146097
+        )
+    )
+
+
+    g_day_no = (
+        g_day_no % 146097
+    )
+
+
+    leap = True
+
+
+    if g_day_no >= 36525:
+
+        g_day_no = (
+            g_day_no - 1
+        )
+
+
+        period_end_gy = (
+            period_end_gy
+            + 100
+            * (
+                g_day_no // 36524
+            )
+        )
+
+
+        g_day_no = (
+            g_day_no % 36524
+        )
+
+
+        if g_day_no >= 365:
+
+            g_day_no = (
+                g_day_no + 1
+            )
+
+        else:
+
+            leap = False
+
+
+    period_end_gy = (
+        period_end_gy
+        + 4
+        * (
+            g_day_no // 1461
+        )
+    )
+
+
+    g_day_no = (
+        g_day_no % 1461
+    )
+
+
+    if g_day_no >= 366:
+
+        leap = False
+
+        g_day_no = (
+            g_day_no - 1
+        )
+
+
+        period_end_gy = (
+            period_end_gy
+            + (
+                g_day_no // 365
+            )
+        )
+
+
+        g_day_no = (
+            g_day_no % 365
+        )
+
+
+    i = 0
+
+
+    while i < 12:
+
+        month_days = (
+            g_days_in_month[i]
+        )
+
+
+        if (
+            i == 1
+            and leap
+        ):
+
+            month_days = (
+                month_days + 1
+            )
+
+
+        if g_day_no < month_days:
+            break
+
+
+        g_day_no = (
+            g_day_no
+            - month_days
+        )
+
+        i = i + 1
+
+
+    period_end_gm = (
+        i + 1
+    )
+
+    period_end_gd = (
+        g_day_no + 1
+    )
+
+
+    period_end = (
+        frappe.utils.getdate(
+            "%04d-%02d-%02d"
+            % (
+                period_end_gy,
+                period_end_gm,
+                period_end_gd
+            )
+        )
+    )
+
+
+    # ========================================================
+    # 8. FETCH ALL CHECKINS WHOSE CHECKIN TIME IS IN PERIOD
+    #
+    # IMPORTANT:
+    #
+    # We need:
+    #     time
+    #     creation
+    #
+    # time     = actual Checkin datetime
+    # creation = when the Employee Checkin document was made
+    #
+    # If DATE(creation) != DATE(time):
+    #     historical/manual entry
+    # ========================================================
+
+    period_start_datetime = (
+        frappe.utils.get_datetime(
+            str(period_start)
+            + " 00:00:00"
+        )
+    )
+
+
+    period_after_end = (
+        frappe.utils.add_days(
+            period_end,
+            1
+        )
+    )
+
+
+    period_after_end_datetime = (
+        frappe.utils.get_datetime(
+            str(period_after_end)
+            + " 00:00:00"
+        )
+    )
+
+
+    existing_logs = frappe.get_all(
+        "Employee Checkin",
+
+        filters=[
+            [
+                "employee",
+                "=",
+                doc.employee
+            ],
+            [
+                "time",
+                ">=",
+                period_start_datetime
+            ],
+            [
+                "time",
+                "<",
+                period_after_end_datetime
+            ]
+        ],
+
+        fields=[
+            "name",
+            "time",
+            "creation",
+            "log_type"
+        ],
+
+        order_by="time asc",
+
+        limit_page_length=10000
+    )
+
+
+    # ========================================================
+    # 9. COUNT PREVIOUS MANUAL / DELAYED CHECKINS
+    # ========================================================
+
+    manual_count = 0
+
+
+    for existing_log in existing_logs:
+
+        # Safety guard
+        if (
+            doc.name
+            and
+            existing_log.name == doc.name
+        ):
+            continue
+
+
+        if (
+            existing_log.time
+            and
+            existing_log.creation
+        ):
+
+            old_checkin_date = (
+                frappe.utils.getdate(
+                    existing_log.time
+                )
+            )
+
+
+            old_creation_date = (
+                frappe.utils.getdate(
+                    existing_log.creation
+                )
+            )
+
+
+            # -----------------------------------------------
+            # DATE ONLY
+            #
+            # Same calendar date:
+            #     normal
+            #
+            # Different calendar date:
+            #     delayed/manual
+            # -----------------------------------------------
+
+            if (
+                old_checkin_date
+                != old_creation_date
+            ):
+
+                manual_count = (
+                    manual_count + 1
+                )
+
+
+    # ========================================================
+    # 10. BLOCK THE 6TH MANUAL ENTRY
+    # ========================================================
+
+    if (
+        manual_count
+        >= MAX_MANUAL_CHECKINS
+    ):
+
+        frappe.throw(
+            (
+                "امکان ثبت این تردد وجود ندارد."
+                "<br><br>"
+
+                "این تردد مربوط به تاریخی غیر از "
+                "امروز است و به عنوان "
+                "<b>تردد دستی / با تأخیر</b> "
+                "محسوب می‌شود."
+
+                "<br><br>"
+
+                "<b>کارمند:</b> %s"
+
+                "<br>"
+
+                "<b>تاریخ تردد:</b> %s"
+
+                "<br>"
+
+                "<b>تاریخ ثبت:</b> %s"
+
+                "<br><br>"
+
+                "<b>دوره شمسی:</b> "
+                "%04d/%02d/26 تا "
+                "%04d/%02d/25"
+
+                "<br>"
+
+                "<b>تعداد تردد دستی قبلی:</b> %s"
+
+                "<br>"
+
+                "<b>حداکثر مجاز:</b> %s"
+
+                "<br><br>"
+
+                "این تردد، مورد شماره "
+                "<b>%s</b> است و اجازه ثبت ندارد."
+            )
+            % (
+                doc.employee,
+
+                str(checkin_date),
+
+                str(today_date),
+
+                period_start_jy,
+                period_start_jm,
+
+                period_end_jy,
+                period_end_jm,
+
+                manual_count,
+
+                MAX_MANUAL_CHECKINS,
+
+                manual_count + 1
+            )
+        )

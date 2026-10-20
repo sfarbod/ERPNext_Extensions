@@ -255,6 +255,16 @@ override_doctype_class = {
 # Hook on document methods and events
 
 doc_events = {
+	# Manual/delayed Employee Checkin cap (HR Settings; default 5 per Jalali 26–25).
+	# Trusted device imports skip only that cap, via device_import_context() or
+	# Attendance Device Importer + native add_log_based_on_employee_field.
+	"Employee Checkin": {
+		"before_insert": "erpnext_extensions.extentionhrms.employee_checkin_manual_limit.before_insert",
+	},
+	"HR Settings": {
+		"validate": "erpnext_extensions.extentionhrms.employee_checkin_manual_limit.validate_hr_settings_manual_limit",
+		"on_update": "erpnext_extensions.extentionhrms.employee_checkin_manual_limit.clear_manual_checkin_policy_cache",
+	},
 	# Track-Semi-Finished-Goods guards (stock_extensions/job_card_semi_fg.py), still needed on 16.33:
 	#  * after_insert — same semi_fg_bom on every card so per-lot operating cost is not double-counted
 	#  * validate     — refuse a Pending Qty on a completed cycle (locks the operation's remainder)
