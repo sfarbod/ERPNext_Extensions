@@ -7,6 +7,10 @@ opens :func:`device_import_context` only after the caller is authenticated
 and holds both Employee Checkin create permission and an explicit import
 role. Client fields such as ``skip_manual_limit`` are ignored.
 
+``Employee Checkin.device_id`` is Location / Device ID (physical terminal).
+The Excel employee code maps to ``Employee.attendance_device_id``, never to
+``device_id``.
+
 Duplicate identity is employee + timestamp (second precision) + log type,
 matching HRMS ``validate_duplicate_log``. Repeating a batch is idempotent.
 """
@@ -14,6 +18,7 @@ matching HRMS ``validate_duplicate_log``. Repeating a batch is idempotent.
 from __future__ import annotations
 
 import json
+import re
 from collections import OrderedDict
 
 import frappe
@@ -28,20 +33,24 @@ from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
 IMPORT_ROLES = ("System Manager", "Attendance Device Importer")
 MAX_RECORDS = 200
 MAX_ASSIGNMENTS = 500
+MAX_DEVICE_ID_LEN = 140
 _LOG_TYPES = {"IN", "OUT"}
 _RECORD_KEYS = {"employee", "time", "log_type", "device_id", "skip_auto_attendance"}
+_DEVICE_ID_RE = re.compile(r"^[\w.\-/: #]+$", re.UNICODE)
 
 
 @frappe.whitelist()
-def import_device_checkins(records=None, device_assignments=None):
+def import_device_checkins(records=None, device_assignments=None, location_device_id=None):
 	"""Create device checkins for an authorized user.
 
 	``records`` is a list of ``{employee, time, log_type, device_id, skip_auto_attendance}``.
+	``device_id`` on each record, and ``location_device_id``, mean physical terminal /
+	location only. They must not be the employee's biometric/personnel code.
 	``device_assignments`` optionally fills empty ``attendance_device_id`` values.
-	Neither argument can turn the manual-limit bypass on by itself.
 	"""
 	_authorize()
-	parsed = _parse_records(records)
+	batch_location = _sanitize_device_id(location_device_id, label="location_device_id")
+	parsed = _parse_records(records, batch_location=batch_location)
 	assignments = _parse_assignments(device_assignments)
 	with device_import_context():
 		outcome = _insert_records(parsed)
@@ -66,10 +75,44 @@ def import_device_checkins(records=None, device_assignments=None):
 def assign_empty_attendance_device_ids(assignments=None):
 	"""Set ``attendance_device_id`` only where it is empty.
 
-	Existing non-empty values are preserved. Other Employee fields are not written.
+	Existing non-empty values are preserved. Conflicts with another employee
+	are reported and not written. Other Employee fields are not written.
 	"""
 	_authorize()
 	return _assign_empty_attendance_device_ids(assignments)
+
+
+@frappe.whitelist()
+def report_employee_code_stored_as_device_id(limit=500):
+	"""Read-only report: checkins whose device_id equals the employee's attendance_device_id.
+
+	Does not modify data. Intended for reviewing historical imports before any
+	optional cleanup migration.
+	"""
+	_authorize()
+	limit = max(1, min(cint(limit) or 500, 5000))
+	rows = frappe.db.sql(
+		"""
+		select c.name, c.employee, c.time, c.log_type, c.device_id, e.attendance_device_id
+		from `tabEmployee Checkin` c
+		inner join `tabEmployee` e on e.name = c.employee
+		where ifnull(c.device_id, '') != ''
+			and c.device_id = e.attendance_device_id
+		order by c.time desc
+		limit %s
+		""",
+		limit,
+		as_dict=True,
+	)
+	total = frappe.db.sql(
+		"""
+		select count(*) from `tabEmployee Checkin` c
+		inner join `tabEmployee` e on e.name = c.employee
+		where ifnull(c.device_id, '') != ''
+			and c.device_id = e.attendance_device_id
+		"""
+	)[0][0]
+	return {"total": total, "returned": len(rows), "rows": rows}
 
 
 def _assign_empty_attendance_device_ids(assignments) -> dict:
@@ -87,17 +130,61 @@ def _assign_empty_attendance_device_ids(assignments) -> dict:
 			limit_page_length=len(names),
 		)
 	}
+	# Map existing device IDs to owners for conflict detection.
+	codes = list({row["personnel_code"] for row in rows})
+	owners = {}
+	if codes:
+		for row in frappe.get_all(
+			"Employee",
+			filters={"attendance_device_id": ["in", codes]},
+			fields=["name", "attendance_device_id"],
+			limit_page_length=len(codes) + 50,
+		):
+			owners[cstr(row.attendance_device_id).strip()] = row.name
+
 	updated = []
 	preserved = []
 	failed = []
 	for row in rows:
 		employee = row["employee"]
+		code = row["personnel_code"]
 		found = current.get(employee)
 		if not found:
-			failed.append({"employee": employee, "error": f"Employee {employee} does not exist.", "category": "Invalid Employee"})
+			failed.append(
+				{
+					"employee": employee,
+					"error": f"Employee {employee} does not exist.",
+					"category": "Invalid Employee",
+				}
+			)
 			continue
-		if cstr(found.attendance_device_id).strip():
-			preserved.append(employee)
+		existing = cstr(found.attendance_device_id).strip()
+		if existing:
+			if existing != code:
+				failed.append(
+					{
+						"employee": employee,
+						"error": (
+							f"Employee {employee} already has Attendance Device ID "
+							f"'{existing}'; refused to replace with '{code}'."
+						),
+						"category": "Conflicting attendance_device_id",
+					}
+				)
+			else:
+				preserved.append(employee)
+			continue
+		owner = owners.get(code)
+		if owner and owner != employee:
+			failed.append(
+				{
+					"employee": employee,
+					"error": (
+						f"Attendance Device ID '{code}' is already assigned to {owner}."
+					),
+					"category": "Conflicting attendance_device_id",
+				}
+			)
 			continue
 		if not frappe.has_permission("Employee", "write", employee):
 			failed.append(
@@ -112,10 +199,11 @@ def _assign_empty_attendance_device_ids(assignments) -> dict:
 			"Employee",
 			employee,
 			"attendance_device_id",
-			row["personnel_code"],
+			code,
 			update_modified=True,
 		)
-		found.attendance_device_id = row["personnel_code"]
+		found.attendance_device_id = code
+		owners[code] = employee
 		updated.append(employee)
 	return {"updated": updated, "preserved": preserved, "failed": failed}
 
@@ -136,7 +224,24 @@ def _authorize():
 		)
 
 
-def _parse_records(records) -> list[dict]:
+def _sanitize_device_id(value, label="device_id") -> str | None:
+	text = cstr(value).strip()
+	if not text:
+		return None
+	if len(text) > MAX_DEVICE_ID_LEN:
+		frappe.throw(
+			_("{0} is too long (max {1} characters).").format(label, MAX_DEVICE_ID_LEN),
+			frappe.ValidationError,
+		)
+	if not _DEVICE_ID_RE.match(text):
+		frappe.throw(
+			_("{0} contains invalid characters.").format(label),
+			frappe.ValidationError,
+		)
+	return text
+
+
+def _parse_records(records, batch_location: str | None = None) -> list[dict]:
 	records = _load_json_list(records, "records")
 	if len(records) > MAX_RECORDS:
 		frappe.throw(
@@ -147,8 +252,11 @@ def _parse_records(records) -> list[dict]:
 	for index, raw in enumerate(records):
 		if not isinstance(raw, dict):
 			frappe.throw(_("Record {0} is not an object.").format(index + 1), frappe.ValidationError)
-		# Drop client bypass keys. Only the fields below are read.
-		parsed.append({key: raw.get(key) for key in _RECORD_KEYS})
+		row = {key: raw.get(key) for key in _RECORD_KEYS}
+		# Per-record device_id is optional Location / Device ID only.
+		row_device = _sanitize_device_id(row.get("device_id"), label=f"records[{index}].device_id")
+		row["device_id"] = row_device or batch_location
+		parsed.append(row)
 	return parsed
 
 
@@ -167,7 +275,7 @@ def _parse_assignments(assignments) -> list[dict]:
 		code = cstr(raw.get("personnel_code")).strip()
 		if not employee or not code:
 			continue
-		if len(code) > 140:
+		if len(code) > MAX_DEVICE_ID_LEN:
 			frappe.throw(_("Personnel code for {0} is too long.").format(employee), frappe.ValidationError)
 		out.append({"employee": employee, "personnel_code": code})
 	return out
@@ -204,7 +312,7 @@ def _insert_records(parsed: list[dict]) -> dict:
 		for row in frappe.get_all(
 			"Employee",
 			filters={"name": ["in", employees]},
-			fields=["name", "status", "company"],
+			fields=["name", "status", "company", "attendance_device_id"],
 			limit_page_length=len(employees),
 		):
 			employee_rows[row.name] = row
@@ -232,13 +340,18 @@ def _insert_records(parsed: list[dict]) -> dict:
 				}
 			)
 			continue
+		device_id = row.get("device_id")
+		# Never store the employee's attendance_device_id as Location / Device ID.
+		emp_code = cstr(employee_rows.get(employee) and employee_rows[employee].attendance_device_id).strip()
+		if device_id and emp_code and device_id == emp_code:
+			device_id = None
 		normalized.append(
 			{
 				"employee": employee,
 				"time": when,
 				"time_key": when.strftime("%Y-%m-%d %H:%M:%S"),
 				"log_type": log_type,
-				"device_id": cstr(row.get("device_id")).strip()[:140],
+				"device_id": device_id,
 				"skip_auto_attendance": 1 if cint(row.get("skip_auto_attendance")) else 0,
 			}
 		)
@@ -247,82 +360,80 @@ def _insert_records(parsed: list[dict]) -> dict:
 	_lock_employees(sorted({row["employee"] for row in normalized if row["employee"]}))
 	existing = _existing_keys(normalized)
 	for index, row in enumerate(normalized):
-			key = (row["employee"], row["time_key"], row["log_type"])
-			problem = _row_problem(row, employee_rows, readable)
-			if problem:
-				failed.append(problem)
-				continue
-			if key in existing:
+		key = (row["employee"], row["time_key"], row["log_type"])
+		problem = _row_problem(row, employee_rows, readable)
+		if problem:
+			failed.append(problem)
+			continue
+		if key in existing:
+			duplicates.append(
+				{
+					"employee": row["employee"],
+					"time": row["time_key"],
+					"log_type": row["log_type"],
+					"name": existing[key],
+				}
+			)
+			continue
+
+		savepoint = f"device_checkin_{index}"
+		frappe.db.savepoint(savepoint)
+		try:
+			doc = frappe.get_doc(
+				{
+					"doctype": "Employee Checkin",
+					"employee": row["employee"],
+					"time": row["time"],
+					"log_type": row["log_type"],
+					"device_id": row["device_id"] or None,
+					"skip_auto_attendance": row["skip_auto_attendance"],
+				}
+			)
+			doc.insert()
+		except Exception as exc:
+			original = exc
+			savepoint_intact = True
+			try:
+				frappe.db.rollback(save_point=savepoint)
+			except Exception:
+				savepoint_intact = False
+				frappe.db.rollback()
+			frappe.clear_messages()
+			message = _exception_text(original)
+			if _is_duplicate_error(message):
 				duplicates.append(
 					{
 						"employee": row["employee"],
 						"time": row["time_key"],
 						"log_type": row["log_type"],
-						"name": existing[key],
+						"name": None,
 					}
 				)
-				continue
-
-			savepoint = f"device_checkin_{index}"
-			frappe.db.savepoint(savepoint)
-			try:
-				doc = frappe.get_doc(
-					{
-						"doctype": "Employee Checkin",
-						"employee": row["employee"],
-						"time": row["time"],
-						"log_type": row["log_type"],
-						"device_id": row["device_id"] or None,
-						"skip_auto_attendance": row["skip_auto_attendance"],
-					}
-				)
-				doc.insert()
-			except Exception as exc:
-				original = exc
-				savepoint_intact = True
-				try:
-					frappe.db.rollback(save_point=savepoint)
-				except Exception:
-					savepoint_intact = False
-					frappe.db.rollback()
-				frappe.clear_messages()
-				message = _exception_text(original)
-				if _is_duplicate_error(message):
-					duplicates.append(
-						{
-							"employee": row["employee"],
-							"time": row["time_key"],
-							"log_type": row["log_type"],
-							"name": None,
-						}
-					)
-					existing[key] = None
-				else:
-					failed.append(
-						{
-							"employee": row["employee"],
-							"time": row["time_key"],
-							"log_type": row["log_type"],
-							"error": message,
-							"category": _failure_category(message),
-						}
-					)
-				if not savepoint_intact:
-					# The transaction was aborted, so earlier inserts in this
-					# request were rolled back too. Report only rows that remain.
-					created = [item for item in created if _key_exists(item)]
-					return {"created": created, "duplicates": duplicates, "failed": failed}
+				existing[key] = None
 			else:
-				frappe.db.release_savepoint(savepoint)
-				existing[key] = doc.name
-				created.append(
+				failed.append(
 					{
 						"employee": row["employee"],
 						"time": row["time_key"],
 						"log_type": row["log_type"],
-						"name": doc.name,
+						"error": message,
+						"category": _failure_category(message),
 					}
 				)
+			if not savepoint_intact:
+				created = [item for item in created if _key_exists(item)]
+				return {"created": created, "duplicates": duplicates, "failed": failed}
+		else:
+			frappe.db.release_savepoint(savepoint)
+			existing[key] = doc.name
+			created.append(
+				{
+					"employee": row["employee"],
+					"time": row["time_key"],
+					"log_type": row["log_type"],
+					"name": doc.name,
+				}
+			)
 
 	return {"created": created, "duplicates": duplicates, "failed": failed}
 
@@ -353,7 +464,7 @@ def _existing_keys(rows: list[dict]) -> dict:
 	if not employees or not times:
 		return found
 	for existing in frappe.db.sql(
-		f"""
+		"""
 		select name, employee, time, log_type
 		from `tabEmployee Checkin`
 		where employee in %(employees)s

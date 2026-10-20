@@ -287,12 +287,16 @@ espad.attendance_import.lib = (function () {
 				const key = person.employee + "|" + time + "|" + log_type;
 				if (seen.has(key)) return;
 				seen.add(key);
+				// device_id is Location / Device ID (physical terminal), never the
+				// employee/personnel code from Excel. That code maps to
+				// Employee.attendance_device_id when the save option is enabled.
+				const location = (opts.location_device_id || "").trim() || undefined;
 				out.push({
 					doctype: "Employee Checkin",
 					employee: person.employee,
 					log_type: log_type,
 					time: time,
-					device_id: rec.code || undefined,
+					device_id: location,
 					skip_auto_attendance: opts.skip_auto_attendance ? 1 : 0,
 					_meta: {
 						excel_row: rec.excel_row,
@@ -342,7 +346,7 @@ espad.attendance_import.lib = (function () {
 espad.attendance_import.SHEETJS =
 	"https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
 espad.attendance_import.SHEETJS_TIMEOUT_MS = 20000;
-espad.attendance_import.VERSION = "V1.3.0";
+espad.attendance_import.VERSION = "V1.3.1";
 
 espad.attendance_import.open = function () {
 	const lib = espad.attendance_import.lib;
@@ -625,7 +629,20 @@ espad.attendance_import.open = function () {
 				fieldtype: "Check",
 				label: __("Save Personnel Code to Attendance Device ID"),
 				default: 1,
-				description: __("Only fills the field when it is empty."),
+				description: __(
+					"Writes the Excel employee/device user code to Employee.attendance_device_id only when that field is empty. Never writes it to Employee Checkin.device_id."
+				),
+			},
+			{
+				fieldname: "location_device_id",
+				fieldtype: "Data",
+				label: __("Location / Device ID"),
+				description: __(
+					"Optional physical terminal or site identifier stored on each Employee Checkin. Leave blank if the Excel file has no terminal ID. Do not enter the employee code here."
+				),
+				change: () => {
+					if (state.parsed && !state.importing) refresh_ready(false);
+				},
 			},
 			{ fieldtype: "Section Break" },
 			{ fieldname: "ui_panel", fieldtype: "HTML" },
@@ -1512,7 +1529,9 @@ espad.attendance_import.open = function () {
 		state.people.forEach((p) => (by_key[p.key] = p));
 		state.checkins = lib.build_checkins(state.parsed.records, by_key, {
 			skip_auto_attendance: dialog.get_value("skip_auto_attendance"),
+			location_device_id: dialog.get_value("location_device_id"),
 		});
+		state.location_device_id = (dialog.get_value("location_device_id") || "").trim();
 		const invalid = state.parsed.records.filter((r) => r.has_error).length;
 		const matched_people = state.people.filter((p) => p.employee).length;
 
@@ -1565,7 +1584,10 @@ espad.attendance_import.open = function () {
 						Accept: "application/json",
 						"X-Frappe-CSRF-Token": frappe.csrf_token,
 					},
-					body: JSON.stringify({ records: records }),
+					body: JSON.stringify({
+						records: records,
+						location_device_id: state.location_device_id || "",
+					}),
 				}
 			);
 			const data = await r.json().catch(() => ({}));

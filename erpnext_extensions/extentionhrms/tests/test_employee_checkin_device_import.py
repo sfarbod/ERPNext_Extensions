@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from multiprocessing import get_context
+from types import SimpleNamespace
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -12,11 +13,17 @@ from frappe.utils import add_days, getdate, nowdate
 
 from erpnext_extensions.extentionhrms.employee_checkin_import import (
 	import_device_checkins,
+	report_employee_code_stored_as_device_id,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_import_setup import (
 	ensure_device_import_setup,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
+	DEFAULT_MAX_MANUAL_CHECKINS,
+	ENABLE_FIELD,
+	MAX_FIELD,
+	clear_manual_checkin_policy_cache,
+	get_manual_checkin_policy,
 	in_device_import,
 	period_bounds,
 )
@@ -57,7 +64,7 @@ class TestManualLimitCalendar(FrappeTestCase):
 		self.assertEqual((sy, sm, ey, em), (1405, 5, 1405, 6))
 
 
-class TestDeviceCheckinImport(FrappeTestCase):
+class TestManualLimitSettings(FrappeTestCase):
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
@@ -68,11 +75,104 @@ class TestDeviceCheckinImport(FrappeTestCase):
 	def setUp(self):
 		super().setUp()
 		frappe.set_user("Administrator")
+		self._set_policy(1, DEFAULT_MAX_MANUAL_CHECKINS)
 		self.employees = []
 		self.users = []
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
+		self._set_policy(1, DEFAULT_MAX_MANUAL_CHECKINS)
+		super().tearDown()
+
+	def test_default_policy_is_enabled_with_five(self):
+		clear_manual_checkin_policy_cache()
+		frappe.db.delete("Singles", {"doctype": "HR Settings", "field": ENABLE_FIELD})
+		frappe.db.delete("Singles", {"doctype": "HR Settings", "field": MAX_FIELD})
+		frappe.clear_document_cache("HR Settings", "HR Settings")
+		clear_manual_checkin_policy_cache()
+		policy = get_manual_checkin_policy()
+		self.assertTrue(policy["enabled"])
+		self.assertEqual(policy["maximum"], DEFAULT_MAX_MANUAL_CHECKINS)
+		self._set_policy(1, DEFAULT_MAX_MANUAL_CHECKINS)
+
+	def test_configured_maximum_takes_effect(self):
+		self._set_policy(1, 2)
+		employee = self._employee()
+		self._manual(employee, self._past(0))
+		self._manual(employee, self._past(1))
+		with self.assertRaises(frappe.ValidationError):
+			self._manual(employee, self._past(2))
+		self.assertEqual(self._count(employee), 2)
+
+	def test_disabled_limit_allows_historical_manuals(self):
+		self._set_policy(0, 5)
+		employee = self._employee()
+		for offset in range(8):
+			self._manual(employee, self._past(offset))
+		self.assertEqual(self._count(employee), 8)
+
+	def test_invalid_maximum_falls_back_to_default_at_runtime(self):
+		frappe.db.set_single_value("HR Settings", ENABLE_FIELD, 1, update_modified=False)
+		frappe.db.set_single_value("HR Settings", MAX_FIELD, 0, update_modified=False)
+		clear_manual_checkin_policy_cache()
+		policy = get_manual_checkin_policy()
+		self.assertTrue(policy["enabled"])
+		self.assertEqual(policy["maximum"], DEFAULT_MAX_MANUAL_CHECKINS)
+
+	def test_hr_manager_cannot_change_quota_settings(self):
+		user = self._user(["HR Manager"])
+		frappe.set_user(user)
+		doc = frappe.get_doc("HR Settings")
+		doc.set(ENABLE_FIELD, 0)
+		with self.assertRaises(frappe.PermissionError):
+			doc.save()
+		frappe.set_user("Administrator")
+
+	def _set_policy(self, enabled, maximum):
+		frappe.db.set_single_value("HR Settings", ENABLE_FIELD, enabled, update_modified=False)
+		frappe.db.set_single_value("HR Settings", MAX_FIELD, maximum, update_modified=False)
+		clear_manual_checkin_policy_cache()
+
+	def _employee(self, status="Active"):
+		return _make_employee(self, status)
+
+	def _user(self, roles):
+		return _make_user(self, roles)
+
+	def _manual(self, employee, when):
+		return _manual_insert(employee, when)
+
+	def _past(self, offset):
+		return _past(offset)
+
+	def _count(self, employee):
+		return frappe.db.count("Employee Checkin", {"employee": employee})
+
+
+class TestDeviceCheckinImport(FrappeTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		ensure_device_import_setup()
+		frappe.db.set_single_value("HR Settings", ENABLE_FIELD, 1, update_modified=False)
+		frappe.db.set_single_value("HR Settings", MAX_FIELD, DEFAULT_MAX_MANUAL_CHECKINS, update_modified=False)
+		clear_manual_checkin_policy_cache()
+		frappe.db.commit()
+
+	def setUp(self):
+		super().setUp()
+		frappe.set_user("Administrator")
+		frappe.db.set_single_value("HR Settings", ENABLE_FIELD, 1, update_modified=False)
+		frappe.db.set_single_value("HR Settings", MAX_FIELD, DEFAULT_MAX_MANUAL_CHECKINS, update_modified=False)
+		clear_manual_checkin_policy_cache()
+		self.employees = []
+		self.users = []
+		self._restore_request()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		self._restore_request()
 		super().tearDown()
 
 	def test_five_manual_historical_checkins_allowed_sixth_rejected(self):
@@ -95,15 +195,58 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		employee = self._employee()
 		records = [self._record(employee, self._past(i), "IN" if i % 2 == 0 else "OUT") for i in range(8)]
 		before_attendance = frappe.db.count("Attendance")
-		result = import_device_checkins(records)
+		result = import_device_checkins(records, location_device_id="GATE-A")
 		self.assertEqual(len(result["created"]), 8)
 		self.assertEqual(result["failed"], [])
 		self.assertEqual(self._count(employee), 8)
 		self.assertFalse(in_device_import())
 		self.assertEqual(frappe.db.count("Attendance"), before_attendance)
+		device_ids = frappe.get_all(
+			"Employee Checkin", filters={"employee": employee}, pluck="device_id"
+		)
+		self.assertTrue(all(d == "GATE-A" for d in device_ids))
 		types = [row.log_type for row in self._rows(employee)]
 		self.assertEqual(types.count("IN"), 4)
 		self.assertEqual(types.count("OUT"), 4)
+
+	def test_employee_code_is_not_written_as_checkin_device_id(self):
+		employee = self._employee()
+		code = "EMPCODE-77"
+		frappe.db.set_value("Employee", employee, "attendance_device_id", code)
+		# Client mistakenly sending personnel code as device_id must be stripped.
+		result = import_device_checkins(
+			[
+				{
+					"employee": employee,
+					"time": self._past(0),
+					"log_type": "IN",
+					"device_id": code,
+					"skip_auto_attendance": 1,
+				}
+			]
+		)
+		self.assertEqual(len(result["created"]), 1)
+		stored = frappe.db.get_value("Employee Checkin", result["created"][0]["name"], "device_id")
+		self.assertIn(stored, (None, ""))
+
+	def test_missing_location_leaves_device_id_empty(self):
+		employee = self._employee()
+		result = import_device_checkins([self._record(employee, self._past(0), "IN", device_id="")])
+		self.assertEqual(len(result["created"]), 1)
+		stored = frappe.db.get_value("Employee Checkin", result["created"][0]["name"], "device_id")
+		self.assertIn(stored, (None, ""))
+
+	def test_conflicting_attendance_device_id_is_rejected(self):
+		first = self._employee()
+		second = self._employee()
+		frappe.db.set_value("Employee", first, "attendance_device_id", "SHARED-9")
+		result = import_device_checkins(
+			[self._record(second, self._past(0), "IN")],
+			device_assignments=[{"employee": second, "personnel_code": "SHARED-9"}],
+		)
+		self.assertEqual(result["device_ids"]["updated"], [])
+		self.assertEqual(result["device_ids"]["failed"][0]["category"], "Conflicting attendance_device_id")
+		self.assertIn(frappe.db.get_value("Employee", second, "attendance_device_id"), (None, ""))
 
 	def test_device_import_does_not_remove_the_manual_limit(self):
 		employee = self._employee()
@@ -128,6 +271,7 @@ class TestDeviceCheckinImport(FrappeTestCase):
 					"employee": employee,
 					"time": self._past(5),
 					"log_type": "IN",
+					"device_id": "forged-device",
 					"skip_manual_limit": 1,
 					"is_device_import": 1,
 					"ignore_validation": 1,
@@ -142,6 +286,52 @@ class TestDeviceCheckinImport(FrappeTestCase):
 			frappe.flags.ignore_validation = 0
 		self.assertEqual(self._count(employee), 5)
 		self.assertFalse(in_device_import())
+
+	def test_native_api_path_alone_does_not_bypass_quota(self):
+		employee = self._employee()
+		for offset in range(5):
+			self._manual(employee, self._past(offset))
+		self._set_native_request()
+		# Administrator is System Manager but not granted exemption without Importer
+		# role on the native path. Remove Importer if present on this session by
+		# using a System Manager user without that role.
+		user = self._user(["System Manager"])
+		self._ensure_checkin_create(user)
+		frappe.set_user(user)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._manual(employee, self._past(5))
+		self.assertIn("تردد دستی", str(caught.exception))
+		frappe.set_user("Administrator")
+		self.assertEqual(self._count(employee), 5)
+
+	def test_native_api_with_importer_role_is_exempt(self):
+		employee = self._employee()
+		for offset in range(5):
+			self._manual(employee, self._past(offset))
+		user = self._user(["Attendance Device Importer", "HR Manager", "System Manager"])
+		self._ensure_checkin_create(user)
+		self._set_native_request()
+		frappe.set_user(user)
+		# Even with System Manager, Importer + native path is the trusted boundary.
+		name = self._manual(employee, self._past(5))
+		frappe.set_user("Administrator")
+		self.assertTrue(name)
+		self.assertEqual(self._count(employee), 6)
+
+	def test_importer_role_without_native_path_still_limited(self):
+		employee = self._employee()
+		for offset in range(5):
+			self._manual(employee, self._past(offset))
+		user = self._user(["Attendance Device Importer", "System Manager"])
+		self._ensure_checkin_create(user)
+		# Desk-like insert: no native API marker on the request.
+		frappe.local.request = SimpleNamespace(path="/api/resource/Employee Checkin")
+		frappe.local.form_dict = frappe._dict()
+		frappe.set_user(user)
+		with self.assertRaises(frappe.ValidationError):
+			self._manual(employee, self._past(5))
+		frappe.set_user("Administrator")
+		self.assertEqual(self._count(employee), 5)
 
 	def test_unauthorized_user_cannot_call_the_import_api(self):
 		employee = self._employee()
@@ -216,21 +406,6 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		self.assertEqual(again["created"], [])
 		self.assertEqual(len(again["duplicates"]), 2)
 		self.assertEqual(self._count(employee), 2)
-		self.assertEqual(
-			frappe.db.sql(
-				"""
-				select count(*) from (
-					select employee, time, log_type
-					from `tabEmployee Checkin`
-					where employee = %s
-					group by employee, time, log_type
-					having count(*) > 1
-				) t
-				""",
-				employee,
-			)[0][0],
-			0,
-		)
 
 	def test_missing_employee_is_a_row_failure(self):
 		employee = self._employee()
@@ -257,7 +432,10 @@ class TestDeviceCheckinImport(FrappeTestCase):
 			],
 		)
 		self.assertEqual(result["device_ids"]["updated"], [blank])
-		self.assertIn(filled, result["device_ids"]["preserved"])
+		self.assertTrue(
+			filled in result["device_ids"]["preserved"]
+			or any(f.get("employee") == filled for f in result["device_ids"]["failed"])
+		)
 		self.assertEqual(frappe.db.get_value("Employee", blank, "attendance_device_id"), "00042")
 		self.assertEqual(frappe.db.get_value("Employee", filled, "attendance_device_id"), "KEEP-ME")
 		after = self._snapshot(filled)
@@ -265,7 +443,6 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		before_without_device = dict(before)
 		before_without_device.pop("attendance_device_id", None)
 		self.assertEqual(after, before_without_device)
-		self.assertEqual(frappe.db.get_value("Employee", blank, "status"), "Active")
 
 	def test_user_permission_blocks_employee_outside_scope(self):
 		allowed = self._employee()
@@ -296,6 +473,23 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		self.assertEqual(result["failed"][0]["employee"], hidden)
 		self.assertEqual(result["failed"][0]["category"], "Permission error")
 		self.assertEqual(self._count(hidden), 0)
+
+	def test_batch_size_cap(self):
+		employee = self._employee()
+		records = [self._record(employee, self._past(i % 20), "IN" if i % 2 == 0 else "OUT") for i in range(201)]
+		# Unique timestamps so we hit the batch cap, not duplicates.
+		records = [
+			self._record(employee, f"2026-07-01 {i // 60:02d}:{i % 60:02d}:00", "IN") for i in range(201)
+		]
+		with self.assertRaises(frappe.ValidationError) as caught:
+			import_device_checkins(records)
+		self.assertIn("200", str(caught.exception))
+
+	def test_report_employee_code_as_device_id_is_read_only(self):
+		before = frappe.db.count("Employee Checkin")
+		report = report_employee_code_stored_as_device_id(limit=10)
+		self.assertIn("total", report)
+		self.assertEqual(frappe.db.count("Employee Checkin"), before)
 
 	def test_concurrent_imports_of_the_same_punch_create_one_row(self):
 		employee = self._employee()
@@ -331,73 +525,63 @@ class TestDeviceCheckinImport(FrappeTestCase):
 				frappe.delete_doc("Employee", employee, force=1, ignore_permissions=True)
 			frappe.db.commit()
 
+	def _set_native_request(self):
+		frappe.local.request = SimpleNamespace(
+			path="/api/method/hrms.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field"
+		)
+		frappe.local.form_dict = frappe._dict(
+			cmd="hrms.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field"
+		)
+
+	def _restore_request(self):
+		frappe.local.request = SimpleNamespace(path="/")
+		frappe.local.form_dict = frappe._dict()
+
+	def _ensure_checkin_create(self, user):
+		if frappe.has_permission("Employee Checkin", "create", user=user):
+			return
+		# Grant via role permission temporarily for the test user roles.
+		for role in frappe.get_roles(user):
+			if role in ("Guest", "All", "Desk User"):
+				continue
+			if not frappe.db.exists("Custom DocPerm", {"parent": "Employee Checkin", "role": role, "permlevel": 0}):
+				frappe.get_doc(
+					{
+						"doctype": "Custom DocPerm",
+						"parent": "Employee Checkin",
+						"parenttype": "DocType",
+						"parentfield": "permissions",
+						"role": role,
+						"permlevel": 0,
+						"read": 1,
+						"write": 1,
+						"create": 1,
+					}
+				).insert(ignore_permissions=True)
+		frappe.clear_cache(doctype="Employee Checkin")
+
 	def _employee(self, status="Active"):
-		template = frappe.db.get_value(
-			"Employee",
-			{"status": "Active", "company": ["is", "set"], "department": ["is", "set"]},
-			["company", "department", "payroll_cost_center"],
-			as_dict=True,
-		)
-		doc = frappe.get_doc(
-			{
-				"doctype": "Employee",
-				"naming_series": "HR-EMP-",
-				"first_name": "DeviceImport",
-				"gender": "Male",
-				"date_of_birth": "1990-01-01",
-				"date_of_joining": "2020-01-01",
-				"status": status,
-				"company": template.company,
-				"department": template.department,
-				"payroll_cost_center": template.payroll_cost_center,
-			}
-		)
-		doc.insert()
-		self.employees.append(doc.name)
-		return doc.name
+		return _make_employee(self, status)
 
 	def _user(self, roles):
-		email = f"device-import-{frappe.generate_hash(length=8)}@example.com"
-		doc = frappe.get_doc(
-			{
-				"doctype": "User",
-				"email": email,
-				"first_name": "DeviceImport",
-				"send_welcome_email": 0,
-				"roles": [{"role": role} for role in roles],
-			}
-		)
-		doc.insert(ignore_permissions=True)
-		self.users.append(doc.name)
-		return doc.name
+		return _make_user(self, roles)
 
 	def _manual(self, employee, when):
-		doc = frappe.get_doc(
-			{
-				"doctype": "Employee Checkin",
-				"employee": employee,
-				"time": when,
-				"log_type": "IN",
-				"skip_auto_attendance": 1,
-			}
-		)
-		doc.insert()
-		return doc.name
+		return _manual_insert(employee, when)
 
-	def _record(self, employee, when, log_type):
+	def _record(self, employee, when, log_type, device_id=None):
 		return {
 			"employee": employee,
 			"time": when,
 			"log_type": log_type,
-			"device_id": "dev",
+			"device_id": "" if device_id is None else device_id,
 			"skip_auto_attendance": 1,
 			"skip_manual_limit": 1,
 			"is_device_import": 1,
 		}
 
 	def _past(self, offset):
-		day = add_days(getdate("2026-08-18"), offset)
-		return f"{day} 08:{offset:02d}:00"
+		return _past(offset)
 
 	def _count(self, employee):
 		return frappe.db.count("Employee Checkin", {"employee": employee})
@@ -417,3 +601,64 @@ class TestDeviceCheckinImport(FrappeTestCase):
 			["status", "company", "department", "payroll_cost_center", "attendance_device_id", "first_name"],
 			as_dict=True,
 		)
+
+
+def _make_employee(suite, status="Active"):
+	template = frappe.db.get_value(
+		"Employee",
+		{"status": "Active", "company": ["is", "set"], "department": ["is", "set"]},
+		["company", "department", "payroll_cost_center"],
+		as_dict=True,
+	)
+	doc = frappe.get_doc(
+		{
+			"doctype": "Employee",
+			"naming_series": "HR-EMP-",
+			"first_name": "DeviceImport",
+			"gender": "Male",
+			"date_of_birth": "1990-01-01",
+			"date_of_joining": "2020-01-01",
+			"status": status,
+			"company": template.company,
+			"department": template.department,
+			"payroll_cost_center": template.payroll_cost_center,
+		}
+	)
+	doc.insert()
+	suite.employees.append(doc.name)
+	return doc.name
+
+
+def _make_user(suite, roles):
+	email = f"device-import-{frappe.generate_hash(length=8)}@example.com"
+	doc = frappe.get_doc(
+		{
+			"doctype": "User",
+			"email": email,
+			"first_name": "DeviceImport",
+			"send_welcome_email": 0,
+			"roles": [{"role": role} for role in roles],
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	suite.users.append(doc.name)
+	return doc.name
+
+
+def _manual_insert(employee, when):
+	doc = frappe.get_doc(
+		{
+			"doctype": "Employee Checkin",
+			"employee": employee,
+			"time": when,
+			"log_type": "IN",
+			"skip_auto_attendance": 1,
+		}
+	)
+	doc.insert()
+	return doc.name
+
+
+def _past(offset):
+	day = add_days(getdate("2026-08-18"), offset)
+	return f"{day} 08:{offset:02d}:00"

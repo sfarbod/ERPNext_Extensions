@@ -2,7 +2,6 @@
 
 **App:** `erpnext_extensions`  
 **Version:** `5.6.4`  
-**Branch:** `feature/5.6.3-secure-checkin-excel-import`  
 **Requires:** ERPNext ≥ 16.51.1 / Frappe ≥ 16.52.0 / HRMS ≥ 16.51.0  
 **Verified on:** `development.localhost` only. Not deployed to Production.
 
@@ -10,107 +9,123 @@
 
 ## 1. What this release does
 
-Historical attendance-device punches imported from Excel were rejected by the manual check-in limit: five historical Employee Checkins per employee per Jalali period (the 26th through the 25th). Desk entry of a historical check-in must keep that limit. An authorized device import must not.
+Historical attendance-device punches imported from Excel were rejected by a custom manual check-in limit. Desk entry of a historical check-in must keep that limit. Authorized device imports must not.
 
-The Excel dialog stays the database Client Script `Employee Checkin Excel Import V1.0.1` (JavaScript V1.3.0). Parsing, Persian digits, Jalali conversion, employee matching, progress and the final report stay in that script. The server decides which inserts are device imports.
+The Excel dialog stays the database Client Script `Employee Checkin Excel Import V1.0.1` (JavaScript V1.3.1). Parsing, Persian digits, Jalali conversion, employee matching, progress and the final report stay in that script. The server decides which inserts are trusted device imports.
+
+Standard HRMS has **no physical attendance-device registry**. Offline punches belong on **Employee Checkin**. Online integrations continue to use HRMS `add_log_based_on_employee_field` with an external sync tool.
 
 ---
 
-## 2. Manual limit and device import
+## 2. Manual limit (HR Settings)
 
-| Action | Limit |
+| Setting | Fieldname | Default |
+|---|---|---|
+| Enable Manual Checkin Limit | `espad_enable_manual_checkin_limit` | Enabled (1) |
+| Maximum Manual Checkins per Period | `espad_max_manual_checkins` | 5 |
+
+- Period: Jalali **26th → 25th** (unchanged).
+- Counted per **employee**.
+- Check-ins dated **today** are not counted.
+- Existing rows count as manual when `DATE(creation) ≠ DATE(time)`.
+- Missing / null / invalid maximum **never** means unlimited: runtime falls back to enabled + 5.
+- Explicit Enable = 0 disables only this quota (not HRMS validations).
+- Fields are permlevel 1; **only System Manager** may change them (Custom DocPerm + validate hook).
+- Policy is cached in `frappe.cache` and cleared on HR Settings update.
+
+Desk path: **HR → HR Settings → Manual Checkin Limit (Espad)**.
+
+---
+
+## 3. Device vs manual exemption
+
+| Action | Quota |
 |---|---|
-| Desk or `insert` / `insert_many` of a historical check-in | 5 per employee per Jalali 26–25 period |
-| Check-in dated today | Not counted |
-| Authorized call to `import_device_checkins` | Limit is not applied and these rows do not need a client flag |
+| Desk / `insert` / `insert_many` historical check-in | Applies (when enabled) |
+| Authorized `import_device_checkins` (offline Excel) | Exempt (`device_import_context`) |
+| Native `add_log_based_on_employee_field` | Exempt **only if** the user has role `Attendance Device Importer` |
+| Same native method without that role | Quota applies |
+| Client flags / `device_id` / forged JSON | Never grant exemption |
 
-IN and OUT each count. The period is taken from the check-in date. HRMS still checks an active employee, the timestamp, log type and its own duplicate rule.
-
-A browser field, `device_id`, or a JSON flag cannot open this exception. Frappe 16.52 runs the old Server Script inside `safe_exec`, where `frappe.flags` is an empty object, so the exception lives in `extentionhrms.employee_checkin_manual_limit` and is entered only by `device_import_context()` inside the whitelisted API.
-
----
-
-## 3. API and permissions
-
-`erpnext_extensions.extentionhrms.employee_checkin_import.import_device_checkins`
-
-- Logged-in user only
-- Role `System Manager` or `Attendance Device Importer`
-- Create permission on Employee Checkin
-- Read permission on each Employee, including User Permissions
-- At most 200 records per request
-- Active employees, `IN` or `OUT`, parseable timestamp
-- Duplicate key: employee + timestamp + log type
-- One failed row rolls back to a savepoint; the rest of the batch continues
-- Empty `attendance_device_id` can be filled. A non-empty value is left as it is
-
-`Attendance Device Importer` is created on migrate. It is not granted to existing users. System Manager can import without that role. Everyone else who should import must be given the role. Create permission alone is not enough.
+System Manager may use the Excel import API. System Manager alone does **not** exempt native `add_log` Desk-style inserts; assign `Attendance Device Importer` to the integration user.
 
 ---
 
-## 4. Performance measured on development.localhost
+## 4. Import role and permissions
 
-File `shahrivar.xlsx`: 11,900 check-in payloads, 1,264 already stored.
+Role: **`Attendance Device Importer`** (created on migrate; **not** auto-assigned).
+
+Also allowed: **System Manager**.
+
+Additionally required: Create on Employee Checkin, Read on each Employee (User Permissions apply). Write on Employee only when filling empty `attendance_device_id`.
+
+Assign the role: **User → Roles → Attendance Device Importer**.
+
+---
+
+## 5. Identifier mapping
+
+| Value | Field |
+|---|---|
+| Excel employee / device user code | `Employee.attendance_device_id` (optional empty-only fill) |
+| Resolved employee | `Employee Checkin.employee` |
+| Physical terminal / site | `Employee Checkin.device_id` (optional dialog **Location / Device ID**) |
+
+The importer **never** writes the employee code into `Employee Checkin.device_id`. If neither Excel nor the dialog supplies a real terminal ID, `device_id` stays empty. Conflicting `attendance_device_id` assignments are rejected, not overwritten.
+
+Read-only review of historical rows where `device_id == attendance_device_id`:
+
+`erpnext_extensions.extentionhrms.employee_checkin_import.report_employee_code_stored_as_device_id`
+
+No automatic mass cleanup of existing rows is performed.
+
+---
+
+## 6. Performance (development.localhost)
+
+File `shahrivar.xlsx`: 11,900 check-in payloads.
 
 | Measure | Result |
 |---|---|
-| New records inserted | 10,636 |
+| New records (first full import) | 10,636 |
 | Failed | 0 |
-| Wall clock | 60 seconds |
-| API time | 59.88 seconds |
-| Requests | 54, all HTTP 200 |
-| Batch size | 200 |
-| Batch latency P50 / P95 | 1,125 ms / 1,236 ms |
-| Rate | 177.6 records/second |
-
-The second pass detected all 11,900 rows as already imported and created none.
+| Wall clock | ~60 seconds |
+| Batch size | 200 (hard server cap) |
+| Second pass | 0 creates (idempotent) |
 
 ---
 
-## 5. Duplicate prevention
+## 7. Duplicate prevention
 
-The API checks existing rows and rows repeated inside the batch. A unique database key `espad_checkin_emp_time_log` on `(employee, time, log_type)` stops two overlapping requests from inserting the same punch.
-
-If that key is missing and duplicate groups already exist, migrate does **not** fail and does **not** delete rows. It logs `Employee Checkin duplicate index skipped` and leaves the index absent. Application-level duplicate checks still run. Add the index only after those groups are reviewed by hand.
+Application checks + unique key `espad_checkin_emp_time_log` on `(employee, time, log_type)` when the table has no duplicate groups. If duplicates already exist, migrate logs and **skips** the index; it does not delete rows.
 
 ---
 
-## 6. Server Script compatibility
+## 8. Server Script compatibility
 
-Database script `# Employee Checkin - Outside Shift Day Limit` is disabled only when its source is the known script (sha256 `0f5676dcf01eea441343adee8043eab76a377a625602beae9b4d6438e3042c2e`) or it already contains the retirement marker. The original text is kept in `extentionhrms/legacy/employee_checkin_outside_shift_day_limit.server_script.txt`.
-
-A different script is not disabled. Device import will still be rejected by that script until someone reviews it. Migrate records the mismatch in the Error Log and continues.
-
-Other Employee Checkin Server Scripts (shift resolver, attendance mapper, rest attendance) are unchanged.
+`# Employee Checkin - Outside Shift Day Limit` is disabled only when it matches the known sha256 `0f5676dcf01eea441343adee8043eab76a377a625602beae9b4d6438e3042c2e` or already carries the retirement marker. Unknown customizations are left enabled and logged.
 
 ---
 
-## 7. Deployment
+## 9. Deployment
 
-1. Deploy the app at `5.6.4`. Do not deploy this revision to Production until it is explicitly approved.
+1. Deploy app at **5.6.4**.
 2. `bench --site <site> migrate` then `clear-cache`.
-3. Confirm the legacy Server Script is disabled, or read the Error Log if the hash did not match.
-4. Assign role `Attendance Device Importer` to importers who are not System Manager.
-5. Open Employee Checkin list. The button is `Import Attendance (Excel)`. HRMS 16.51 marks this DocType `in_create`; the button checks both `can_create` and `in_create`.
-6. Leave `server_script_enabled` on. The other check-in scripts still need it.
-
-Client Script content is copied from `extentionhrms/public/js/employee_checkin_excel_import.js` into `Employee Checkin Excel Import V1.0.1` on migrate. Do not enable the older disabled importer scripts.
+3. Confirm HR Settings fields and defaults.
+4. Assign `Attendance Device Importer` to offline importers and to online integration users that call `add_log_based_on_employee_field`.
+5. Open Employee Checkin list → **Import Attendance (Excel)**.
+6. Optional: set **Location / Device ID** in the dialog for the physical terminal.
 
 ---
 
-## 8. Rollback
+## 10. Rollback
 
-Revert the `5.6.4` merge on `develop` and migrate again so the Client Script is rewritten from the previous file.
-
-Re-enable `# Employee Checkin - Outside Shift Day Limit` only if the Python hook is also removed. Leaving both enabled applies the limit twice and blocks device import again.
-
-The unique index does not change existing rows. Dropping it is optional and is not required to restore the manual limit.
+Revert the 5.6.4 commits on `develop` and migrate so the Client Script is rewritten from the previous file. Re-enable the legacy Server Script only if the Python hook is also removed. Do not leave both enabled.
 
 ---
 
-## 9. Production configuration required before use
+## 11. Existing data notes
 
-- Role `Attendance Device Importer` for non-System Manager importers
-- Confirmation that the manual-limit Server Script is the known script, or a reviewed replacement
-- No duplicate `(employee, time, log_type)` groups if the unique index must be created
-- Scheduler and outbound mail remain under the site's existing isolation; this release does not change them
+Sites that imported Excel when `device_id` was incorrectly set to the personnel code may have historical rows where `device_id == attendance_device_id`. Those rows are left unchanged. Use the read-only report above; any cleanup must be a separate audited migration with dry-run approval.
+
+Shift Assignment / Auto Attendance configuration is out of scope for this importer.

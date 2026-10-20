@@ -23,12 +23,60 @@ import hashlib
 import os
 
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
+from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
+	DEFAULT_MAX_MANUAL_CHECKINS,
+	ENABLE_FIELD,
+	MAX_FIELD,
+	clear_manual_checkin_policy_cache,
+)
 
 LEGACY_SERVER_SCRIPT = "# Employee Checkin - Outside Shift Day Limit"
 LEGACY_SHA256 = "0f5676dcf01eea441343adee8043eab76a377a625602beae9b4d6438e3042c2e"
 RETIRED_MARK = "RETIRED BY erpnext_extensions.extentionhrms.employee_checkin_manual_limit"
 IMPORT_ROLE = "Attendance Device Importer"
 CLIENT_SCRIPT_NAME = "Employee Checkin Excel Import V1.0.1"
+
+HR_SETTINGS_CUSTOM_FIELDS = {
+	"HR Settings": [
+		{
+			"fieldname": "espad_manual_checkin_section",
+			"label": "Manual Checkin Limit (Espad)",
+			"fieldtype": "Section Break",
+			"insert_after": "allow_geolocation_tracking",
+			"collapsible": 1,
+		},
+		{
+			"fieldname": ENABLE_FIELD,
+			"label": "Enable Manual Checkin Limit",
+			"fieldtype": "Check",
+			"default": "1",
+			"insert_after": "espad_manual_checkin_section",
+			"permlevel": 1,
+			"description": (
+				"When enabled, historical manual Employee Checkins are capped per "
+				"employee for each Jalali period from the 26th through the 25th. "
+				"Authorized attendance-device imports do not consume this quota. "
+				"Only System Manager can change this setting."
+			),
+		},
+		{
+			"fieldname": MAX_FIELD,
+			"label": "Maximum Manual Checkins per Period",
+			"fieldtype": "Int",
+			"default": str(DEFAULT_MAX_MANUAL_CHECKINS),
+			"insert_after": ENABLE_FIELD,
+			"permlevel": 1,
+			"depends_on": f"eval:doc.{ENABLE_FIELD}",
+			"description": (
+				f"Default {DEFAULT_MAX_MANUAL_CHECKINS}. Applies per employee per "
+				"Jalali 26–25 period. Values below 1 are rejected when the limit "
+				"is enabled."
+			),
+		},
+	]
+}
 
 
 def after_migrate():
@@ -38,11 +86,70 @@ def after_migrate():
 def ensure_device_import_setup() -> dict:
 	result = {
 		"role": ensure_import_role(),
+		"hr_settings_fields": ensure_hr_settings_fields(),
+		"hr_settings_permlevel": ensure_hr_settings_permlevel(),
 		"server_script": retire_legacy_server_script(),
 		"client_script": sync_client_script(),
 		"duplicate_index": ensure_duplicate_index(),
 	}
+	clear_manual_checkin_policy_cache()
 	return result
+
+
+def ensure_hr_settings_fields() -> str:
+	create_custom_fields(HR_SETTINGS_CUSTOM_FIELDS, ignore_validate=True)
+	# Guarantee defaults when Singles rows are absent (Check casts missing → 0).
+	def _stored(fieldname: str) -> bool:
+		return bool(
+			frappe.db.sql(
+				"select 1 from tabSingles where doctype=%s and field=%s limit 1",
+				("HR Settings", fieldname),
+			)
+		)
+
+	if not _stored(ENABLE_FIELD):
+		frappe.db.set_single_value("HR Settings", ENABLE_FIELD, 1, update_modified=False)
+	if not _stored(MAX_FIELD):
+		frappe.db.set_single_value(
+			"HR Settings", MAX_FIELD, DEFAULT_MAX_MANUAL_CHECKINS, update_modified=False
+		)
+	else:
+		current_max = frappe.db.get_single_value("HR Settings", MAX_FIELD, cache=False)
+		if current_max in (None, "") or int(current_max or 0) < 1:
+			frappe.db.set_single_value(
+				"HR Settings", MAX_FIELD, DEFAULT_MAX_MANUAL_CHECKINS, update_modified=False
+			)
+	return "ensured"
+
+
+def ensure_hr_settings_permlevel() -> str:
+	"""Restrict write on permlevel-1 quota fields to System Manager."""
+	existing = frappe.db.exists(
+		"Custom DocPerm",
+		{"parent": "HR Settings", "role": "System Manager", "permlevel": 1},
+	)
+	if existing:
+		frappe.db.set_value(
+			"Custom DocPerm",
+			existing,
+			{"read": 1, "write": 1, "create": 0, "delete": 0},
+			update_modified=False,
+		)
+		return "exists"
+	doc = frappe.get_doc(
+		{
+			"doctype": "Custom DocPerm",
+			"parent": "HR Settings",
+			"parenttype": "DocType",
+			"parentfield": "permissions",
+			"role": "System Manager",
+			"permlevel": 1,
+			"read": 1,
+			"write": 1,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return "created"
 
 
 def ensure_duplicate_index() -> str:
