@@ -81,6 +81,9 @@ class PayrollEntryWithAccountingDimensions(PayrollEntry):
 
 		accounts = self._to_journal_entry_rows(result, config)
 
+		# Save as Draft so finance can review debit/credit balance and dimensions
+		# before posting. (Auto-submit previously left failed/unbalanced drafts when
+		# currency re-rounding diverged expense vs per-employee liability rows.)
 		return self.make_journal_entry(
 			accounts,
 			[company_currency],
@@ -89,7 +92,7 @@ class PayrollEntryWithAccountingDimensions(PayrollEntry):
 			user_remark=frappe._("Accrual Journal Entry for salaries from {0} to {1}").format(
 				self.start_date, self.end_date
 			),
-			submit_journal_entry=True,
+			submit_journal_entry=False,
 			submitted_salary_slips=submitted_salary_slips,
 			employee_wise_accounting_enabled=False,
 		)
@@ -263,6 +266,30 @@ class PayrollEntryWithAccountingDimensions(PayrollEntry):
 		)
 
 	def _currency_precision(self) -> int:
+		"""Precision that Journal Entry Account currency fields will use on save.
+
+		``frappe.get_precision("Journal Entry Account", ...)`` without a row
+		context defaults to 2. On validate, ERPNext sets ``account_currency`` and
+		Currency fields then resolve via System Settings ``currency_precision``,
+		or — when that is empty and ``use_number_format_from_currency`` is on —
+		via the company currency's number format (IRR ``#,###`` → 0).
+
+		Building the accrual at a coarser precision than JE will apply (e.g. 2
+		then re-round to 0) unbalances aggregated expense rows against
+		per-employee liability rows. Match JE's eventual precision up front so
+		round-off (if any) is computed on the same amounts the JE will store.
+		"""
+		from frappe.model.meta import get_precision_from_currency_format
+		from frappe.utils.data import get_currency_precision
+
+		system_precision = get_currency_precision()
+		if system_precision is not None:
+			return cint(system_precision)
+
+		company_currency = frappe.get_cached_value("Company", self.company, "default_currency")
+		if company_currency:
+			return cint(get_precision_from_currency_format(company_currency))
+
 		return cint(frappe.get_precision("Journal Entry Account", "debit_in_account_currency"))
 
 	def get_payroll_payable_account_value(self) -> str:

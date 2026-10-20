@@ -328,8 +328,21 @@ def build_accrual_journal_accounts(slips: Iterable[SalarySlip], config: AccrualC
 	_emit_rows(result, payable_bucket, is_debit=False)
 
 	_apply_account_parties(result, config)
+	# Quantize emitted rows to the configured precision before measuring residual
+	# so round-off matches the amounts Journal Entry will store after currency
+	# rounding (critical for zero-decimal currencies such as IRR).
+	_quantize_emitted_rows(result, precision)
 	_append_round_off(result, config)
 	return result
+
+
+def _quantize_emitted_rows(result: AccrualResult, precision: int) -> None:
+	"""Re-apply currency precision to every debit/credit before round-off."""
+	for row in result.rows:
+		if row.debit:
+			row.debit = _quantize(row.debit, precision)
+		if row.credit:
+			row.credit = _quantize(row.credit, precision)
 
 
 def _apply_account_parties(result: AccrualResult, config: AccrualConfig) -> None:
