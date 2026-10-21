@@ -29,7 +29,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 
 ## 3. What changed
 
-### UI (Client Script V2.0.8)
+### UI (Client Script V2.0.9)
 
 - Synced from `extentionhrms/public/js/attendance_excel_import.js`.
 - Summary stats (personnel / matched / unmatched / ambiguous / rows / invalid).
@@ -80,7 +80,7 @@ bench --site <site> migrate
 bench --site <site> clear-cache
 ```
 
-Verify Client Script contains `Version: V2.0.8`, `missionPresent`, `rejectOutlierWorkbookYears`, `Mission and absence conflict`, mission→Present, and `import_attendance_details`.
+Verify Client Script contains `Version: V2.0.9`, `excelBusinessClassification`, `hasExcelBusinessValue`, `On Leave`, `rejectOutlierWorkbookYears`, and `import_attendance_details`.
 
 ### Correction (V2.0.1 within 5.6.7)
 
@@ -127,7 +127,7 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 
 1. **Work shortage** = sum of Excel unauthorized exit + early + late (minutes → hours). Not shift math; absence excluded.
 2. **Dual unauthorized OT:** Excel عادی غیرمجاز alone populates both `custom_regular_work_hours` and `custom_extra_presence_hours` with the same decimal hours (including explicit zero). Overrides the prior sum-of-all-unauthorized-OT mapping for `custom_regular_work_hours`. Does not feed Approved OT.
-3. **Status:** Mission > 0 → `Present` (hours still mapped); absence > 0 → `Absent`; mission+absence → Review; presence without absence → `Present`. Blank absence / missing punches never force Absent. On Leave / Half Day preserved.
+3. **Status (V2.0.9):** Paid/unpaid leave → `On Leave`; Mission > 0 → `Present`; absence > 0 → `Absent`; leave/mission/absence conflicts → Review; presence without absence → `Present`. Blank absence / missing punches never force Absent. Half Day preserved; Excel On Leave may update existing On Leave.
 4. **Approved OT (V2.0.5+):** `Normal Approved + Holiday Approved` only. Night/Mission approved are excluded from this field (Holiday Approved still also maps to `custom_holiday_work_hours`).
 5. **Persistence:** `EXCEL_AUTHORITATIVE_FIELDS` includes `status`, `working_hours`, dual OT, shortage, night, mission, approved OT, etc., re-applied after create/draft submit.
 
@@ -155,6 +155,14 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 3. **Data repair (development.localhost):** Reimported 82 eligible mission mismatches via `import_attendance_details` (74 create + 8 submitted update). Post-audit: 185/185 eligible mission rows Present with matching mission hours; 0 conflicts; 0 remaining incorrect Absent.
 4. **Verified:** `HR-ATT-2026-14770` → Present / 9.0; `HR-ATT-2026-14774` → Present / 9.0.
 
+### Correction (V2.0.9 within 5.6.7) — Paid/Unpaid Leave + Excel-first mapping contract
+
+1. **Root cause:** Paid leave rows (e.g. محسن اعتمادی / `1405/06/29`, Excel row 529, مرخصی با حقوق `۹:۰۰`, no punches) were classified `Review / Leave needs verification`. `excelImportStatus` never returned `On Leave`, so Submitted `HR-ATT-2026-14764` stayed `Absent` with `custom_paid_leave_hours = 0`.
+2. **HRMS note:** Stock `Attendance.check_leave_record` only alerts when `On Leave` has no Leave Application — it does not throw. Importer sets `On Leave` from Excel without inventing Leave Applications; punch/shift checks no longer block leave.
+3. **Contract:** Central `excel_business_status` / `build_excel_authoritative_payload` (Python) + `excelBusinessClassification` / `hasExcelBusinessValue` (JS). Leave/mission/absence conflicts → Review. Incomplete IN/OUT only Reviews rows lacking Excel business values.
+4. **Full workbook audit (`mehr.xls`, 7994 daily rows) after repair:** Paid Leave 866/866 On Leave + hours; Mission 178/178; Night/Shortage/Holiday/Unauthorized OT/Approved OT/Working Hours all matched with **0 remaining mismatches**. Unpaid Leave: **0 positive source rows** in this workbook (rule covered by unit tests). 7 genuine Review conflicts retained. Repaired **2554** Attendance rows (1747 create + 807 submitted update), failed 0.
+5. **Verified:** `HR-ATT-2026-14764` → `On Leave` / `custom_paid_leave_hours = 9.0`.
+
 ### Browser E2E on `development.localhost` (`mehr.xls`)
 
 | Phase | Result |
@@ -180,7 +188,9 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 
 **Mission incomplete-punch E2E (V2.0.8):** Preview for code `71` includes `1405/07/06` as Update→Present (not Review Missing IN/OUT). DB `HR-ATT-2026-14770`: `Present` / mission `9.0`. Full mission-row audit: 185 OK, 0 wrong Absent.
 
-Screenshots: `extentionhrms/e2e/screenshots/attendance_excel_import/v207_*.png`, `v208_*.png`.
+**Leave On Leave E2E (V2.0.9):** Preview for code `71` / `1405/06/29` → Status `On Leave`, Paid Leave `9`. DB `HR-ATT-2026-14764`: `On Leave` / `custom_paid_leave_hours = 9.0`. Workbook mapping audit: 0 unexplained mismatches across all contracted fields.
+
+Screenshots: `extentionhrms/e2e/screenshots/attendance_excel_import/v207_*.png`, `v208_*.png`, `v209_*.png`.
 
 ---
 
@@ -196,7 +206,7 @@ unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFro
 PY
 ```
 
-Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, Client Script sync (V2.0.8), mission→Present with hours (including draft/submitted Absent→Present and incomplete IN/OUT `missionPresent` guard), Jalali date regression (1405/07/25→2026-10-17), workbook year outlier rejection, Approved OT = Normal+Holiday, dual unauthorized OT, and post-submit re-apply.
+Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, Client Script sync (V2.0.9), Excel-first leave→On Leave (paid/unpaid, no punches, submitted Absent→On Leave), mission→Present, mapping payload contract, Jalali date regression, workbook year outlier rejection, Approved OT = Normal+Holiday, dual unauthorized OT, and post-submit re-apply.
 
 Playwright regression helper: `extentionhrms/e2e/attendance_excel_import_playwright.mjs` (library HTTP 200 + file select + parse stats).
 

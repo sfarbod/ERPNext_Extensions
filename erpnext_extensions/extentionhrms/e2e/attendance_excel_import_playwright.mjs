@@ -1,5 +1,5 @@
 /**
- * Regression: Attendance Excel Import V2.0.8 — mission Present + incomplete IN/OUT.
+ * Regression: Attendance Excel Import V2.0.9 — leave On Leave + mapping contract.
  *
  * Usage:
  *   DEV_SID=... node attendance_excel_import_playwright.mjs
@@ -171,7 +171,7 @@ try {
 		DLG,
 		{ timeout: 180000 }
 	);
-	await page.screenshot({ path: path.join(OUT, "v208_parse.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v209_parse.png"), fullPage: true });
 
 	const parseInfo = await page.evaluate((sel) => {
 		const t = document.querySelector(sel)?.innerText || "";
@@ -251,7 +251,7 @@ try {
 			}
 		}
 	});
-	await page.screenshot({ path: path.join(OUT, "v208_filter_71.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v209_filter_71.png"), fullPage: true });
 
 	// Verify persisted DB docs via frappe.call
 	const dbCheck = await page.evaluate(async () => {
@@ -268,6 +268,8 @@ try {
 						"attendance_date",
 						"status",
 						"custom_mission_work_hours",
+						"custom_paid_leave_hours",
+						"custom_unpaid_leave_hours",
 						"custom_approved_overtime_hours",
 						"docstatus",
 					],
@@ -322,9 +324,28 @@ try {
 				limit_page_length: 20,
 			},
 		});
+		const leave0629 = await frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Attendance",
+				filters: {
+					employee: "HR-EMP-0019",
+					attendance_date: "2026-09-20",
+					docstatus: ["<", 2],
+				},
+				fieldname: [
+					"name",
+					"status",
+					"custom_paid_leave_hours",
+					"custom_unpaid_leave_hours",
+					"attendance_date",
+				],
+			},
+		});
 		return {
 			mission0712: await get("HR-ATT-2026-14774"),
 			mission0706: await get("HR-ATT-2026-14770"),
+			leave0629: leave0629.message,
 			list2020: list2020.message || [],
 			onDuty: onDuty.message || [],
 			correctOct17: correct.message,
@@ -345,6 +366,12 @@ try {
 	if (String(dbCheck.mission0706.attendance_date) !== "2026-09-28") {
 		throw new Error("14770 date mismatch: " + JSON.stringify(dbCheck.mission0706));
 	}
+	if (!dbCheck.leave0629 || dbCheck.leave0629.status !== "On Leave") {
+		throw new Error("1405/06/29 not On Leave: " + JSON.stringify(dbCheck.leave0629));
+	}
+	if (Math.abs(Number(dbCheck.leave0629.custom_paid_leave_hours) - 9) > 1e-6) {
+		throw new Error("1405/06/29 paid leave != 9: " + JSON.stringify(dbCheck.leave0629));
+	}
 	if ((dbCheck.list2020 || []).length) {
 		throw new Error("Leftover 2020/1399 fixtures: " + JSON.stringify(dbCheck.list2020));
 	}
@@ -358,7 +385,7 @@ try {
 		throw new Error("Missing correct 2026-10-17 Present: " + JSON.stringify(dbCheck.correctOct17));
 	}
 
-	await page.screenshot({ path: path.join(OUT, "v208_verified.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v209_verified.png"), fullPage: true });
 
 	const relevantErrors = consoleErrors.filter(
 		(e) =>
@@ -394,7 +421,7 @@ try {
 } catch (e) {
 	console.error(e);
 	await page
-		.screenshot({ path: path.join(OUT, "v208_error.png"), fullPage: true })
+		.screenshot({ path: path.join(OUT, "v209_error.png"), fullPage: true })
 		.catch(() => {});
 	process.exitCode = 2;
 } finally {

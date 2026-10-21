@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.8 (Mission Present even with incomplete IN/OUT)
+// Version: V2.0.9 (Excel-first leave/mission/absence mapping contract)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -363,22 +363,51 @@ frappe.provide("espad.attendance_details");
         };
     }
 
-    function excelImportStatus(details, inTime, outTime) {
-        // Precedence (importer-only):
-        // 1) Mission + absence both > 0 → conflict (classify as Review; defensive Absent)
-        // 2) Absence > 0 → Absent
-        // 3) Mission > 0 → Present (mission hours still mapped; status is not On Duty)
-        // 4) Presence / worked / IN-OUT → Present
-        // Blank/zero absence never forces Absent.
+    function excelBusinessClassification(details, inTime, outTime) {
+        // Central Excel→status contract (mirrors Python excel_business_status).
+        // Punch completeness is NOT part of status — only classify() may Review.
         const d = details || {};
+        const paid = d.paidLeave || 0;
+        const unpaid = d.unpaidLeave || 0;
         const mission = d.mission || 0;
         const absence = d.absence || 0;
-        if (mission > 0 && absence > 0) return "Absent";
-        if (absence > 0) return "Absent";
-        if (mission > 0) return "Present";
+        const leave = paid > 0 || unpaid > 0;
+        if (leave && mission > 0)
+            return { status: "Absent", review: true, reason: "Leave and mission conflict" };
+        if (leave && absence > 0)
+            return { status: "Absent", review: true, reason: "Leave and absence conflict" };
+        if (mission > 0 && absence > 0)
+            return { status: "Absent", review: true, reason: "Mission and absence conflict" };
+        if (leave)
+            return { status: "On Leave", review: false, reason: null };
+        if (absence > 0)
+            return { status: "Absent", review: false, reason: null };
+        if (mission > 0)
+            return { status: "Present", review: false, reason: null };
         if ((d.presence || 0) > 0 || (d.worked || 0) > 0 || inTime || outTime)
-            return "Present";
-        return "Present";
+            return { status: "Present", review: false, reason: null };
+        return { status: "Present", review: false, reason: null };
+    }
+
+    function excelImportStatus(details, inTime, outTime) {
+        return excelBusinessClassification(details, inTime, outTime).status;
+    }
+
+    function hasExcelBusinessValue(details, approvedOT, unauthorizedNormalOT, workShortage) {
+        const d = details || {};
+        return (
+            (d.paidLeave || 0) > 0 ||
+            (d.unpaidLeave || 0) > 0 ||
+            (d.mission || 0) > 0 ||
+            (d.absence || 0) > 0 ||
+            (d.presence || 0) > 0 ||
+            (d.worked || 0) > 0 ||
+            (d.nightTotal || 0) > 0 ||
+            (d.holidayOTApproved || 0) > 0 ||
+            (approvedOT || 0) > 0 ||
+            (unauthorizedNormalOT || 0) > 0 ||
+            (workShortage || 0) > 0
+        );
     }
 
     function workbookDateYearStats(records) {
@@ -1049,6 +1078,7 @@ frappe.provide("espad.attendance_details");
         }
 
         function classify(r, existing, duplicates) {
+            // Excel-first order: business mapping/conflicts before punch checks.
             if (!r.included)
                 return ["Exclude", "Employee excluded"];
 
@@ -1065,21 +1095,18 @@ frappe.provide("espad.attendance_details");
             if (a?.duplicate)
                 return ["Review", "Duplicate Attendance in ERP"];
 
-            // Submitted records are eligible for the dedicated controlled API.
-            // Cancelled records are excluded by fetchExisting().
-
-            if (a?.status === "On Leave" || a?.status === "Half Day")
+            if (a?.status === "Half Day")
                 return ["Review", "Existing Leave Attendance"];
 
             const d = r.details || {};
-            const missionPresent =
-                (d.mission || 0) > 0 && (d.absence || 0) <= 0;
+            const biz = excelBusinessClassification(d, r.inTime, r.outTime);
+            if (biz.review)
+                return ["Review", biz.reason || "Excel business-value conflict"];
 
-            // Incomplete punch pair normally needs review. Exception: Excel
-            // mission > 0 with blank/zero absence — punches are not required
-            // for mission days (status Present + mission hours).
-            if (!!r.inTime !== !!r.outTime && !missionPresent)
-                return ["Review", "Missing IN / OUT"];
+            // Protect HRMS On Leave from non-leave Excel overwrites.
+            // Excel paid/unpaid leave (status On Leave) may update existing On Leave.
+            if (a?.status === "On Leave" && biz.status !== "On Leave")
+                return ["Review", "Existing Leave Attendance"];
 
             if (
                 r.approvedOT > 0 &&
@@ -1088,30 +1115,16 @@ frappe.provide("espad.attendance_details");
                 return ["Review", "Approved OT field missing"];
             }
 
-            // Mission + absence conflict: never silently choose a status.
-            if ((d.mission || 0) > 0 && (d.absence || 0) > 0)
-                return ["Review", "Mission and absence conflict"];
+            const excelAuthoritative = hasExcelBusinessValue(
+                d, r.approvedOT, r.unauthorizedNormalOT, r.workShortage
+            );
 
-            if (!r.inTime && !r.outTime) {
-                // Paid/unpaid leave without punches still needs human review.
-                // Pure mission days import as Present with mission hours.
-                if ((d.paidLeave || 0) > 0 || (d.unpaidLeave || 0) > 0) {
-                    if ((d.mission || 0) > 0)
-                        return ["Review", "Mission and leave need verification"];
-                    return ["Review", "Leave needs verification"];
-                }
+            // Incomplete punches only block rows that lack Excel business values.
+            if (!!r.inTime !== !!r.outTime && !excelAuthoritative)
+                return ["Review", "Missing IN / OUT"];
 
-                // Excel حضور / کارکرد / مأموریت / غیبت are authoritative —
-                // missing punches alone must not block import.
-                if (
-                    d.presence <= 0 &&
-                    d.worked <= 0 &&
-                    d.absence <= 0 &&
-                    (d.mission || 0) <= 0 &&
-                    !a
-                )
-                    return ["Review", "No punches / absence"];
-            }
+            if (!r.inTime && !r.outTime && !excelAuthoritative && !a)
+                return ["Review", "No punches / absence"];
 
             return a
                 ? ["Update", Number(a.docstatus) === 1 ? "Existing Submitted" : "Existing Draft"]
@@ -1709,11 +1722,11 @@ frappe.provide("espad.attendance_details");
             const d = r.details;
             // Excel-authoritative presence (حضور). Do not substitute punch interval.
             const presence = Math.max(0, d.presence || 0);
-            // Preserve On Leave / Half Day set by HRMS on an existing document.
+            // Half Day is HRMS-managed and classified Review. On Leave may be
+            // set from Excel paid/unpaid leave (excelImportStatus → On Leave).
             const priorStatus = doc.status;
-            if (priorStatus === "On Leave" || priorStatus === "Half Day") {
-                // Keep HRMS leave status; Excel rules do not override Leave docs
-                // (those rows are classified Review and normally not written).
+            if (priorStatus === "Half Day") {
+                // Keep Half Day; Excel must not silently overwrite it.
             } else {
                 doc.status = excelImportStatus(d, r.inTime, r.outTime);
             }
@@ -1819,7 +1832,7 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
                     source: "Attendance Excel Import",
-                    mapping_version: "V2.0.8",
+                    mapping_version: "V2.0.9",
                     source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
                     raw_excel_date: r.rawDate,
@@ -1837,15 +1850,21 @@ frappe.provide("espad.attendance_details");
                     night_work_source: "Excel شبکاری کل",
                     holiday_work_source: "Excel تعطیل مجاز",
                     mission_work_source: "Excel کل مأموریت",
+                    paid_leave_source: "Excel مرخصی با حقوق",
+                    unpaid_leave_source: "Excel مرخصی بی‌حقوق",
                     regular_and_extra_presence_source: "Excel عادی غیرمجاز (identical)",
                     work_shortage_source: "Excel خروج غیرمجاز + تعجیل + تأخیر",
-                    status_rule: (d.mission > 0 && d.absence > 0)
-                        ? "Conflict: mission + absence (Review)"
-                        : (d.absence > 0)
-                            ? "Excel غیبت > 0 → Absent"
-                            : (d.mission > 0)
-                                ? "Excel کل مأموریت > 0 → Present (mission hours mapped)"
-                                : "Present unless Excel absence > 0 (missing punches do not force Absent)",
+                    status_rule: (() => {
+                        const biz = excelBusinessClassification(d, r.inTime, r.outTime);
+                        if (biz.review) return "Conflict: " + biz.reason;
+                        if (biz.status === "On Leave")
+                            return "Excel مرخصی با/بی‌حقوق > 0 → On Leave";
+                        if (biz.status === "Absent")
+                            return "Excel غیبت > 0 → Absent";
+                        if ((d.mission || 0) > 0)
+                            return "Excel کل مأموریت > 0 → Present (mission hours mapped)";
+                        return "Present unless Excel absence/leave (missing punches do not force Absent)";
+                    })(),
                     resolved_shift: schedule.shiftName, scheduled_day: schedule.scheduled,
                     holiday_or_rest: schedule.rest,
                     note: "Other Paid Leave Hours not overwritten: source Excel has no separate column"
@@ -1973,7 +1992,10 @@ frappe.provide("espad.attendance_details");
                         const current = existing.get(key);
                         if (current?.duplicate)
                             throw Error("Duplicate Attendance in ERP");
-                        if (current?.status === "On Leave")
+                        if (current?.status === "Half Day")
+                            throw Error("Existing Leave Attendance");
+                        if (current?.status === "On Leave" &&
+                            excelImportStatus(r.details, r.inTime, r.outTime) !== "On Leave")
                             throw Error("Existing Leave Attendance");
 
                         const company =

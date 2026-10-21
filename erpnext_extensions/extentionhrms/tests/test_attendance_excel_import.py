@@ -14,11 +14,14 @@ from erpnext_extensions.extentionhrms.attendance_excel_import import (
 	_normalize_personnel_code,
 	_reapply_excel_authoritative_fields,
 	approved_overtime_hours_from_components,
+	build_excel_authoritative_payload,
+	excel_business_status,
 	excel_status_from_absence,
 	expected_gregorian_from_jalali_ymd,
 	find_existing_attendance,
 	get_personnel_code_index,
 	import_attendance_details,
+	leave_business_conflict,
 	minutes_to_hours,
 	mission_absence_conflict,
 	preload_attendance_import_context,
@@ -240,7 +243,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.8", script)
+		self.assertIn("V2.0.9", script)
 		self.assertIn("import_attendance_details", script)
 		self.assertIn("get_personnel_code_index", script)
 		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
@@ -260,12 +263,16 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn('setHours(doc, "Approved Overtime Hours", r.approvedOT', script)
 		self.assertIn("holidayOTApproved + d.normalOTApproved", script)
 		self.assertIn("excelImportStatus", script)
+		self.assertIn("excelBusinessClassification", script)
+		self.assertIn("hasExcelBusinessValue", script)
+		self.assertIn('return { status: "On Leave"', script)
 		self.assertIn("rejectOutlierWorkbookYears", script)
 		self.assertNotIn('return "On Duty"', script)
 		self.assertIn("Mission and absence conflict", script)
-		# Mission days must not be blocked by incomplete IN/OUT.
-		self.assertIn("missionPresent", script)
-		self.assertIn("&& !missionPresent", script)
+		self.assertIn("Leave and mission conflict", script)
+		# Excel business values must not be blocked by incomplete IN/OUT.
+		self.assertIn("&& !excelAuthoritative", script)
+		self.assertNotIn("Leave needs verification", script)
 		self.assertIn("CONFIG.approvedOT", script)
 		self.assertIn("Excel غیبت", script)
 		self.assertIn(first.get("status_options"), ("removed", "unchanged"))
@@ -501,6 +508,41 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		)
 		self.assertTrue(mission_absence_conflict(540, 30))
 		self.assertFalse(mission_absence_conflict(540, 0))
+		# Paid / unpaid leave → On Leave
+		self.assertEqual(
+			excel_status_from_absence(0, "Present", paid_leave_minutes=540),
+			"On Leave",
+		)
+		self.assertEqual(
+			excel_status_from_absence(0, "Present", unpaid_leave_minutes=270),
+			"On Leave",
+		)
+		self.assertEqual(
+			excel_business_status(paid_leave_minutes=540, unpaid_leave_minutes=0)["status"],
+			"On Leave",
+		)
+		self.assertTrue(
+			excel_business_status(paid_leave_minutes=540, mission_minutes=60)["review"]
+		)
+		self.assertTrue(leave_business_conflict(540, 0, 60, 0))
+		self.assertFalse(leave_business_conflict(540, 0, 0, 0))
+		# Central payload contract
+		payload = build_excel_authoritative_payload(
+			paid_leave_minutes=540,
+			normal_ot_unauthorized_minutes=105,
+			holiday_ot_approved_minutes=45,
+			normal_ot_approved_minutes=60,
+			unauthorized_exit_minutes=30,
+			early_minutes=20,
+			late_minutes=40,
+			presence_minutes=0,
+		)
+		self.assertEqual(payload["status"], "On Leave")
+		self.assertAlmostEqual(payload["custom_paid_leave_hours"], 9.0, places=5)
+		self.assertAlmostEqual(payload["custom_regular_work_hours"], 1.75, places=5)
+		self.assertAlmostEqual(payload["custom_extra_presence_hours"], 1.75, places=5)
+		self.assertAlmostEqual(payload["custom_approved_overtime_hours"], 1.75, places=5)
+		self.assertAlmostEqual(payload["custom_work_shortage_hours"], 1.5, places=5)
 
 	def test_create_persists_excel_authoritative_mapping(self):
 		employee = self._employee("77050")
@@ -860,7 +902,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 						"custom_extra_presence_hours": 0,
 						"custom_approved_overtime_hours": 0,
 						"custom_calculation_details": (
-							'{"source":"Attendance Excel Import","mapping_version":"V2.0.8",'
+							'{"source":"Attendance Excel Import","mapping_version":"V2.0.9",'
 							'"mission_work_source":"Excel کل مأموریت"}'
 						),
 					},
@@ -1068,5 +1110,197 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertAlmostEqual(
 			float(frappe.db.get_value("Attendance", name, "custom_mission_work_hours")),
 			7.5,
+			places=5,
+		)
+
+	def test_create_paid_leave_day_as_on_leave_without_punches(self):
+		# Regression fixture: محسن اعتمادی / 1405/06/29 pattern (paid 09:00, no punches).
+		employee = self._employee("77080")
+		day = add_days(getdate(nowdate()), -50)
+		company = frappe.db.get_value("Employee", employee, "company")
+		payload = build_excel_authoritative_payload(paid_leave_minutes=540)
+		self.assertEqual(payload["status"], "On Leave")
+		result = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": {
+						"status": payload["status"],
+						"standard_working_hours": 9,
+						"working_hours": 0,
+						"custom_paid_leave_hours": payload["custom_paid_leave_hours"],
+						"custom_unpaid_leave_hours": 0,
+						"custom_total_leave_hours": payload["custom_total_leave_hours"],
+						"custom_mission_work_hours": 0,
+						"custom_regular_work_hours": 0,
+						"custom_extra_presence_hours": 0,
+						"custom_approved_overtime_hours": 0,
+						"in_time": None,
+						"out_time": None,
+					},
+					"row": 529,
+				}
+			]
+		)
+		self.assertEqual(result["failed"], [], result.get("failed"))
+		name = result["created"][0]["name"]
+		self.attendance.append(name)
+		row = frappe.db.get_value(
+			"Attendance",
+			name,
+			["status", "custom_paid_leave_hours", "custom_unpaid_leave_hours", "docstatus"],
+			as_dict=True,
+		)
+		self.assertEqual(row.status, "On Leave")
+		self.assertAlmostEqual(float(row.custom_paid_leave_hours), 9.0, places=5)
+		self.assertEqual(float(row.custom_unpaid_leave_hours or 0), 0.0)
+		self.assertEqual(int(row.docstatus), 1)
+
+	def test_create_unpaid_leave_day_as_on_leave(self):
+		employee = self._employee("77081")
+		day = add_days(getdate(nowdate()), -51)
+		company = frappe.db.get_value("Employee", employee, "company")
+		payload = build_excel_authoritative_payload(unpaid_leave_minutes=270)
+		result = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": {
+						"status": "On Leave",
+						"standard_working_hours": 9,
+						"working_hours": 0,
+						"custom_paid_leave_hours": 0,
+						"custom_unpaid_leave_hours": payload["custom_unpaid_leave_hours"],
+						"custom_total_leave_hours": payload["custom_total_leave_hours"],
+					},
+					"row": 2,
+				}
+			]
+		)
+		self.assertEqual(result["failed"], [], result.get("failed"))
+		name = result["created"][0]["name"]
+		self.attendance.append(name)
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "On Leave")
+		self.assertAlmostEqual(
+			float(frappe.db.get_value("Attendance", name, "custom_unpaid_leave_hours")),
+			4.5,
+			places=5,
+		)
+
+	def test_submitted_absent_paid_leave_updates_to_on_leave(self):
+		employee = self._employee("77082")
+		day = add_days(getdate(nowdate()), -52)
+		company = frappe.db.get_value("Employee", employee, "company")
+		first = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": {
+						"status": "Absent",
+						"standard_working_hours": 9,
+						"working_hours": 0,
+						"custom_paid_leave_hours": 0,
+					},
+					"row": 1,
+				}
+			]
+		)
+		name = first["created"][0]["name"]
+		self.attendance.append(name)
+		second = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"mode": "update_submitted",
+					"name": name,
+					"values": {
+						"status": "On Leave",
+						"standard_working_hours": 9,
+						"working_hours": 0,
+						"custom_paid_leave_hours": 9.0,
+						"custom_unpaid_leave_hours": 0,
+						"custom_total_leave_hours": 9.0,
+						"custom_mission_work_hours": 0,
+						"custom_regular_work_hours": 0,
+						"custom_extra_presence_hours": 0,
+						"custom_night_work_hours": 0,
+						"custom_work_shortage_hours": 0,
+						"custom_approved_overtime_hours": 0,
+					},
+					"row": 529,
+				}
+			]
+		)
+		self.assertEqual(second["failed"], [], second.get("failed"))
+		self.assertEqual(len(second["updated"]), 1)
+		row = frappe.db.get_value(
+			"Attendance",
+			name,
+			["status", "custom_paid_leave_hours"],
+			as_dict=True,
+		)
+		self.assertEqual(row.status, "On Leave")
+		self.assertAlmostEqual(float(row.custom_paid_leave_hours), 9.0, places=5)
+
+	def test_on_leave_reimport_is_idempotent(self):
+		employee = self._employee("77083")
+		day = add_days(getdate(nowdate()), -53)
+		company = frappe.db.get_value("Employee", employee, "company")
+		values = {
+			"status": "On Leave",
+			"standard_working_hours": 9,
+			"working_hours": 0,
+			"custom_paid_leave_hours": 9.0,
+			"custom_unpaid_leave_hours": 0,
+			"custom_total_leave_hours": 9.0,
+			"custom_mission_work_hours": 0,
+			"custom_regular_work_hours": 0,
+			"custom_extra_presence_hours": 0,
+			"custom_approved_overtime_hours": 0,
+			"custom_work_shortage_hours": 0,
+			"custom_night_work_hours": 0,
+		}
+		first = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": values,
+					"row": 529,
+				}
+			]
+		)
+		name = first["created"][0]["name"]
+		self.attendance.append(name)
+		second = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"mode": "update_submitted",
+					"name": name,
+					"values": values,
+					"row": 529,
+				}
+			]
+		)
+		self.assertEqual(second["failed"], [])
+		self.assertEqual(len(second["updated"]), 1)
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "On Leave")
+		self.assertAlmostEqual(
+			float(frappe.db.get_value("Attendance", name, "custom_paid_leave_hours")),
+			9.0,
 			places=5,
 		)
