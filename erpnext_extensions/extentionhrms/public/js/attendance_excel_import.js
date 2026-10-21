@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.4 (Excel-authoritative field mapping)
+// Version: V2.0.5 (Status from Excel presence/absence; Approved OT = Normal+Holiday)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -343,14 +343,22 @@ frappe.provide("espad.attendance_details");
             // خروج غیرمجاز + تعجیل + تأخیر (absence excluded).
             workShortage:
                 d.unauthorizedExit + d.early + d.late,
+            // Approved OT = عادی مجاز + تعطیل مجاز ONLY (night/mission approved excluded).
             approvedOT:
-                d.nightOTApproved +
-                d.missionOTApproved +
-                d.holidayOTApproved +
-                d.normalOTApproved,
+                d.holidayOTApproved + d.normalOTApproved,
             workGroup: norm(row[C.workGroup]),
             weekday: norm(row[C.weekday])
         };
+    }
+
+    function excelImportStatus(details, inTime, outTime) {
+        // Absent ONLY when Excel غیبت duration is strictly greater than zero.
+        // Missing punches, blank absence, zero absence, or missing shift never force Absent.
+        const d = details || {};
+        if ((d.absence || 0) > 0) return "Absent";
+        if ((d.presence || 0) > 0 || (d.worked || 0) > 0 || inTime || outTime)
+            return "Present";
+        return "Present";
     }
 
     async function api(method, args) {
@@ -1027,7 +1035,9 @@ frappe.provide("espad.attendance_details");
                     return ["Review", "Mission / Leave needs verification"];
                 }
 
-                if (d.absence <= 0 && !a)
+                // Excel حضور / کارکرد / غیبت are authoritative — missing punches alone
+                // must not block import or force a Review/Absent path.
+                if (d.presence <= 0 && d.worked <= 0 && d.absence <= 0 && !a)
                     return ["Review", "No punches / absence"];
             }
 
@@ -1138,8 +1148,7 @@ frappe.provide("espad.attendance_details");
                             </tr></thead>
                             <tbody>${classified.slice(0, CONFIG.previewLimit).map(r => {
                                 const d = r.details || {};
-                                const status = d.absence > 0 ? "Absent"
-                                    : ((d.presence > 0 || r.inTime || r.outTime) ? "Present" : "Absent");
+                                const status = excelImportStatus(d, r.inTime, r.outTime);
                                 const unauth = hours(r.unauthorizedNormalOT || 0);
                                 return `
                                 <tr>
@@ -1603,12 +1612,13 @@ frappe.provide("espad.attendance_details");
             const d = r.details;
             // Excel-authoritative presence (حضور). Do not substitute punch interval.
             const presence = Math.max(0, d.presence || 0);
-            // Rule 3: positive Excel غیبت forces Absent over punch-inferred Present.
-            if (d.absence > 0) {
-                doc.status = "Absent";
+            // Preserve On Leave / Half Day set by HRMS on an existing document.
+            const priorStatus = doc.status;
+            if (priorStatus === "On Leave" || priorStatus === "Half Day") {
+                // Keep HRMS leave status; Excel absence rule does not override Leave docs
+                // (those rows are classified Review and normally not written).
             } else {
-                const hasPresence = presence > 0 || !!r.inTime || !!r.outTime;
-                doc.status = hasPresence ? "Present" : "Absent";
+                doc.status = excelImportStatus(d, r.inTime, r.outTime);
             }
             if (state.fields.has("in_time")) doc.in_time = r.inTime;
             if (state.fields.has("out_time")) doc.out_time = r.outTime;
@@ -1704,7 +1714,7 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
                     source: "Attendance Excel Import",
-                    mapping_version: "V2.0.4",
+                    mapping_version: "V2.0.5",
                     source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
                     weekday: r.weekday, work_group: r.workGroup,
@@ -1712,11 +1722,19 @@ frappe.provide("espad.attendance_details");
                     unauthorized_normal_ot_minutes: unauthorizedNormal,
                     work_shortage_minutes: shortageMinutes,
                     approved_overtime_minutes: r.approvedOT,
+                    approved_overtime_components: {
+                        holiday_approved_minutes: d.holidayOTApproved,
+                        normal_approved_minutes: d.normalOTApproved,
+                        excluded_night_approved_minutes: d.nightOTApproved,
+                        excluded_mission_approved_minutes: d.missionOTApproved
+                    },
                     night_work_source: "Excel شبکاری کل",
                     holiday_work_source: "Excel تعطیل مجاز",
                     regular_and_extra_presence_source: "Excel عادی غیرمجاز (identical)",
                     work_shortage_source: "Excel خروج غیرمجاز + تعجیل + تأخیر",
-                    status_rule: d.absence > 0 ? "Excel غیبت > 0 → Absent" : "presence/punches",
+                    status_rule: d.absence > 0
+                        ? "Excel غیبت > 0 → Absent"
+                        : "Present unless Excel absence > 0 (missing punches do not force Absent)",
                     resolved_shift: schedule.shiftName, scheduled_day: schedule.scheduled,
                     holiday_or_rest: schedule.rest,
                     note: "Other Paid Leave Hours not overwritten: source Excel has no separate column"

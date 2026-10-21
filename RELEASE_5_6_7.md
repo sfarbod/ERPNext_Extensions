@@ -29,7 +29,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 
 ## 3. What changed
 
-### UI (Client Script V2.0.4)
+### UI (Client Script V2.0.5)
 
 - Synced from `extentionhrms/public/js/attendance_excel_import.js`.
 - Summary stats (personnel / matched / unmatched / ambiguous / rows / invalid).
@@ -80,7 +80,7 @@ bench --site <site> migrate
 bench --site <site> clear-cache
 ```
 
-Verify Client Script contains `Version: V2.0.4`, local SheetJS asset path, `data-espad-att-progress`, `unauthorizedNormalOT`, `custom_extra_presence_hours`, and `import_attendance_details`.
+Verify Client Script contains `Version: V2.0.5`, local SheetJS asset path, `data-espad-att-progress`, `excelImportStatus`, `holidayOTApproved + d.normalOTApproved`, and `import_attendance_details`.
 
 ### Correction (V2.0.1 within 5.6.7)
 
@@ -120,16 +120,21 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 | 8 | غیبت > 0 | `status = "Absent"` |
 | 14 | تعطیل مجاز | `custom_holiday_work_hours` |
 | 15 | عادی غیرمجاز | `custom_regular_work_hours` **and** `custom_extra_presence_hours` (identical) |
-| 10+12+14+16 | Approved OT components | `custom_approved_overtime_hours` |
+| 14+16 | تعطیل مجاز + عادی مجاز | `custom_approved_overtime_hours` |
 | 17 | حضور | `working_hours` |
 
 #### Rules
 
 1. **Work shortage** = sum of Excel unauthorized exit + early + late (minutes → hours). Not shift math; absence excluded.
 2. **Dual unauthorized OT:** Excel عادی غیرمجاز alone populates both `custom_regular_work_hours` and `custom_extra_presence_hours` with the same decimal hours (including explicit zero). Overrides the prior sum-of-all-unauthorized-OT mapping for `custom_regular_work_hours`. Does not feed Approved OT.
-3. **Absence:** Excel غیبت duration > 0 forces `status = "Absent"` over punch-inferred Present.
-4. **Approved OT:** unchanged V2.0.3 formula; OTAR cannot replace after submit.
-5. **Persistence:** `EXCEL_AUTHORITATIVE_FIELDS` extended with `status`, `working_hours`, `custom_night_work_hours`, `custom_work_shortage_hours`, dual OT fields, etc., and re-applied after create/draft submit.
+3. **Status:** Excel غیبت duration > 0 → `Absent`. Blank/zero absence never forces Absent; missing punches/checkins/shift alone never force Absent. Positive حضور/کارکرد/IN-OUT → `Present`. On Leave / Half Day preserved.
+4. **Approved OT (V2.0.5):** `Normal Approved + Holiday Approved` only. Night/Mission approved are excluded from this field (Holiday Approved still also maps to `custom_holiday_work_hours`).
+5. **Persistence:** `EXCEL_AUTHORITATIVE_FIELDS` includes `status`, `working_hours`, dual OT, shortage, night, approved OT, etc., re-applied after create/draft submit.
+
+### Correction (V2.0.5 within 5.6.7) — Status + Approved OT
+
+1. **Status bug:** Importer no longer defaults to Absent when punches are missing or absence is blank/zero. Only positive Excel غیبت forces Absent. Verified for رضوان مرزبانی / `1405/07/25` (Excel row 152, HR-EMP-0001, 2026-10-17): حضور `۱۱:۰۱`, غیبت blank → persisted `Present`.
+2. **Approved OT formula:** Replaced four-category sum with `holidayOTApproved + normalOTApproved` (indexes 14 + 16). Night/Mission approved no longer inflate `custom_approved_overtime_hours`.
 
 ### Browser E2E on `development.localhost` (`mehr.xls`)
 
@@ -150,6 +155,8 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 
 **Excel-authoritative E2E (V2.0.4):** Expanded preview columns; Regular Work Hours === Extra Presence Hours for all previewed rows (dual عادی غیرمجاز). Import Updated 36 / Skipped 26 / Failed 0 with inline progress only. DB checks: row 231 عادی غیرمجاز `۸:۲۴` → both fields `8.4`; row 245 shortage (exit+early) → `1.983333`; synthetic absence create → `status=Absent`. Note: `mehr.xls` data rows have empty numeric غیبت / unpaid columns (header labels only).
 
+**Status + Approved OT E2E (V2.0.5):** Personnel code `3` (رضوان مرزبانی). Preview row 152 / `2026-10-17` → Status `Present`, Approved OT `2.016667` (Normal `۲:۰۱` only). Rows 115/118/119 show corrected Approved OT excluding Night (`14.316667` / `6.933333` / `2.7` vs old four-sum). Import Updated 23 / Failed 0, single modal + inline progress. Post-import DB matched preview.
+
 Screenshots (populated UI + import result): `extentionhrms/e2e/screenshots/attendance_excel_import/`.
 
 ---
@@ -166,7 +173,7 @@ unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFro
 PY
 ```
 
-Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, preload, Client Script sync (V2.0.4 + local SheetJS path, no CDN), local SheetJS asset presence, personnel-code normalization/index, permission gates, Approved Overtime Hours formula, work-shortage sum, dual unauthorized-OT fields, absence→Absent, create/draft/submitted persistence, and post-submit re-apply.
+Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, preload, Client Script sync (V2.0.5 + local SheetJS path, no CDN), local SheetJS asset presence, personnel-code normalization/index, permission gates, Approved OT = Normal+Holiday only (Night/Mission excluded), work-shortage sum, dual unauthorized-OT fields, status Present unless Excel absence > 0, Absent→Present correction, create/draft/submitted persistence, and post-submit re-apply.
 
 Playwright regression helper: `extentionhrms/e2e/attendance_excel_import_playwright.mjs` (library HTTP 200 + file select + parse stats).
 

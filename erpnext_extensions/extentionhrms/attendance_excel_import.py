@@ -152,17 +152,14 @@ def approved_overtime_hours_from_components(
 	holiday_approved_minutes=0,
 	normal_approved_minutes=0,
 ) -> float:
-	"""Legacy Client Script formula: sum of four approved Excel columns in minutes → hours.
+	"""Excel Approved OT for the importer: Normal Approved + Holiday Approved only.
 
-	Matches ``hours(nightOTApproved + missionOTApproved + holidayOTApproved + normalOTApproved)``.
+	Night Approved and Mission Approved arguments are accepted for call-site
+	compatibility but are intentionally excluded from the sum.
 	Unauthorized overtime is never included.
 	"""
-	total_minutes = (
-		float(night_approved_minutes or 0)
-		+ float(mission_approved_minutes or 0)
-		+ float(holiday_approved_minutes or 0)
-		+ float(normal_approved_minutes or 0)
-	)
+	_ = (night_approved_minutes, mission_approved_minutes)  # excluded by design
+	total_minutes = float(holiday_approved_minutes or 0) + float(normal_approved_minutes or 0)
 	return minutes_to_hours(total_minutes)
 
 
@@ -188,10 +185,27 @@ def unauthorized_normal_ot_hours(normal_unauthorized_minutes=0) -> float:
 	return minutes_to_hours(normal_unauthorized_minutes)
 
 
-def excel_status_from_absence(absence_minutes=0, fallback_status: str = "Present") -> str:
-	"""Positive Excel غیبت forces Absent; blank/zero keeps fallback."""
+def excel_status_from_absence(
+	absence_minutes=0,
+	fallback_status: str = "Present",
+	*,
+	presence_minutes=0,
+	worked_minutes=0,
+	has_in_out: bool = False,
+) -> str:
+	"""Excel-import status: Absent only when غیبت duration > 0.
+
+	Blank/zero absence never forces Absent. Missing punches or zero presence alone
+	do not force Absent either — fallback (default Present) is used.
+	"""
 	if float(absence_minutes or 0) > 0:
 		return "Absent"
+	if (
+		float(presence_minutes or 0) > 0
+		or float(worked_minutes or 0) > 0
+		or has_in_out
+	):
+		return "Present"
 	return fallback_status or "Present"
 
 

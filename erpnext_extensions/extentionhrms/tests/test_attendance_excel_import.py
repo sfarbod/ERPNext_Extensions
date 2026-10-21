@@ -238,7 +238,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.4", script)
+		self.assertIn("V2.0.5", script)
 		self.assertIn("import_attendance_details", script)
 		self.assertIn("get_personnel_code_index", script)
 		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
@@ -256,7 +256,8 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn("custom_extra_presence_hours", script)
 		self.assertIn("workShortage", script)
 		self.assertIn('setHours(doc, "Approved Overtime Hours", r.approvedOT', script)
-		self.assertIn("nightOTApproved", script)
+		self.assertIn("holidayOTApproved + d.normalOTApproved", script)
+		self.assertIn("excelImportStatus", script)
 		self.assertIn("CONFIG.approvedOT", script)
 		self.assertIn("Excel غیبت", script)
 
@@ -289,28 +290,30 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			get_personnel_code_index()
 		frappe.set_user("Administrator")
 
-	def test_approved_overtime_hours_formula_matches_legacy_script(self):
-		# 00:30 + 01:00 + 00:45 + 02:15 = 4.5 hours
+	def test_approved_overtime_hours_formula_normal_plus_holiday_only(self):
+		# Normal 02:30 + Holiday 01:15 = 3.75; Night 03:00 + Mission 02:00 excluded
 		self.assertEqual(
-			approved_overtime_hours_from_components(30, 60, 45, 135),
-			4.5,
+			approved_overtime_hours_from_components(180, 120, 75, 150),
+			3.75,
 		)
-		# single Normal Approved 01:30
+		# Normal only 01:30
 		self.assertEqual(approved_overtime_hours_from_components(0, 0, 0, 90), 1.5)
-		# zero
+		# Holiday only 00:45
+		self.assertEqual(approved_overtime_hours_from_components(0, 0, 45, 0), 0.75)
+		# Night-only must NOT count
+		self.assertEqual(approved_overtime_hours_from_components(90, 0, 0, 0), 0.0)
+		# Mission-only must NOT count
+		self.assertEqual(approved_overtime_hours_from_components(0, 90, 0, 0), 0.0)
+		# zero / blank
 		self.assertEqual(approved_overtime_hours_from_components(0, 0, 0, 0), 0.0)
-		# multi-component from mehr.xls row 115: 5 + 859 minutes
-		self.assertEqual(approved_overtime_hours_from_components(5, 0, 0, 859), 14.4)
-		# Night-approved minutes are not interchangeable with Normal-approved positionally,
-		# but the sum is commutative — both paths equal 1.5 hours.
-		self.assertEqual(approved_overtime_hours_from_components(90, 0, 0, 0), 1.5)
-		self.assertEqual(approved_overtime_hours_from_components(0, 0, 0, 90), 1.5)
+		# Night+Normal: only Normal
+		self.assertEqual(approved_overtime_hours_from_components(5, 0, 0, 859), minutes_to_hours(859))
 
 	def test_create_persists_approved_overtime_hours(self):
 		employee = self._employee("77040")
 		day = add_days(getdate(nowdate()), -20)
 		company = frappe.db.get_value("Employee", employee, "company")
-		expected = approved_overtime_hours_from_components(30, 60, 45, 135)
+		expected = approved_overtime_hours_from_components(30, 60, 45, 135)  # = 3.0
 		result = import_attendance_details(
 			[
 				{
@@ -326,7 +329,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 						"custom_regular_work_hours": 1.25,
 						"custom_calculation_details": (
 							'{"source":"Attendance Excel Import",'
-							'"approved_overtime_minutes":270}'
+							'"approved_overtime_minutes":180}'
 						),
 					},
 					"row": 1,
@@ -342,6 +345,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			expected,
 			places=5,
 		)
+		self.assertEqual(expected, 3.0)
 		self.assertAlmostEqual(
 			float(frappe.db.get_value("Attendance", name, "custom_regular_work_hours") or 0),
 			1.25,
@@ -400,6 +404,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		employee = self._employee("77042")
 		day = add_days(getdate(nowdate()), -22)
 		company = frappe.db.get_value("Employee", employee, "company")
+		# Night 5 excluded; only Normal 859 minutes → hours
 		expected = approved_overtime_hours_from_components(5, 0, 0, 859)
 		result = import_attendance_details(
 			[
@@ -415,7 +420,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 						"custom_approved_overtime_hours": expected,
 						"custom_calculation_details": (
 							'{"source":"Attendance Excel Import",'
-							'"approved_overtime_minutes":864}'
+							'"approved_overtime_minutes":859}'
 						),
 					},
 					"row": 115,
@@ -432,7 +437,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			{
 				"custom_approved_overtime_hours": expected,
 				"custom_calculation_details": (
-					'{"source":"Attendance Excel Import","approved_overtime_minutes":864}'
+					'{"source":"Attendance Excel Import","approved_overtime_minutes":859}'
 				),
 			},
 		)
@@ -459,8 +464,22 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertEqual(excel_status_from_absence(30, "Present"), "Absent")
 		self.assertEqual(excel_status_from_absence(480, "Present"), "Absent")
 		self.assertEqual(excel_status_from_absence(0, "Present"), "Present")
-		self.assertEqual(excel_status_from_absence(0, "Absent"), "Absent")
 		self.assertEqual(excel_status_from_absence(None, "Present"), "Present")
+		# Blank/zero absence with positive presence → Present
+		self.assertEqual(
+			excel_status_from_absence(0, "Absent", presence_minutes=661),
+			"Present",
+		)
+		# No punches, blank absence, positive Excel حضور → Present
+		self.assertEqual(
+			excel_status_from_absence(0, "Absent", presence_minutes=120, has_in_out=False),
+			"Present",
+		)
+		# No punches, zero presence, blank absence → do NOT force Absent
+		self.assertEqual(
+			excel_status_from_absence(0, "Present", presence_minutes=0, has_in_out=False),
+			"Present",
+		)
 
 	def test_create_persists_excel_authoritative_mapping(self):
 		employee = self._employee("77050")
@@ -468,7 +487,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		company = frappe.db.get_value("Employee", employee, "company")
 		shortage = work_shortage_hours_from_components(30, 20, 40)
 		unauth = unauthorized_normal_ot_hours(105)
-		approved = approved_overtime_hours_from_components(30, 0, 45, 60)
+		approved = approved_overtime_hours_from_components(30, 0, 45, 60)  # holiday+normal=1.75
 		result = import_attendance_details(
 			[
 				{
@@ -490,7 +509,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 						"custom_approved_overtime_hours": approved,
 						"custom_holiday_work_hours": 0.75,
 						"custom_calculation_details": (
-							'{"source":"Attendance Excel Import","mapping_version":"V2.0.4"}'
+							'{"source":"Attendance Excel Import","mapping_version":"V2.0.5"}'
 						),
 					},
 					"row": 1,
@@ -532,7 +551,60 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			float(row.custom_extra_presence_hours),
 		)
 		self.assertAlmostEqual(float(row.custom_approved_overtime_hours), approved, places=5)
+		self.assertEqual(approved, 1.75)
 		self.assertAlmostEqual(float(row.custom_holiday_work_hours), 0.75, places=5)
+
+	def test_submitted_update_corrects_absent_to_present(self):
+		employee = self._employee("77060")
+		day = add_days(getdate(nowdate()), -34)
+		company = frappe.db.get_value("Employee", employee, "company")
+		first = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": {
+						"status": "Absent",
+						"standard_working_hours": 8,
+						"working_hours": 0,
+					},
+					"row": 1,
+				}
+			]
+		)
+		name = first["created"][0]["name"]
+		self.attendance.append(name)
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "Absent")
+		second = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"mode": "update_submitted",
+					"name": name,
+					"values": {
+						"status": "Present",
+						"standard_working_hours": 8,
+						"working_hours": 11.016667,
+						"custom_approved_overtime_hours": 2.016667,
+						"custom_regular_work_hours": 0,
+						"custom_extra_presence_hours": 0,
+						"custom_night_work_hours": 0,
+						"custom_work_shortage_hours": 0,
+					},
+					"row": 152,
+				}
+			]
+		)
+		self.assertEqual(len(second["updated"]), 1)
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "Present")
+		self.assertAlmostEqual(
+			float(frappe.db.get_value("Attendance", name, "working_hours")),
+			11.02,
+			places=2,
+		)
 
 	def test_submitted_update_keeps_dual_unauthorized_ot_equal(self):
 		employee = self._employee("77051")
