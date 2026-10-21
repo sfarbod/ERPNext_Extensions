@@ -29,7 +29,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 
 ## 3. What changed
 
-### UI (Client Script V2.0.2)
+### UI (Client Script V2.0.3)
 
 - Synced from `extentionhrms/public/js/attendance_excel_import.js`.
 - Summary stats (personnel / matched / unmatched / ambiguous / rows / invalid).
@@ -40,6 +40,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 - Batched save/submit via the new API (50 rows/batch default).
 - Errors show the failing phase and asset URL / cause.
 - **Inline Import Progress** inside the original dialog (progress bar, %, batch, created/updated/skipped/failed from backend, scrollable log). No nested `frappe.show_progress` / result dialog. Close confirms while a run is active.
+- **Approved Overtime Hours** mapped explicitly to `custom_approved_overtime_hours` from Excel columns K/M/O/Q (minutes → hours).
 
 ### Backend APIs
 
@@ -79,7 +80,7 @@ bench --site <site> migrate
 bench --site <site> clear-cache
 ```
 
-Verify Client Script contains `Version: V2.0.2`, local SheetJS asset path, `data-espad-att-progress`, and `import_attendance_details`.
+Verify Client Script contains `Version: V2.0.3`, local SheetJS asset path, `data-espad-att-progress`, `custom_approved_overtime_hours`, and `import_attendance_details`.
 
 ### Correction (V2.0.1 within 5.6.7)
 
@@ -92,6 +93,16 @@ Verify Client Script contains `Version: V2.0.2`, local SheetJS asset path, `data
 1. **Inline progress:** Removed the separate `Attendance Import` progress dialog (`frappe.show_progress`) and the nested `Attendance Import Result` dialog. Progress bar, batch status, backend counters, and the final result/log stay inside `Import Attendance Details (Excel)`, matching Employee Checkin Excel Import UX.
 2. **Close policy:** While a synchronous import is running, Close / modal-X asks for confirmation; closing does not cancel in-flight server requests.
 3. **Known import failures:** Rows that fail with historical Shift Assignment gaps / missing Shift Schedule Assignment remain **Failed** (not silently skipped or counted as success).
+
+### Correction (V2.0.3 within 5.6.7) — Approved Overtime Hours regression
+
+1. **Business formula restored:** `custom_approved_overtime_hours` =
+   `(Night OT Approved + Mission OT Approved + Holiday OT Approved + Normal OT Approved) / 60`
+   (Excel columns K/M/O/Q → minutes after duration parse → decimal hours), matching the legacy Client Script.
+2. **Frontend:** Explicit assignment to `custom_approved_overtime_hours` in the batch payload (in addition to label-based `setHours`), so the field cannot be dropped when metadata lookup is ambiguous.
+3. **Backend persistence:** After create/draft submit, Excel-authoritative hour fields (including Approved OT) are re-applied via `_reapply_excel_authoritative_fields` so `ESPAD ATT AFTER SUBMIT` / `espad_attendance_calculate` cannot silently replace Excel values with OTAR-derived zeros.
+4. **Submitted path:** Controlled `update_submitted` allow-list already included `custom_approved_overtime_hours`; regression tests cover create, draft→submit, and submitted update persistence.
+5. **Helpers/tests:** `approved_overtime_hours_from_components()` mirrors the legacy `hours(sum(minutes))` rounding; unit tests cover single/multi-component sums, zeros, Persian digits, and write paths.
 
 ### Browser E2E on `development.localhost` (`mehr.xls`)
 
@@ -107,6 +118,8 @@ Verify Client Script contains `Version: V2.0.2`, local SheetJS asset path, `data
 | Inline E2E (15 employees) | Created 117 · Updated 223 · Skipped 116 · Failed 9* · **4003 ms (~85 rec/s)** · single modal only |
 
 \*Failed rows are intentional business-rule refusals (historical Shift Assignment gaps / missing schedule assignment), not library or API crashes. They appear with Excel row numbers in the inline result panel.
+
+**Approved OT E2E (V2.0.3):** Preview for personnel codes `3` and `15` showed Excel-derived Approved OT (e.g. row 115 → `14.4`, row 118 → `8.9`). Controlled import Updated 36 / Skipped 26 / Failed 0 in one modal with inline progress only. Post-import DB values for five multi-component Excel rows matched `(K+M+O+Q minutes)/60`.
 
 Screenshots (populated UI + import result): `extentionhrms/e2e/screenshots/attendance_excel_import/`.
 
@@ -124,7 +137,7 @@ unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFro
 PY
 ```
 
-Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, preload, Client Script sync (V2.0.1 + local SheetJS path, no CDN), local SheetJS asset presence, personnel-code normalization/index, and permission gates.
+Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, preload, Client Script sync (V2.0.3 + local SheetJS path, no CDN), local SheetJS asset presence, personnel-code normalization/index, permission gates, and Approved Overtime Hours formula / create / submitted / post-submit re-apply persistence.
 
 Playwright regression helper: `extentionhrms/e2e/attendance_excel_import_playwright.mjs` (library HTTP 200 + file select + parse stats).
 

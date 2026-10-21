@@ -56,6 +56,25 @@ ALLOWED_SUBMITTED_FIELDS = (
 	"custom_calculation_details",
 )
 
+# Excel is the source of truth for these hour fields. ESPAD ATT AFTER SUBMIT may
+# call espad_attendance_calculate, which overwrites custom_approved_overtime_hours
+# (and related fields) from Overtime Authorization Requests. Re-apply after submit
+# so the Excel import mapping survives when the engine runs successfully.
+EXCEL_AUTHORITATIVE_FIELDS = (
+	"custom_approved_overtime_hours",
+	"custom_regular_work_hours",
+	"custom_regular_overtime_hours",
+	"custom_paid_leave_hours",
+	"custom_unpaid_leave_hours",
+	"custom_total_leave_hours",
+	"custom_leave_hours",
+	"custom_mission_work_hours",
+	"custom_extra_presence_hours",
+	"custom_friday_work_hours",
+	"custom_holiday_work_hours",
+	"custom_calculation_details",
+)
+
 
 def _authorize():
 	if frappe.session.user in (None, "", "Guest"):
@@ -117,6 +136,25 @@ def _normalize_personnel_code(value) -> str:
 	if compact.isdigit():
 		return compact.lstrip("0") or "0"
 	return compact
+
+
+def approved_overtime_hours_from_components(
+	night_approved_minutes=0,
+	mission_approved_minutes=0,
+	holiday_approved_minutes=0,
+	normal_approved_minutes=0,
+) -> float:
+	"""Legacy Client Script formula: sum of four approved Excel columns in minutes → hours.
+
+	Matches ``hours(nightOTApproved + missionOTApproved + holidayOTApproved + normalOTApproved)``.
+	"""
+	total_minutes = (
+		float(night_approved_minutes or 0)
+		+ float(mission_approved_minutes or 0)
+		+ float(holiday_approved_minutes or 0)
+		+ float(normal_approved_minutes or 0)
+	)
+	return round(max(0.0, total_minutes) / 60.0 * 1_000_000) / 1_000_000
 
 
 @frappe.whitelist()
@@ -484,6 +522,7 @@ def _persist_one(item: dict) -> dict:
 			frappe.throw(_("Attendance employee/date scope changed"))
 		doc.save()
 		doc.submit()
+		_reapply_excel_authoritative_fields(doc.name, values)
 		return {
 			"bucket": "updated",
 			"employee": employee,
@@ -511,6 +550,7 @@ def _persist_one(item: dict) -> dict:
 	_apply_values(doc, values)
 	doc.insert()
 	doc.submit()
+	_reapply_excel_authoritative_fields(doc.name, values)
 	return {
 		"bucket": "created",
 		"employee": employee,
@@ -528,6 +568,30 @@ def _apply_values(doc, values: dict) -> None:
 		if field.startswith("_"):
 			continue
 		doc.set(field, value)
+
+
+def _reapply_excel_authoritative_fields(name: str, values: dict) -> None:
+	"""Restore Excel-mapped hours after After-Submit hooks may overwrite them."""
+	restore = {
+		k: values[k]
+		for k in EXCEL_AUTHORITATIVE_FIELDS
+		if k in values and k in ALLOWED_SUBMITTED_FIELDS
+	}
+	if not restore:
+		return
+	att = frappe.get_doc("Attendance", name)
+	if int(att.docstatus) != 1:
+		return
+	att.check_permission("write")
+	changed = False
+	for field, value in restore.items():
+		if att.get(field) != value:
+			att.set(field, value)
+			changed = True
+	if not changed:
+		return
+	att.flags.ignore_validate_update_after_submit = True
+	att.save()
 
 
 def _update_submitted(name: str, employee: str, day_s: str, values: dict):
