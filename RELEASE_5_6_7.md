@@ -29,7 +29,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 
 ## 3. What changed
 
-### UI (Client Script V2.0.7)
+### UI (Client Script V2.0.8)
 
 - Synced from `extentionhrms/public/js/attendance_excel_import.js`.
 - Summary stats (personnel / matched / unmatched / ambiguous / rows / invalid).
@@ -80,7 +80,7 @@ bench --site <site> migrate
 bench --site <site> clear-cache
 ```
 
-Verify Client Script contains `Version: V2.0.7`, `rejectOutlierWorkbookYears`, `Mission and absence conflict`, mission→Present, and `import_attendance_details`.
+Verify Client Script contains `Version: V2.0.8`, `missionPresent`, `rejectOutlierWorkbookYears`, `Mission and absence conflict`, mission→Present, and `import_attendance_details`.
 
 ### Correction (V2.0.1 within 5.6.7)
 
@@ -148,6 +148,13 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 3. **1399 dates:** List View Jalali `1399-*` for رضوان مرزبانی were **not** Excel parser failures. Stored Gregorian dates were `2020-09-21`…`2020-10-16` (Jalali 1399-06-31…1399-07-25) from earlier path-verification fixtures near `date_of_joining` (2020-08-22), not from `mehr.xls` (text Jalali `۱۴۰۵/…` cells). Real Excel imports for that employee remain `2026-09-17`…`2026-10-17` (Jalali 1405). The four fixture records were cancelled/deleted. Workbook majority-year validation (`rejectOutlierWorkbookYears`) blocks minority outlier Gregorian years without hardcoding 1405.
 4. **Regression:** `1405/07/25` → `2026-10-17`. محسن اعتمادی / `1405/07/12` → Present / mission `9.0`.
 
+### Correction (V2.0.8 within 5.6.7) — Mission Present despite incomplete IN/OUT
+
+1. **Root cause:** `classify()` returned `Review / Missing IN / OUT` when only one of IN or OUT was present. Mission rows such as محسن اعتمادی / `1405/07/06` (Excel row 537: مأموریت `۹:۰۰`, OUT only `۱۶:۵۷`, absence blank) were skipped, leaving Submitted `HR-ATT-2026-14770` as `Absent` with `custom_mission_work_hours = 0`.
+2. **Fix:** When Excel mission > 0 and absence is blank/zero (`missionPresent`), incomplete punch pairs no longer force Review. Asymmetric punches are not written to Attendance (null IN/OUT); status + mission hours still import as Present.
+3. **Data repair (development.localhost):** Reimported 82 eligible mission mismatches via `import_attendance_details` (74 create + 8 submitted update). Post-audit: 185/185 eligible mission rows Present with matching mission hours; 0 conflicts; 0 remaining incorrect Absent.
+4. **Verified:** `HR-ATT-2026-14770` → Present / 9.0; `HR-ATT-2026-14774` → Present / 9.0.
+
 ### Browser E2E on `development.localhost` (`mehr.xls`)
 
 | Phase | Result |
@@ -171,7 +178,9 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 
 **Mission Present E2E (V2.0.7):** `mehr.xls` → 7994 rows / 261 matched; all workbook Jalali years = 1405 → Gregorian 2026. convertDate probes: `1405/07/25` / Persian / Arabic digits → `2026-10-17`. DB `HR-ATT-2026-14774` (محسن اعتمادی / `2026-10-04`): `Present` / mission `9.0`. `HR-ATT-2026-14573` (رضوان مرزبانی / `2026-10-17`): `Present`. Synthetic 2020 fixtures deleted; zero remaining `On Duty`. Inline progress present; no nested progress dialog.
 
-Screenshots: `extentionhrms/e2e/screenshots/attendance_excel_import/v207_*.png`.
+**Mission incomplete-punch E2E (V2.0.8):** Preview for code `71` includes `1405/07/06` as Update→Present (not Review Missing IN/OUT). DB `HR-ATT-2026-14770`: `Present` / mission `9.0`. Full mission-row audit: 185 OK, 0 wrong Absent.
+
+Screenshots: `extentionhrms/e2e/screenshots/attendance_excel_import/v207_*.png`, `v208_*.png`.
 
 ---
 
@@ -187,7 +196,7 @@ unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFro
 PY
 ```
 
-Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, Client Script sync (V2.0.7), mission→Present with hours, Jalali date regression (1405/07/25→2026-10-17), workbook year outlier rejection, Approved OT = Normal+Holiday, dual unauthorized OT, and post-submit re-apply.
+Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, Client Script sync (V2.0.8), mission→Present with hours (including draft/submitted Absent→Present and incomplete IN/OUT `missionPresent` guard), Jalali date regression (1405/07/25→2026-10-17), workbook year outlier rejection, Approved OT = Normal+Holiday, dual unauthorized OT, and post-submit re-apply.
 
 Playwright regression helper: `extentionhrms/e2e/attendance_excel_import_playwright.mjs` (library HTTP 200 + file select + parse stats).
 

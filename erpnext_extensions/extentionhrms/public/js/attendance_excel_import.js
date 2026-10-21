@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.7 (Mission → Present; workbook date-range validation)
+// Version: V2.0.8 (Mission Present even with incomplete IN/OUT)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -1071,7 +1071,14 @@ frappe.provide("espad.attendance_details");
             if (a?.status === "On Leave" || a?.status === "Half Day")
                 return ["Review", "Existing Leave Attendance"];
 
-            if (!!r.inTime !== !!r.outTime)
+            const d = r.details || {};
+            const missionPresent =
+                (d.mission || 0) > 0 && (d.absence || 0) <= 0;
+
+            // Incomplete punch pair normally needs review. Exception: Excel
+            // mission > 0 with blank/zero absence — punches are not required
+            // for mission days (status Present + mission hours).
+            if (!!r.inTime !== !!r.outTime && !missionPresent)
                 return ["Review", "Missing IN / OUT"];
 
             if (
@@ -1080,8 +1087,6 @@ frappe.provide("espad.attendance_details");
             ) {
                 return ["Review", "Approved OT field missing"];
             }
-
-            const d = r.details;
 
             // Mission + absence conflict: never silently choose a status.
             if ((d.mission || 0) > 0 && (d.absence || 0) > 0)
@@ -1712,8 +1717,16 @@ frappe.provide("espad.attendance_details");
             } else {
                 doc.status = excelImportStatus(d, r.inTime, r.outTime);
             }
-            if (state.fields.has("in_time")) doc.in_time = r.inTime;
-            if (state.fields.has("out_time")) doc.out_time = r.outTime;
+            // Only write a complete IN/OUT pair. Asymmetric punches on mission
+            // days must not block Present/mission hours, and must not persist
+            // a one-sided punch that HRMS / calc hooks would misread.
+            if (r.inTime && r.outTime) {
+                if (state.fields.has("in_time")) doc.in_time = r.inTime;
+                if (state.fields.has("out_time")) doc.out_time = r.outTime;
+            } else {
+                if (state.fields.has("in_time")) doc.in_time = null;
+                if (state.fields.has("out_time")) doc.out_time = null;
+            }
             if (state.fields.has("shift")) doc.shift = schedule.shiftName || null;
 
             // Explicitly map visible attendance flags. A Rest day is not scheduled.
@@ -1806,7 +1819,7 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
                     source: "Attendance Excel Import",
-                    mapping_version: "V2.0.7",
+                    mapping_version: "V2.0.8",
                     source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
                     raw_excel_date: r.rawDate,

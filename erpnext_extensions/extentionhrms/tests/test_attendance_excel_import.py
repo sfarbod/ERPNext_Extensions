@@ -240,7 +240,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.7", script)
+		self.assertIn("V2.0.8", script)
 		self.assertIn("import_attendance_details", script)
 		self.assertIn("get_personnel_code_index", script)
 		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
@@ -263,6 +263,9 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn("rejectOutlierWorkbookYears", script)
 		self.assertNotIn('return "On Duty"', script)
 		self.assertIn("Mission and absence conflict", script)
+		# Mission days must not be blocked by incomplete IN/OUT.
+		self.assertIn("missionPresent", script)
+		self.assertIn("&& !missionPresent", script)
 		self.assertIn("CONFIG.approvedOT", script)
 		self.assertIn("Excel غیبت", script)
 		self.assertIn(first.get("status_options"), ("removed", "unchanged"))
@@ -857,7 +860,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 						"custom_extra_presence_hours": 0,
 						"custom_approved_overtime_hours": 0,
 						"custom_calculation_details": (
-							'{"source":"Attendance Excel Import","mapping_version":"V2.0.7",'
+							'{"source":"Attendance Excel Import","mapping_version":"V2.0.8",'
 							'"mission_work_source":"Excel کل مأموریت"}'
 						),
 					},
@@ -877,6 +880,105 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertEqual(row.status, "Present")
 		self.assertAlmostEqual(float(row.custom_mission_work_hours), 9.0, places=5)
 		self.assertEqual(int(row.docstatus), 1)
+
+	def test_draft_absent_mission_update_to_present(self):
+		employee = self._employee("77073")
+		day = add_days(getdate(nowdate()), -43)
+		company = frappe.db.get_value("Employee", employee, "company")
+		# Create as draft Absent via insert, then importer draft update.
+		doc = frappe.get_doc(
+			{
+				"doctype": "Attendance",
+				"employee": employee,
+				"attendance_date": day,
+				"company": company,
+				"status": "Absent",
+				"standard_working_hours": 9,
+				"working_hours": 0,
+			}
+		)
+		doc.insert(ignore_permissions=True)
+		self.attendance.append(doc.name)
+		result = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"mode": "update_draft",
+					"name": doc.name,
+					"values": {
+						"status": "Present",
+						"standard_working_hours": 9,
+						"working_hours": 0,
+						"custom_mission_work_hours": 9.0,
+						"custom_regular_work_hours": 0,
+						"custom_extra_presence_hours": 0,
+					},
+					"row": 537,
+				}
+			]
+		)
+		self.assertEqual(result["failed"], [], result.get("failed"))
+		self.assertEqual(len(result["updated"]), 1)
+		row = frappe.db.get_value(
+			"Attendance",
+			doc.name,
+			["status", "custom_mission_work_hours", "docstatus"],
+			as_dict=True,
+		)
+		self.assertEqual(row.status, "Present")
+		self.assertAlmostEqual(float(row.custom_mission_work_hours), 9.0, places=5)
+		self.assertEqual(int(row.docstatus), 1)
+
+	def test_mission_reimport_is_idempotent(self):
+		employee = self._employee("77074")
+		day = add_days(getdate(nowdate()), -44)
+		company = frappe.db.get_value("Employee", employee, "company")
+		payload_values = {
+			"status": "Present",
+			"standard_working_hours": 9,
+			"working_hours": 0,
+			"custom_mission_work_hours": 9.0,
+			"custom_regular_work_hours": 0,
+			"custom_extra_presence_hours": 0,
+			"custom_approved_overtime_hours": 0,
+			"custom_work_shortage_hours": 0,
+			"custom_night_work_hours": 0,
+		}
+		first = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": payload_values,
+					"row": 537,
+				}
+			]
+		)
+		name = first["created"][0]["name"]
+		self.attendance.append(name)
+		second = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"mode": "update_submitted",
+					"name": name,
+					"values": payload_values,
+					"row": 537,
+				}
+			]
+		)
+		self.assertEqual(len(second["updated"]), 1)
+		self.assertEqual(second["failed"], [])
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "Present")
+		self.assertAlmostEqual(
+			float(frappe.db.get_value("Attendance", name, "custom_mission_work_hours")),
+			9.0,
+			places=5,
+		)
 
 	def test_submitted_update_sets_mission_present_from_absent(self):
 		employee = self._employee("77071")

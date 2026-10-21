@@ -1,8 +1,8 @@
 /**
- * Regression: Attendance Excel Import V2.0.7 — dates + mission Present.
+ * Regression: Attendance Excel Import V2.0.8 — mission Present + incomplete IN/OUT.
  *
  * Usage:
- *   DEV_SID=... NODE_PATH=/path/to/node_modules node attendance_excel_import_playwright.mjs
+ *   DEV_SID=... node attendance_excel_import_playwright.mjs
  */
 import { chromium } from "playwright";
 import fs from "fs";
@@ -171,7 +171,7 @@ try {
 		DLG,
 		{ timeout: 180000 }
 	);
-	await page.screenshot({ path: path.join(OUT, "v207_parse.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v208_parse.png"), fullPage: true });
 
 	const parseInfo = await page.evaluate((sel) => {
 		const t = document.querySelector(sel)?.innerText || "";
@@ -251,7 +251,7 @@ try {
 			}
 		}
 	});
-	await page.screenshot({ path: path.join(OUT, "v207_filter_71.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v208_filter_71.png"), fullPage: true });
 
 	// Verify persisted DB docs via frappe.call
 	const dbCheck = await page.evaluate(async () => {
@@ -309,19 +309,41 @@ try {
 				fieldname: ["name", "status", "attendance_date"],
 			},
 		});
+		const absentMission = await frappe.call({
+			method: "frappe.client.get_list",
+			args: {
+				doctype: "Attendance",
+				filters: {
+					status: "Absent",
+					custom_mission_work_hours: [">", 0],
+					docstatus: ["<", 2],
+				},
+				fields: ["name", "employee", "attendance_date", "custom_mission_work_hours"],
+				limit_page_length: 20,
+			},
+		});
 		return {
-			mission: await get("HR-ATT-2026-14774"),
+			mission0712: await get("HR-ATT-2026-14774"),
+			mission0706: await get("HR-ATT-2026-14770"),
 			list2020: list2020.message || [],
 			onDuty: onDuty.message || [],
 			correctOct17: correct.message,
+			absentWithMission: absentMission.message || [],
 		};
 	});
 
-	if (!dbCheck.mission || dbCheck.mission.status !== "Present") {
-		throw new Error("Mission attendance not Present: " + JSON.stringify(dbCheck.mission));
-	}
-	if (Math.abs(Number(dbCheck.mission.custom_mission_work_hours) - 9) > 1e-6) {
-		throw new Error("Mission hours != 9: " + JSON.stringify(dbCheck.mission));
+	const checkMission = (label, row) => {
+		if (!row || row.status !== "Present") {
+			throw new Error(label + " not Present: " + JSON.stringify(row));
+		}
+		if (Math.abs(Number(row.custom_mission_work_hours) - 9) > 1e-6) {
+			throw new Error(label + " mission hours != 9: " + JSON.stringify(row));
+		}
+	};
+	checkMission("1405/07/12", dbCheck.mission0712);
+	checkMission("1405/07/06", dbCheck.mission0706);
+	if (String(dbCheck.mission0706.attendance_date) !== "2026-09-28") {
+		throw new Error("14770 date mismatch: " + JSON.stringify(dbCheck.mission0706));
 	}
 	if ((dbCheck.list2020 || []).length) {
 		throw new Error("Leftover 2020/1399 fixtures: " + JSON.stringify(dbCheck.list2020));
@@ -329,11 +351,14 @@ try {
 	if ((dbCheck.onDuty || []).length) {
 		throw new Error("Leftover On Duty: " + JSON.stringify(dbCheck.onDuty));
 	}
+	if ((dbCheck.absentWithMission || []).length) {
+		throw new Error("Absent with mission hours: " + JSON.stringify(dbCheck.absentWithMission));
+	}
 	if (!dbCheck.correctOct17 || dbCheck.correctOct17.status !== "Present") {
 		throw new Error("Missing correct 2026-10-17 Present: " + JSON.stringify(dbCheck.correctOct17));
 	}
 
-	await page.screenshot({ path: path.join(OUT, "v207_verified.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v208_verified.png"), fullPage: true });
 
 	const relevantErrors = consoleErrors.filter(
 		(e) =>
@@ -369,7 +394,7 @@ try {
 } catch (e) {
 	console.error(e);
 	await page
-		.screenshot({ path: path.join(OUT, "v207_error.png"), fullPage: true })
+		.screenshot({ path: path.join(OUT, "v208_error.png"), fullPage: true })
 		.catch(() => {});
 	process.exitCode = 2;
 } finally {
