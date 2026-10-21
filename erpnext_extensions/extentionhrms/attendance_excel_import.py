@@ -203,16 +203,19 @@ def excel_business_status(
 
 	Precedence (no punch dependency):
 	1. Leave + mission / leave + absence / mission + absence → Review
-	2. Paid or unpaid leave > 0 → On Leave
-	3. Absence > 0 → Absent
-	4. Mission > 0 → Present
-	5. Presence / worked / punches → Present
-	6. Otherwise fallback (default Present); blank absence never forces Absent.
+	2. Working hours (حضور) > 0 AND total leave hours > 0 → Present
+	   (paid/unpaid leave hours are still mapped; status is not On Leave)
+	3. Leave > 0 with zero working hours → On Leave
+	4. Absence > 0 → Absent
+	5. Mission > 0 → Present
+	6. Presence / worked / punches → Present
+	7. Otherwise fallback (default Present); blank absence never forces Absent.
 	"""
 	paid = float(paid_leave_minutes or 0)
 	unpaid = float(unpaid_leave_minutes or 0)
 	mission = float(mission_minutes or 0)
 	absence = float(absence_minutes or 0)
+	presence = float(presence_minutes or 0)
 	leave = paid > 0 or unpaid > 0
 
 	if leave and mission > 0:
@@ -233,17 +236,16 @@ def excel_business_status(
 			"review": True,
 			"reason": "Mission and absence conflict",
 		}
+	# Partial leave day: Excel حضور + leave hours → Present (retain leave fields).
+	if leave and presence > 0:
+		return {"status": "Present", "review": False, "reason": None}
 	if leave:
 		return {"status": "On Leave", "review": False, "reason": None}
 	if absence > 0:
 		return {"status": "Absent", "review": False, "reason": None}
 	if mission > 0:
 		return {"status": "Present", "review": False, "reason": None}
-	if (
-		float(presence_minutes or 0) > 0
-		or float(worked_minutes or 0) > 0
-		or has_in_out
-	):
+	if presence > 0 or float(worked_minutes or 0) > 0 or has_in_out:
 		return {"status": "Present", "review": False, "reason": None}
 	return {
 		"status": fallback_status or "Present",
@@ -700,10 +702,15 @@ def _persist_one(item: dict) -> dict:
 	if len(existing) > 1:
 		frappe.throw(_("Duplicate Attendance in ERP for {0} on {1}").format(employee, day_s))
 
-	# Protect HRMS leave docs from non-leave Excel overwrites. Excel-authoritative
-	# On Leave reimports (paid/unpaid leave hours) are allowed through.
+	# Protect HRMS leave docs from non-leave Excel overwrites. Excel rows that
+	# still carry paid/unpaid leave hours may update On Leave → Present
+	# (partial leave day) or reimport On Leave.
 	if existing and existing[0].status == "On Leave":
-		if cstr(values.get("status")) != "On Leave":
+		excel_has_leave = (
+			float(values.get("custom_paid_leave_hours") or 0) > 0
+			or float(values.get("custom_unpaid_leave_hours") or 0) > 0
+		)
+		if not excel_has_leave and cstr(values.get("status")) != "On Leave":
 			return {
 				"bucket": "skipped",
 				"employee": employee,
@@ -820,9 +827,15 @@ def _update_submitted(name: str, employee: str, day_s: str, values: dict):
 	if att.employee != employee or str(att.attendance_date) != day_s:
 		frappe.throw(_("Attendance employee/date scope mismatch"))
 	att.check_permission("write")
-	# Allow Excel-authoritative On Leave updates; block wiping leave with other statuses.
-	if att.status == "On Leave" and cstr(values.get("status")) != "On Leave":
-		frappe.throw(_("On Leave Attendance requires separate review"))
+	# Allow Excel leave-hour rows to correct On Leave → Present (partial leave).
+	# Block wiping leave when Excel carries neither paid nor unpaid leave hours.
+	if att.status == "On Leave":
+		excel_has_leave = (
+			float(values.get("custom_paid_leave_hours") or 0) > 0
+			or float(values.get("custom_unpaid_leave_hours") or 0) > 0
+		)
+		if not excel_has_leave and cstr(values.get("status")) != "On Leave":
+			frappe.throw(_("On Leave Attendance requires separate review"))
 
 	filtered = {k: v for k, v in values.items() if k in ALLOWED_SUBMITTED_FIELDS}
 	if "standard_working_hours" not in filtered:

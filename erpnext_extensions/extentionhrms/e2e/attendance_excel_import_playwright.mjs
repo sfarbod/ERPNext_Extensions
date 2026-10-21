@@ -1,5 +1,5 @@
 /**
- * Regression: Attendance Excel Import V2.0.9 — leave On Leave + mapping contract.
+ * Regression: Attendance Excel Import V2.0.10 — work+leave → Present.
  *
  * Usage:
  *   DEV_SID=... node attendance_excel_import_playwright.mjs
@@ -171,7 +171,7 @@ try {
 		DLG,
 		{ timeout: 180000 }
 	);
-	await page.screenshot({ path: path.join(OUT, "v209_parse.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v210_parse.png"), fullPage: true });
 
 	const parseInfo = await page.evaluate((sel) => {
 		const t = document.querySelector(sel)?.innerText || "";
@@ -251,7 +251,7 @@ try {
 			}
 		}
 	});
-	await page.screenshot({ path: path.join(OUT, "v209_filter_71.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v210_filter_71.png"), fullPage: true });
 
 	// Verify persisted DB docs via frappe.call
 	const dbCheck = await page.evaluate(async () => {
@@ -338,6 +338,22 @@ try {
 					"status",
 					"custom_paid_leave_hours",
 					"custom_unpaid_leave_hours",
+					"working_hours",
+					"attendance_date",
+				],
+			},
+		});
+		const partialLeave = await frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Attendance",
+				filters: "HR-ATT-2026-19338",
+				fieldname: [
+					"name",
+					"status",
+					"working_hours",
+					"custom_paid_leave_hours",
+					"custom_unpaid_leave_hours",
 					"attendance_date",
 				],
 			},
@@ -346,6 +362,7 @@ try {
 			mission0712: await get("HR-ATT-2026-14774"),
 			mission0706: await get("HR-ATT-2026-14770"),
 			leave0629: leave0629.message,
+			partialLeave: partialLeave.message,
 			list2020: list2020.message || [],
 			onDuty: onDuty.message || [],
 			correctOct17: correct.message,
@@ -372,6 +389,13 @@ try {
 	if (Math.abs(Number(dbCheck.leave0629.custom_paid_leave_hours) - 9) > 1e-6) {
 		throw new Error("1405/06/29 paid leave != 9: " + JSON.stringify(dbCheck.leave0629));
 	}
+	if (!dbCheck.partialLeave || dbCheck.partialLeave.status !== "Present") {
+		throw new Error("Partial leave not Present: " + JSON.stringify(dbCheck.partialLeave));
+	}
+	if (Number(dbCheck.partialLeave.custom_paid_leave_hours) <= 0 ||
+		Number(dbCheck.partialLeave.working_hours) <= 0) {
+		throw new Error("Partial leave hours missing: " + JSON.stringify(dbCheck.partialLeave));
+	}
 	if ((dbCheck.list2020 || []).length) {
 		throw new Error("Leftover 2020/1399 fixtures: " + JSON.stringify(dbCheck.list2020));
 	}
@@ -385,7 +409,7 @@ try {
 		throw new Error("Missing correct 2026-10-17 Present: " + JSON.stringify(dbCheck.correctOct17));
 	}
 
-	await page.screenshot({ path: path.join(OUT, "v209_verified.png"), fullPage: true });
+	await page.screenshot({ path: path.join(OUT, "v210_verified.png"), fullPage: true });
 
 	const relevantErrors = consoleErrors.filter(
 		(e) =>
@@ -421,7 +445,7 @@ try {
 } catch (e) {
 	console.error(e);
 	await page
-		.screenshot({ path: path.join(OUT, "v209_error.png"), fullPage: true })
+		.screenshot({ path: path.join(OUT, "v210_error.png"), fullPage: true })
 		.catch(() => {});
 	process.exitCode = 2;
 } finally {

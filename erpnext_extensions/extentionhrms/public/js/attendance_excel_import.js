@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.9 (Excel-first leave/mission/absence mapping contract)
+// Version: V2.0.10 (Work+Leave → Present; retain leave hours)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -371,6 +371,7 @@ frappe.provide("espad.attendance_details");
         const unpaid = d.unpaidLeave || 0;
         const mission = d.mission || 0;
         const absence = d.absence || 0;
+        const presence = d.presence || 0;
         const leave = paid > 0 || unpaid > 0;
         if (leave && mission > 0)
             return { status: "Absent", review: true, reason: "Leave and mission conflict" };
@@ -378,13 +379,16 @@ frappe.provide("espad.attendance_details");
             return { status: "Absent", review: true, reason: "Leave and absence conflict" };
         if (mission > 0 && absence > 0)
             return { status: "Absent", review: true, reason: "Mission and absence conflict" };
+        // Partial leave: حضور > 0 + leave hours → Present (leave fields retained).
+        if (leave && presence > 0)
+            return { status: "Present", review: false, reason: null };
         if (leave)
             return { status: "On Leave", review: false, reason: null };
         if (absence > 0)
             return { status: "Absent", review: false, reason: null };
         if (mission > 0)
             return { status: "Present", review: false, reason: null };
-        if ((d.presence || 0) > 0 || (d.worked || 0) > 0 || inTime || outTime)
+        if (presence > 0 || (d.worked || 0) > 0 || inTime || outTime)
             return { status: "Present", review: false, reason: null };
         return { status: "Present", review: false, reason: null };
     }
@@ -1104,9 +1108,12 @@ frappe.provide("espad.attendance_details");
                 return ["Review", biz.reason || "Excel business-value conflict"];
 
             // Protect HRMS On Leave from non-leave Excel overwrites.
-            // Excel paid/unpaid leave (status On Leave) may update existing On Leave.
-            if (a?.status === "On Leave" && biz.status !== "On Leave")
-                return ["Review", "Existing Leave Attendance"];
+            // Excel leave hours may correct On Leave → Present (partial leave day).
+            if (a?.status === "On Leave") {
+                const hasLeave = (d.paidLeave || 0) > 0 || (d.unpaidLeave || 0) > 0;
+                if (!hasLeave && biz.status !== "On Leave")
+                    return ["Review", "Existing Leave Attendance"];
+            }
 
             if (
                 r.approvedOT > 0 &&
@@ -1832,7 +1839,7 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
                     source: "Attendance Excel Import",
-                    mapping_version: "V2.0.9",
+                    mapping_version: "V2.0.10",
                     source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
                     raw_excel_date: r.rawDate,
@@ -1857,8 +1864,12 @@ frappe.provide("espad.attendance_details");
                     status_rule: (() => {
                         const biz = excelBusinessClassification(d, r.inTime, r.outTime);
                         if (biz.review) return "Conflict: " + biz.reason;
+                        if (biz.status === "Present" &&
+                            ((d.paidLeave || 0) > 0 || (d.unpaidLeave || 0) > 0) &&
+                            (d.presence || 0) > 0)
+                            return "Excel حضور + leave hours → Present (leave hours retained)";
                         if (biz.status === "On Leave")
-                            return "Excel مرخصی با/بی‌حقوق > 0 → On Leave";
+                            return "Excel مرخصی با/بی‌حقوق > 0 (no حضور) → On Leave";
                         if (biz.status === "Absent")
                             return "Excel غیبت > 0 → Absent";
                         if ((d.mission || 0) > 0)
@@ -1994,9 +2005,14 @@ frappe.provide("espad.attendance_details");
                             throw Error("Duplicate Attendance in ERP");
                         if (current?.status === "Half Day")
                             throw Error("Existing Leave Attendance");
-                        if (current?.status === "On Leave" &&
-                            excelImportStatus(r.details, r.inTime, r.outTime) !== "On Leave")
-                            throw Error("Existing Leave Attendance");
+                        if (current?.status === "On Leave") {
+                            const d0 = r.details || {};
+                            const hasLeave = (d0.paidLeave || 0) > 0 ||
+                                (d0.unpaidLeave || 0) > 0;
+                            if (!hasLeave &&
+                                excelImportStatus(d0, r.inTime, r.outTime) !== "On Leave")
+                                throw Error("Existing Leave Attendance");
+                        }
 
                         const company =
                             (state.context?.employees?.[r.employee]?.company) || null;
