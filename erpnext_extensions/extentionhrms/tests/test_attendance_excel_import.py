@@ -232,7 +232,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.1", script)
+		self.assertIn("V2.0.2", script)
 		self.assertIn("import_attendance_details", script)
 		self.assertIn("get_personnel_code_index", script)
 		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
@@ -240,6 +240,10 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		# Refresh Preview must not use btn-primary (collides with dialog primary on Frappe 16).
 		self.assertIn("btn-default btn-sm espad-refresh", script)
 		self.assertNotIn("btn-primary btn-sm espad-refresh", script)
+		# Progress stays inside the main dialog — no nested frappe.show_progress.
+		self.assertIn("data-espad-att-progress", script)
+		self.assertNotIn("frappe.show_progress", script)
+		self.assertNotIn("Attendance Import Result", script)
 
 	def test_sheetjs_asset_is_served_locally(self):
 		path = os.path.join(

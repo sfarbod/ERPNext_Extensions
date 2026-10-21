@@ -29,7 +29,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 
 ## 3. What changed
 
-### UI (Client Script V2.0.1)
+### UI (Client Script V2.0.2)
 
 - Synced from `extentionhrms/public/js/attendance_excel_import.js`.
 - Summary stats (personnel / matched / unmatched / ambiguous / rows / invalid).
@@ -39,6 +39,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 - Bulk existing-record check and schedule preload before import.
 - Batched save/submit via the new API (50 rows/batch default).
 - Errors show the failing phase and asset URL / cause.
+- **Inline Import Progress** inside the original dialog (progress bar, %, batch, created/updated/skipped/failed from backend, scrollable log). No nested `frappe.show_progress` / result dialog. Close confirms while a run is active.
 
 ### Backend APIs
 
@@ -78,13 +79,19 @@ bench --site <site> migrate
 bench --site <site> clear-cache
 ```
 
-Verify Client Script contains `Version: V2.0.1`, local SheetJS asset path, and `import_attendance_details`.
+Verify Client Script contains `Version: V2.0.2`, local SheetJS asset path, `data-espad-att-progress`, and `import_attendance_details`.
 
 ### Correction (V2.0.1 within 5.6.7)
 
 1. **Excel library load:** Replaced jsDelivr CDN injection with the vendored SheetJS `xlsx@0.18.5` under `erpnext_extensions/public/js/lib/xlsx.full.min.js`. The Desk error `Excel library could not load` was `script.onerror` on `https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js` (CDN/CSP/network). Local asset returns HTTP 200 and exposes `window.XLSX.read`.
 2. **Employee matching:** Client `frappe.db.get_list` ignores `limit_page_length` and defaults to `limit=20`, so only ~20 Employees were indexed. Matching now uses authorized `get_personnel_code_index`.
 3. **UX:** Timing log replaces the empty progress strip; errors show the failing phase; Refresh Preview uses `btn-default` so it does not collide with the dialog primary action (`btn-modal-primary` on Frappe 16).
+
+### Correction (V2.0.2 within 5.6.7)
+
+1. **Inline progress:** Removed the separate `Attendance Import` progress dialog (`frappe.show_progress`) and the nested `Attendance Import Result` dialog. Progress bar, batch status, backend counters, and the final result/log stay inside `Import Attendance Details (Excel)`, matching Employee Checkin Excel Import UX.
+2. **Close policy:** While a synchronous import is running, Close / modal-X asks for confirmation; closing does not cancel in-flight server requests.
+3. **Known import failures:** Rows that fail with historical Shift Assignment gaps / missing Shift Schedule Assignment remain **Failed** (not silently skipped or counted as success).
 
 ### Browser E2E on `development.localhost` (`mehr.xls`)
 
@@ -96,8 +103,10 @@ Verify Client Script contains `Version: V2.0.1`, local SheetJS asset path, and `
 | Small import (2 employees) | Created 45 · Skipped 17 · Failed 0 · **1126 ms (~40 rec/s)** |
 | Larger import (30 employees / 930 daily rows) | Created 663 · Updated 45 · Skipped 206 · Failed 16* · **16703 ms (~42 rec/s)** |
 | Integrity | No duplicate (employee, date); Employee Checkin unchanged; Leave Application unchanged |
+| Inline progress (V2.0.2) | No secondary progress modal; counters update per batch inside the original dialog |
+| Inline E2E (15 employees) | Created 117 · Updated 223 · Skipped 116 · Failed 9* · **4003 ms (~85 rec/s)** · single modal only |
 
-\*Failed rows are intentional business-rule refusals (historical Shift Assignment gaps / missing schedule assignment), not library or API crashes.
+\*Failed rows are intentional business-rule refusals (historical Shift Assignment gaps / missing schedule assignment), not library or API crashes. They appear with Excel row numbers in the inline result panel.
 
 Screenshots (populated UI + import result): `extentionhrms/e2e/screenshots/attendance_excel_import/`.
 

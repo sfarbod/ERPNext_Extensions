@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.1 (local SheetJS + server personnel index)
+// Version: V2.0.2 (inline import progress inside the main dialog)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -88,8 +88,95 @@ frappe.provide("espad.attendance_details");
         return frappe.utils.escape_html(String(v ?? ""));
     }
 
+    function fmtTime(sec) {
+        sec = Math.max(0, Math.floor(sec || 0));
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    }
+
+    function yieldUi() {
+        return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
     function hours(minutes) {
         return Math.round(minutes / 60 * 1000000) / 1000000;
+    }
+
+    const ATT_IMPORT_CSS = `
+.espad-att-import-dlg .espad-att-progress {
+    border: 1px solid var(--border-color, #CBD5E1);
+    background: var(--control-bg, #F8FAFC);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    display: none;
+}
+.espad-att-import-dlg .espad-att-progress.visible { display: block; }
+.espad-att-import-dlg .espad-att-progress .title {
+    font-weight: 700; margin-bottom: 6px; font-size: 13px;
+}
+.espad-att-import-dlg .espad-att-progress .meta {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px 10px;
+    font-size: 12px;
+    margin-bottom: 8px;
+    font-variant-numeric: tabular-nums;
+}
+@media (max-width: 720px) {
+    .espad-att-import-dlg .espad-att-progress .meta {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+.espad-att-import-dlg .espad-att-bar {
+    height: 14px;
+    background: #E2E8F0;
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid #CBD5E1;
+}
+.espad-att-import-dlg .espad-att-bar > i {
+    display: block; height: 100%; width: 0%;
+    background: #1D4ED8; transition: width 0.15s linear;
+}
+.espad-att-import-dlg .espad-att-progress .op {
+    margin-top: 6px; font-size: 12px; color: var(--text-muted, #475569);
+}
+.espad-att-import-dlg .espad-att-term {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; line-height: 1.45;
+    max-height: min(220px, 28vh); overflow: auto;
+    white-space: pre-wrap; word-break: break-word;
+    border: 1px solid var(--border-color, #CBD5E1);
+    border-radius: 6px; padding: 8px 10px;
+    background: var(--control-bg, #F8FAFC);
+    margin-top: 8px; display: none;
+}
+.espad-att-import-dlg .espad-att-term.visible { display: block; }
+.espad-att-import-dlg .espad-att-term .ok { color: #047857; font-weight: 600; }
+.espad-att-import-dlg .espad-att-term .warn { color: #92400E; font-weight: 600; }
+.espad-att-import-dlg .espad-att-term .err { color: #B91C1C; font-weight: 600; }
+.espad-att-import-dlg .espad-att-term .info { color: #1D4ED8; }
+.espad-att-import-dlg .espad-att-term .muted { color: #475569; }
+.espad-att-import-dlg .espad-att-result {
+    margin-top: 10px; padding: 10px 12px;
+    border: 1px solid var(--border-color, #CBD5E1);
+    border-radius: 6px; display: none;
+}
+.espad-att-import-dlg .espad-att-result.visible { display: block; }
+.espad-att-import-dlg .espad-att-result h4 { margin: 0 0 8px; }
+.espad-att-import-dlg .espad-att-fail-list {
+    max-height: 220px; overflow: auto; margin-top: 8px;
+}
+`;
+
+    function ensureAttImportCss() {
+        if (document.getElementById("espad-att-import-css")) return;
+        const style = document.createElement("style");
+        style.id = "espad-att-import-css";
+        style.textContent = ATT_IMPORT_CSS;
+        document.head.appendChild(style);
     }
 
     function duration(v) {
@@ -358,6 +445,8 @@ frappe.provide("espad.attendance_details");
     }
 
     NS.open = function () {
+        ensureAttImportCss();
+
         const state = {
             records: [],
             people: new Map(),
@@ -366,6 +455,8 @@ frappe.provide("espad.attendance_details");
             errors: [],
             fileName: "",
             busy: false,
+            importing: false,
+            allowClose: false,
             previewReady: false,
             previewVersion: 0,
             employeeCodeIndex: new Map(),
@@ -373,7 +464,9 @@ frappe.provide("espad.attendance_details");
             shiftCache: new Map(),
             holidayCache: new Map(),
             context: null,
-            timings: {}
+            timings: {},
+            progress: null,
+            logLines: []
         };
 
         const dialog = new frappe.ui.Dialog({
@@ -415,18 +508,31 @@ frappe.provide("espad.attendance_details");
                     fieldname: "confirm",
                     label: "I reviewed the preview and authorize Attendance updates, including submitted records",
                     default: 0
+                },
+                {
+                    fieldtype: "Section Break",
+                    label: "Import Progress"
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "progress_html"
                 }
             ],
             primary_action_label: "Import Selected Attendance",
-            primary_action: () => importRecords()
+            primary_action: () => importRecords(),
+            secondary_action_label: "Close",
+            secondary_action: () => requestClose()
         });
 
+        dialog.$wrapper.addClass("espad-att-import-dlg");
         dialog.show();
 
         const employeeArea =
             dialog.fields_dict.employee_html.$wrapper;
         const previewArea =
             dialog.fields_dict.preview_html.$wrapper;
+        const progressArea =
+            dialog.fields_dict.progress_html.$wrapper;
 
         dialog.$wrapper.find(".modal-body").prepend(
             `<div class="espad-att-stats" style="padding:4px 8px"></div>
@@ -437,9 +543,129 @@ frappe.provide("espad.attendance_details");
             '<p class="text-muted">Upload Excel to load employees.</p>'
         );
         previewArea.empty();
+        progressArea.html(`
+            <div class="espad-att-progress" data-espad-att-progress>
+                <div class="title">Import Progress</div>
+                <div class="meta"></div>
+                <div class="espad-att-bar"><i></i></div>
+                <div class="op"></div>
+            </div>
+            <div class="espad-att-term" data-espad-att-term></div>
+            <div class="espad-att-result" data-espad-att-result></div>
+        `);
 
         const primary = dialog.get_primary_btn();
         primary.prop("disabled", true);
+
+        dialog.$wrapper.find(".btn-modal-close, .modal-header .close").on(
+            "click.espadAtt",
+            function (e) {
+                if (state.importing && !state.allowClose) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    requestClose();
+                    return false;
+                }
+            }
+        );
+
+        function requestClose() {
+            if (state.importing && !state.allowClose) {
+                frappe.confirm(
+                    "Import is still running. Closing will not cancel in-flight server requests and may leave a partial import. Close anyway?",
+                    () => {
+                        state.allowClose = true;
+                        dialog.hide();
+                    }
+                );
+                return;
+            }
+            dialog.hide();
+        }
+
+        function stampRate(processed, total, t0) {
+            if (!state.progress) return;
+            const elapsed = Math.max(0.001, (performance.now() - t0) / 1000);
+            const rate = processed / elapsed;
+            state.progress.elapsed_sec = elapsed;
+            state.progress.rate = rate;
+            state.progress.eta_sec = rate > 0
+                ? Math.max(0, total - processed) / rate
+                : 0;
+        }
+
+        function updateProgressDom() {
+            const p = state.progress;
+            const root = progressArea.find("[data-espad-att-progress]");
+            if (!root.length || !p) return;
+            root.addClass("visible");
+            const pct = p.total
+                ? Math.min(100, Math.round((p.processed / p.total) * 100))
+                : (p.done ? 100 : 0);
+            root.find(".title").text(p.heading || "Import Progress");
+            root.find(".meta").html(`
+                <div>Progress: <b>${pct}%</b></div>
+                <div>Processed: <b>${p.processed}</b> / <b>${p.total}</b></div>
+                <div>Elapsed: <b>${fmtTime(p.elapsed_sec)}</b></div>
+                <div>Created: <b>${p.created}</b></div>
+                <div>Updated: <b>${p.updated}</b></div>
+                <div>Skipped: <b>${p.skipped}</b></div>
+                <div>Failed: <b>${p.failed}</b></div>
+                <div>Batch: <b>${p.batch}</b> / <b>${p.batches}</b></div>
+                <div>Rate: <b>${(p.rate || 0).toFixed(1)}/s</b></div>
+                <div style="grid-column: span 2">Status: <b>${esc(p.status || "-")}</b></div>
+            `);
+            root.find(".espad-att-bar > i").css("width", pct + "%");
+            root.find(".op").text(p.operation || "");
+        }
+
+        function termAppend(lines) {
+            const el = progressArea.find("[data-espad-att-term]");
+            if (!el.length) return;
+            el.addClass("visible");
+            (lines || []).forEach((L) => {
+                state.logLines.push(L);
+                el.append(
+                    `<div class="${esc(L.cls || "info")}">${esc(L.text)}</div>`
+                );
+            });
+            if (state.logLines.length > 800) {
+                state.logLines = state.logLines.slice(-800);
+            }
+            const node = el[0];
+            if (node) node.scrollTop = node.scrollHeight;
+        }
+
+        function showInlineResult(payload) {
+            const box = progressArea.find("[data-espad-att-result]");
+            if (!box.length) return;
+            const failedHtml = (payload.failed || []).map((x) => `
+                <div class="err text-danger">
+                    Row ${esc(x.row)} — ${esc(x.employee)} — ${esc(x.date)}:
+                    ${esc(x.error)}
+                </div>
+            `).join("");
+            const skippedHtml = (payload.skipped || []).slice(0, 100).map((x) => `
+                <div class="muted">${esc(x)}</div>
+            `).join("");
+            const moreSkipped = (payload.skipped || []).length > 100
+                ? `<div class="muted">… and ${(payload.skipped || []).length - 100} more skipped</div>`
+                : "";
+            box.addClass("visible").html(`
+                <h4>Import Result</h4>
+                <p>Created: <b>${payload.created}</b></p>
+                <p>Updated: <b>${payload.updated}</b></p>
+                <p>Skipped: <b>${(payload.skipped || []).length}</b></p>
+                <p>Failed: <b>${(payload.failed || []).length}</b></p>
+                <p>Duration: <b>${payload.durationMs} ms</b>
+                    (${payload.rate} records/s)</p>
+                <div class="espad-att-fail-list">
+                    ${failedHtml || '<div class="muted">No failed rows.</div>'}
+                    ${skippedHtml}
+                    ${moreSkipped}
+                </div>
+            `);
+        }
 
         function mappedRows() {
             return state.records.map(r => {
@@ -1438,23 +1664,29 @@ frappe.provide("espad.attendance_details");
             return doc;
         }
 
-async function importRecords() {
+        async function importRecords() {
             if (
                 state.busy ||
+                state.importing ||
                 !state.previewReady ||
                 Number(dialog.get_value("confirm") || 0) !== 1
             ) return;
 
             state.busy = true;
+            state.importing = true;
+            state.allowClose = false;
             state.previewReady = false;
-            primary.prop("disabled", true);
+            primary.prop("disabled", true).text("Importing…");
+            progressArea.find("[data-espad-att-result]").removeClass("visible").empty();
+            progressArea.find("[data-espad-att-term]").empty().removeClass("visible");
+            state.logLines = [];
 
             let created = 0;
             let updated = 0;
             const failed = [];
             const skipped = [];
-            const postSubmitWarnings = [];
             const tImport = performance.now();
+            let tick = null;
 
             try {
                 const rows = selectedRows();
@@ -1487,6 +1719,37 @@ async function importRecords() {
                     }
                 }
 
+                const BATCH = 50;
+                const prepareTotal = Math.max(1, work.length);
+
+                state.progress = {
+                    heading: "Import Progress",
+                    processed: 0,
+                    total: prepareTotal,
+                    created: 0,
+                    updated: 0,
+                    skipped: skipped.length,
+                    failed: 0,
+                    batch: 0,
+                    batches: 0,
+                    elapsed_sec: 0,
+                    rate: 0,
+                    eta_sec: 0,
+                    status: "Preparing",
+                    operation: "Preparing Attendance rows…",
+                    done: false
+                };
+                updateProgressDom();
+                termAppend([
+                    { cls: "info", text: `[INFO] Import started — ${rows.length} selected rows, ${work.length} to create/update, ${skipped.length} pre-skipped` }
+                ]);
+
+                tick = setInterval(() => {
+                    if (!state.progress || state.progress.done) return;
+                    stampRate(state.progress.processed, state.progress.total, tImport);
+                    updateProgressDom();
+                }, 400);
+
                 const ALLOWED_SUBMITTED = [
                     "status", "shift", "in_time", "out_time",
                     "late_entry", "early_exit", "working_hours",
@@ -1504,12 +1767,17 @@ async function importRecords() {
                 const prepared = [];
                 for (let i = 0; i < work.length; i++) {
                     const r = work[i];
-                    frappe.show_progress(
-                        "Attendance Import",
-                        i + 1,
-                        work.length,
-                        `Preparing ${i + 1} / ${work.length}`
-                    );
+                    if (i === 0 || (i + 1) % 25 === 0 || i + 1 === work.length) {
+                        state.progress.processed = i + 1;
+                        state.progress.failed = failed.length;
+                        state.progress.skipped = skipped.length;
+                        state.progress.status = "Preparing";
+                        state.progress.operation =
+                            `Preparing ${i + 1} / ${work.length}`;
+                        stampRate(i + 1, prepareTotal, tImport);
+                        updateProgressDom();
+                        await yieldUi();
+                    }
                     try {
                         const key = r.employee + "|" + r.date;
                         const current = existing.get(key);
@@ -1596,25 +1864,51 @@ async function importRecords() {
                             date: r.date,
                             error: e.message || String(e)
                         });
+                        termAppend([{
+                            cls: "err",
+                            text: `[FAIL] Row ${r.row} ${r.employee} ${r.date}: ${e.message || e}`
+                        }]);
                     }
                 }
 
-                const BATCH = 50;
+                const saveTotal = Math.max(prepared.length, 1);
+                const saveBatches = Math.max(1, Math.ceil(prepared.length / BATCH) || 1);
+                state.progress.total = prepared.length || 1;
+                state.progress.batches = prepared.length ? saveBatches : 0;
+                state.progress.processed = 0;
+                state.progress.failed = failed.length;
+                state.progress.skipped = skipped.length;
+                state.progress.status = "Saving";
+                state.progress.operation = prepared.length
+                    ? `Saving batch 1 / ${saveBatches}`
+                    : "Nothing to save";
+                updateProgressDom();
+                termAppend([{
+                    cls: "info",
+                    text: `[INFO] Prepared ${prepared.length}; prepare-failed ${failed.length}; saving in ${saveBatches} batch(es) of ${BATCH}`
+                }]);
+
+                let savedProcessed = 0;
                 for (let i = 0; i < prepared.length; i += BATCH) {
                     const chunk = prepared.slice(i, i + BATCH);
-                    frappe.show_progress(
-                        "Attendance Import",
-                        Math.min(i + chunk.length, prepared.length),
-                        prepared.length,
-                        `Saving batch ${Math.floor(i / BATCH) + 1} / ${Math.ceil(prepared.length / BATCH)}`
-                    );
+                    const batchNo = Math.floor(i / BATCH) + 1;
+                    state.progress.batch = batchNo;
+                    state.progress.status = "Saving";
+                    state.progress.operation =
+                        `Saving batch ${batchNo} / ${saveBatches}`;
+                    stampRate(savedProcessed, saveTotal, tImport);
+                    updateProgressDom();
+                    await yieldUi();
+
                     try {
                         const result = await api(
                             "erpnext_extensions.extentionhrms.attendance_excel_import.import_attendance_details",
                             { records: chunk }
                         );
-                        created += (result.created || []).length;
-                        updated += (result.updated || []).length;
+                        const batchCreated = (result.created || []).length;
+                        const batchUpdated = (result.updated || []).length;
+                        created += batchCreated;
+                        updated += batchUpdated;
                         for (const row of (result.failed || [])) {
                             failed.push({
                                 row: row.row,
@@ -1622,10 +1916,18 @@ async function importRecords() {
                                 date: row.attendance_date,
                                 error: row.error || "Import failed"
                             });
+                            termAppend([{
+                                cls: "err",
+                                text: `[FAIL] Row ${row.row} ${row.employee} ${row.attendance_date}: ${row.error || "Import failed"}`
+                            }]);
                         }
                         for (const row of (result.skipped || [])) {
                             skipped.push(`Row ${row.row || "?"}: ${row.reason || "skipped"}`);
                         }
+                        termAppend([{
+                            cls: "ok",
+                            text: `[OK] Batch ${batchNo}/${saveBatches}: +${batchCreated} created, +${batchUpdated} updated`
+                        }]);
                     } catch (e) {
                         for (const item of chunk) {
                             failed.push({
@@ -1635,74 +1937,83 @@ async function importRecords() {
                                 error: e.message || String(e)
                             });
                         }
+                        termAppend([{
+                            cls: "err",
+                            text: `[ERROR] Batch ${batchNo} failed: ${e.message || e}`
+                        }]);
                     }
+
+                    savedProcessed += chunk.length;
+                    state.progress.processed = savedProcessed;
+                    state.progress.created = created;
+                    state.progress.updated = updated;
+                    state.progress.failed = failed.length;
+                    state.progress.skipped = skipped.length;
+                    stampRate(savedProcessed, saveTotal, tImport);
+                    updateProgressDom();
                 }
 
-                frappe.hide_progress();
                 state.timings = state.timings || {};
                 state.timings.importMs = Math.round(performance.now() - tImport);
                 const importSecs = Math.max(0.001, state.timings.importMs / 1000);
                 const savedCount = created + updated;
                 const rate = Math.round(savedCount / importSecs);
-                dialog.hide();
 
-                const report = new frappe.ui.Dialog({
-                    title: "Attendance Import Result",
-                    size: "extra-large",
-                    fields: [{
-                        fieldtype: "HTML",
-                        fieldname: "result"
-                    }]
+                state.progress.processed = prepared.length;
+                state.progress.total = Math.max(prepared.length, 1);
+                state.progress.created = created;
+                state.progress.updated = updated;
+                state.progress.failed = failed.length;
+                state.progress.skipped = skipped.length;
+                state.progress.done = true;
+                state.progress.eta_sec = 0;
+                state.progress.heading = failed.length
+                    ? "Import Completed With Errors"
+                    : "Import Completed";
+                state.progress.status = failed.length ? "COMPLETED WITH ERRORS" : "COMPLETED";
+                state.progress.operation = `Finished in ${state.timings.importMs} ms (${rate} records/s)`;
+                state.progress.rate = rate;
+                updateProgressDom();
+
+                showInlineResult({
+                    created,
+                    updated,
+                    skipped,
+                    failed,
+                    durationMs: state.timings.importMs,
+                    rate
                 });
-
-                report.show();
-
-                report.fields_dict.result.$wrapper.html(`
-                    <div style="padding:12px">
-                        <h4>Import Result</h4>
-                        <p>Created: <b>${created}</b></p>
-                        <p>Updated: <b>${updated}</b></p>
-                        <p>Skipped: <b>${skipped.length}</b></p>
-                        <p>Failed: <b>${failed.length}</b></p>
-                        <p>Duration: <b>${state.timings.importMs} ms</b>
-                            (${rate} records/s)</p>
-                        <p>Post-submit recalculation warnings:
-                            <b>${postSubmitWarnings.length}</b></p>
-
-                        <div style="max-height:350px;overflow:auto">
-                            ${postSubmitWarnings.map(x => `
-                                <div class="text-warning">${esc(x)}</div>
-                            `).join("")}
-                            ${failed.map(x => `
-                                <div class="text-danger">
-                                    Row ${x.row} -
-                                    ${esc(x.employee)} -
-                                    ${esc(x.date)}:
-                                    ${esc(x.error)}
-                                </div>
-                            `).join("")}
-
-                            ${skipped.map(x => `
-                                <div class="text-muted">
-                                    ${esc(x)}
-                                </div>
-                            `).join("")}
-                        </div>
-                    </div>
-                `);
+                termAppend([{
+                    cls: failed.length ? "warn" : "ok",
+                    text: `[DONE] Created ${created}, Updated ${updated}, Skipped ${skipped.length}, Failed ${failed.length}`
+                }]);
 
                 if (window.cur_list?.doctype === "Attendance")
                     cur_list.refresh();
 
             } catch (e) {
-                frappe.hide_progress();
+                console.error(e);
+                termAppend([{
+                    cls: "err",
+                    text: `[ERROR] ${e.message || e}`
+                }]);
+                if (state.progress) {
+                    state.progress.status = "FAILED";
+                    state.progress.operation = String(e.message || e);
+                    state.progress.done = true;
+                    updateProgressDom();
+                }
                 frappe.msgprint({
                     title: "Import Error",
                     indicator: "red",
                     message: esc(e.message || String(e))
                 });
             } finally {
+                if (tick) clearInterval(tick);
                 state.busy = false;
+                state.importing = false;
+                state.allowClose = true;
+                primary.prop("disabled", true).text("Import Selected Attendance");
             }
         }
     };
