@@ -56,22 +56,25 @@ ALLOWED_SUBMITTED_FIELDS = (
 	"custom_calculation_details",
 )
 
-# Excel is the source of truth for these hour fields. ESPAD ATT AFTER SUBMIT may
-# call espad_attendance_calculate, which overwrites custom_approved_overtime_hours
-# (and related fields) from Overtime Authorization Requests. Re-apply after submit
-# so the Excel import mapping survives when the engine runs successfully.
+# Excel is the source of truth for these fields on the Attendance Excel Import
+# path only. ESPAD ATT AFTER SUBMIT / espad_attendance_calculate may overwrite
+# hour fields from OTAR or punch math; re-apply after submit so Excel wins.
 EXCEL_AUTHORITATIVE_FIELDS = (
+	"status",
+	"working_hours",
 	"custom_approved_overtime_hours",
 	"custom_regular_work_hours",
 	"custom_regular_overtime_hours",
+	"custom_extra_presence_hours",
 	"custom_paid_leave_hours",
 	"custom_unpaid_leave_hours",
 	"custom_total_leave_hours",
 	"custom_leave_hours",
 	"custom_mission_work_hours",
-	"custom_extra_presence_hours",
-	"custom_friday_work_hours",
+	"custom_night_work_hours",
+	"custom_work_shortage_hours",
 	"custom_holiday_work_hours",
+	"custom_friday_work_hours",
 	"custom_calculation_details",
 )
 
@@ -138,23 +141,234 @@ def _normalize_personnel_code(value) -> str:
 	return compact
 
 
+def minutes_to_hours(minutes=0) -> float:
+	"""Match Client Script ``hours(minutes)``: round to 6 decimal places."""
+	return round(max(0.0, float(minutes or 0)) / 60.0 * 1_000_000) / 1_000_000
+
+
 def approved_overtime_hours_from_components(
 	night_approved_minutes=0,
 	mission_approved_minutes=0,
 	holiday_approved_minutes=0,
 	normal_approved_minutes=0,
 ) -> float:
-	"""Legacy Client Script formula: sum of four approved Excel columns in minutes → hours.
+	"""Excel Approved OT for the importer: Normal Approved + Holiday Approved only.
 
-	Matches ``hours(nightOTApproved + missionOTApproved + holidayOTApproved + normalOTApproved)``.
+	Night Approved and Mission Approved arguments are accepted for call-site
+	compatibility but are intentionally excluded from the sum.
+	Unauthorized overtime is never included.
+	"""
+	_ = (night_approved_minutes, mission_approved_minutes)  # excluded by design
+	total_minutes = float(holiday_approved_minutes or 0) + float(normal_approved_minutes or 0)
+	return minutes_to_hours(total_minutes)
+
+
+def work_shortage_hours_from_components(
+	unauthorized_exit_minutes=0,
+	early_minutes=0,
+	late_minutes=0,
+) -> float:
+	"""Excel-authoritative shortage: خروج غیرمجاز + تعجیل + تأخیر (minutes → hours).
+
+	Does not include absence and is independent of shift start/end.
 	"""
 	total_minutes = (
-		float(night_approved_minutes or 0)
-		+ float(mission_approved_minutes or 0)
-		+ float(holiday_approved_minutes or 0)
-		+ float(normal_approved_minutes or 0)
+		float(unauthorized_exit_minutes or 0)
+		+ float(early_minutes or 0)
+		+ float(late_minutes or 0)
 	)
-	return round(max(0.0, total_minutes) / 60.0 * 1_000_000) / 1_000_000
+	return minutes_to_hours(total_minutes)
+
+
+def unauthorized_normal_ot_hours(normal_unauthorized_minutes=0) -> float:
+	"""Excel عادی غیرمجاز → hours for BOTH regular_work and extra_presence."""
+	return minutes_to_hours(normal_unauthorized_minutes)
+
+
+def excel_business_status(
+	*,
+	paid_leave_minutes=0,
+	unpaid_leave_minutes=0,
+	mission_minutes=0,
+	absence_minutes=0,
+	presence_minutes=0,
+	worked_minutes=0,
+	has_in_out: bool = False,
+	fallback_status: str = "Present",
+) -> dict:
+	"""Central Excel→Attendance status contract (shared with Client Script).
+
+	Returns ``{status, review, reason}``. When ``review`` is True, ``status`` is a
+	defensive fallback only — the importer must not silently write conflicting rows.
+
+	Precedence (no punch dependency):
+	1. Leave + mission / leave + absence / mission + absence → Review
+	2. Working hours (حضور) > 0 AND total leave hours > 0 → Present
+	   (paid/unpaid leave hours are still mapped; status is not On Leave)
+	3. Leave > 0 with zero working hours → On Leave
+	4. Absence > 0 → Absent
+	5. Mission > 0 → Present
+	6. Presence / worked / punches → Present
+	7. Otherwise fallback (default Present); blank absence never forces Absent.
+	"""
+	paid = float(paid_leave_minutes or 0)
+	unpaid = float(unpaid_leave_minutes or 0)
+	mission = float(mission_minutes or 0)
+	absence = float(absence_minutes or 0)
+	presence = float(presence_minutes or 0)
+	leave = paid > 0 or unpaid > 0
+
+	if leave and mission > 0:
+		return {
+			"status": "Absent",
+			"review": True,
+			"reason": "Leave and mission conflict",
+		}
+	if leave and absence > 0:
+		return {
+			"status": "Absent",
+			"review": True,
+			"reason": "Leave and absence conflict",
+		}
+	if mission > 0 and absence > 0:
+		return {
+			"status": "Absent",
+			"review": True,
+			"reason": "Mission and absence conflict",
+		}
+	# Partial leave day: Excel حضور + leave hours → Present (retain leave fields).
+	if leave and presence > 0:
+		return {"status": "Present", "review": False, "reason": None}
+	if leave:
+		return {"status": "On Leave", "review": False, "reason": None}
+	if absence > 0:
+		return {"status": "Absent", "review": False, "reason": None}
+	if mission > 0:
+		return {"status": "Present", "review": False, "reason": None}
+	if presence > 0 or float(worked_minutes or 0) > 0 or has_in_out:
+		return {"status": "Present", "review": False, "reason": None}
+	return {
+		"status": fallback_status or "Present",
+		"review": False,
+		"reason": None,
+	}
+
+
+def build_excel_authoritative_payload(
+	*,
+	paid_leave_minutes=0,
+	unpaid_leave_minutes=0,
+	night_total_minutes=0,
+	mission_minutes=0,
+	unauthorized_exit_minutes=0,
+	early_minutes=0,
+	late_minutes=0,
+	absence_minutes=0,
+	holiday_ot_approved_minutes=0,
+	normal_ot_approved_minutes=0,
+	normal_ot_unauthorized_minutes=0,
+	presence_minutes=0,
+	worked_minutes=0,
+	has_in_out: bool = False,
+	fallback_status: str = "Present",
+) -> dict:
+	"""Single Excel→Attendance field contract used by tests and repair tooling.
+
+	Mirrors Client Script ``applyValues`` hour mapping + ``excelImportStatus``.
+	"""
+	classification = excel_business_status(
+		paid_leave_minutes=paid_leave_minutes,
+		unpaid_leave_minutes=unpaid_leave_minutes,
+		mission_minutes=mission_minutes,
+		absence_minutes=absence_minutes,
+		presence_minutes=presence_minutes,
+		worked_minutes=worked_minutes,
+		has_in_out=has_in_out,
+		fallback_status=fallback_status,
+	)
+	paid_h = minutes_to_hours(paid_leave_minutes)
+	unpaid_h = minutes_to_hours(unpaid_leave_minutes)
+	unauth_h = unauthorized_normal_ot_hours(normal_ot_unauthorized_minutes)
+	approved_h = approved_overtime_hours_from_components(
+		0, 0, holiday_ot_approved_minutes, normal_ot_approved_minutes
+	)
+	return {
+		"custom_paid_leave_hours": paid_h,
+		"custom_unpaid_leave_hours": unpaid_h,
+		"custom_total_leave_hours": minutes_to_hours(
+			float(paid_leave_minutes or 0) + float(unpaid_leave_minutes or 0)
+		),
+		"custom_leave_hours": minutes_to_hours(
+			float(paid_leave_minutes or 0) + float(unpaid_leave_minutes or 0)
+		),
+		"custom_night_work_hours": minutes_to_hours(night_total_minutes),
+		"custom_mission_work_hours": minutes_to_hours(mission_minutes),
+		"custom_work_shortage_hours": work_shortage_hours_from_components(
+			unauthorized_exit_minutes, early_minutes, late_minutes
+		),
+		"custom_holiday_work_hours": minutes_to_hours(holiday_ot_approved_minutes),
+		"custom_regular_work_hours": unauth_h,
+		"custom_extra_presence_hours": unauth_h,
+		"custom_regular_overtime_hours": unauth_h,
+		"custom_approved_overtime_hours": approved_h,
+		"working_hours": minutes_to_hours(presence_minutes),
+		"status": classification["status"],
+		"review": classification["review"],
+		"review_reason": classification["reason"],
+	}
+
+
+def excel_status_from_absence(
+	absence_minutes=0,
+	fallback_status: str = "Present",
+	*,
+	presence_minutes=0,
+	worked_minutes=0,
+	has_in_out: bool = False,
+	mission_minutes=0,
+	paid_leave_minutes=0,
+	unpaid_leave_minutes=0,
+) -> str:
+	"""Compatibility wrapper around :func:`excel_business_status`."""
+	return excel_business_status(
+		paid_leave_minutes=paid_leave_minutes,
+		unpaid_leave_minutes=unpaid_leave_minutes,
+		mission_minutes=mission_minutes,
+		absence_minutes=absence_minutes,
+		presence_minutes=presence_minutes,
+		worked_minutes=worked_minutes,
+		has_in_out=has_in_out,
+		fallback_status=fallback_status,
+	)["status"]
+
+
+def expected_gregorian_from_jalali_ymd(year: int, month: int, day: int) -> str:
+	"""Reference Jalali→Gregorian used by importer regression tests.
+
+	Matches the Desk Client Script ``convertDate`` result for valid Jalali Y/M/D
+	(verified: 1405/07/25 → 2026-10-17).
+	"""
+	import jdatetime
+
+	return jdatetime.date(int(year), int(month), int(day)).togregorian().isoformat()
+
+
+def mission_absence_conflict(mission_minutes=0, absence_minutes=0) -> bool:
+	"""True when Excel has both positive mission and positive absence."""
+	return float(mission_minutes or 0) > 0 and float(absence_minutes or 0) > 0
+
+
+def leave_business_conflict(
+	paid_leave_minutes=0,
+	unpaid_leave_minutes=0,
+	mission_minutes=0,
+	absence_minutes=0,
+) -> bool:
+	"""True when Excel leave conflicts with mission or absence."""
+	leave = float(paid_leave_minutes or 0) > 0 or float(unpaid_leave_minutes or 0) > 0
+	if not leave:
+		return False
+	return float(mission_minutes or 0) > 0 or float(absence_minutes or 0) > 0
 
 
 @frappe.whitelist()
@@ -488,15 +702,23 @@ def _persist_one(item: dict) -> dict:
 	if len(existing) > 1:
 		frappe.throw(_("Duplicate Attendance in ERP for {0} on {1}").format(employee, day_s))
 
+	# Protect HRMS leave docs from non-leave Excel overwrites. Excel rows that
+	# still carry paid/unpaid leave hours may update On Leave → Present
+	# (partial leave day) or reimport On Leave.
 	if existing and existing[0].status == "On Leave":
-		return {
-			"bucket": "skipped",
-			"employee": employee,
-			"attendance_date": day_s,
-			"name": existing[0].name,
-			"reason": "Existing Leave Attendance",
-			"row": row_no,
-		}
+		excel_has_leave = (
+			float(values.get("custom_paid_leave_hours") or 0) > 0
+			or float(values.get("custom_unpaid_leave_hours") or 0) > 0
+		)
+		if not excel_has_leave and cstr(values.get("status")) != "On Leave":
+			return {
+				"bucket": "skipped",
+				"employee": employee,
+				"attendance_date": day_s,
+				"name": existing[0].name,
+				"reason": "Existing Leave Attendance",
+				"row": row_no,
+			}
 
 	if mode == "update_submitted" or (existing and int(existing[0].docstatus) == 1):
 		if not existing or int(existing[0].docstatus) != 1:
@@ -605,8 +827,15 @@ def _update_submitted(name: str, employee: str, day_s: str, values: dict):
 	if att.employee != employee or str(att.attendance_date) != day_s:
 		frappe.throw(_("Attendance employee/date scope mismatch"))
 	att.check_permission("write")
+	# Allow Excel leave-hour rows to correct On Leave → Present (partial leave).
+	# Block wiping leave when Excel carries neither paid nor unpaid leave hours.
 	if att.status == "On Leave":
-		frappe.throw(_("On Leave Attendance requires separate review"))
+		excel_has_leave = (
+			float(values.get("custom_paid_leave_hours") or 0) > 0
+			or float(values.get("custom_unpaid_leave_hours") or 0) > 0
+		)
+		if not excel_has_leave and cstr(values.get("status")) != "On Leave":
+			frappe.throw(_("On Leave Attendance requires separate review"))
 
 	filtered = {k: v for k, v in values.items() if k in ALLOWED_SUBMITTED_FIELDS}
 	if "standard_working_hours" not in filtered:

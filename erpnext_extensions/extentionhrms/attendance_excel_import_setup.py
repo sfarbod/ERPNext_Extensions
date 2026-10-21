@@ -16,9 +16,42 @@ CLIENT_SCRIPT_PATH = os.path.join(
 	"attendance_excel_import.js",
 )
 
+# Stock HRMS statuses — On Duty was briefly added for a rejected mission rule and must be removed.
+STOCK_ATTENDANCE_STATUS_OPTIONS = "Present\nAbsent\nOn Leave\nHalf Day\nWork From Home"
+
 
 def ensure_attendance_excel_import_setup() -> dict:
-	return {"client_script": sync_client_script()}
+	return {
+		"client_script": sync_client_script(),
+		"status_options": remove_on_duty_status_option(),
+	}
+
+
+def remove_on_duty_status_option() -> str:
+	"""Remove importer-only ``On Duty`` Property Setter if present; restore stock options."""
+	changed = False
+	for row in frappe.get_all(
+		"Property Setter",
+		filters={"doc_type": "Attendance", "field_name": "status", "property": "options"},
+		fields=["name", "value"],
+	):
+		value = row.value or ""
+		if "On Duty" not in value.split("\n"):
+			continue
+		# If the setter exists solely to inject On Duty, delete it so meta falls back to stock.
+		if value.strip() == STOCK_ATTENDANCE_STATUS_OPTIONS + "\nOn Duty" or value.strip().endswith(
+			"On Duty"
+		):
+			frappe.delete_doc("Property Setter", row.name, force=1, ignore_permissions=True)
+			changed = True
+		else:
+			cleaned = "\n".join(line for line in value.split("\n") if line.strip() != "On Duty")
+			frappe.db.set_value("Property Setter", row.name, "value", cleaned)
+			changed = True
+	if changed:
+		frappe.clear_cache(doctype="Attendance")
+		return "removed"
+	return "unchanged"
 
 
 def sync_client_script() -> str:
