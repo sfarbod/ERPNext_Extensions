@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.2 (inline import progress inside the main dialog)
+// Version: V2.0.3 (Approved OT Excel mapping + post-submit persistence)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -1635,13 +1635,26 @@ frappe.provide("espad.attendance_details");
             // Other Paid Leave Hours has no distinct Excel column:
             // preserve existing value rather than inventing a zero.
             // Never overwrite Other Paid Leave Hours without a separate Excel source.
+            // Regular OT = night+mission+holiday+normal *regular* Excel columns (minutes→hours).
+            // Prefer custom_regular_work_hours; also mirror onto the legacy overtime field when
+            // both exist so older reports that still read the legacy field keep working.
             setHours(doc, "Regular Work Hours", r.regularOT,
                 ["custom_regular_work_hours", "custom_regular_overtime_hours"]);
+            if (state.fields.has("custom_regular_work_hours") &&
+                state.fields.has("custom_regular_overtime_hours")) {
+                doc.custom_regular_overtime_hours = hours(Math.max(0, r.regularOT));
+            }
             setHours(doc, "Extra Presence Hours", schedule.rest ? presence : Math.max(0, presence - inside),
                 ["custom_extra_presence_hours"]);
+            // Approved OT = night+mission+holiday+normal *approved* Excel columns (K/M/O/Q).
+            // Minutes are summed then converted to decimal hours — never confuse with Regular OT.
             // 'Overtime Type' may be a Select field. Never put numeric hours in it.
             setHours(doc, "Approved Overtime Hours", r.approvedOT,
                 ["custom_approved_overtime_hours"]);
+            // Always include the fieldname explicitly so batch payloads never drop it.
+            if (state.fields.has(CONFIG.approvedOT)) {
+                doc[CONFIG.approvedOT] = hours(Math.max(0, r.approvedOT));
+            }
 
             if (state.fields.has("custom_missing_checkin")) {
                 doc.custom_missing_checkin = r.inTime && r.outTime ? "None" :
