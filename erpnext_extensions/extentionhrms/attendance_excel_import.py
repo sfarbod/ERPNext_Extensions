@@ -56,22 +56,25 @@ ALLOWED_SUBMITTED_FIELDS = (
 	"custom_calculation_details",
 )
 
-# Excel is the source of truth for these hour fields. ESPAD ATT AFTER SUBMIT may
-# call espad_attendance_calculate, which overwrites custom_approved_overtime_hours
-# (and related fields) from Overtime Authorization Requests. Re-apply after submit
-# so the Excel import mapping survives when the engine runs successfully.
+# Excel is the source of truth for these fields on the Attendance Excel Import
+# path only. ESPAD ATT AFTER SUBMIT / espad_attendance_calculate may overwrite
+# hour fields from OTAR or punch math; re-apply after submit so Excel wins.
 EXCEL_AUTHORITATIVE_FIELDS = (
+	"status",
+	"working_hours",
 	"custom_approved_overtime_hours",
 	"custom_regular_work_hours",
 	"custom_regular_overtime_hours",
+	"custom_extra_presence_hours",
 	"custom_paid_leave_hours",
 	"custom_unpaid_leave_hours",
 	"custom_total_leave_hours",
 	"custom_leave_hours",
 	"custom_mission_work_hours",
-	"custom_extra_presence_hours",
-	"custom_friday_work_hours",
+	"custom_night_work_hours",
+	"custom_work_shortage_hours",
 	"custom_holiday_work_hours",
+	"custom_friday_work_hours",
 	"custom_calculation_details",
 )
 
@@ -138,6 +141,11 @@ def _normalize_personnel_code(value) -> str:
 	return compact
 
 
+def minutes_to_hours(minutes=0) -> float:
+	"""Match Client Script ``hours(minutes)``: round to 6 decimal places."""
+	return round(max(0.0, float(minutes or 0)) / 60.0 * 1_000_000) / 1_000_000
+
+
 def approved_overtime_hours_from_components(
 	night_approved_minutes=0,
 	mission_approved_minutes=0,
@@ -147,6 +155,7 @@ def approved_overtime_hours_from_components(
 	"""Legacy Client Script formula: sum of four approved Excel columns in minutes → hours.
 
 	Matches ``hours(nightOTApproved + missionOTApproved + holidayOTApproved + normalOTApproved)``.
+	Unauthorized overtime is never included.
 	"""
 	total_minutes = (
 		float(night_approved_minutes or 0)
@@ -154,7 +163,36 @@ def approved_overtime_hours_from_components(
 		+ float(holiday_approved_minutes or 0)
 		+ float(normal_approved_minutes or 0)
 	)
-	return round(max(0.0, total_minutes) / 60.0 * 1_000_000) / 1_000_000
+	return minutes_to_hours(total_minutes)
+
+
+def work_shortage_hours_from_components(
+	unauthorized_exit_minutes=0,
+	early_minutes=0,
+	late_minutes=0,
+) -> float:
+	"""Excel-authoritative shortage: خروج غیرمجاز + تعجیل + تأخیر (minutes → hours).
+
+	Does not include absence and is independent of shift start/end.
+	"""
+	total_minutes = (
+		float(unauthorized_exit_minutes or 0)
+		+ float(early_minutes or 0)
+		+ float(late_minutes or 0)
+	)
+	return minutes_to_hours(total_minutes)
+
+
+def unauthorized_normal_ot_hours(normal_unauthorized_minutes=0) -> float:
+	"""Excel عادی غیرمجاز → hours for BOTH regular_work and extra_presence."""
+	return minutes_to_hours(normal_unauthorized_minutes)
+
+
+def excel_status_from_absence(absence_minutes=0, fallback_status: str = "Present") -> str:
+	"""Positive Excel غیبت forces Absent; blank/zero keeps fallback."""
+	if float(absence_minutes or 0) > 0:
+		return "Absent"
+	return fallback_status or "Present"
 
 
 @frappe.whitelist()

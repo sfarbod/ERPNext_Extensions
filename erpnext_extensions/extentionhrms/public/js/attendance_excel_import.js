@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.3 (Approved OT Excel mapping + post-submit persistence)
+// Version: V2.0.4 (Excel-authoritative field mapping)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -332,11 +332,17 @@ frappe.provide("espad.attendance_details");
             inTime,
             outTime,
             details: d,
+            // Legacy sum of all *unauthorized* OT columns (audit / calculation_details only).
             regularOT:
                 d.nightOTRegular +
                 d.missionOTRegular +
                 d.holidayOTRegular +
                 d.normalOTRegular,
+            // عادی غیرمجاز alone — dual-maps to regular_work + extra_presence.
+            unauthorizedNormalOT: d.normalOTRegular,
+            // خروج غیرمجاز + تعجیل + تأخیر (absence excluded).
+            workShortage:
+                d.unauthorizedExit + d.early + d.late,
             approvedOT:
                 d.nightOTApproved +
                 d.missionOTApproved +
@@ -1117,24 +1123,40 @@ frappe.provide("espad.attendance_details");
                     </div>
                     <p class="text-muted small">
                         Showing first ${Math.min(CONFIG.previewLimit, rows.length)}
-                        of ${rows.length} selected Excel rows.
+                        of ${rows.length} selected Excel rows. Hours are Excel-authoritative.
+                        Regular Work Hours and Extra Presence Hours both come from عادی غیرمجاز.
                     </p>
                     <div style="max-height:330px;overflow:auto">
-                        <table class="table table-bordered table-sm">
+                        <table class="table table-bordered table-sm" style="font-size:11px">
                             <thead><tr>
-                                <th>Excel Row</th><th>Employee</th><th>Date</th>
-                                <th>Regular OT</th><th>Approved OT</th>
+                                <th>Excel Row</th><th>Employee</th><th>Date</th><th>Status</th>
+                                <th>Paid Leave</th><th>Unpaid Leave</th>
+                                <th>Night</th><th>Mission</th><th>Shortage</th>
+                                <th>Regular Work</th><th>Extra Presence</th>
+                                <th>Approved OT</th><th>Holiday</th><th>Working Hrs</th>
                                 <th>Action</th><th>Reason</th>
                             </tr></thead>
-                            <tbody>${classified.slice(0, CONFIG.previewLimit).map(r => `
+                            <tbody>${classified.slice(0, CONFIG.previewLimit).map(r => {
+                                const d = r.details || {};
+                                const status = d.absence > 0 ? "Absent"
+                                    : ((d.presence > 0 || r.inTime || r.outTime) ? "Present" : "Absent");
+                                const unauth = hours(r.unauthorizedNormalOT || 0);
+                                return `
                                 <tr>
                                     <td>${r.row}</td><td>${esc(r.name)}</td>
-                                    <td>${esc(r.date)}</td>
-                                    <td>${hours(r.regularOT)}</td>
-                                    <td>${hours(r.approvedOT)}</td>
+                                    <td>${esc(r.date)}</td><td>${esc(status)}</td>
+                                    <td>${hours(d.paidLeave || 0)}</td>
+                                    <td>${hours(d.unpaidLeave || 0)}</td>
+                                    <td>${hours(d.nightTotal || 0)}</td>
+                                    <td>${hours(d.mission || 0)}</td>
+                                    <td>${hours(r.workShortage || 0)}</td>
+                                    <td>${unauth}</td><td>${unauth}</td>
+                                    <td>${hours(r.approvedOT || 0)}</td>
+                                    <td>${hours(d.holidayOTApproved || 0)}</td>
+                                    <td>${hours(d.presence || 0)}</td>
                                     <td>${esc(r.action)}</td><td>${esc(r.reason)}</td>
-                                </tr>
-                            `).join("")}</tbody>
+                                </tr>`;
+                            }).join("")}</tbody>
                         </table>
                     </div>
                 `);
@@ -1579,10 +1601,15 @@ frappe.provide("espad.attendance_details");
 
         function applyValues(doc, r, schedule) {
             const d = r.details;
-            const presence = d.presence > 0 ? d.presence :
-                (r.inTime && r.outTime ? minutesBetween(r.inTime, r.outTime) : d.worked);
-            const hasPresence = presence > 0 || !!r.inTime || !!r.outTime;
-            doc.status = hasPresence ? "Present" : "Absent";
+            // Excel-authoritative presence (حضور). Do not substitute punch interval.
+            const presence = Math.max(0, d.presence || 0);
+            // Rule 3: positive Excel غیبت forces Absent over punch-inferred Present.
+            if (d.absence > 0) {
+                doc.status = "Absent";
+            } else {
+                const hasPresence = presence > 0 || !!r.inTime || !!r.outTime;
+                doc.status = hasPresence ? "Present" : "Absent";
+            }
             if (state.fields.has("in_time")) doc.in_time = r.inTime;
             if (state.fields.has("out_time")) doc.out_time = r.outTime;
             if (state.fields.has("shift")) doc.shift = schedule.shiftName || null;
@@ -1597,64 +1624,78 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("early_exit"))
                 doc.early_exit = d.early > 0 ? 1 : 0;
 
-            // Excel is the source for imported daily totals.
+            // Standard / shift-window fields remain schedule-derived (not in Excel mapping table).
             setHours(doc, "Standard Working Hours", schedule.required, ["standard_working_hours"]);
+            // Rule: حضور → working_hours (Excel authoritative, including explicit zero).
             setHours(doc, "Working Hours", presence, ["working_hours"]);
+            if (state.fields.has("working_hours"))
+                doc.working_hours = hours(presence);
             const inside = r.inTime && r.outTime && schedule.scheduled
                 ? Math.max(0, (Math.min(dateTimeMs(r.outTime), dateTimeMs(schedule.shiftEnd)) -
                     Math.max(dateTimeMs(r.inTime), dateTimeMs(schedule.shiftStart))) / 60000)
                 : Math.min(presence, schedule.required);
             setHours(doc, "Shift Work Hours", inside, ["custom_shift_work_hours"]);
-            // Leave/mission are from Excel. Do not manufacture approved records.
-            const shortage = schedule.scheduled
-                ? Math.max(0, schedule.required - inside - d.paidLeave - d.unpaidLeave - d.mission)
-                : 0;
             setHours(doc, "Presence Shortage Hours (raw)",
                 Math.max(0, schedule.required - inside),
                 ["custom_presence_shortage_hours"]);
-            setHours(doc, "Work Shortage Hours", shortage, ["custom_work_shortage_hours"]);
+
+            // Rule 1: Work Shortage = خروج غیرمجاز + تعجیل + تأخیر (not shift math, not absence).
+            const shortageMinutes = (r.workShortage != null)
+                ? r.workShortage
+                : (d.unauthorizedExit + d.early + d.late);
+            setHours(doc, "Work Shortage Hours", shortageMinutes, ["custom_work_shortage_hours"]);
+            if (state.fields.has("custom_work_shortage_hours"))
+                doc.custom_work_shortage_hours = hours(Math.max(0, shortageMinutes));
+
+            // Friday remains schedule/weekday derived (no dedicated Excel Friday column).
             const friday = weekday(r.date) === 5 ? presence : 0;
             setHours(doc, "Friday Work Hours", friday, ["custom_friday_work_hours"]);
-            setHours(doc, "Holiday Work Hours", schedule.holiday ? presence : 0,
+
+            // تعطیل مجاز → Holiday Work Hours (Excel approved holiday OT column).
+            setHours(doc, "Holiday Work Hours", d.holidayOTApproved,
                 ["custom_holiday_work_hours"]);
+            if (state.fields.has("custom_holiday_work_hours"))
+                doc.custom_holiday_work_hours = hours(Math.max(0, d.holidayOTApproved));
+
             setHours(doc, "Mission Work Hours", d.mission, ["custom_mission_work_hours"]);
-            const nightMinutes = actualNightMinutes(doc.in_time, doc.out_time);
-            // Missing punches cannot establish actual night presence.
-            // Preserve existing night hours; for a new Attendance default to zero.
-            // On full IN/OUT, zero is a valid calculated result and must be sent.
-            if (nightMinutes !== null) {
-                setHours(doc, "Night Work Hours", nightMinutes, ["custom_night_work_hours"]);
-            } else if (!doc.name) {
-                setHours(doc, "Night Work Hours", 0, ["custom_night_work_hours"]);
-            }
+            if (state.fields.has("custom_mission_work_hours"))
+                doc.custom_mission_work_hours = hours(Math.max(0, d.mission));
+
+            // شبکاری کل → Night Work Hours (Excel authoritative; not punch overlap).
+            setHours(doc, "Night Work Hours", d.nightTotal, ["custom_night_work_hours"]);
+            if (state.fields.has("custom_night_work_hours"))
+                doc.custom_night_work_hours = hours(Math.max(0, d.nightTotal));
+
             setHours(doc, "Total Leave Hours", d.paidLeave + d.unpaidLeave,
                 ["custom_total_leave_hours", "custom_leave_hours"]);
-            // The Excel has one paid-leave column and cannot split privilege vs other paid leave.
             setHours(doc, "Paid Leave Hours", d.paidLeave, ["custom_paid_leave_hours"]);
+            if (state.fields.has("custom_paid_leave_hours"))
+                doc.custom_paid_leave_hours = hours(Math.max(0, d.paidLeave));
             setHours(doc, "Unpaid Leave Hours", d.unpaidLeave, ["custom_unpaid_leave_hours"]);
-            // Other Paid Leave Hours has no distinct Excel column:
-            // preserve existing value rather than inventing a zero.
-            // Never overwrite Other Paid Leave Hours without a separate Excel source.
-            // Regular OT = night+mission+holiday+normal *regular* Excel columns (minutes→hours).
-            // Prefer custom_regular_work_hours; also mirror onto the legacy overtime field when
-            // both exist so older reports that still read the legacy field keep working.
-            setHours(doc, "Regular Work Hours", r.regularOT,
-                ["custom_regular_work_hours", "custom_regular_overtime_hours"]);
-            if (state.fields.has("custom_regular_work_hours") &&
-                state.fields.has("custom_regular_overtime_hours")) {
-                doc.custom_regular_overtime_hours = hours(Math.max(0, r.regularOT));
-            }
-            setHours(doc, "Extra Presence Hours", schedule.rest ? presence : Math.max(0, presence - inside),
+            if (state.fields.has("custom_unpaid_leave_hours"))
+                doc.custom_unpaid_leave_hours = hours(Math.max(0, d.unpaidLeave));
+
+            // Rule 2: عادی غیرمجاز → BOTH custom_regular_work_hours AND custom_extra_presence_hours.
+            const unauthorizedNormal = (r.unauthorizedNormalOT != null)
+                ? r.unauthorizedNormalOT
+                : d.normalOTRegular;
+            setHours(doc, "Regular Work Hours", unauthorizedNormal,
+                ["custom_regular_work_hours"]);
+            setHours(doc, "Extra Presence Hours", unauthorizedNormal,
                 ["custom_extra_presence_hours"]);
-            // Approved OT = night+mission+holiday+normal *approved* Excel columns (K/M/O/Q).
-            // Minutes are summed then converted to decimal hours — never confuse with Regular OT.
-            // 'Overtime Type' may be a Select field. Never put numeric hours in it.
+            if (state.fields.has("custom_regular_work_hours"))
+                doc.custom_regular_work_hours = hours(Math.max(0, unauthorizedNormal));
+            if (state.fields.has("custom_extra_presence_hours"))
+                doc.custom_extra_presence_hours = hours(Math.max(0, unauthorizedNormal));
+            // Legacy overtime field: keep in sync with the same unauthorized-normal value.
+            if (state.fields.has("custom_regular_overtime_hours"))
+                doc.custom_regular_overtime_hours = hours(Math.max(0, unauthorizedNormal));
+
+            // Rule 4: Approved OT = K+M+O+Q approved minutes → hours (never unauthorized).
             setHours(doc, "Approved Overtime Hours", r.approvedOT,
                 ["custom_approved_overtime_hours"]);
-            // Always include the fieldname explicitly so batch payloads never drop it.
-            if (state.fields.has(CONFIG.approvedOT)) {
+            if (state.fields.has(CONFIG.approvedOT))
                 doc[CONFIG.approvedOT] = hours(Math.max(0, r.approvedOT));
-            }
 
             if (state.fields.has("custom_missing_checkin")) {
                 doc.custom_missing_checkin = r.inTime && r.outTime ? "None" :
@@ -1662,13 +1703,20 @@ frappe.provide("espad.attendance_details");
             }
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
-                    source: "Attendance Excel Import", source_file: state.fileName,
+                    source: "Attendance Excel Import",
+                    mapping_version: "V2.0.4",
+                    source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
                     weekday: r.weekday, work_group: r.workGroup,
-                    durations_minutes: d, regular_overtime_minutes: r.regularOT,
+                    durations_minutes: d,
+                    unauthorized_normal_ot_minutes: unauthorizedNormal,
+                    work_shortage_minutes: shortageMinutes,
                     approved_overtime_minutes: r.approvedOT,
-                    night_work_source: "actual IN/OUT overlap with 22:00-06:00",
-                    night_work_minutes: nightMinutes,
+                    night_work_source: "Excel شبکاری کل",
+                    holiday_work_source: "Excel تعطیل مجاز",
+                    regular_and_extra_presence_source: "Excel عادی غیرمجاز (identical)",
+                    work_shortage_source: "Excel خروج غیرمجاز + تعجیل + تأخیر",
+                    status_rule: d.absence > 0 ? "Excel غیبت > 0 → Absent" : "presence/punches",
                     resolved_shift: schedule.shiftName, scheduled_day: schedule.scheduled,
                     holiday_or_rest: schedule.rest,
                     note: "Other Paid Leave Hours not overwritten: source Excel has no separate column"
@@ -1842,11 +1890,36 @@ frappe.provide("espad.attendance_details");
                                     values[field] = doc[field];
                             }
                             values.standard_working_hours = doc.standard_working_hours;
-                            if (doc.in_time && doc.out_time) {
-                                if (!state.fields.has("custom_night_work_hours") ||
-                                    !Number.isFinite(Number(doc.custom_night_work_hours)))
-                                    throw Error("Calculated Night Work Hours missing");
-                                values.custom_night_work_hours = Number(doc.custom_night_work_hours);
+                            // Excel-authoritative fields must always be present on submitted updates.
+                            const mustSend = [
+                                "status",
+                                "working_hours",
+                                "custom_night_work_hours",
+                                "custom_work_shortage_hours",
+                                "custom_mission_work_hours",
+                                "custom_paid_leave_hours",
+                                "custom_unpaid_leave_hours",
+                                "custom_holiday_work_hours",
+                                "custom_regular_work_hours",
+                                "custom_extra_presence_hours",
+                                "custom_approved_overtime_hours",
+                            ];
+                            for (const field of mustSend) {
+                                if (!state.fields.has(field)) continue;
+                                if (!Object.prototype.hasOwnProperty.call(doc, field) ||
+                                    (typeof doc[field] === "number" && !Number.isFinite(doc[field])))
+                                    throw Error("Excel-authoritative field missing: " + field);
+                                values[field] = doc[field];
+                            }
+                            // Dual-field unauthorized OT must stay identical.
+                            if (state.fields.has("custom_regular_work_hours") &&
+                                state.fields.has("custom_extra_presence_hours") &&
+                                Number(values.custom_regular_work_hours) !==
+                                Number(values.custom_extra_presence_hours)) {
+                                throw Error(
+                                    "Regular Work Hours and Extra Presence Hours must match " +
+                                    "(Excel عادی غیرمجاز)"
+                                );
                             }
                         } else {
                             for (const field of Object.keys(doc)) {
