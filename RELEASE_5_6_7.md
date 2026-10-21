@@ -29,7 +29,7 @@ This release keeps the Attendance business rules (custom hours, shift rotation, 
 
 ## 3. What changed
 
-### UI (Client Script V2.0.6)
+### UI (Client Script V2.0.7)
 
 - Synced from `extentionhrms/public/js/attendance_excel_import.js`.
 - Summary stats (personnel / matched / unmatched / ambiguous / rows / invalid).
@@ -80,7 +80,7 @@ bench --site <site> migrate
 bench --site <site> clear-cache
 ```
 
-Verify Client Script contains `Version: V2.0.6`, `On Duty`, `Mission and absence conflict`, `holidayOTApproved + d.normalOTApproved`, and `import_attendance_details`.
+Verify Client Script contains `Version: V2.0.7`, `rejectOutlierWorkbookYears`, `Mission and absence conflict`, mission→Present, and `import_attendance_details`.
 
 ### Correction (V2.0.1 within 5.6.7)
 
@@ -115,7 +115,7 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 | 0 | مرخصی با حقوق | `custom_paid_leave_hours` |
 | 1 | مرخصی بی‌حقوق | `custom_unpaid_leave_hours` |
 | 2 | شبکاری کل | `custom_night_work_hours` |
-| 4 | کل مأموریت | `custom_mission_work_hours` (+ `status = On Duty` when > 0) |
+| 4 | کل مأموریت | `custom_mission_work_hours` (+ `status = Present` when mission > 0) |
 | 5+6+7 | خروج غیرمجاز + تعجیل + تأخیر | `custom_work_shortage_hours` |
 | 8 | غیبت > 0 | `status = "Absent"` |
 | 14 | تعطیل مجاز | `custom_holiday_work_hours` |
@@ -127,7 +127,7 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 
 1. **Work shortage** = sum of Excel unauthorized exit + early + late (minutes → hours). Not shift math; absence excluded.
 2. **Dual unauthorized OT:** Excel عادی غیرمجاز alone populates both `custom_regular_work_hours` and `custom_extra_presence_hours` with the same decimal hours (including explicit zero). Overrides the prior sum-of-all-unauthorized-OT mapping for `custom_regular_work_hours`. Does not feed Approved OT.
-3. **Status:** Mission > 0 → `On Duty`; absence > 0 → `Absent`; mission+absence → Review; presence without absence → `Present`. Blank absence / missing punches never force Absent. On Leave / Half Day preserved.
+3. **Status:** Mission > 0 → `Present` (hours still mapped); absence > 0 → `Absent`; mission+absence → Review; presence without absence → `Present`. Blank absence / missing punches never force Absent. On Leave / Half Day preserved.
 4. **Approved OT (V2.0.5+):** `Normal Approved + Holiday Approved` only. Night/Mission approved are excluded from this field (Holiday Approved still also maps to `custom_holiday_work_hours`).
 5. **Persistence:** `EXCEL_AUTHORITATIVE_FIELDS` includes `status`, `working_hours`, dual OT, shortage, night, mission, approved OT, etc., re-applied after create/draft submit.
 
@@ -136,10 +136,17 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 1. **Status bug:** Importer no longer defaults to Absent when punches are missing or absence is blank/zero. Only positive Excel غیبت forces Absent. Verified for رضوان مرزبانی / `1405/07/25` (Excel row 152, HR-EMP-0001, 2026-10-17): حضور `۱۱:۰۱`, غیبت blank → persisted `Present`.
 2. **Approved OT formula:** Replaced four-category sum with `holidayOTApproved + normalOTApproved` (indexes 14 + 16). Night/Mission approved no longer inflate `custom_approved_overtime_hours`.
 
-### Correction (V2.0.6 within 5.6.7) — Mission → On Duty
+### Correction (V2.0.6 within 5.6.7) — Mission hours mapping
 
-1. **Root cause:** Mission rows without punches were classified `Review` (“Mission / Leave needs verification”) and skipped, leaving prior `Absent` with `custom_mission_work_hours = 0`. Stock HRMS also rejects status `On Duty` in `Attendance.validate`.
-2. **Fix:** Pure Excel mission days import as `On Duty` with `custom_mission_work_hours` from `کل مأموریت`. Mission+absence conflicts stay `Review`. `AttendanceWithOnDuty` DocType override + Property Setter add `On Duty` to the allowlist/UI. Verified: محسن اعتمادی / `1405/07/12` (Excel row 543, HR-EMP-0019, 2026-10-04) mission `۹:۰۰` → `On Duty` / `9.0`.
+1. **Root cause:** Mission rows without punches were classified `Review` and skipped, leaving prior `Absent` with `custom_mission_work_hours = 0`.
+2. **Interim:** Briefly used `On Duty` via a global Attendance class override (removed in V2.0.7).
+
+### Correction (V2.0.7 within 5.6.7) — Mission Present + 1399 date audit
+
+1. **Mission status:** Positive Excel `کل مأموریت` → `status = Present` with `custom_mission_work_hours` populated. No `On Duty`.
+2. **Override removed:** Deleted `attendance_override.py` / `override_doctype_class` Attendance entry and the On Duty Property Setter. Native HRMS Attendance class restored.
+3. **1399 dates:** List View Jalali `1399-*` for رضوان مرزبانی were **not** Excel parser failures. Stored Gregorian dates were `2020-09-21`…`2020-10-16` (Jalali 1399-06-31…1399-07-25) from earlier path-verification fixtures near `date_of_joining` (2020-08-22), not from `mehr.xls` (text Jalali `۱۴۰۵/…` cells). Real Excel imports for that employee remain `2026-09-17`…`2026-10-17` (Jalali 1405). The four fixture records were cancelled/deleted. Workbook majority-year validation (`rejectOutlierWorkbookYears`) blocks minority outlier Gregorian years without hardcoding 1405.
+4. **Regression:** `1405/07/25` → `2026-10-17`. محسن اعتمادی / `1405/07/12` → Present / mission `9.0`.
 
 ### Browser E2E on `development.localhost` (`mehr.xls`)
 
@@ -162,9 +169,9 @@ Importer-only scope: does **not** change general Attendance / OTAR / Checkin Res
 
 **Status + Approved OT E2E (V2.0.5):** Personnel code `3` (رضوان مرزبانی). Preview row 152 / `2026-10-17` → Status `Present`, Approved OT `2.016667` (Normal `۲:۰۱` only). Rows 115/118/119 show corrected Approved OT excluding Night (`14.316667` / `6.933333` / `2.7` vs old four-sum). Import Updated 23 / Failed 0, single modal + inline progress. Post-import DB matched preview.
 
-**Mission On Duty E2E (V2.0.6):** Personnel code `71` (محسن اعتمادی). Preview row 543 / `2026-10-04` → Status `On Duty`, Mission `9`. Import Created 1 / Updated 19 / Failed 0, single modal + inline progress. DB `HR-ATT-2026-14774`: `On Duty` / `custom_mission_work_hours = 9.0`.
+**Mission Present E2E (V2.0.7):** `mehr.xls` → 7994 rows / 261 matched; all workbook Jalali years = 1405 → Gregorian 2026. convertDate probes: `1405/07/25` / Persian / Arabic digits → `2026-10-17`. DB `HR-ATT-2026-14774` (محسن اعتمادی / `2026-10-04`): `Present` / mission `9.0`. `HR-ATT-2026-14573` (رضوان مرزبانی / `2026-10-17`): `Present`. Synthetic 2020 fixtures deleted; zero remaining `On Duty`. Inline progress present; no nested progress dialog.
 
-Screenshots (populated UI + import result): `extentionhrms/e2e/screenshots/attendance_excel_import/`.
+Screenshots: `extentionhrms/e2e/screenshots/attendance_excel_import/v207_*.png`.
 
 ---
 
@@ -180,7 +187,7 @@ unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFro
 PY
 ```
 
-Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, preload, Client Script sync (V2.0.6), On Duty status option, mission mapping/persistence, Approved OT = Normal+Holiday only, work-shortage sum, dual unauthorized-OT fields, status precedence (mission/absence/presence), and post-submit re-apply.
+Covers existing lookup, cancelled exclusion, unauthorized rejection, create+submit, idempotent submitted update, Client Script sync (V2.0.7), mission→Present with hours, Jalali date regression (1405/07/25→2026-10-17), workbook year outlier rejection, Approved OT = Normal+Holiday, dual unauthorized OT, and post-submit re-apply.
 
 Playwright regression helper: `extentionhrms/e2e/attendance_excel_import_playwright.mjs` (library HTTP 200 + file select + parse stats).
 

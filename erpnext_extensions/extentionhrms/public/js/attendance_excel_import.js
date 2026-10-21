@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.6 (Mission → On Duty + Excel mapping audit)
+// Version: V2.0.7 (Mission → Present; workbook date-range validation)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -210,6 +210,16 @@ frappe.provide("espad.attendance_details");
     );
 
     function convertDate(value) {
+        // Never use Date.parse on Jalali strings — ambiguous and can invent years.
+        // Excel serial numbers (SheetJS raw:true) → Gregorian via the 1899-12-30 epoch.
+        if (typeof value === "number" && Number.isFinite(value)) {
+            if (value < 1 || value > 100000) return null;
+            const ms = Math.round((value - 25569) * 86400000);
+            const dt = new Date(ms);
+            if (Number.isNaN(dt.getTime())) return null;
+            return dt.toISOString().slice(0, 10);
+        }
+
         const s = norm(value);
         const m = s.match(
             /^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})$/
@@ -231,7 +241,7 @@ frappe.provide("espad.attendance_details");
                 ? result : null;
         }
 
-        // Jalali date
+        // Jalali date — reject out-of-range years (no silent year inventing).
         if (y < 1200 || y > 1600) return null;
 
         let low = Math.floor(
@@ -281,7 +291,8 @@ frappe.provide("espad.attendance_details");
     }
 
     function parseRow(row, rowNumber) {
-        const date = convertDate(row[C.date]);
+        const rawDate = row[C.date];
+        const date = convertDate(rawDate);
         if (!date) return null;
 
         const get = key => duration(row[C[key]]);
@@ -324,6 +335,7 @@ frappe.provide("espad.attendance_details");
         return {
             row: rowNumber,
             date,
+            rawDate,
             code: codeKey(row[C.code]),
             name: [
                 norm(row[C.firstName]),
@@ -355,7 +367,7 @@ frappe.provide("espad.attendance_details");
         // Precedence (importer-only):
         // 1) Mission + absence both > 0 → conflict (classify as Review; defensive Absent)
         // 2) Absence > 0 → Absent
-        // 3) Mission > 0 → On Duty (no punches required)
+        // 3) Mission > 0 → Present (mission hours still mapped; status is not On Duty)
         // 4) Presence / worked / IN-OUT → Present
         // Blank/zero absence never forces Absent.
         const d = details || {};
@@ -363,10 +375,47 @@ frappe.provide("espad.attendance_details");
         const absence = d.absence || 0;
         if (mission > 0 && absence > 0) return "Absent";
         if (absence > 0) return "Absent";
-        if (mission > 0) return "On Duty";
+        if (mission > 0) return "Present";
         if ((d.presence || 0) > 0 || (d.worked || 0) > 0 || inTime || outTime)
             return "Present";
         return "Present";
+    }
+
+    function workbookDateYearStats(records) {
+        const counts = new Map();
+        for (const r of records) {
+            const y = Number(String(r.date || "").slice(0, 4));
+            if (!Number.isFinite(y)) continue;
+            counts.set(y, (counts.get(y) || 0) + 1);
+        }
+        let modeYear = null, modeCount = 0;
+        for (const [y, c] of counts) {
+            if (c > modeCount) { modeYear = y; modeCount = c; }
+        }
+        return { counts, modeYear, modeCount, total: records.length };
+    }
+
+    function rejectOutlierWorkbookYears(records, errors) {
+        // Block minority Gregorian years that are far from the workbook majority.
+        // Does not hardcode 1405 — uses the actual parsed distribution.
+        const { counts, modeYear, modeCount, total } = workbookDateYearStats(records);
+        if (!modeYear || total < 5) return records;
+        const kept = [];
+        for (const r of records) {
+            const y = Number(String(r.date || "").slice(0, 4));
+            const share = (counts.get(y) || 0) / total;
+            // Keep the mode year and any year that is itself a substantial cluster (>= 10%).
+            if (y === modeYear || share >= 0.10) {
+                kept.push(r);
+                continue;
+            }
+            errors.push({
+                row: r.row,
+                error: `Date year ${y} is outside the workbook majority year ${modeYear} ` +
+                    `(${modeCount}/${total} rows). Review the Excel date cell before import.`
+            });
+        }
+        return kept;
     }
 
     async function api(method, args) {
@@ -1040,7 +1089,7 @@ frappe.provide("espad.attendance_details");
 
             if (!r.inTime && !r.outTime) {
                 // Paid/unpaid leave without punches still needs human review.
-                // Pure mission days are eligible for On Duty import.
+                // Pure mission days import as Present with mission hours.
                 if ((d.paidLeave || 0) > 0 || (d.unpaidLeave || 0) > 0) {
                     if ((d.mission || 0) > 0)
                         return ["Review", "Mission and leave need verification"];
@@ -1310,6 +1359,31 @@ frappe.provide("espad.attendance_details");
 
                     if (!state.records.length)
                         throw Error("No valid daily rows found");
+
+                    // Reject minority Gregorian years outside the workbook majority cluster.
+                    state.records = rejectOutlierWorkbookYears(
+                        state.records, state.errors
+                    );
+                    // Rebuild personnel index from retained rows only.
+                    state.people.clear();
+                    for (const r of state.records) {
+                        if (!r.code) continue;
+                        if (!state.people.has(r.code)) {
+                            state.people.set(r.code, {
+                                code: r.code,
+                                name: r.name,
+                                employee: null,
+                                included: false,
+                                days: 0
+                            });
+                        }
+                        state.people.get(r.code).days++;
+                    }
+
+                    if (!state.records.length)
+                        throw Error(
+                            "No valid daily rows remain after workbook date-year validation"
+                        );
 
                     phase = "match employees";
                     employeeArea.text(
@@ -1732,9 +1806,10 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
                     source: "Attendance Excel Import",
-                    mapping_version: "V2.0.6",
+                    mapping_version: "V2.0.7",
                     source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
+                    raw_excel_date: r.rawDate,
                     weekday: r.weekday, work_group: r.workGroup,
                     durations_minutes: d,
                     unauthorized_normal_ot_minutes: unauthorizedNormal,
@@ -1756,7 +1831,7 @@ frappe.provide("espad.attendance_details");
                         : (d.absence > 0)
                             ? "Excel غیبت > 0 → Absent"
                             : (d.mission > 0)
-                                ? "Excel کل مأموریت > 0 → On Duty"
+                                ? "Excel کل مأموریت > 0 → Present (mission hours mapped)"
                                 : "Present unless Excel absence > 0 (missing punches do not force Absent)",
                     resolved_shift: schedule.shiftName, scheduled_day: schedule.scheduled,
                     holiday_or_rest: schedule.rest,

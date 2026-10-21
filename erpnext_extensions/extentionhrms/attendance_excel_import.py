@@ -199,7 +199,7 @@ def excel_status_from_absence(
 	* Mission > 0 and absence > 0 → conflict (caller should Review); returns ``Absent``
 	  only as a defensive non-write fallback.
 	* Absence > 0 → ``Absent``
-	* Mission > 0 → ``On Duty``
+	* Mission > 0 → ``Present`` (mission hours are mapped separately)
 	* Presence / worked / punches → ``Present``
 	* Otherwise fallback (default ``Present``); blank absence never forces Absent.
 	"""
@@ -210,7 +210,7 @@ def excel_status_from_absence(
 	if absence > 0:
 		return "Absent"
 	if mission > 0:
-		return "On Duty"
+		return "Present"
 	if (
 		float(presence_minutes or 0) > 0
 		or float(worked_minutes or 0) > 0
@@ -218,6 +218,17 @@ def excel_status_from_absence(
 	):
 		return "Present"
 	return fallback_status or "Present"
+
+
+def expected_gregorian_from_jalali_ymd(year: int, month: int, day: int) -> str:
+	"""Reference Jalali→Gregorian used by importer regression tests.
+
+	Matches the Desk Client Script ``convertDate`` result for valid Jalali Y/M/D
+	(verified: 1405/07/25 → 2026-10-17).
+	"""
+	import jdatetime
+
+	return jdatetime.date(int(year), int(month), int(day)).togregorian().isoformat()
 
 
 def mission_absence_conflict(mission_minutes=0, absence_minutes=0) -> bool:

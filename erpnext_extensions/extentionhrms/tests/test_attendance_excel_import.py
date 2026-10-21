@@ -15,6 +15,7 @@ from erpnext_extensions.extentionhrms.attendance_excel_import import (
 	_reapply_excel_authoritative_fields,
 	approved_overtime_hours_from_components,
 	excel_status_from_absence,
+	expected_gregorian_from_jalali_ymd,
 	find_existing_attendance,
 	get_personnel_code_index,
 	import_attendance_details,
@@ -239,7 +240,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.6", script)
+		self.assertIn("V2.0.7", script)
 		self.assertIn("import_attendance_details", script)
 		self.assertIn("get_personnel_code_index", script)
 		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
@@ -259,11 +260,12 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn('setHours(doc, "Approved Overtime Hours", r.approvedOT', script)
 		self.assertIn("holidayOTApproved + d.normalOTApproved", script)
 		self.assertIn("excelImportStatus", script)
-		self.assertIn("On Duty", script)
+		self.assertIn("rejectOutlierWorkbookYears", script)
+		self.assertNotIn('return "On Duty"', script)
 		self.assertIn("Mission and absence conflict", script)
 		self.assertIn("CONFIG.approvedOT", script)
 		self.assertIn("Excel غیبت", script)
-		self.assertIn(first.get("status_options"), ("created", "updated", "unchanged"))
+		self.assertIn(first.get("status_options"), ("removed", "unchanged"))
 
 	def test_sheetjs_asset_is_served_locally(self):
 		path = os.path.join(
@@ -484,15 +486,15 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			excel_status_from_absence(0, "Present", presence_minutes=0, has_in_out=False),
 			"Present",
 		)
-		# Mission without punches → On Duty
+		# Mission without punches → Present
 		self.assertEqual(
 			excel_status_from_absence(0, "Present", mission_minutes=540),
-			"On Duty",
+			"Present",
 		)
-		# Mission with presence still On Duty
+		# Mission with presence still Present
 		self.assertEqual(
 			excel_status_from_absence(0, "Present", presence_minutes=120, mission_minutes=480),
-			"On Duty",
+			"Present",
 		)
 		self.assertTrue(mission_absence_conflict(540, 30))
 		self.assertFalse(mission_absence_conflict(540, 0))
@@ -800,7 +802,41 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			places=5,
 		)
 
-	def test_create_mission_day_as_on_duty_without_punches(self):
+	def test_jalali_1405_07_25_converts_to_2026_10_17(self):
+		self.assertEqual(expected_gregorian_from_jalali_ymd(1405, 7, 25), "2026-10-17")
+		# Month / year boundaries (Jalali Nowruz)
+		self.assertEqual(expected_gregorian_from_jalali_ymd(1405, 1, 1), "2026-03-21")
+		self.assertEqual(expected_gregorian_from_jalali_ymd(1404, 12, 29), "2026-03-20")
+
+	def test_client_script_date_parser_guards(self):
+		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
+		# Persian / Arabic digit normalization before parse
+		self.assertIn("[۰-۹]", script)
+		self.assertIn("[٠-٩]", script)
+		# No Date.parse on Jalali strings; reject out-of-range Jalali years
+		self.assertIn("Never use Date.parse on Jalali strings", script)
+		self.assertIn("y < 1200 || y > 1600", script)
+		# Excel serial support + raw date diagnostics
+		self.assertIn("25569", script)
+		self.assertIn("rawDate", script)
+		self.assertIn("raw_excel_date", script)
+		self.assertIn("rejectOutlierWorkbookYears", script)
+		# No silent 1399 inventing
+		self.assertNotIn("1399", script)
+
+	def test_no_global_attendance_class_override(self):
+		import erpnext_extensions.hooks as hooks
+
+		overrides = getattr(hooks, "override_doctype_class", {}) or {}
+		self.assertNotIn("Attendance", overrides)
+		override_path = os.path.join(
+			frappe.get_app_path("erpnext_extensions"),
+			"extentionhrms",
+			"attendance_override.py",
+		)
+		self.assertFalse(os.path.isfile(override_path))
+
+	def test_create_mission_day_as_present_without_punches(self):
 		employee = self._employee("77070")
 		day = add_days(getdate(nowdate()), -40)
 		company = frappe.db.get_value("Employee", employee, "company")
@@ -813,7 +849,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 					"company": company,
 					"mode": "create",
 					"values": {
-						"status": "On Duty",
+						"status": "Present",
 						"standard_working_hours": 9,
 						"working_hours": 0,
 						"custom_mission_work_hours": mission_hours,
@@ -821,7 +857,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 						"custom_extra_presence_hours": 0,
 						"custom_approved_overtime_hours": 0,
 						"custom_calculation_details": (
-							'{"source":"Attendance Excel Import","mapping_version":"V2.0.6",'
+							'{"source":"Attendance Excel Import","mapping_version":"V2.0.7",'
 							'"mission_work_source":"Excel کل مأموریت"}'
 						),
 					},
@@ -838,11 +874,11 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			["status", "custom_mission_work_hours", "working_hours", "docstatus"],
 			as_dict=True,
 		)
-		self.assertEqual(row.status, "On Duty")
+		self.assertEqual(row.status, "Present")
 		self.assertAlmostEqual(float(row.custom_mission_work_hours), 9.0, places=5)
 		self.assertEqual(int(row.docstatus), 1)
 
-	def test_submitted_update_sets_mission_on_duty_from_absent(self):
+	def test_submitted_update_sets_mission_present_from_absent(self):
 		employee = self._employee("77071")
 		day = add_days(getdate(nowdate()), -41)
 		company = frappe.db.get_value("Employee", employee, "company")
@@ -873,7 +909,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 					"mode": "update_submitted",
 					"name": name,
 					"values": {
-						"status": "On Duty",
+						"status": "Present",
 						"standard_working_hours": 9,
 						"working_hours": 0,
 						"custom_mission_work_hours": 9.0,
@@ -887,14 +923,14 @@ class TestAttendanceExcelImport(FrappeTestCase):
 			]
 		)
 		self.assertEqual(len(second["updated"]), 1)
-		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "On Duty")
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "Present")
 		self.assertAlmostEqual(
 			float(frappe.db.get_value("Attendance", name, "custom_mission_work_hours")),
 			9.0,
 			places=5,
 		)
 
-	def test_reapply_restores_mission_hours_and_on_duty(self):
+	def test_reapply_restores_mission_hours_and_present_status(self):
 		employee = self._employee("77072")
 		day = add_days(getdate(nowdate()), -42)
 		company = frappe.db.get_value("Employee", employee, "company")
@@ -906,7 +942,7 @@ class TestAttendanceExcelImport(FrappeTestCase):
 					"company": company,
 					"mode": "create",
 					"values": {
-						"status": "On Duty",
+						"status": "Present",
 						"standard_working_hours": 9,
 						"working_hours": 0,
 						"custom_mission_work_hours": 7.5,
@@ -924,9 +960,9 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		)
 		_reapply_excel_authoritative_fields(
 			name,
-			{"status": "On Duty", "custom_mission_work_hours": 7.5, "working_hours": 0},
+			{"status": "Present", "custom_mission_work_hours": 7.5, "working_hours": 0},
 		)
-		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "On Duty")
+		self.assertEqual(frappe.db.get_value("Attendance", name, "status"), "Present")
 		self.assertAlmostEqual(
 			float(frappe.db.get_value("Attendance", name, "custom_mission_work_hours")),
 			7.5,
