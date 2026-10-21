@@ -244,6 +244,11 @@ override_doctype_class = {
 	"Leave Application": (
 		"erpnext_extensions.extentionhrms.leave_application_override.LeaveApplicationWithHourlyLeave"
 	),
+	# Excel Attendance Import mission days use status ``On Duty`` (not in stock HRMS).
+	# See ``extentionhrms/attendance_override.py``.
+	"Attendance": (
+		"erpnext_extensions.extentionhrms.attendance_override.AttendanceWithOnDuty"
+	),
 }
 
 # Document Events

@@ -192,14 +192,25 @@ def excel_status_from_absence(
 	presence_minutes=0,
 	worked_minutes=0,
 	has_in_out: bool = False,
+	mission_minutes=0,
 ) -> str:
-	"""Excel-import status: Absent only when غیبت duration > 0.
+	"""Excel-import status with mission / absence precedence.
 
-	Blank/zero absence never forces Absent. Missing punches or zero presence alone
-	do not force Absent either — fallback (default Present) is used.
+	* Mission > 0 and absence > 0 → conflict (caller should Review); returns ``Absent``
+	  only as a defensive non-write fallback.
+	* Absence > 0 → ``Absent``
+	* Mission > 0 → ``On Duty``
+	* Presence / worked / punches → ``Present``
+	* Otherwise fallback (default ``Present``); blank absence never forces Absent.
 	"""
-	if float(absence_minutes or 0) > 0:
+	mission = float(mission_minutes or 0)
+	absence = float(absence_minutes or 0)
+	if mission > 0 and absence > 0:
 		return "Absent"
+	if absence > 0:
+		return "Absent"
+	if mission > 0:
+		return "On Duty"
 	if (
 		float(presence_minutes or 0) > 0
 		or float(worked_minutes or 0) > 0
@@ -207,6 +218,11 @@ def excel_status_from_absence(
 	):
 		return "Present"
 	return fallback_status or "Present"
+
+
+def mission_absence_conflict(mission_minutes=0, absence_minutes=0) -> bool:
+	"""True when Excel has both positive mission and positive absence."""
+	return float(mission_minutes or 0) > 0 and float(absence_minutes or 0) > 0
 
 
 @frappe.whitelist()
