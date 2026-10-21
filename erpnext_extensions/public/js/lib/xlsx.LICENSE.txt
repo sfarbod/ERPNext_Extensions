@@ -1,0 +1,11 @@
+SheetJS Community Edition — xlsx@0.18.5
+https://github.com/SheetJS/sheetjs
+
+Licensed under the Apache License, Version 2.0.
+https://www.apache.org/licenses/LICENSE-2.0
+
+Vendored file: xlsx.full.min.js
+Served at: /assets/erpnext_extensions/js/lib/xlsx.full.min.js
+
+Used by:
+- Attendance Excel Import (erpnext_extensions)

@@ -8,8 +8,12 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_days, getdate, nowdate
 
+import os
+
 from erpnext_extensions.extentionhrms.attendance_excel_import import (
+	_normalize_personnel_code,
 	find_existing_attendance,
+	get_personnel_code_index,
 	import_attendance_details,
 	preload_attendance_import_context,
 )
@@ -228,5 +232,40 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.0", script)
+		self.assertIn("V2.0.1", script)
 		self.assertIn("import_attendance_details", script)
+		self.assertIn("get_personnel_code_index", script)
+		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
+		self.assertNotIn("cdn.jsdelivr.net", script)
+		# Refresh Preview must not use btn-primary (collides with dialog primary on Frappe 16).
+		self.assertIn("btn-default btn-sm espad-refresh", script)
+		self.assertNotIn("btn-primary btn-sm espad-refresh", script)
+
+	def test_sheetjs_asset_is_served_locally(self):
+		path = os.path.join(
+			frappe.get_app_path("erpnext_extensions"),
+			"public",
+			"js",
+			"lib",
+			"xlsx.full.min.js",
+		)
+		self.assertTrue(os.path.isfile(path), "vendored SheetJS missing: " + path)
+		self.assertGreater(os.path.getsize(path), 100_000)
+
+	def test_normalize_personnel_code_strips_zeros_and_persian_digits(self):
+		self.assertEqual(_normalize_personnel_code("000025"), "25")
+		self.assertEqual(_normalize_personnel_code("        ۲۵"), "25")
+		self.assertEqual(_normalize_personnel_code("۰۶۷"), "67")
+
+	def test_personnel_code_index_includes_readable_employees(self):
+		employee = self._employee("000771")
+		result = get_personnel_code_index()
+		self.assertIn("771", result["index"])
+		self.assertIn(employee, result["index"]["771"])
+
+	def test_unauthorized_user_cannot_get_personnel_index(self):
+		user = self._user(["Employee"])
+		frappe.set_user(user)
+		with self.assertRaises(frappe.PermissionError):
+			get_personnel_code_index()
+		frappe.set_user("Administrator")

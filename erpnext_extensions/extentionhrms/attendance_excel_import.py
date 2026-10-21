@@ -96,6 +96,54 @@ def _load_json_dict(value, label: str) -> dict:
 	return value
 
 
+def _normalize_personnel_code(value) -> str:
+	"""Match Client Script ``codeKey``: Persian/Arabic digits → ASCII, strip zeros."""
+	text = cstr(value)
+	if not text:
+		return ""
+	fa = "۰۱۲۳۴۵۶۷۸۹"
+	ar = "٠١٢٣٤٥٦٧٨٩"
+	out = []
+	for ch in text:
+		if ch in fa:
+			out.append(str(fa.index(ch)))
+		elif ch in ar:
+			out.append(str(ar.index(ch)))
+		else:
+			out.append(ch)
+	compact = "".join(out).replace(" ", "").strip()
+	if not compact:
+		return ""
+	if compact.isdigit():
+		return compact.lstrip("0") or "0"
+	return compact
+
+
+@frappe.whitelist()
+def get_personnel_code_index():
+	"""Return ``{normalized_code: [employee_name, ...]}`` for readable Employees.
+
+	Uses ``get_all`` so ``custom_personal_code`` (permlevel 1) is available for
+	matching, then filters each row with ``has_permission(Employee, read)``.
+	"""
+	_authorize()
+	rows = frappe.get_all(
+		"Employee",
+		fields=["name", "custom_personal_code"],
+		filters={"custom_personal_code": ["is", "set"]},
+		limit_page_length=0,
+	)
+	index: dict[str, list[str]] = {}
+	for row in rows:
+		if not frappe.has_permission("Employee", "read", row.name):
+			continue
+		key = _normalize_personnel_code(row.custom_personal_code)
+		if not key:
+			continue
+		index.setdefault(key, []).append(row.name)
+	return {"index": index, "employees": sum(len(v) for v in index.values())}
+
+
 @frappe.whitelist()
 def find_existing_attendance(keys=None):
 	"""Return existing non-cancelled Attendance for (employee, date) keys.

@@ -5,8 +5,9 @@
 // personnel via Employee.custom_personal_code, resolves shift rotations,
 // and creates/updates Submitted Attendance with overtime/leave hours.
 //
-// XLSX: SheetJS xlsx@0.18.5 from CDN when window.XLSX is missing.
-// Version: V2.0.0 (bulk lookup + schedule preload + batch import API)
+// XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
+// /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
+// Version: V2.0.1 (local SheetJS + server personnel index)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -19,7 +20,9 @@ frappe.provide("espad.attendance_details");
     const CONFIG = {
         regularOT: "custom_regular_overtime_hours",
         approvedOT: "custom_approved_overtime_hours",
-        previewLimit: 300
+        previewLimit: 300,
+        sheetJsUrl: "/assets/erpnext_extensions/js/lib/xlsx.full.min.js",
+        sheetJsTimeoutMs: 20000
     };
 
     // Excel columns A to AC, zero-based
@@ -262,20 +265,96 @@ frappe.provide("espad.attendance_details");
         return r.message;
     }
 
-    async function loadXLSX() {
-        if (window.XLSX?.read) return;
+    function sheetjsReady() {
+        return typeof window.XLSX !== "undefined"
+            && window.XLSX
+            && typeof window.XLSX.read === "function";
+    }
 
-        await new Promise((resolve, reject) => {
+    function loadSheetJsScript(url, timeoutMs) {
+        return new Promise((resolve, reject) => {
+            const existing = document.querySelector(
+                'script[data-espad-attendance-sheetjs="1"]'
+            );
+            if (existing && sheetjsReady()) {
+                resolve();
+                return;
+            }
+            if (existing && !sheetjsReady()) {
+                existing.addEventListener(
+                    "load",
+                    () => (sheetjsReady()
+                        ? resolve()
+                        : reject(Error(
+                            "Excel library loaded but XLSX.read is missing: "
+                            + url
+                        ))),
+                    { once: true }
+                );
+                existing.addEventListener(
+                    "error",
+                    () => reject(Error(
+                        "Excel library could not load (script error): " + url
+                    )),
+                    { once: true }
+                );
+                return;
+            }
+
             const script = document.createElement("script");
-            script.src =
-                "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-            script.onload = () => window.XLSX
-                ? resolve()
-                : reject(Error("XLSX not available"));
-            script.onerror = () =>
-                reject(Error("Excel library could not load"));
+            script.src = url;
+            script.async = true;
+            script.dataset.espadAttendanceSheetjs = "1";
+            let done = false;
+            const timer = setTimeout(() => {
+                if (done) return;
+                done = true;
+                script.remove();
+                reject(Error(
+                    "Excel library could not load (timeout): " + url
+                ));
+            }, timeoutMs);
+            script.onload = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                if (sheetjsReady()) resolve();
+                else reject(Error(
+                    "Excel library loaded but XLSX.read is missing: " + url
+                ));
+            };
+            script.onerror = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                script.remove();
+                reject(Error(
+                    "Excel library could not load (network/asset error): " + url
+                ));
+            };
             document.head.appendChild(script);
         });
+    }
+
+    async function loadXLSX() {
+        if (sheetjsReady()) return;
+
+        const url = CONFIG.sheetJsUrl;
+        // Prefer frappe.require when available; fall back to a single script tag.
+        if (frappe.require) {
+            try {
+                await frappe.require(url);
+                if (sheetjsReady()) return;
+            } catch (e) {
+                // fall through to script injection
+            }
+        }
+        await loadSheetJsScript(url, CONFIG.sheetJsTimeoutMs);
+        if (!sheetjsReady()) {
+            throw Error(
+                "Excel library could not load: " + url
+            );
+        }
     }
 
     NS.open = function () {
@@ -351,7 +430,7 @@ frappe.provide("espad.attendance_details");
 
         dialog.$wrapper.find(".modal-body").prepend(
             `<div class="espad-att-stats" style="padding:4px 8px"></div>
-             <div class="espad-att-log text-muted small" style="max-height:120px;overflow:auto;padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;margin-bottom:8px"></div>`
+             <div class="espad-att-log text-muted small" style="display:none;max-height:120px;overflow:auto;padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;margin-bottom:8px"></div>`
         );
 
         employeeArea.html(
@@ -396,23 +475,19 @@ frappe.provide("espad.attendance_details");
         }
 
         async function buildEmployeeIndex() {
+            // Server-side index: client frappe.db.get_list defaults limit=20 and
+            // ignores limit_page_length; custom_personal_code is also permlevel 1
+            // and may be stripped for HR Manager. The whitelist returns only
+            // employees the current user may read.
             state.employeeCodeIndex = new Map();
-            let offset = 0;
-            while (true) {
-                const batch = await frappe.db.get_list("Employee", {
-                    fields: ["name", "custom_personal_code"],
-                    limit_start: offset,
-                    limit_page_length: 500
-                });
-                for (const e of batch) {
-                    if (!e.custom_personal_code) continue;
-                    const key = codeKey(e.custom_personal_code);
-                    const list = state.employeeCodeIndex.get(key) || [];
-                    list.push(e.name);
-                    state.employeeCodeIndex.set(key, list);
-                }
-                if (batch.length < 500) break;
-                offset += batch.length;
+            const message = await api(
+                "erpnext_extensions.extentionhrms.attendance_excel_import.get_personnel_code_index",
+                {}
+            );
+            const index = (message && message.index) || {};
+            for (const [key, names] of Object.entries(index)) {
+                if (!key || !Array.isArray(names) || !names.length) continue;
+                state.employeeCodeIndex.set(key, names.slice());
             }
         }
 
@@ -656,7 +731,24 @@ frappe.provide("espad.attendance_details");
                     <div class="espad-stat"><div class="text-muted">Unmatched</div><b>${unmatched}</b></div>
                     <div class="espad-stat"><div class="text-muted">Ambiguous</div><b>${ambiguous}</b></div>
                     <div class="espad-stat"><div class="text-muted">Excel rows</div><b>${state.records.length}</b></div>
+                    <div class="espad-stat"><div class="text-muted">Invalid rows</div><b>${state.errors.length}</b></div>
                 </div>`);
+            const log = dialog.$wrapper.find(".espad-att-log");
+            if (!log.length) return;
+            const t = state.timings || {};
+            const parts = [];
+            if (state.fileName) parts.push("File: " + state.fileName);
+            if (t.libraryMs != null) parts.push("Library " + t.libraryMs + " ms");
+            if (t.parseMs != null) parts.push("Parse " + t.parseMs + " ms");
+            if (t.matchMs != null) parts.push("Match " + t.matchMs + " ms");
+            if (t.preloadMs != null) parts.push("Preload " + t.preloadMs + " ms");
+            if (t.existingMs != null) parts.push("Existing " + t.existingMs + " ms");
+            if (t.importMs != null) parts.push("Import " + t.importMs + " ms");
+            if (parts.length) {
+                log.text(parts.join(" · ")).show();
+            } else {
+                log.hide().empty();
+            }
         }
 
         function classify(r, existing, duplicates) {
@@ -741,9 +833,11 @@ frappe.provide("espad.attendance_details");
         function renderPreviewButton() {
             // Keep one refresh button, even after replacing preview content.
             previewArea.find(".espad-refresh").remove();
+            // Use btn-default so this never competes with the dialog's
+            // primary "Import Selected Attendance" button (btn-primary).
             const button = $("<button>", {
                 type: "button",
-                class: "btn btn-primary btn-sm espad-refresh",
+                class: "btn btn-default btn-sm espad-refresh",
                 text: "Refresh Preview"
             }).css("margin-bottom", "12px");
             button.on("click", () => refreshPreview());
@@ -764,7 +858,10 @@ frappe.provide("espad.attendance_details");
                 // Include unmatched selections so their Skip reason is visible.
                 const rows = mappedRows().filter(r => r.included);
                 const active = rows.filter(r => r.employee);
+                const tExisting = performance.now();
                 const existing = await fetchExisting(active);
+                state.timings.existingMs = Math.round(performance.now() - tExisting);
+                paintStats();
                 if (version !== state.previewVersion) return;
 
                 state.existing = existing;
@@ -817,9 +914,10 @@ frappe.provide("espad.attendance_details");
                 `);
                 renderPreviewButton();
                 state.previewReady = selected > 0 && active.length > 0;
+                const confirmed = Number(dialog.get_value("confirm") || 0) === 1;
                 primary.prop("disabled",
                     !state.previewReady ||
-                    !dialog.get_value("confirm") ||
+                    !confirmed ||
                     counts.Create + counts.Update === 0);
             } catch (e) {
                 if (version !== state.previewVersion) return;
@@ -832,15 +930,17 @@ frappe.provide("espad.attendance_details");
         dialog.fields_dict.confirm.$input.on(
             "change",
             function () {
-                if (state.previewReady && !state.busy)
+                if (state.previewReady && !state.busy) {
+                    const confirmed = Number(dialog.get_value("confirm") || 0) === 1;
                     primary.prop(
                         "disabled",
-                        !dialog.get_value("confirm") ||
+                        !confirmed ||
                         !selectedRows().some(r => {
                             const [action] = classify(r, state.existing, duplicateKeys(selectedRows()));
                             return action === "Create" || action === "Update";
                         })
                     );
+                }
             }
         );
 
@@ -853,13 +953,23 @@ frappe.provide("espad.attendance_details");
                 state.previewReady = false;
                 state.fileName = file.name;
                 primary.prop("disabled", true);
+                state.timings = {};
 
-                employeeArea.text("Reading Excel...");
+                let phase = "load library";
+                employeeArea.text("Phase: " + phase + "…");
                 previewArea.empty();
 
                 try {
+                    const t0 = performance.now();
                     await loadXLSX();
+                    state.timings.libraryMs = Math.round(performance.now() - t0);
 
+                    phase = "parse Excel";
+                    employeeArea.text(
+                        "Phase: " + phase + "… (SheetJS "
+                        + (window.XLSX.version || "ready") + ")"
+                    );
+                    const tParse = performance.now();
                     const wb = XLSX.read(
                         await file.arrayBuffer(),
                         { type: "array" }
@@ -921,15 +1031,18 @@ frappe.provide("espad.attendance_details");
                             });
                         }
                     }
+                    state.timings.parseMs = Math.round(performance.now() - tParse);
 
                     if (!state.records.length)
                         throw Error("No valid daily rows found");
 
+                    phase = "match employees";
                     employeeArea.text(
-                        "Matching " + state.people.size +
-                        " employees..."
+                        "Phase: " + phase + "… (" + state.people.size
+                        + " personnel, " + state.records.length + " rows)"
                     );
 
+                    const tMatch = performance.now();
                     await buildEmployeeIndex();
                     for (const p of state.people.values()) {
                         const hit = matchEmployee(p);
@@ -938,25 +1051,37 @@ frappe.provide("espad.attendance_details");
                         p.candidates = hit.candidates || null;
                         p.included = !!p.employee;
                     }
+                    state.timings.matchMs = Math.round(performance.now() - tMatch);
                     const matchedEmployees = [...new Set(
                         [...state.people.values()].map(p => p.employee).filter(Boolean)
                     )];
-                    employeeArea.text("Loading shift context for " + matchedEmployees.length + " employees...");
+                    phase = "preload shift context";
+                    employeeArea.text(
+                        "Phase: " + phase + "… ("
+                        + matchedEmployees.length + " employees)"
+                    );
+                    const tPre = performance.now();
                     await preloadContext(matchedEmployees);
+                    state.timings.preloadMs = Math.round(performance.now() - tPre);
 
                     renderEmployees();
                     paintStats();
 
                     state.busy = false;
+                    phase = "preview";
                     await refreshPreview();
 
                 } catch (e) {
                     state.busy = false;
                     console.error(e);
 
-                    employeeArea.text(
-                        "Excel error: " + (e.message || e)
+                    employeeArea.html(
+                        "<div class='text-danger' style='padding:8px'>"
+                        + "<b>Excel error</b> (phase: " + esc(phase) + ")<br>"
+                        + esc(e.message || e)
+                        + "</div>"
                     );
+                    previewArea.empty();
                 }
             });
 
@@ -1317,7 +1442,7 @@ async function importRecords() {
             if (
                 state.busy ||
                 !state.previewReady ||
-                !dialog.get_value("confirm")
+                Number(dialog.get_value("confirm") || 0) !== 1
             ) return;
 
             state.busy = true;
@@ -1329,6 +1454,7 @@ async function importRecords() {
             const failed = [];
             const skipped = [];
             const postSubmitWarnings = [];
+            const tImport = performance.now();
 
             try {
                 const rows = selectedRows();
@@ -1513,6 +1639,11 @@ async function importRecords() {
                 }
 
                 frappe.hide_progress();
+                state.timings = state.timings || {};
+                state.timings.importMs = Math.round(performance.now() - tImport);
+                const importSecs = Math.max(0.001, state.timings.importMs / 1000);
+                const savedCount = created + updated;
+                const rate = Math.round(savedCount / importSecs);
                 dialog.hide();
 
                 const report = new frappe.ui.Dialog({
@@ -1533,6 +1664,8 @@ async function importRecords() {
                         <p>Updated: <b>${updated}</b></p>
                         <p>Skipped: <b>${skipped.length}</b></p>
                         <p>Failed: <b>${failed.length}</b></p>
+                        <p>Duration: <b>${state.timings.importMs} ms</b>
+                            (${rate} records/s)</p>
                         <p>Post-submit recalculation warnings:
                             <b>${postSubmitWarnings.length}</b></p>
 
