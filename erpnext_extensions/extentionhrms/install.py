@@ -53,4 +53,9 @@ def after_migrate() -> None:
 	)
 
 	ensure_device_import_setup()
+	from erpnext_extensions.extentionhrms.attendance_excel_import_setup import (
+		ensure_attendance_excel_import_setup,
+	)
+
+	ensure_attendance_excel_import_setup()
 	frappe.db.commit()

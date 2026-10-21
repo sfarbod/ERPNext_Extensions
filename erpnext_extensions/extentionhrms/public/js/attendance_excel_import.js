@@ -1,0 +1,1598 @@
+// ---------------------------------------------------------------------------
+// Attendance — Excel attendance-details importer (جزئیات کارکرد)
+// Adds "Import Attendance Details (Excel)" to the Attendance list view.
+// Parses Persian/Jalali daily-detail exports (.xls / .xlsx), matches
+// personnel via Employee.custom_personal_code, resolves shift rotations,
+// and creates/updates Submitted Attendance with overtime/leave hours.
+//
+// XLSX: SheetJS xlsx@0.18.5 from CDN when window.XLSX is missing.
+// Version: V2.0.0 (bulk lookup + schedule preload + batch import API)
+// ---------------------------------------------------------------------------
+
+frappe.provide("espad.attendance_details");
+
+(function () {
+    "use strict";
+
+    const NS = espad.attendance_details;
+
+    const CONFIG = {
+        regularOT: "custom_regular_overtime_hours",
+        approvedOT: "custom_approved_overtime_hours",
+        previewLimit: 300
+    };
+
+    // Excel columns A to AC, zero-based
+    const C = {
+        paidLeave: 0,
+        unpaidLeave: 1,
+        nightTotal: 2,
+        nightRegular: 3,
+        mission: 4,
+        unauthorizedExit: 5,
+        early: 6,
+        late: 7,
+        absence: 8,
+        nightOTRegular: 9,
+        nightOTApproved: 10,
+        missionOTRegular: 11,
+        missionOTApproved: 12,
+        holidayOTRegular: 13,
+        holidayOTApproved: 14,
+        normalOTRegular: 15,
+        normalOTApproved: 16,
+        presence: 17,
+        worked: 18,
+        outClock: 19,
+        outDate: 20,
+        inClock: 21,
+        inDate: 22,
+        workGroup: 23,
+        date: 24,
+        weekday: 25,
+        lastName: 26,
+        firstName: 27,
+        code: 28
+    };
+
+    function codeKey(v) {
+        const x = norm(v).replace(/\s/g, "");
+        return /^\d+$/.test(x) ? (x.replace(/^0+/, "") || "0") : x;
+    }
+
+    function dateTimeMs(v) {
+        return v ? new Date(v.replace(" ", "T") + "Z").getTime() : NaN;
+    }
+
+    function minutesBetween(a, b) {
+        return Math.max(0, (dateTimeMs(b) - dateTimeMs(a)) / 60000);
+    }
+
+    function norm(v) {
+        return String(v == null ? "" : v)
+            .replace(/[۰-۹]/g, x =>
+                String("۰۱۲۳۴۵۶۷۸۹".indexOf(x)))
+            .replace(/[٠-٩]/g, x =>
+                String("٠١٢٣٤٥٦٧٨٩".indexOf(x)))
+            .replace(/ي/g, "ی")
+            .replace(/ك/g, "ک")
+            .replace(/[\u200c\u200d]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    function esc(v) {
+        return frappe.utils.escape_html(String(v ?? ""));
+    }
+
+    function hours(minutes) {
+        return Math.round(minutes / 60 * 1000000) / 1000000;
+    }
+
+    function duration(v) {
+        const s = norm(v);
+        if (!s || s === "-" || s === "--") return 0;
+
+        const m = s.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+
+        if (m) {
+            if (+m[2] >= 60 || +(m[3] || 0) >= 60)
+                throw Error("Invalid duration: " + s);
+
+            return +m[1] * 60 + +m[2] +
+                +(m[3] || 0) / 60;
+        }
+
+        if (/^\d+(\.\d+)?$/.test(s))
+            return Number(s) * 60;
+
+        throw Error("Invalid duration: " + s);
+    }
+
+    const persianFormatter = new Intl.DateTimeFormat(
+        "en-US-u-ca-persian-nu-latn",
+        {
+            year: "numeric",
+            month: "numeric",
+            day: "numeric",
+            timeZone: "UTC"
+        }
+    );
+
+    function convertDate(value) {
+        const s = norm(value);
+        const m = s.match(
+            /^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})$/
+        );
+
+        if (!m) return null;
+
+        const y = +m[1], mo = +m[2], d = +m[3];
+
+        if (mo < 1 || mo > 12 || d < 1 || d > 31)
+            return null;
+
+        // Gregorian date
+        if (y >= 1700) {
+            const dt = new Date(Date.UTC(y, mo - 1, d));
+            const result = dt.toISOString().slice(0, 10);
+            return result ===
+                `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`
+                ? result : null;
+        }
+
+        // Jalali date
+        if (y < 1200 || y > 1600) return null;
+
+        let low = Math.floor(
+            Date.UTC(y + 620, 0, 1) / 86400000
+        );
+        let high = Math.floor(
+            Date.UTC(y + 622, 11, 31) / 86400000
+        );
+
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const dt = new Date(mid * 86400000);
+
+            const parts = persianFormatter.formatToParts(dt);
+            const n = type => Number(
+                parts.find(p => p.type === type).value
+            );
+
+            const cmp =
+                n("year") - y ||
+                n("month") - mo ||
+                n("day") - d;
+
+            if (!cmp) return dt.toISOString().slice(0, 10);
+            if (cmp < 0) low = mid + 1;
+            else high = mid - 1;
+        }
+
+        return null;
+    }
+
+    function clock(v) {
+        const s = norm(v);
+        if (!s) return null;
+
+        const m = s.match(
+            /^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/
+        );
+
+        if (!m || +m[1] > 23 ||
+            +m[2] > 59 || +(m[3] || 0) > 59)
+            throw Error("Invalid time: " + s);
+
+        return [m[1], m[2], m[3] || "00"]
+            .map(x => String(+x).padStart(2, "0"))
+            .join(":");
+    }
+
+    function parseRow(row, rowNumber) {
+        const date = convertDate(row[C.date]);
+        if (!date) return null;
+
+        const get = key => duration(row[C[key]]);
+
+        const keys = [
+            "paidLeave", "unpaidLeave", "nightTotal",
+            "nightRegular", "mission", "unauthorizedExit",
+            "early", "late", "absence",
+            "nightOTRegular", "nightOTApproved",
+            "missionOTRegular", "missionOTApproved",
+            "holidayOTRegular", "holidayOTApproved",
+            "normalOTRegular", "normalOTApproved",
+            "presence", "worked"
+        ];
+
+        const d = {};
+        keys.forEach(k => d[k] = get(k));
+
+        const inClock = clock(row[C.inClock]);
+        const outClock = clock(row[C.outClock]);
+
+        const inDate = norm(row[C.inDate])
+            ? convertDate(row[C.inDate]) : date;
+        const outDate = norm(row[C.outDate])
+            ? convertDate(row[C.outDate]) : date;
+
+        if (inClock && !inDate)
+            throw Error("Invalid IN date");
+        if (outClock && !outDate)
+            throw Error("Invalid OUT date");
+
+        const inTime = inClock
+            ? inDate + " " + inClock : null;
+        const outTime = outClock
+            ? outDate + " " + outClock : null;
+
+        if (inTime && outTime && outTime <= inTime)
+            throw Error("OUT must be after IN");
+
+        return {
+            row: rowNumber,
+            date,
+            code: codeKey(row[C.code]),
+            name: [
+                norm(row[C.firstName]),
+                norm(row[C.lastName])
+            ].filter(Boolean).join(" "),
+            inTime,
+            outTime,
+            details: d,
+            regularOT:
+                d.nightOTRegular +
+                d.missionOTRegular +
+                d.holidayOTRegular +
+                d.normalOTRegular,
+            approvedOT:
+                d.nightOTApproved +
+                d.missionOTApproved +
+                d.holidayOTApproved +
+                d.normalOTApproved,
+            workGroup: norm(row[C.workGroup]),
+            weekday: norm(row[C.weekday])
+        };
+    }
+
+    async function api(method, args) {
+        const r = await frappe.call({ method, args });
+        return r.message;
+    }
+
+    async function loadXLSX() {
+        if (window.XLSX?.read) return;
+
+        await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src =
+                "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+            script.onload = () => window.XLSX
+                ? resolve()
+                : reject(Error("XLSX not available"));
+            script.onerror = () =>
+                reject(Error("Excel library could not load"));
+            document.head.appendChild(script);
+        });
+    }
+
+    NS.open = function () {
+        const state = {
+            records: [],
+            people: new Map(),
+            existing: new Map(),
+            fields: new Set(),
+            errors: [],
+            fileName: "",
+            busy: false,
+            previewReady: false,
+            previewVersion: 0,
+            employeeCodeIndex: new Map(),
+            fieldMap: new Map(),
+            shiftCache: new Map(),
+            holidayCache: new Map(),
+            context: null,
+            timings: {}
+        };
+
+        const dialog = new frappe.ui.Dialog({
+            title: "Import Attendance Details (Excel)",
+            size: "extra-large",
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "file_html",
+                    options: `
+                        <div style="padding:8px 0">
+                            <label class="control-label">
+                                Select Attendance Excel File
+                            </label>
+                            <input type="file"
+                                class="form-control espad-excel-file"
+                                accept=".xlsx,.xls"
+                                style="display:block;width:100%">
+                        </div>`
+                },
+                {
+                    fieldtype: "Section Break",
+                    label: "Employee Selection"
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "employee_html"
+                },
+                {
+                    fieldtype: "Section Break",
+                    label: "Import Preview"
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "preview_html"
+                },
+                {
+                    fieldtype: "Check",
+                    fieldname: "confirm",
+                    label: "I reviewed the preview and authorize Attendance updates, including submitted records",
+                    default: 0
+                }
+            ],
+            primary_action_label: "Import Selected Attendance",
+            primary_action: () => importRecords()
+        });
+
+        dialog.show();
+
+        const employeeArea =
+            dialog.fields_dict.employee_html.$wrapper;
+        const previewArea =
+            dialog.fields_dict.preview_html.$wrapper;
+
+        dialog.$wrapper.find(".modal-body").prepend(
+            `<div class="espad-att-stats" style="padding:4px 8px"></div>
+             <div class="espad-att-log text-muted small" style="max-height:120px;overflow:auto;padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;margin-bottom:8px"></div>`
+        );
+
+        employeeArea.html(
+            '<p class="text-muted">Upload Excel to load employees.</p>'
+        );
+        previewArea.empty();
+
+        const primary = dialog.get_primary_btn();
+        primary.prop("disabled", true);
+
+        function mappedRows() {
+            return state.records.map(r => {
+                const p = state.people.get(r.code);
+                return {
+                    ...r,
+                    employee: p?.employee || null,
+                    included: !!p?.included
+                };
+            });
+        }
+
+        function selectedRows() {
+            return mappedRows().filter(
+                r => r.included && r.employee
+            );
+        }
+
+        // Match Excel personnel code to Employee.custom_personal_code.
+        // Example: Excel 67 must match Employee 000067.
+        // Uses the prebuilt index only (no per-person get_list).
+        function matchEmployee(person) {
+            const key = codeKey(person.code);
+            if (!key) return { employee: null, ambiguous: false };
+            const names = [...new Set(state.employeeCodeIndex.get(key) || [])];
+            if (names.length > 1) {
+                console.warn("Ambiguous personnel code", person.code, names);
+                return { employee: null, ambiguous: true, candidates: names };
+            }
+            if (names.length === 1)
+                return { employee: names[0], ambiguous: false };
+            return { employee: null, ambiguous: false };
+        }
+
+        async function buildEmployeeIndex() {
+            state.employeeCodeIndex = new Map();
+            let offset = 0;
+            while (true) {
+                const batch = await frappe.db.get_list("Employee", {
+                    fields: ["name", "custom_personal_code"],
+                    limit_start: offset,
+                    limit_page_length: 500
+                });
+                for (const e of batch) {
+                    if (!e.custom_personal_code) continue;
+                    const key = codeKey(e.custom_personal_code);
+                    const list = state.employeeCodeIndex.get(key) || [];
+                    list.push(e.name);
+                    state.employeeCodeIndex.set(key, list);
+                }
+                if (batch.length < 500) break;
+                offset += batch.length;
+            }
+        }
+
+        function renderEmployees() {
+            employeeArea.html(`
+                <div class="espad-employee-selector">
+                    <div style="display:flex;gap:8px;
+                        align-items:center;flex-wrap:wrap;
+                        margin-bottom:12px">
+
+                        <input type="text"
+                            class="form-control emp-search"
+                            placeholder="Search Employee / Code"
+                            style="max-width:300px">
+
+                        <button type="button"
+                            class="btn btn-default btn-sm emp-all">
+                            Select All
+                        </button>
+
+                        <button type="button"
+                            class="btn btn-default btn-sm emp-none">
+                            Exclude All
+                        </button>
+
+                        <span class="emp-count text-muted"></span>
+                    </div>
+
+                    <div style="max-height:330px;overflow:auto;
+                        border:1px solid var(--border-color);
+                        border-radius:6px">
+
+                        <table class="table table-bordered table-sm"
+                            style="margin:0">
+                            <thead>
+                                <tr>
+                                    <th>Include</th>
+                                    <th>Code</th>
+                                    <th>Employee Name</th>
+                                    <th>Matched Employee</th>
+                                    <th>Days</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody class="emp-rows"></tbody>
+                        </table>
+                    </div>
+                </div>
+            `);
+
+            const root = employeeArea.find(
+                ".espad-employee-selector"
+            );
+            const tbody = root.find(".emp-rows");
+
+            function updateCount() {
+                const count = [...state.people.values()]
+                    .filter(p => p.included).length;
+
+                root.find(".emp-count").text(
+                    `${count} / ${state.people.size} selected`
+                );
+            }
+
+            function updateRow(row, p) {
+                row.find(".emp-check")
+                    .prop("checked", p.included);
+
+                row.find(".emp-match").text(
+                    p.employee || "Not Matched"
+                );
+
+                row.find(".emp-status").text(
+                    p.included ? "Included" : "Excluded"
+                );
+            }
+
+            for (const p of state.people.values()) {
+                const row = $(`
+                    <tr class="emp-item">
+                        <td>
+                            <input type="checkbox"
+                                class="emp-check">
+                        </td>
+                        <td class="emp-code"></td>
+                        <td class="emp-name"></td>
+                        <td class="emp-match"></td>
+                        <td class="emp-days"></td>
+                        <td>
+                            <button type="button"
+                                class="btn btn-default btn-xs emp-change">
+                                Change Employee
+                            </button>
+                            <span class="emp-status"></span>
+                        </td>
+                    </tr>
+                `);
+
+                row.find(".emp-code").text(p.code);
+                row.find(".emp-name").text(p.name);
+                row.find(".emp-days").text(p.days);
+
+                tbody.append(row);
+                updateRow(row, p);
+
+                row.find(".emp-check").on("change", function () {
+                    p.included = this.checked;
+                    updateRow(row, p);
+                    updateCount();
+                    invalidatePreview();
+                });
+
+                row.find(".emp-change").on("click", function () {
+                    const lookup = new frappe.ui.Dialog({
+                        title: "Select Employee: " + p.name,
+                        fields: [{
+                            fieldtype: "Link",
+                            fieldname: "employee",
+                            label: "Employee",
+                            options: "Employee",
+                            reqd: 1,
+                            default: p.employee || ""
+                        }],
+                        primary_action_label: "Apply",
+                        primary_action(values) {
+                            p.employee = values.employee;
+                            updateRow(row, p);
+                            lookup.hide();
+                            invalidatePreview();
+                        }
+                    });
+
+                    lookup.show();
+                });
+            }
+
+            root.find(".emp-all").on("click", () => {
+                state.people.forEach(p => p.included = true);
+
+                tbody.find(".emp-item").each(function (i) {
+                    const p = [...state.people.values()][i];
+                    updateRow($(this), p);
+                });
+
+                updateCount();
+                invalidatePreview();
+            });
+
+            root.find(".emp-none").on("click", () => {
+                state.people.forEach(p => p.included = false);
+
+                tbody.find(".emp-item").each(function (i) {
+                    const p = [...state.people.values()][i];
+                    updateRow($(this), p);
+                });
+
+                updateCount();
+                invalidatePreview();
+            });
+
+            root.find(".emp-search").on("input", function () {
+                const q = norm(this.value).toLowerCase();
+                const people = [...state.people.values()];
+
+                tbody.find(".emp-item").each(function (i) {
+                    const p = people[i];
+                    const searchText = norm(
+                        `${p.code} ${p.name} ${p.employee || ""}`
+                    ).toLowerCase();
+
+                    $(this).toggle(searchText.includes(q));
+                });
+            });
+
+            updateCount();
+        }
+
+        async function fetchExisting(rows) {
+            const map = new Map();
+            if (!rows.length) return map;
+            const keys = rows
+                .filter(r => r.employee && r.date)
+                .map(r => ({ employee: r.employee, attendance_date: r.date }));
+            const page = 2000;
+            for (let start = 0; start < keys.length; start += page) {
+                const chunk = keys.slice(start, start + page);
+                const message = await api(
+                    "erpnext_extensions.extentionhrms.attendance_excel_import.find_existing_attendance",
+                    { keys: chunk }
+                );
+                for (const a of (message && message.rows) || []) {
+                    const key = a.employee + "|" + a.attendance_date;
+                    if (map.has(key)) map.get(key).duplicate = true;
+                    else map.set(key, a);
+                }
+            }
+            return map;
+        }
+
+        async function preloadContext(employees) {
+            state.context = {
+                employees: {},
+                assignments: {},
+                shift_types: {},
+                schedule_assignments: {},
+                schedules: {},
+                holiday_lists: {}
+            };
+            if (!employees.length) return;
+            const page = 400;
+            for (let i = 0; i < employees.length; i += page) {
+                const chunk = employees.slice(i, i + page);
+                const message = await api(
+                    "erpnext_extensions.extentionhrms.attendance_excel_import.preload_attendance_import_context",
+                    { employees: chunk }
+                );
+                Object.assign(state.context.employees, message.employees || {});
+                Object.assign(state.context.assignments, message.assignments || {});
+                Object.assign(state.context.shift_types, message.shift_types || {});
+                Object.assign(state.context.schedule_assignments, message.schedule_assignments || {});
+                Object.assign(state.context.schedules, message.schedules || {});
+                Object.assign(state.context.holiday_lists, message.holiday_lists || {});
+            }
+            // Normalize holiday lists to Set for fast has()
+            for (const [name, dates] of Object.entries(state.context.holiday_lists)) {
+                state.holidayCache.set(name, new Set(dates || []));
+            }
+        }
+
+        function paintStats() {
+            const people = [...state.people.values()];
+            const matched = people.filter(p => p.employee).length;
+            const unmatched = people.filter(p => !p.employee).length;
+            const ambiguous = people.filter(p => p.ambiguous).length;
+            const stats = dialog.$wrapper.find(".espad-att-stats");
+            if (!stats.length) return;
+            stats.html(`
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 12px">
+                    <div class="espad-stat"><div class="text-muted">Personnel</div><b>${people.length}</b></div>
+                    <div class="espad-stat"><div class="text-muted">Matched</div><b>${matched}</b></div>
+                    <div class="espad-stat"><div class="text-muted">Unmatched</div><b>${unmatched}</b></div>
+                    <div class="espad-stat"><div class="text-muted">Ambiguous</div><b>${ambiguous}</b></div>
+                    <div class="espad-stat"><div class="text-muted">Excel rows</div><b>${state.records.length}</b></div>
+                </div>`);
+        }
+
+        function classify(r, existing, duplicates) {
+            if (!r.included)
+                return ["Exclude", "Employee excluded"];
+
+            if (!r.employee)
+                return ["Skip", "Employee not matched"];
+
+            const key = r.employee + "|" + r.date;
+
+            if (duplicates.has(key))
+                return ["Review", "Duplicate Excel employee/date"];
+
+            const a = existing.get(key);
+
+            if (a?.duplicate)
+                return ["Review", "Duplicate Attendance in ERP"];
+
+            // Submitted records are eligible for the dedicated controlled API.
+            // Cancelled records are excluded by fetchExisting().
+
+            if (a?.status === "On Leave")
+                return ["Review", "Existing Leave Attendance"];
+
+            if (!!r.inTime !== !!r.outTime)
+                return ["Review", "Missing IN / OUT"];
+
+            if (
+                r.approvedOT > 0 &&
+                !state.fields.has(CONFIG.approvedOT)
+            ) {
+                return ["Review", "Approved OT field missing"];
+            }
+
+            const d = r.details;
+
+            if (!r.inTime && !r.outTime) {
+                if (
+                    d.mission > 0 ||
+                    d.paidLeave > 0 ||
+                    d.unpaidLeave > 0
+                ) {
+                    return ["Review", "Mission / Leave needs verification"];
+                }
+
+                if (d.absence <= 0 && !a)
+                    return ["Review", "No punches / absence"];
+            }
+
+            return a
+                ? ["Update", Number(a.docstatus) === 1 ? "Existing Submitted" : "Existing Draft"]
+                : ["Create", "New Attendance"];
+        }
+
+        function duplicateKeys(rows) {
+            const seen = new Set();
+            const duplicates = new Set();
+
+            for (const r of rows) {
+                if (!r.included || !r.employee) continue;
+                const key = r.employee + "|" + r.date;
+
+                if (seen.has(key))
+                    duplicates.add(key);
+                seen.add(key);
+            }
+
+            return duplicates;
+        }
+
+        function invalidatePreview() {
+            state.previewReady = false;
+            state.previewVersion++;
+            primary.prop("disabled", true);
+            previewArea.html(
+                '<p class="text-muted">Employee selection changed. Click Refresh Preview.</p>'
+            );
+            renderPreviewButton();
+        }
+
+        function renderPreviewButton() {
+            // Keep one refresh button, even after replacing preview content.
+            previewArea.find(".espad-refresh").remove();
+            const button = $("<button>", {
+                type: "button",
+                class: "btn btn-primary btn-sm espad-refresh",
+                text: "Refresh Preview"
+            }).css("margin-bottom", "12px");
+            button.on("click", () => refreshPreview());
+            previewArea.prepend(button);
+        }
+
+        async function refreshPreview() {
+            if (state.busy) return;
+
+            const version = ++state.previewVersion;
+            state.previewReady = false;
+            primary.prop("disabled", true);
+            previewArea.html('<p>Checking existing Attendance records...</p>');
+            renderPreviewButton();
+
+            try {
+                // Preview only the Excel rows belonging to selected employees.
+                // Include unmatched selections so their Skip reason is visible.
+                const rows = mappedRows().filter(r => r.included);
+                const active = rows.filter(r => r.employee);
+                const existing = await fetchExisting(active);
+                if (version !== state.previewVersion) return;
+
+                state.existing = existing;
+                const duplicates = duplicateKeys(rows);
+                const counts = { Create: 0, Update: 0, Review: 0, Skip: 0 };
+                const classified = rows.map(r => {
+                    const [action, reason] = classify(r, existing, duplicates);
+                    if (counts[action] !== undefined) counts[action]++;
+                    return { ...r, action, reason };
+                });
+                const selected = [...state.people.values()]
+                    .filter(p => p.included).length;
+
+                previewArea.html(`
+                    <div style="margin:8px 0">
+                        <b>Employees:</b> ${selected} / ${state.people.size}
+                        &nbsp; | &nbsp;
+                        <b>Daily Rows:</b> ${rows.length}
+                        &nbsp; | &nbsp;
+                        <b>Excel Errors:</b> ${state.errors.length}
+                    </div>
+                    <div style="margin-bottom:12px">
+                        <span class="indicator-pill green">Create: ${counts.Create}</span>
+                        <span class="indicator-pill blue">Update: ${counts.Update}</span>
+                        <span class="indicator-pill orange">Review: ${counts.Review}</span>
+                        <span class="indicator-pill gray">Skip: ${counts.Skip}</span>
+                    </div>
+                    <p class="text-muted small">
+                        Showing first ${Math.min(CONFIG.previewLimit, rows.length)}
+                        of ${rows.length} selected Excel rows.
+                    </p>
+                    <div style="max-height:330px;overflow:auto">
+                        <table class="table table-bordered table-sm">
+                            <thead><tr>
+                                <th>Excel Row</th><th>Employee</th><th>Date</th>
+                                <th>Regular OT</th><th>Approved OT</th>
+                                <th>Action</th><th>Reason</th>
+                            </tr></thead>
+                            <tbody>${classified.slice(0, CONFIG.previewLimit).map(r => `
+                                <tr>
+                                    <td>${r.row}</td><td>${esc(r.name)}</td>
+                                    <td>${esc(r.date)}</td>
+                                    <td>${hours(r.regularOT)}</td>
+                                    <td>${hours(r.approvedOT)}</td>
+                                    <td>${esc(r.action)}</td><td>${esc(r.reason)}</td>
+                                </tr>
+                            `).join("")}</tbody>
+                        </table>
+                    </div>
+                `);
+                renderPreviewButton();
+                state.previewReady = selected > 0 && active.length > 0;
+                primary.prop("disabled",
+                    !state.previewReady ||
+                    !dialog.get_value("confirm") ||
+                    counts.Create + counts.Update === 0);
+            } catch (e) {
+                if (version !== state.previewVersion) return;
+                console.error(e);
+                previewArea.text("Preview error: " + (e.message || e));
+                renderPreviewButton();
+            }
+        }
+
+        dialog.fields_dict.confirm.$input.on(
+            "change",
+            function () {
+                if (state.previewReady && !state.busy)
+                    primary.prop(
+                        "disabled",
+                        !dialog.get_value("confirm") ||
+                        !selectedRows().some(r => {
+                            const [action] = classify(r, state.existing, duplicateKeys(selectedRows()));
+                            return action === "Create" || action === "Update";
+                        })
+                    );
+            }
+        );
+
+        dialog.$wrapper.find(".espad-excel-file")
+            .on("change", async function () {
+                const file = this.files?.[0];
+                if (!file) return;
+
+                state.busy = true;
+                state.previewReady = false;
+                state.fileName = file.name;
+                primary.prop("disabled", true);
+
+                employeeArea.text("Reading Excel...");
+                previewArea.empty();
+
+                try {
+                    await loadXLSX();
+
+                    const wb = XLSX.read(
+                        await file.arrayBuffer(),
+                        { type: "array" }
+                    );
+
+                    const sheet = wb.Sheets[wb.SheetNames[0]];
+
+                    const data = XLSX.utils.sheet_to_json(
+                        sheet, {
+                            header: 1,
+                            raw: false,
+                            defval: ""
+                        }
+                    );
+
+                    state.records = [];
+                    state.people.clear();
+                    state.errors = [];
+                    state.existing.clear();
+
+                    state.fields = new Set(
+                        frappe.get_meta("Attendance")
+                            .fields.map(f => f.fieldname)
+                    );
+
+                    if (!state.fields.has(CONFIG.regularOT))
+                        throw Error(
+                            "Missing field: " + CONFIG.regularOT
+                        );
+
+                    for (let i = 0; i < data.length; i++) {
+                        if (!convertDate(data[i][C.date]))
+                            continue;
+
+                        try {
+                            const r = parseRow(data[i], i + 1);
+                            if (!r) continue;
+
+                            state.records.push(r);
+
+                            if (!r.code) continue;
+
+                            if (!state.people.has(r.code)) {
+                                state.people.set(r.code, {
+                                    code: r.code,
+                                    name: r.name,
+                                    employee: null,
+                                    included: false,
+                                    days: 0
+                                });
+                            }
+
+                            state.people.get(r.code).days++;
+
+                        } catch (e) {
+                            state.errors.push({
+                                row: i + 1,
+                                error: e.message
+                            });
+                        }
+                    }
+
+                    if (!state.records.length)
+                        throw Error("No valid daily rows found");
+
+                    employeeArea.text(
+                        "Matching " + state.people.size +
+                        " employees..."
+                    );
+
+                    await buildEmployeeIndex();
+                    for (const p of state.people.values()) {
+                        const hit = matchEmployee(p);
+                        p.employee = hit.employee;
+                        p.ambiguous = !!hit.ambiguous;
+                        p.candidates = hit.candidates || null;
+                        p.included = !!p.employee;
+                    }
+                    const matchedEmployees = [...new Set(
+                        [...state.people.values()].map(p => p.employee).filter(Boolean)
+                    )];
+                    employeeArea.text("Loading shift context for " + matchedEmployees.length + " employees...");
+                    await preloadContext(matchedEmployees);
+
+                    renderEmployees();
+                    paintStats();
+
+                    state.busy = false;
+                    await refreshPreview();
+
+                } catch (e) {
+                    state.busy = false;
+                    console.error(e);
+
+                    employeeArea.text(
+                        "Excel error: " + (e.message || e)
+                    );
+                }
+            });
+
+                // Resolve fields from actual Attendance metadata; never assume custom fieldnames.
+        function fieldName(label, candidates = []) {
+            const meta = frappe.get_meta("Attendance");
+            const all = [...(meta.fields || [])];
+            for (const candidate of candidates) {
+                if (all.some(f => f.fieldname === candidate)) return candidate;
+            }
+            const matches = all.filter(f => norm(f.label).toLowerCase() === norm(label).toLowerCase());
+            return matches.length === 1 ? matches[0].fieldname : null;
+        }
+
+        function setHours(doc, label, value, candidates = []) {
+            const f = fieldName(label, candidates);
+            if (!f) throw Error("Missing Attendance numeric field: " + label +
+                " (candidates: " + candidates.join(", ") + ")");
+            const df = frappe.get_meta("Attendance").fields.find(x => x.fieldname === f);
+            if (!["Float", "Currency", "Int", "Percent"].includes(df.fieldtype))
+                throw Error(`${label}: ${f} is ${df.fieldtype}, not a numeric hours field`);
+            doc[f] = hours(Math.max(0, value));
+            return true;
+        }
+
+        function setCheck(doc, label, value, candidates = []) {
+            const f = fieldName(label, candidates);
+            if (!f) throw Error("Missing Attendance checkbox: " + label);
+            const df = frappe.get_meta("Attendance").fields.find(x => x.fieldname === f);
+            if (df.fieldtype !== "Check")
+                throw Error(label + " must be a Check field; found " + df.fieldtype);
+            doc[f] = value ? 1 : 0;
+        }
+
+        function weekday(date) {
+            return new Date(date + "T12:00:00Z").getUTCDay();
+        }
+
+        function addDay(date) {
+            const x = new Date(date + "T00:00:00Z");
+            x.setUTCDate(x.getUTCDate() + 1);
+            return x.toISOString().slice(0, 10);
+        }
+
+        // Historical back-projection is used ONLY for selected Excel rows.
+        // It never creates Shift Assignments or Attendance outside the Excel dates.
+        async function resolveSchedule(r) {
+            const ctx = state.context || {};
+            let assignments = (ctx.assignments && ctx.assignments[r.employee]) || [];
+            if (!assignments.length) {
+                // Fallback for employees added after preload.
+                assignments = await frappe.db.get_list("Shift Assignment", {
+                    filters: { employee: r.employee, docstatus: 1, status: "Active" },
+                    fields: ["name", "shift_type", "start_date", "end_date", "shift_schedule_assignment"],
+                    order_by: "start_date asc",
+                    limit_page_length: 500
+                });
+            }
+            if (assignments.length === 500)
+                throw Error("Too many Shift Assignments; cannot safely resolve historical shift");
+
+            const effective = assignments.filter(a =>
+                a.start_date <= r.date && (!a.end_date || a.end_date >= r.date));
+            let a;
+            let historical = false;
+            if (effective.length) {
+                const keys = new Set(effective.map(x =>
+                    x.shift_type + "|" + (x.shift_schedule_assignment || "")));
+                if (keys.size !== 1) throw Error("Conflicting effective Shift Assignments");
+                a = effective[0];
+            } else {
+                // Do not bridge an expired historical assignment or choose a later
+                // assignment if there are competing assignments in the future.
+                const future = assignments.filter(x => x.start_date > r.date);
+                if (!future.length)
+                    throw Error("No Shift Assignment available for historical rotation");
+                const firstStart = future[0].start_date;
+                const nearest = future.filter(x => x.start_date === firstStart);
+                const keys = new Set(nearest.map(x =>
+                    x.shift_type + "|" + (x.shift_schedule_assignment || "")));
+                if (keys.size !== 1)
+                    throw Error("Conflicting future Shift Assignments; historical rotation is ambiguous");
+                if (assignments.some(x => x.start_date <= r.date))
+                    throw Error("Historical assignment gap; refusing to infer rotation");
+                a = nearest[0];
+                historical = true;
+            }
+
+            let shiftName = a.shift_type;
+            let scheduled = true;
+            let rotationDayType = null;
+            let isCustom = false;
+            if (a.shift_schedule_assignment) {
+                let ssa = (ctx.schedule_assignments || {})[a.shift_schedule_assignment];
+                if (!ssa) {
+                    ssa = await api("frappe.client.get", {
+                        doctype: "Shift Schedule Assignment", name: a.shift_schedule_assignment
+                    });
+                }
+                if (!ssa.shift_schedule) throw Error("Shift Schedule Assignment has no schedule");
+                let schedule = (ctx.schedules || {})[ssa.shift_schedule];
+                if (!schedule) {
+                    schedule = await api("frappe.client.get", {
+                        doctype: "Shift Schedule", name: ssa.shift_schedule
+                    });
+                }
+                isCustom = Number(schedule.custom_use_custom_rotation || 0) !== 0;
+                if (historical && !isCustom)
+                    throw Error("Historical import requires a custom rotation schedule");
+                if (isCustom) {
+                    const rotation = schedule.custom_rotation_type || "Weekly";
+                    const repeat = Number(schedule.custom_repeat_every || 0);
+                    const anchor = ssa.create_shifts_after;
+                    const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][weekday(r.date)];
+                    const rows = schedule.custom_repeat_on_days_copy || [];
+                    let sequence, weekNo;
+                    if (rotation !== "Weekly") {
+                        if (!anchor || !Number.isInteger(repeat) || repeat <= 0)
+                            throw Error("Rotation anchor/repeat missing or invalid");
+                        const offset = Math.round((Date.parse(r.date + "T00:00:00Z") -
+                            Date.parse(anchor + "T00:00:00Z")) / 86400000);
+                        if (!Number.isFinite(offset)) throw Error("Invalid rotation date");
+                        if (rotation === "Daily Sequence")
+                            sequence = ((offset % repeat) + repeat) % repeat + 1;
+                        else if (rotation === "Weekly Sequence")
+                            weekNo = ((Math.floor(offset / 7) % repeat) + repeat) % repeat + 1;
+                        else throw Error("Unsupported rotation " + rotation);
+                    }
+                    const matching = rows.filter(x => rotation === "Daily Sequence"
+                        ? Number(x.custom_sequence) === sequence
+                        : rotation === "Weekly Sequence"
+                            ? Number(x.custom_week_no) === weekNo && x.day === dayName
+                            : x.day === dayName);
+                    if (rotation === "Weekly" && matching.length === 0) {
+                        scheduled = false;
+                        rotationDayType = "Rest";
+                    } else {
+                        if (matching.length !== 1) throw Error("Missing or ambiguous rotation row");
+                        const row = matching[0];
+                        rotationDayType = row.custom_day_type || "Work";
+                        if (!["Work", "Rest"].includes(rotationDayType))
+                            throw Error("Invalid rotation Work/Rest");
+                        scheduled = rotationDayType === "Work";
+                        if (scheduled) {
+                            if (!row.custom_shift_type)
+                                throw Error("Work rotation row missing child Shift Type");
+                            shiftName = row.custom_shift_type;
+                        }
+                    }
+                } else {
+                    const rows = schedule.repeat_on_days || [];
+                    const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][weekday(r.date)];
+                    scheduled = rows.some(x => x.day === dayName);
+                }
+            } else if (historical) {
+                throw Error("Historical import requires Shift Schedule Assignment");
+            }
+
+            // For Rest, mother shift is context only, not a scheduled child shift.
+            let st = (ctx.shift_types || {})[shiftName];
+            if (!st) {
+                st = await api("frappe.client.get", { doctype: "Shift Type", name: shiftName });
+            }
+            const start = String(st.start_time || "00:00:00");
+            const end = String(st.end_time || "00:00:00");
+            let shiftStart = r.date + " " + start;
+            let shiftEnd = r.date + " " + end;
+            if (dateTimeMs(shiftEnd) <= dateTimeMs(shiftStart))
+                shiftEnd = addDay(r.date) + " " + end;
+            const required = scheduled ? minutesBetween(shiftStart, shiftEnd) : 0;
+
+            // Mirror the Checkin Resolver: official holiday suppression applies
+            // only when enabled on the selected child Shift Type.
+            let isHoliday = false;
+            if (isCustom && Number(st.custom_apply_official_holidays || 0) && st.holiday_list) {
+                // Holiday is a child DocType; direct get_list may return 403.
+                // Read the parent Holiday List with normal document permissions.
+                let holidayDates = state.holidayCache.get(st.holiday_list);
+                if (!holidayDates) {
+                    const holidayList = await api("frappe.client.get", {
+                        doctype: "Holiday List",
+                        name: st.holiday_list
+                    });
+                    holidayDates = new Set(
+                        (holidayList.holidays || [])
+                            .map(x => x.holiday_date)
+                            .filter(Boolean)
+                    );
+                    state.holidayCache.set(st.holiday_list, holidayDates);
+                }
+                isHoliday = holidayDates.has(r.date);
+                if (isHoliday) scheduled = false;
+            }
+            return {
+                shiftName: scheduled ? shiftName : null,
+                shiftStart, shiftEnd,
+                required: scheduled ? required : 0,
+                scheduled,
+                rest: !scheduled,
+                holiday: isHoliday || weekday(r.date) === 5,
+                rotationDayType,
+                historical,
+                assignment: a.name
+            };
+        }
+
+        // Derive duty hours from the actual Attendance Shift Type, not Excel.
+        // Keep a confirmed rest/holiday day at zero required hours.
+        async function alignDutyToAttendanceShift(doc, r, schedule) {
+            const shift = doc.shift || schedule.shiftName;
+            if (!shift) {
+                schedule.required = 0;
+                return;
+            }
+            const ctxAlign = state.context || {};
+            let st = (ctxAlign.shift_types || {})[shift];
+            if (!st) {
+                st = await api("frappe.client.get", {
+                    doctype: "Shift Type", name: shift
+                });
+            }
+            const parseTime = (v) => {
+                const m = String(v ?? "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+                if (!m || +m[1] > 23 || +m[2] > 59 || +(m[3] || 0) > 59)
+                    throw Error("Invalid Shift Type time for " + shift + ": " + v);
+                return (+m[1] * 60 + +m[2] + +(m[3] || 0) / 60);
+            };
+            const start = parseTime(st.start_time);
+            const end = parseTime(st.end_time);
+            const duration = ((end - start + 1440) % 1440);
+            if (!duration) throw Error("Zero-length Shift Type: " + shift);
+            const fmt = (mins) => {
+                const hh = Math.floor(mins / 60);
+                const mm = Math.floor(mins % 60);
+                const ss = Math.round((mins % 1) * 60);
+                return [hh, mm, ss].map(x => String(x).padStart(2, "0")).join(":");
+            };
+            schedule.shiftName = shift;
+            schedule.shiftStart = r.date + " " + fmt(start);
+            schedule.shiftEnd = (end <= start ? addDay(r.date) : r.date) + " " + fmt(end);
+            schedule.required = schedule.scheduled ? duration : 0;
+            if (schedule.scheduled && schedule.required <= 0)
+                throw Error("Scheduled shift has no standard working hours: " + shift);
+        }
+
+        // Actual night presence within 22:00-06:00, across calendar days.
+        // Uses punches, never the Excel night-work total or planned shift duration.
+        function actualNightMinutes(inTime, outTime) {
+            if (!inTime || !outTime) return null;
+            const startMs = dateTimeMs(inTime);
+            const endMs = dateTimeMs(outTime);
+            if (!Number.isFinite(startMs) || !Number.isFinite(endMs) ||
+                endMs <= startMs || endMs - startMs > 48 * 3600000)
+                throw Error("Invalid or over-48h IN/OUT interval for night-work calculation");
+
+            let total = 0;
+            const dayMs = 86400000;
+            const firstDay = Math.floor(startMs / dayMs) - 1;
+            const lastDay = Math.floor(endMs / dayMs);
+            for (let day = firstDay; day <= lastDay; day++) {
+                const nightStart = day * dayMs + 22 * 3600000;
+                const nightEnd = (day + 1) * dayMs + 6 * 3600000;
+                total += Math.max(0,
+                    Math.min(endMs, nightEnd) - Math.max(startMs, nightStart)
+                ) / 60000;
+            }
+            return total;
+        }
+
+        function applyValues(doc, r, schedule) {
+            const d = r.details;
+            const presence = d.presence > 0 ? d.presence :
+                (r.inTime && r.outTime ? minutesBetween(r.inTime, r.outTime) : d.worked);
+            const hasPresence = presence > 0 || !!r.inTime || !!r.outTime;
+            doc.status = hasPresence ? "Present" : "Absent";
+            if (state.fields.has("in_time")) doc.in_time = r.inTime;
+            if (state.fields.has("out_time")) doc.out_time = r.outTime;
+            if (state.fields.has("shift")) doc.shift = schedule.shiftName || null;
+
+            // Explicitly map visible attendance flags. A Rest day is not scheduled.
+            setCheck(doc, "Scheduled Day", schedule.scheduled,
+                ["custom_scheduled_day"]);
+            setCheck(doc, "Is Holiday", schedule.holiday,
+                ["custom_is_holiday"]);
+            if (state.fields.has("late_entry"))
+                doc.late_entry = d.late > 0 ? 1 : 0;
+            if (state.fields.has("early_exit"))
+                doc.early_exit = d.early > 0 ? 1 : 0;
+
+            // Excel is the source for imported daily totals.
+            setHours(doc, "Standard Working Hours", schedule.required, ["standard_working_hours"]);
+            setHours(doc, "Working Hours", presence, ["working_hours"]);
+            const inside = r.inTime && r.outTime && schedule.scheduled
+                ? Math.max(0, (Math.min(dateTimeMs(r.outTime), dateTimeMs(schedule.shiftEnd)) -
+                    Math.max(dateTimeMs(r.inTime), dateTimeMs(schedule.shiftStart))) / 60000)
+                : Math.min(presence, schedule.required);
+            setHours(doc, "Shift Work Hours", inside, ["custom_shift_work_hours"]);
+            // Leave/mission are from Excel. Do not manufacture approved records.
+            const shortage = schedule.scheduled
+                ? Math.max(0, schedule.required - inside - d.paidLeave - d.unpaidLeave - d.mission)
+                : 0;
+            setHours(doc, "Presence Shortage Hours (raw)",
+                Math.max(0, schedule.required - inside),
+                ["custom_presence_shortage_hours"]);
+            setHours(doc, "Work Shortage Hours", shortage, ["custom_work_shortage_hours"]);
+            const friday = weekday(r.date) === 5 ? presence : 0;
+            setHours(doc, "Friday Work Hours", friday, ["custom_friday_work_hours"]);
+            setHours(doc, "Holiday Work Hours", schedule.holiday ? presence : 0,
+                ["custom_holiday_work_hours"]);
+            setHours(doc, "Mission Work Hours", d.mission, ["custom_mission_work_hours"]);
+            const nightMinutes = actualNightMinutes(doc.in_time, doc.out_time);
+            // Missing punches cannot establish actual night presence.
+            // Preserve existing night hours; for a new Attendance default to zero.
+            // On full IN/OUT, zero is a valid calculated result and must be sent.
+            if (nightMinutes !== null) {
+                setHours(doc, "Night Work Hours", nightMinutes, ["custom_night_work_hours"]);
+            } else if (!doc.name) {
+                setHours(doc, "Night Work Hours", 0, ["custom_night_work_hours"]);
+            }
+            setHours(doc, "Total Leave Hours", d.paidLeave + d.unpaidLeave,
+                ["custom_total_leave_hours", "custom_leave_hours"]);
+            // The Excel has one paid-leave column and cannot split privilege vs other paid leave.
+            setHours(doc, "Paid Leave Hours", d.paidLeave, ["custom_paid_leave_hours"]);
+            setHours(doc, "Unpaid Leave Hours", d.unpaidLeave, ["custom_unpaid_leave_hours"]);
+            // Other Paid Leave Hours has no distinct Excel column:
+            // preserve existing value rather than inventing a zero.
+            // Never overwrite Other Paid Leave Hours without a separate Excel source.
+            setHours(doc, "Regular Work Hours", r.regularOT,
+                ["custom_regular_work_hours", "custom_regular_overtime_hours"]);
+            setHours(doc, "Extra Presence Hours", schedule.rest ? presence : Math.max(0, presence - inside),
+                ["custom_extra_presence_hours"]);
+            // 'Overtime Type' may be a Select field. Never put numeric hours in it.
+            setHours(doc, "Approved Overtime Hours", r.approvedOT,
+                ["custom_approved_overtime_hours"]);
+
+            if (state.fields.has("custom_missing_checkin")) {
+                doc.custom_missing_checkin = r.inTime && r.outTime ? "None" :
+                    r.inTime ? "OUT" : r.outTime ? "IN" : "Both";
+            }
+            if (state.fields.has("custom_calculation_details")) {
+                doc.custom_calculation_details = JSON.stringify({
+                    source: "Attendance Excel Import", source_file: state.fileName,
+                    excel_row: r.row, personnel_code: r.code,
+                    weekday: r.weekday, work_group: r.workGroup,
+                    durations_minutes: d, regular_overtime_minutes: r.regularOT,
+                    approved_overtime_minutes: r.approvedOT,
+                    night_work_source: "actual IN/OUT overlap with 22:00-06:00",
+                    night_work_minutes: nightMinutes,
+                    resolved_shift: schedule.shiftName, scheduled_day: schedule.scheduled,
+                    holiday_or_rest: schedule.rest,
+                    note: "Other Paid Leave Hours not overwritten: source Excel has no separate column"
+                }, null, 2);
+            }
+            return doc;
+        }
+
+async function importRecords() {
+            if (
+                state.busy ||
+                !state.previewReady ||
+                !dialog.get_value("confirm")
+            ) return;
+
+            state.busy = true;
+            state.previewReady = false;
+            primary.prop("disabled", true);
+
+            let created = 0;
+            let updated = 0;
+            const failed = [];
+            const skipped = [];
+            const postSubmitWarnings = [];
+
+            try {
+                const rows = selectedRows();
+                if (!rows.length) throw Error("Select at least one employee");
+                const selectedEmployees = new Map();
+                for (const r of rows) {
+                    const p = state.people.get(r.code);
+                    if (!p || !p.included || p.employee !== r.employee)
+                        throw Error("Selection changed; refresh preview");
+                    if (selectedEmployees.has(r.employee) && selectedEmployees.get(r.employee) !== r.code)
+                        throw Error("Multiple personnel codes mapped to " + r.employee);
+                    selectedEmployees.set(r.employee, r.code);
+                }
+                const existing = await fetchExisting(rows);
+                const duplicates = duplicateKeys(rows);
+
+                const work = [];
+
+                for (const r of rows) {
+                    const [action, reason] =
+                        classify(r, existing, duplicates);
+
+                    if (action === "Create" ||
+                        action === "Update") {
+                        work.push(r);
+                    } else {
+                        skipped.push(
+                            `Row ${r.row}: ${reason}`
+                        );
+                    }
+                }
+
+                const ALLOWED_SUBMITTED = [
+                    "status", "shift", "in_time", "out_time",
+                    "late_entry", "early_exit", "working_hours",
+                    "standard_working_hours", "custom_scheduled_day",
+                    "custom_is_holiday", "custom_shift_work_hours",
+                    "custom_presence_shortage_hours", "custom_work_shortage_hours",
+                    "custom_friday_work_hours", "custom_holiday_work_hours",
+                    "custom_mission_work_hours", "custom_night_work_hours",
+                    "custom_total_leave_hours", "custom_leave_hours",
+                    "custom_paid_leave_hours", "custom_unpaid_leave_hours",
+                    "custom_regular_work_hours", "custom_regular_overtime_hours",
+                    "custom_extra_presence_hours", "custom_approved_overtime_hours",
+                    "custom_missing_checkin", "custom_calculation_details"
+                ];
+                const prepared = [];
+                for (let i = 0; i < work.length; i++) {
+                    const r = work[i];
+                    frappe.show_progress(
+                        "Attendance Import",
+                        i + 1,
+                        work.length,
+                        `Preparing ${i + 1} / ${work.length}`
+                    );
+                    try {
+                        const key = r.employee + "|" + r.date;
+                        const current = existing.get(key);
+                        if (current?.duplicate)
+                            throw Error("Duplicate Attendance in ERP");
+                        if (current?.status === "On Leave")
+                            throw Error("Existing Leave Attendance");
+
+                        const company =
+                            (state.context?.employees?.[r.employee]?.company) || null;
+                        if (!current && !company)
+                            throw Error("Employee company missing");
+
+                        const doc = {
+                            doctype: "Attendance",
+                            name: current?.name,
+                            employee: r.employee,
+                            attendance_date: r.date,
+                            company: company || undefined,
+                            status: "Absent",
+                            shift: current?.shift || null,
+                            custom_scheduled_day: current?.custom_scheduled_day
+                        };
+
+                        const schedule = await resolveSchedule(r);
+                        if (current && doc.shift) {
+                            schedule.shiftName = doc.shift;
+                            if (doc.custom_scheduled_day !== undefined &&
+                                doc.custom_scheduled_day !== null) {
+                                schedule.scheduled = Number(doc.custom_scheduled_day) === 1;
+                                schedule.rest = !schedule.scheduled;
+                            }
+                        }
+                        await alignDutyToAttendanceShift(doc, r, schedule);
+                        applyValues(doc, r, schedule);
+                        if (!Number.isFinite(Number(doc.standard_working_hours)))
+                            throw Error("Invalid Standard Working Hours");
+                        if (doc.employee !== r.employee || doc.attendance_date !== r.date)
+                            throw Error("Attendance employee/date scope changed");
+
+                        const isSubmitted = current && Number(current.docstatus) === 1;
+                        const values = {};
+                        if (isSubmitted) {
+                            if (!state.fields.has("standard_working_hours"))
+                                throw Error("Attendance standard_working_hours field missing");
+                            for (const field of ALLOWED_SUBMITTED) {
+                                if (state.fields.has(field) &&
+                                    Object.prototype.hasOwnProperty.call(doc, field))
+                                    values[field] = doc[field];
+                            }
+                            values.standard_working_hours = doc.standard_working_hours;
+                            if (doc.in_time && doc.out_time) {
+                                if (!state.fields.has("custom_night_work_hours") ||
+                                    !Number.isFinite(Number(doc.custom_night_work_hours)))
+                                    throw Error("Calculated Night Work Hours missing");
+                                values.custom_night_work_hours = Number(doc.custom_night_work_hours);
+                            }
+                        } else {
+                            for (const field of Object.keys(doc)) {
+                                if (["doctype", "name", "employee", "attendance_date", "company"].includes(field))
+                                    continue;
+                                if (state.fields.has(field) || field === "status" || field === "shift" ||
+                                    field === "in_time" || field === "out_time" ||
+                                    field === "late_entry" || field === "early_exit" ||
+                                    field === "working_hours" || field === "standard_working_hours")
+                                    values[field] = doc[field];
+                            }
+                        }
+
+                        prepared.push({
+                            employee: r.employee,
+                            attendance_date: r.date,
+                            company,
+                            name: current?.name,
+                            mode: isSubmitted ? "update_submitted" :
+                                (current ? "update_draft" : "create"),
+                            values,
+                            row: r.row
+                        });
+                    } catch (e) {
+                        failed.push({
+                            row: r.row,
+                            employee: r.employee,
+                            date: r.date,
+                            error: e.message || String(e)
+                        });
+                    }
+                }
+
+                const BATCH = 50;
+                for (let i = 0; i < prepared.length; i += BATCH) {
+                    const chunk = prepared.slice(i, i + BATCH);
+                    frappe.show_progress(
+                        "Attendance Import",
+                        Math.min(i + chunk.length, prepared.length),
+                        prepared.length,
+                        `Saving batch ${Math.floor(i / BATCH) + 1} / ${Math.ceil(prepared.length / BATCH)}`
+                    );
+                    try {
+                        const result = await api(
+                            "erpnext_extensions.extentionhrms.attendance_excel_import.import_attendance_details",
+                            { records: chunk }
+                        );
+                        created += (result.created || []).length;
+                        updated += (result.updated || []).length;
+                        for (const row of (result.failed || [])) {
+                            failed.push({
+                                row: row.row,
+                                employee: row.employee,
+                                date: row.attendance_date,
+                                error: row.error || "Import failed"
+                            });
+                        }
+                        for (const row of (result.skipped || [])) {
+                            skipped.push(`Row ${row.row || "?"}: ${row.reason || "skipped"}`);
+                        }
+                    } catch (e) {
+                        for (const item of chunk) {
+                            failed.push({
+                                row: item.row,
+                                employee: item.employee,
+                                date: item.attendance_date,
+                                error: e.message || String(e)
+                            });
+                        }
+                    }
+                }
+
+                frappe.hide_progress();
+                dialog.hide();
+
+                const report = new frappe.ui.Dialog({
+                    title: "Attendance Import Result",
+                    size: "extra-large",
+                    fields: [{
+                        fieldtype: "HTML",
+                        fieldname: "result"
+                    }]
+                });
+
+                report.show();
+
+                report.fields_dict.result.$wrapper.html(`
+                    <div style="padding:12px">
+                        <h4>Import Result</h4>
+                        <p>Created: <b>${created}</b></p>
+                        <p>Updated: <b>${updated}</b></p>
+                        <p>Skipped: <b>${skipped.length}</b></p>
+                        <p>Failed: <b>${failed.length}</b></p>
+                        <p>Post-submit recalculation warnings:
+                            <b>${postSubmitWarnings.length}</b></p>
+
+                        <div style="max-height:350px;overflow:auto">
+                            ${postSubmitWarnings.map(x => `
+                                <div class="text-warning">${esc(x)}</div>
+                            `).join("")}
+                            ${failed.map(x => `
+                                <div class="text-danger">
+                                    Row ${x.row} -
+                                    ${esc(x.employee)} -
+                                    ${esc(x.date)}:
+                                    ${esc(x.error)}
+                                </div>
+                            `).join("")}
+
+                            ${skipped.map(x => `
+                                <div class="text-muted">
+                                    ${esc(x)}
+                                </div>
+                            `).join("")}
+                        </div>
+                    </div>
+                `);
+
+                if (window.cur_list?.doctype === "Attendance")
+                    cur_list.refresh();
+
+            } catch (e) {
+                frappe.hide_progress();
+                frappe.msgprint({
+                    title: "Import Error",
+                    indicator: "red",
+                    message: esc(e.message || String(e))
+                });
+            } finally {
+                state.busy = false;
+            }
+        }
+    };
+
+    // Register the button on the Attendance List.
+    // Keep existing List View settings.
+    const previous =
+        frappe.listview_settings["Attendance"] || {};
+
+    const previousOnload = previous.onload;
+
+    frappe.listview_settings["Attendance"] = {
+        ...previous,
+
+        onload(listview) {
+            if (typeof previousOnload === "function")
+                previousOnload.call(this, listview);
+
+            listview.page.add_inner_button(
+                "Import Attendance Details (Excel)",
+                () => NS.open()
+            );
+        }
+    };
+
+})();

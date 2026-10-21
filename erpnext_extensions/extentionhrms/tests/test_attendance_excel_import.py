@@ -1,0 +1,232 @@
+# Copyright (c) 2026, ERPNext Extensions contributors
+# License: MIT
+"""Tests for Attendance Details Excel bulk import helpers."""
+
+from __future__ import annotations
+
+import frappe
+from frappe.tests.utils import FrappeTestCase
+from frappe.utils import add_days, getdate, nowdate
+
+from erpnext_extensions.extentionhrms.attendance_excel_import import (
+	find_existing_attendance,
+	import_attendance_details,
+	preload_attendance_import_context,
+)
+from erpnext_extensions.extentionhrms.attendance_excel_import_setup import (
+	ensure_attendance_excel_import_setup,
+)
+
+
+class TestAttendanceExcelImport(FrappeTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		ensure_attendance_excel_import_setup()
+		frappe.db.commit()
+
+	def setUp(self):
+		super().setUp()
+		frappe.set_user("Administrator")
+		self.employees = []
+		self.users = []
+		self.attendance = []
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		for name in self.attendance:
+			if frappe.db.exists("Attendance", name):
+				doc = frappe.get_doc("Attendance", name)
+				if int(doc.docstatus) == 1:
+					doc.cancel()
+				frappe.delete_doc("Attendance", name, force=1, ignore_permissions=True)
+		for name in self.employees:
+			if frappe.db.exists("Employee", name):
+				frappe.db.sql("delete from `tabAttendance` where employee=%s", name)
+				frappe.delete_doc("Employee", name, force=1, ignore_permissions=True)
+		for name in self.users:
+			if name != "Administrator" and frappe.db.exists("User", name):
+				frappe.delete_doc("User", name, force=1, ignore_permissions=True)
+		frappe.db.commit()
+		super().tearDown()
+
+	def _employee(self, personal_code="77001"):
+		template = frappe.db.get_value(
+			"Employee",
+			{"status": "Active", "company": ["is", "set"]},
+			["company", "department", "payroll_cost_center"],
+			as_dict=True,
+		)
+		doc = frappe.get_doc(
+			{
+				"doctype": "Employee",
+				"naming_series": "HR-EMP-",
+				"first_name": "AttExcel",
+				"gender": "Male",
+				"date_of_birth": "1990-01-01",
+				"date_of_joining": "2020-01-01",
+				"status": "Active",
+				"company": template.company,
+				"department": template.department,
+				"payroll_cost_center": template.payroll_cost_center,
+				"custom_personal_code": personal_code,
+			}
+		)
+		doc.insert()
+		self.employees.append(doc.name)
+		return doc.name
+
+	def _user(self, roles):
+		email = f"att-excel-{frappe.generate_hash(length=6)}@example.com"
+		doc = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": "AttExcel",
+				"send_welcome_email": 0,
+				"roles": [{"role": role} for role in roles],
+			}
+		)
+		doc.insert(ignore_permissions=True)
+		self.users.append(doc.name)
+		return doc.name
+
+	def _attendance(self, employee, day, status="Present", submit=True):
+		doc = frappe.get_doc(
+			{
+				"doctype": "Attendance",
+				"employee": employee,
+				"attendance_date": day,
+				"status": status,
+				"company": frappe.db.get_value("Employee", employee, "company"),
+			}
+		)
+		doc.insert()
+		if submit:
+			doc.submit()
+		self.attendance.append(doc.name)
+		return doc
+
+	def test_find_existing_attendance_reports_draft_and_submitted(self):
+		employee = self._employee("77011")
+		day = add_days(getdate(nowdate()), -10)
+		draft = self._attendance(employee, day, submit=False)
+		submitted = self._attendance(employee, add_days(day, 1), submit=True)
+		before = frappe.db.count("Attendance")
+		result = find_existing_attendance(
+			[
+				{"employee": employee, "attendance_date": str(day)},
+				{"employee": employee, "attendance_date": str(add_days(day, 1))},
+				{"employee": employee, "attendance_date": str(add_days(day, 2))},
+			]
+		)
+		names = {row["name"] for row in result["rows"]}
+		self.assertIn(draft.name, names)
+		self.assertIn(submitted.name, names)
+		self.assertEqual(frappe.db.count("Attendance"), before)
+
+	def test_find_existing_ignores_cancelled(self):
+		employee = self._employee("77012")
+		day = add_days(getdate(nowdate()), -11)
+		doc = self._attendance(employee, day, submit=True)
+		doc.cancel()
+		result = find_existing_attendance(
+			[{"employee": employee, "attendance_date": str(day)}]
+		)
+		self.assertEqual(result["rows"], [])
+
+	def test_unauthorized_user_cannot_lookup_or_import(self):
+		employee = self._employee("77013")
+		user = self._user(["Employee"])
+		frappe.set_user(user)
+		with self.assertRaises(frappe.PermissionError):
+			find_existing_attendance(
+				[{"employee": employee, "attendance_date": str(nowdate())}]
+			)
+		with self.assertRaises(frappe.PermissionError):
+			import_attendance_details([])
+		frappe.set_user("Administrator")
+
+	def test_import_create_submits_attendance(self):
+		employee = self._employee("77014")
+		day = add_days(getdate(nowdate()), -12)
+		company = frappe.db.get_value("Employee", employee, "company")
+		before_checkin = frappe.db.count("Employee Checkin")
+		result = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": {
+						"status": "Present",
+						"working_hours": 8,
+						"standard_working_hours": 8,
+					},
+					"row": 1,
+				}
+			]
+		)
+		self.assertEqual(len(result["created"]), 1)
+		self.assertEqual(result["failed"], [])
+		name = result["created"][0]["name"]
+		self.attendance.append(name)
+		doc = frappe.get_doc("Attendance", name)
+		self.assertEqual(int(doc.docstatus), 1)
+		self.assertEqual(doc.status, "Present")
+		self.assertEqual(frappe.db.count("Employee Checkin"), before_checkin)
+
+	def test_import_is_idempotent_for_existing_day(self):
+		employee = self._employee("77015")
+		day = add_days(getdate(nowdate()), -13)
+		company = frappe.db.get_value("Employee", employee, "company")
+		first = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "create",
+					"values": {"status": "Present", "standard_working_hours": 8, "working_hours": 8},
+					"row": 1,
+				}
+			]
+		)
+		self.attendance.append(first["created"][0]["name"])
+		second = import_attendance_details(
+			[
+				{
+					"employee": employee,
+					"attendance_date": str(day),
+					"company": company,
+					"mode": "update_submitted",
+					"name": first["created"][0]["name"],
+					"values": {
+						"status": "Present",
+						"standard_working_hours": 8,
+						"working_hours": 7.5,
+						"custom_approved_overtime_hours": 0.5,
+					},
+					"row": 1,
+				}
+			]
+		)
+		self.assertEqual(len(second["updated"]), 1)
+		self.assertEqual(frappe.db.count("Attendance", {"employee": employee, "attendance_date": day, "docstatus": 1}), 1)
+
+	def test_preload_context_returns_employee_company(self):
+		employee = self._employee("77016")
+		ctx = preload_attendance_import_context([employee])
+		self.assertIn(employee, ctx["employees"])
+		self.assertTrue(ctx["employees"][employee]["company"])
+
+	def test_client_script_sync_is_idempotent(self):
+		first = ensure_attendance_excel_import_setup()
+		second = ensure_attendance_excel_import_setup()
+		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
+		self.assertEqual(second["client_script"], "unchanged")
+		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
+		self.assertIn("V2.0.0", script)
+		self.assertIn("import_attendance_details", script)
