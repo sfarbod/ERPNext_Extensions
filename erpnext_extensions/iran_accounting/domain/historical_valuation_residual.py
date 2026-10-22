@@ -250,6 +250,25 @@ def classify_zero_qty_ghost(
 			has_historical_proof = abs(flt(value_before)) > abs(flt(movement)) + quantum
 
 		if abs(ghost) > MANUFACTURE_AUTO_SA_MAX:
+			# SED may claim tens of trillions while the true previous layer is
+			# empty/modest (MAT-STE-2026-36178-1 / item 30100298). Absorbing
+			# only clears ``value_before`` — it never auto-expenses the
+			# overclaim. FAIL_CLOSED after Core already wrote rate×qty SVD
+			# leaves VALUATION_CONTINUITY (sv=0, svd=SED) because
+			# ``value_before = sv − svd`` invents a fictional previous.
+			# Cap when the available layer itself is within the ceiling.
+			if abs(flt(value_before)) <= MANUFACTURE_AUTO_SA_MAX:
+				return {
+					**base,
+					"category": HISTORICAL_RESIDUAL,
+					"disposition": ABSORB_INTO_MOVEMENT,
+					"detail": "manufacture_cap_sed_overclaim_to_available_layer",
+					"ceiling": MANUFACTURE_AUTO_SA_MAX,
+					"rejected_overclaim": ghost,
+					"guard": TRANSITIONAL_NON_BLOCKING,
+					"historical_source_voucher": (ancestor or {}).get("voucher_no"),
+					"historical_source_sle": (ancestor or {}).get("name"),
+				}
 			return {
 				**base,
 				"category": UNDETERMINED,
