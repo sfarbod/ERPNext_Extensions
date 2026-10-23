@@ -977,3 +977,16 @@ def run_sequential_rebuild(
 		max_identities=max_identities,
 		stop_on_failure=stop_on_failure,
 	)
+
+
+def finalize_sequential_rebuild(campaign: str, session_id: str | None = None) -> dict:
+	"""Re-apply coverage marking and complete campaign when all entries verified.
+
+	Use after every identity RIV succeeded but Pending items remain due to a
+	coverage-compare defect. Does not create RIVs or restart the campaign.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
+		finalize_sequential_campaign,
+	)
+
+	return finalize_sequential_campaign(campaign, session_id=session_id)
