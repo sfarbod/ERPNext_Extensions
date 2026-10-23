@@ -36,3 +36,24 @@ warehouse `انبار پایکار خط تولید اسپاد فارمد` with:
 Production HRC-00002 failed earlier on item `13100018` with a truncated
 MariaDB traceback — that SQL class is **not** claimed fixed here. Operator
 must capture the full exception (errno / SQLSTATE) before Production restart.
+
+## HRC coverage chronology — unpadded posting_time
+
+### Symptom
+HRC-00003 finished all 4628 identity RIVs (Failed=0) but stayed **Paused**
+with **57 Pending** manifest entries. Verified coverage stuck at 16490/16547.
+
+### Root cause
+`mark_campaign_coverage` compared RIV vs SLE posting times as raw strings.
+Unpadded times such as ``7:54:56`` lexicographically sort **after**
+``17:17:48`` (``'7' > '1'``), so morning RIV anchors were treated as
+*after* afternoon SLEs and coverage was refused.
+
+### Fix
+- `normalize_posting_time` / `posting_sort_key` for zero-padded compares.
+- `finalize_sequential_campaign` / `finalize_sequential_rebuild` to re-mark
+  coverage from the existing session without creating RIVs.
+- Session restore from disk when Redis cache expired after long runs.
+
+### Tests
+`test_hrc_coverage_time_normalize_v568`.
