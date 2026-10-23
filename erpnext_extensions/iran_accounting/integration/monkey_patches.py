@@ -1185,10 +1185,15 @@ def _patch_stock_ledger_engine():
 					# SLE.outgoing_rate so Core MA uses wh_data.valuation_rate
 					# (poisoned SED stamps otherwise drive I3 on consume-to-zero).
 					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						clear_manufacture_overclaim_outgoing_rate_for_riv,
 						clear_sticky_native_outgoing_rate_for_riv,
 					)
 
 					clear_sticky_native_outgoing_rate_for_riv(sle)
+					# CASE E: Manufacture SED overclaim sticky rate (30100298 /
+					# MAT-STE-2026-36178-1) — clear before Core MA so SVD is not
+					# rate×qty poison while previous layer is empty.
+					clear_manufacture_overclaim_outgoing_rate_for_riv(sle, engine=self)
 					# CASE A: consume-to-zero with desynced wh_data (future balance)
 					# yields positive SVD / I3. Reseed from chronological previous.
 					from erpnext_extensions.iran_accounting.domain.sle_persistence import (
@@ -1246,6 +1251,38 @@ def _patch_stock_ledger_engine():
 					restore_vanilla_zero_qty_terminal_stock_value(
 						sle, vanilla_stock_value, vanilla_qty_after
 					)
+					# CASE E: restore_vanilla only clears stock_value; if Core /
+					# SED left a discontinuous SVD at qty=0, repair continuity.
+					if (
+						flt(
+							sle.get("qty_after_transaction")
+							if hasattr(sle, "get")
+							else sle.qty_after_transaction
+						)
+						== 0
+						and flt(
+							sle.get("actual_qty") if hasattr(sle, "get") else sle.actual_qty
+						)
+						< 0
+					):
+						from erpnext_extensions.iran_accounting.domain.currency import (
+							get_company_currency,
+						)
+						from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+							_repair_empty_warehouse_valuation_continuity,
+						)
+
+						_repair_empty_warehouse_valuation_continuity(
+							sle,
+							ccy=get_company_currency(company),
+							purpose=frappe.db.get_value(
+								"Stock Entry",
+								sle.get("voucher_no")
+								if hasattr(sle, "get")
+								else getattr(sle, "voucher_no", None),
+								"purpose",
+							),
+						)
 					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
 						# Vanilla already wrote; restore pre-RIV economics so target
 						# RIV does not create new I1 on unrelated FG cascades.

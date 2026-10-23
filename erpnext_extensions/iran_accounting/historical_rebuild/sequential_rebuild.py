@@ -547,6 +547,43 @@ def execute_one_identity(
 	}
 
 
+def normalize_posting_time(value) -> str:
+	"""Normalize posting_time for chronological comparison.
+
+	MariaDB / Frappe may return unpadded times like ``7:54:56`` while SLE
+	rows often store ``17:17:48``. Lexicographic compare then falsely treats
+	morning RIV anchors as *after* afternoon SLEs (``'7…' > '1…'``), leaving
+	manifest entries Pending forever (HRC-00003: 57 stuck vouchers).
+	"""
+	if value is None or value == "":
+		return "00:00:00"
+	# datetime.timedelta from MySQL TIME columns
+	if hasattr(value, "total_seconds"):
+		secs = int(value.total_seconds()) % (24 * 3600)
+		h, rem = divmod(secs, 3600)
+		m, s = divmod(rem, 60)
+		return f"{h:02d}:{m:02d}:{s:02d}"
+	text = str(value).strip()
+	# Drop fractional seconds for stable compare
+	if "." in text:
+		text = text.split(".", 1)[0]
+	parts = text.split(":")
+	if len(parts) == 2:
+		parts.append("00")
+	if len(parts) != 3:
+		return "00:00:00"
+	try:
+		h, m, s = (int(p) for p in parts)
+	except ValueError:
+		return "00:00:00"
+	return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def posting_sort_key(posting_date, posting_time) -> tuple[str, str]:
+	"""Comparable (date, time) key — zero-padded time, ISO date string."""
+	return (str(posting_date), normalize_posting_time(posting_time))
+
+
 def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any]:
 	"""Mark Pending items COVERED when every SLE identity is in identities_done
 	with a session Completed RIV at/before posting.
@@ -574,7 +611,11 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 		for r in rows:
 			key = (r.item_code, r.warehouse)
 			if key not in index:
-				index[key] = (r.name, str(r.posting_date), str(r.posting_time or "00:00:00"))
+				index[key] = (
+					r.name,
+					str(r.posting_date),
+					normalize_posting_time(r.posting_time),
+				)
 
 	items = frappe.get_all(
 		ITEM_DOCTYPE,
@@ -617,8 +658,10 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 			if not info:
 				ok = False
 				break
-			# chronological: RIV posting <= SLE posting
-			if (info[1], info[2]) > (str(sle.posting_date), str(sle.posting_time or "00:00:00")):
+			# chronological: RIV posting <= SLE posting (normalized times)
+			if posting_sort_key(info[1], info[2]) > posting_sort_key(
+				sle.posting_date, sle.posting_time
+			):
 				ok = False
 				break
 			covers.append(info[0])
@@ -634,6 +677,72 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 		covered += 1
 	frappe.db.commit()
 	return {"covered": covered, "still_pending": still, "direct_no_sle": direct, "scanned": len(items)}
+
+
+def finalize_sequential_campaign(
+	campaign: str, *, session_id: str | None = None
+) -> dict[str, Any]:
+	"""Re-mark coverage with corrected chronology and complete when all verified.
+
+	Safe after a session that finished every identity but left Pending items due
+	to the unpadded posting_time compare bug. Does not create RIVs.
+	"""
+	sess = get_seq_session()
+	if not sess or sess.get("campaign") != campaign:
+		# Cache may have expired after a long sequential run — reload from disk.
+		restored = restore_session_from_file(session_id)
+		sess = restored.get("payload") or get_seq_session()
+	if not sess or sess.get("campaign") != campaign:
+		frappe.throw(f"No active sequential session for campaign {campaign}")
+	if sess.get("riv_failed"):
+		frappe.throw("Cannot finalize while session has failed RIVs")
+
+	cover = mark_campaign_coverage(campaign, limit=50000)
+	vc = frappe.db.sql(
+		"""
+		select verification_class, count(*) c
+		from `tabHistorical Rebuild Campaign Item`
+		where campaign=%s group by verification_class
+		""",
+		campaign,
+		as_dict=True,
+	)
+	success = sum(cint(r.c) for r in vc if r.verification_class in FINAL_SUCCESS_CLASSES)
+	total = sum(cint(r.c) for r in vc)
+	pending = cint(
+		frappe.db.count(ITEM_DOCTYPE, {"campaign": campaign, "item_status": ITEM_PENDING})
+	)
+	active_riv = cint(
+		frappe.db.count(
+			"Repost Item Valuation",
+			{"docstatus": 1, "status": ("in", ["Queued", "In Progress"])},
+		)
+	)
+	out: dict[str, Any] = {
+		"campaign": campaign,
+		"session_id": sess.get("session_id"),
+		"cover": cover,
+		"success_entries": success,
+		"total_entries": total,
+		"pending": pending,
+		"active_riv": active_riv,
+		"verification_class_counts": {r.verification_class: cint(r.c) for r in vc},
+	}
+	if pending == 0 and success == total and total > 0 and active_riv == 0:
+		sess["status"] = "Completed"
+		_save_seq(sess)
+		sync_campaign_execution_state(
+			campaign, status=STATUS_COMPLETED, session_id=sess.get("session_id")
+		)
+		frappe.db.commit()
+		out["campaign_status"] = STATUS_COMPLETED
+		out["session_status"] = "Completed"
+		out["finalized"] = True
+	else:
+		out["campaign_status"] = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "status")
+		out["session_status"] = sess.get("status")
+		out["finalized"] = False
+	return out
 
 
 def _mark(name: str, vclass: str, riv: str | None, detail: dict) -> None:

@@ -122,6 +122,13 @@ def should_preserve_native_outgoing_valuation(sle, row, purpose: str | None) -> 
 	return True
 
 
+def _clear_sle_outgoing_rate(sle) -> None:
+	if hasattr(sle, "outgoing_rate"):
+		sle.outgoing_rate = 0
+	elif hasattr(sle, "__setitem__"):
+		sle["outgoing_rate"] = 0
+
+
 def clear_sticky_native_outgoing_rate_for_riv(sle) -> bool:
 	"""Clear DB-sticky SLE.outgoing_rate so Core MA uses warehouse valuation_rate.
 
@@ -171,10 +178,49 @@ def clear_sticky_native_outgoing_rate_for_riv(sle) -> bool:
 	cur = flt(sle.get("outgoing_rate") if hasattr(sle, "get") else getattr(sle, "outgoing_rate", 0))
 	if abs(cur) <= 1e-9:
 		return False
-	if hasattr(sle, "outgoing_rate"):
-		sle.outgoing_rate = 0
-	elif hasattr(sle, "__setitem__"):
-		sle["outgoing_rate"] = 0
+	_clear_sle_outgoing_rate(sle)
+	return True
+
+
+def clear_manufacture_overclaim_outgoing_rate_for_riv(sle, engine=None) -> bool:
+	"""Clear Manufacture sticky outgoing_rate when it overclaims the warehouse layer.
+
+	CASE E (MAT-STE-2026-36178-1 / 30100298): SED stamps outgoing_rate≈1.49e12 so
+	Core writes SVD≈−35.9T while previous stock_value is 0. Document-authority
+	sync then mis-classifies ghost via ``sv−svd`` fiction. Clearing the sticky
+	rate lets MA use wh_data; Iran sync caps SED overclaim to the available layer.
+	"""
+	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
+		MANUFACTURE_AUTO_SA_MAX,
+	)
+
+	aq = flt(sle.get("actual_qty") if hasattr(sle, "get") else getattr(sle, "actual_qty", 0))
+	if aq >= 0:
+		return False
+	voucher_type = sle.get("voucher_type") if hasattr(sle, "get") else getattr(sle, "voucher_type", None)
+	if voucher_type != "Stock Entry":
+		return False
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	if not voucher_no:
+		return False
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if str(purpose or "") not in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+	cur = flt(sle.get("outgoing_rate") if hasattr(sle, "get") else getattr(sle, "outgoing_rate", 0))
+	if abs(cur) <= 1e-9:
+		return False
+	claimed = abs(cur) * abs(aq)
+	wh = getattr(engine, "wh_data", None) if engine is not None else None
+	available = flt(getattr(wh, "stock_value", 0)) if wh is not None else None
+	if available is None:
+		prev = _lookup_previous_stock_value(sle)
+		available = flt(prev) if prev is not None else 0.0
+	available = max(flt(available), 0.0)
+	# Overclaim: sticky movement exceeds available layer by more than the
+	# Manufacture auto-SA ceiling (same bound as residual classifier).
+	if claimed <= available + MANUFACTURE_AUTO_SA_MAX:
+		return False
+	_clear_sle_outgoing_rate(sle)
 	return True
 
 
@@ -282,23 +328,9 @@ def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
 
 	if not is_final_zero_qty_consume_state(sle):
 		return
-	# Reconstruct previous layer from the post-Core SLE identity.
-	value_before = flt(sle.stock_value) - flt(sle.stock_value_difference)
-	# When stock_value was already forced to 0, value_before == -svd. Prefer the
-	# engine/DB previous layer when it is larger (sticky residual case).
-	true_prev = _lookup_previous_stock_value(sle)
-	if true_prev is not None and abs(true_prev) + 0.5 > abs(value_before):
-		# CASE A (MAT-STE-2026-40942): mid-chain RIV can persist a negative
-		# previous layer (~−95.9M at qty=1). Adopting that for absorb yields
-		# effective_movement = −value_before > 0 on an outbound SLE → I3.
-		# Prefer the reconstructed non-negative layer; never adopt a negative
-		# DB previous that would flip outbound SVD positive.
-		if flt(sle.actual_qty) < 0 and flt(true_prev) < 0:
-			if value_before < 0:
-				value_before = 0.0
-			# else keep reconstructed value_before (>= 0)
-		else:
-			value_before = true_prev
+	# Shared resolver: chronological previous wins over sv−svd fiction when
+	# Core already emptied stock_value (CASE A / 30100298 continuity).
+	value_before = _resolve_consume_to_zero_previous_stock_value(sle)
 	movement = flt(sle.stock_value_difference)
 	purpose = frappe.db.get_value("Stock Entry", sle.voucher_no, "purpose")
 	# Temporarily present value_before via synthetic svd reset for classifier.
@@ -325,6 +357,79 @@ def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
 		row=row,
 	)
 	enforce_zero_qty_terminal_stock_value(sle)
+
+
+def _repair_empty_warehouse_valuation_continuity(
+	sle, *, row=None, ccy: str, purpose: str | None = None
+) -> bool:
+	"""Cap consume-to-zero SVD to the chronological previous layer when discontinuous.
+
+	Final safety net for CASE E: after Core / document paths, ``stock_value=0``
+	with ``|SVD|`` ≫ previous SLE stock_value breaks VALUATION_CONTINUITY.
+	Clears only the available layer; realigns SED; never fabricates coverage.
+	"""
+	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
+		MANUFACTURE_AUTO_SA_MAX,
+		apply_zero_qty_movement_contract,
+	)
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		mark_sle_running_balance_processed,
+	)
+
+	if flt(sle.actual_qty) >= 0:
+		return False
+	if abs(flt(sle.qty_after_transaction)) > 1e-9:
+		return False
+	if abs(flt(sle.stock_value)) > 1.0:
+		return False
+	true_prev = _resolve_consume_to_zero_previous_stock_value(sle)
+	expected_sv = flt(true_prev) + flt(sle.stock_value_difference)
+	# Continuity target at empty warehouse is stock_value == 0.
+	if abs(expected_sv - flt(sle.stock_value)) <= 1.0:
+		return False
+	# Only auto-cap when the true previous layer is within the Manufacture ceiling.
+	if abs(flt(true_prev)) > MANUFACTURE_AUTO_SA_MAX:
+		return False
+	mark_sle_running_balance_processed(sle)
+	movement = flt(sle.stock_value_difference)
+	rate = flt(sle.outgoing_rate) or flt(sle.valuation_rate)
+	sle.stock_value = float(round_currency(true_prev, ccy))
+	sle.stock_value_difference = 0.0
+	apply_zero_qty_movement_contract(
+		sle,
+		movement=movement,
+		rate=rate,
+		ccy=ccy,
+		purpose=purpose,
+		row=row,
+	)
+	enforce_zero_qty_terminal_stock_value(sle)
+	return True
+
+
+def _resolve_consume_to_zero_previous_stock_value(sle) -> float:
+	"""True previous warehouse layer at final consume-to-zero.
+
+	Prefer the chronological previous SLE (same-voucher prior rows included).
+	When Core already forced ``stock_value=0`` while keeping a rate×qty SVD,
+	``stock_value − stock_value_difference`` invents ``−svd`` as the previous
+	layer — that fiction must not feed ghost classification.
+
+	Negative DB previous on an outbound consume is rejected (CASE A / I3):
+	absorbing it would flip SVD positive.
+	"""
+	reconstructed = flt(sle.stock_value) - flt(sle.stock_value_difference)
+	true_prev = _lookup_previous_stock_value(sle)
+	if true_prev is None:
+		return max(reconstructed, 0.0) if flt(sle.actual_qty) < 0 and reconstructed < 0 else reconstructed
+	# Prefer DB previous when it is the authoritative layer.
+	if abs(true_prev) + 0.5 > abs(reconstructed) or abs(flt(sle.stock_value)) <= 0.5:
+		if flt(sle.actual_qty) < 0 and flt(true_prev) < 0:
+			return max(reconstructed, 0.0)
+		return float(true_prev)
+	if flt(sle.actual_qty) < 0 and reconstructed < 0:
+		return 0.0
+	return reconstructed
 
 
 def _lookup_previous_stock_value(sle) -> float | None:
@@ -433,13 +538,36 @@ def _apply_document_authority_movement(
 	  the ghost is a proven historical residual; fail closed when undetermined.
 	"""
 	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
+		MANUFACTURE_AUTO_SA_MAX,
 		apply_zero_qty_movement_contract,
 	)
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
 		is_final_zero_qty_consume_state,
+		mark_sle_running_balance_processed,
+		previous_running_qty,
 	)
 
-	if is_final_zero_qty_consume_state(sle):
+	# Consume-to-zero gate: include the unmarked case where vanilla re-processed
+	# an already-empty SLE (qty_after=0, sv=0) without assigning prev_sle_dict.
+	# Without this, document stamping + restore_vanilla_zero_qty leaves
+	# VALUATION_CONTINUITY (MAT-STE-2026-36178-1 / 30100298): svd=SED, sv=0.
+	consume_to_zero = is_final_zero_qty_consume_state(sle)
+
+	if not consume_to_zero and flt(sle.actual_qty) < 0 and abs(flt(sle.qty_after_transaction)) <= 1e-9:
+		if abs(flt(sle.stock_value)) <= 1.0 and previous_running_qty(sle) > 1e-9:
+			mark_sle_running_balance_processed(sle)
+			consume_to_zero = True
+
+	if consume_to_zero:
+		# Core empty-warehouse write often sets stock_value=0 while keeping
+		# rate×qty SVD (document poison). ``sv − svd`` then invents a fictional
+		# previous equal to −svd, ghost≈0, and NOOP leaves VALUATION_CONTINUITY
+		# (MAT-STE-2026-36178-1 / 30100298). Prefer the chronological previous
+		# SLE — same contract as native absorb — then let the zero-qty policy
+		# cap SED overclaim to the available layer.
+		value_before = _resolve_consume_to_zero_previous_stock_value(sle)
+		sle.stock_value = float(round_currency(value_before, ccy))
+		sle.stock_value_difference = 0.0
 		apply_zero_qty_movement_contract(
 			sle,
 			movement=movement,
@@ -450,6 +578,33 @@ def _apply_document_authority_movement(
 		)
 		enforce_zero_qty_terminal_stock_value(sle)
 		return
+
+	# Last-resort continuity repair for Manufacture SED overclaim when the
+	# zero-qty processed flag was unavailable above: if Core left qty_after=0
+	# with |svd| far beyond the chronological previous layer, cap SVD now.
+	if (
+		flt(sle.actual_qty) < 0
+		and abs(flt(sle.qty_after_transaction)) <= 1e-9
+		and abs(flt(sle.stock_value)) <= 1.0
+		and abs(flt(movement)) > 1.0
+	):
+		true_prev = _resolve_consume_to_zero_previous_stock_value(sle)
+		if abs(flt(true_prev)) <= MANUFACTURE_AUTO_SA_MAX and abs(flt(movement)) > abs(
+			flt(true_prev)
+		) + 1.0:
+			mark_sle_running_balance_processed(sle)
+			sle.stock_value = float(round_currency(true_prev, ccy))
+			sle.stock_value_difference = 0.0
+			apply_zero_qty_movement_contract(
+				sle,
+				movement=movement,
+				rate=rate,
+				ccy=ccy,
+				purpose=purpose,
+				row=row,
+			)
+			enforce_zero_qty_terminal_stock_value(sle)
+			return
 
 	value_after = flt(sle.stock_value)
 	value_before = value_after - flt(sle.stock_value_difference)
@@ -544,6 +699,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	# Native outgoing stock valuation: preserve vanilla SLE; do not SED-stamp.
 	if should_preserve_native_outgoing_valuation(sle, row, purpose):
 		_preserve_native_outgoing_and_align_sed(sle, row, ccy)
+		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
 		return
 
 	try:
@@ -571,6 +727,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
 			enforce_zero_qty_terminal_stock_value(sle)
 			reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
+			_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
 			return
 		movement = round_currency(
 			signed_movement_from_row_amount(
@@ -596,6 +753,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			sle, movement, rate, ccy, purpose=purpose, row=row
 		)
 		reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
+		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
 	except ValuationIntegrityError as exc:
 		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
 		if engine is None:
