@@ -1,9 +1,7 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 
 from decimal import Decimal
-
-import frappe
-from frappe.tests.utils import FrappeTestCase
+import unittest
 
 from erpnext_extensions.iran_accounting.domain.physical_two_slice import (
 	AllocationError,
@@ -12,7 +10,7 @@ from erpnext_extensions.iran_accounting.domain.physical_two_slice import (
 )
 
 
-class TestPhysicalTwoSliceAllocator(FrappeTestCase):
+class TestPhysicalTwoSliceAllocator(unittest.TestCase):
 	def test_primary_qty_10(self):
 		plan = allocate_physical_two_slice(151, 544601298, 10)
 		self.assertEqual(plan.out_value_abs, Decimal("36066311"))
