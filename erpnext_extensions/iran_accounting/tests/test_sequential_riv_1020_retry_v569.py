@@ -25,9 +25,9 @@ class TestSequentialRiv1020RetryV569(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.historical_rebuild import sequential_rebuild as sr
 
 		src = inspect.getsource(sr.execute_one_identity)
-		self.assertIn("run_with_db_concurrency_retry", src)
-		self.assertIn("classify_db_concurrency_error", src)
-		self.assertIn("max_attempts", src)
+		# v5.6.12+: resilient retry module (supersedes short-backoff-only wrapper)
+		self.assertIn("run_resilient_riv_execution", src)
+		self.assertIn("execute_reposting_entry", src)
 
 
 if __name__ == "__main__":
