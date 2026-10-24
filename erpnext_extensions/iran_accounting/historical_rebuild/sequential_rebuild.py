@@ -20,10 +20,6 @@ import frappe
 from frappe.utils import cint, now_datetime
 
 from erpnext.controllers.stock_controller import create_repost_item_valuation_entry
-from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
-	execute_reposting_entry,
-)
-
 from erpnext_extensions.iran_accounting.historical_rebuild.constants import (
 	CAMPAIGN_DOCTYPE,
 	ITEM_DOCTYPE,
@@ -332,14 +328,44 @@ def start_sequential_session(campaign: str = "HRC-00001") -> dict[str, Any]:
 
 
 def _save_seq(payload: dict) -> None:
-	frappe.cache().set_value(CACHE_SEQ, payload, expires_in_sec=60 * 60 * 24 * 14)
-	path = os.path.join(_session_dir(), f"session_{payload['session_id']}.json")
+	"""Persist session JSON first, then Redis — JSON is source of truth on restart.
+
+	Increments ``revision`` so a stale Redis cache cannot overwrite newer disk state.
+	"""
+	data = dict(payload)
+	data["revision"] = int(data.get("revision") or 0) + 1
+	data["persisted_at"] = str(now_datetime())
+	path = os.path.join(_session_dir(), f"session_{data['session_id']}.json")
 	with open(path, "w", encoding="utf-8") as fh:
-		json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+		json.dump(data, fh, ensure_ascii=False, indent=2, default=str)
+	frappe.cache().set_value(CACHE_SEQ, data, expires_in_sec=60 * 60 * 24 * 14)
+	# Keep caller's dict in sync with persisted revision.
+	payload.clear()
+	payload.update(data)
 
 
 def get_seq_session() -> dict | None:
-	return frappe.cache().get_value(CACHE_SEQ)
+	"""Return session preferring newer JSON revision over stale Redis cache."""
+	cached = frappe.cache().get_value(CACHE_SEQ)
+	if not cached:
+		return None
+	sid = cached.get("session_id")
+	if not sid:
+		return cached
+	path = os.path.join(_session_dir(), f"session_{sid}.json")
+	if not os.path.exists(path):
+		return cached
+	try:
+		with open(path, encoding="utf-8") as fh:
+			disk = json.load(fh)
+	except Exception:
+		return cached
+	disk_rev = int(disk.get("revision") or 0)
+	cache_rev = int(cached.get("revision") or 0)
+	if disk_rev > cache_rev:
+		frappe.cache().set_value(CACHE_SEQ, disk, expires_in_sec=60 * 60 * 24 * 14)
+		return disk
+	return cached
 
 
 def restore_session_from_file(session_id: str | None = None) -> dict[str, Any]:
@@ -475,92 +501,57 @@ def execute_one_identity(
 	_save_seq(sess)
 	frappe.db.commit()
 
-	t0 = time.time()
-	# MariaDB 1020 / deadlock on concurrent RIV progress db_set must retry —
-	# Production HRC-00003 failed RIVs (h6vr92mt90 / tnf88cqqer / 7oivgc47g8)
-	# with QueryDeadlockError(1020) on tabRepost Item Valuation mid-repost.
-	from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
-		classify_db_concurrency_error,
-		run_with_db_concurrency_retry,
+	# v5.6.12: resilient transient retry (1020/1205/1213) + Completed reconciliation.
+	# Waits occur outside DB transactions. Production HRC-00004 race: Core raised
+	# QueryDeadlockError(1020) on progress db_set while the same RIV later became
+	# Completed — executor must reconcile, not permanently Fail the campaign.
+	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+		execute_reposting_entry as _exec_riv,
+	)
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry import (
+		run_resilient_riv_execution,
 	)
 
-	def _execute_once() -> dict[str, Any]:
+	def _execute_fn(riv: str) -> None:
 		_empty_rq()
-		try:
-			execute_reposting_entry(name, continue_reposting=False)
-			frappe.db.commit()
-		except Exception as e:
-			frappe.db.rollback()
-			reason = classify_db_concurrency_error(e)
-			if reason:
-				return {
-					"ok": False,
-					"db_concurrency_retry": True,
-					"retry_reason": reason,
-					"error": str(e)[:500],
-				}
-			return {"ok": False, "error": str(e)[:500], "raised": True, "exc": e}
-		st = frappe.db.get_value("Repost Item Valuation", name, "status")
-		err = (frappe.db.get_value("Repost Item Valuation", name, "error_log") or "")[:500]
-		# Completed RIVs may still carry a stale 1020 error_log from a prior attempt.
-		if st == "Completed":
-			return {"ok": True, "status": st}
-		reason = classify_db_concurrency_error(Exception(err)) if err else None
-		if reason and st in ("Failed", "Queued", "In Progress"):
-			return {
-				"ok": False,
-				"db_concurrency_retry": True,
-				"retry_reason": reason,
-				"status": st,
-				"error": err,
-			}
-		return {"ok": False, "status": st, "error": err}
+		_exec_riv(riv, continue_reposting=False)
 
-	exec_out = run_with_db_concurrency_retry(_execute_once, max_attempts=4)
-	duration = round(time.time() - t0, 3)
-	if exec_out.get("raised"):
-		status = frappe.db.get_value("Repost Item Valuation", name, "status")
-		sess.setdefault("riv_failed", []).append(name)
-		_save_seq(sess)
-		return {
-			"ok": False,
-			"riv": name,
-			"status": status,
-			"error": exec_out.get("error") or str(exec_out.get("exc"))[:500],
-			"item_code": item_code,
-			"warehouse": warehouse,
-			"duration": duration,
-		}
-
-	status = frappe.db.get_value("Repost Item Valuation", name, "status")
-	if status != "Completed" or not exec_out.get("ok"):
-		err = (
-			exec_out.get("error")
-			or (frappe.db.get_value("Repost Item Valuation", name, "error_log") or "")[:500]
-		)
-		sess.setdefault("riv_failed", []).append(name)
-		_save_seq(sess)
-		return {
-			"ok": False,
-			"riv": name,
-			"status": status,
-			"error": err,
-			"item_code": item_code,
-			"warehouse": warehouse,
-			"duration": duration,
-			"stop_chain": True,
-			"db_retry": exec_out.get("retry_reason") or exec_out.get("attempts"),
-		}
-
-	# Verify SLE continuity from RIV anchor forward
-	chain = inspect_sle_chain(
-		item_code, warehouse, company=company, from_date=posting_date, from_time=posting_time
+	# Refresh session from cache/JSON in case another path updated revision.
+	sess = get_seq_session() or sess
+	exec_out = run_resilient_riv_execution(
+		riv_name=name,
+		item_code=item_code,
+		warehouse=warehouse,
+		posting_date=posting_date,
+		posting_time=posting_time,
+		company=company,
+		sess=sess,
+		execute_fn=_execute_fn,
+		verify_chain=inspect_sle_chain,
+		stop_check=_stop_requested,
+		save_session=_save_seq,
 	)
-	if chain.get("dirty"):
-		# RIV engine may have set status=Completed while leaving confirmed
-		# corruption (e.g. qty>0 with stock_value<0). Align DB status with
-		# session fail-fast so campaign counters do not disagree.
-		issues = (chain.get("issues") or [])[:10]
+	duration = exec_out.get("duration")
+	if exec_out.get("ok"):
+		_save_seq(sess)
+		return {
+			"ok": True,
+			"riv": name,
+			"status": "Completed",
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"duration": duration,
+			"sle_count": exec_out.get("sle_count"),
+			"reconciled": bool(exec_out.get("reconciled")),
+			"reconciled_after_transient": bool(exec_out.get("reconciled_after_transient")),
+			"attempt": exec_out.get("attempt"),
+		}
+
+	# Terminal failure / stop — preserve Failed RIV for audit; do not delete.
+	status = frappe.db.get_value("Repost Item Valuation", name, "status")
+	if exec_out.get("verify_failed") and status == "Completed":
+		# Case 4: Completed but invalid — mark RIV Failed for audit alignment.
+		issues = exec_out.get("issues_sample") or []
 		try:
 			frappe.db.set_value(
 				"Repost Item Valuation",
@@ -572,34 +563,30 @@ def execute_one_identity(
 				update_modified=True,
 			)
 			frappe.db.commit()
+			status = "Failed"
 		except Exception:
 			frappe.db.rollback()
-		sess.setdefault("riv_failed", []).append(name)
-		_save_seq(sess)
-		return {
-			"ok": False,
-			"riv": name,
-			"status": "Failed",
-			"verify_failed": True,
-			"issue_count": chain.get("issue_count"),
-			"issues_sample": issues[:5],
-			"item_code": item_code,
-			"warehouse": warehouse,
-			"duration": duration,
-			"stop_chain": True,
-		}
 
-	sess.setdefault("riv_completed", []).append(name)
-	sess.setdefault("identities_done", []).append(key)
+	if name not in (sess.get("riv_failed") or []):
+		sess.setdefault("riv_failed", []).append(name)
 	_save_seq(sess)
 	return {
-		"ok": True,
+		"ok": False,
 		"riv": name,
-		"status": "Completed",
+		"status": status,
+		"error": exec_out.get("error")
+		or (str(exec_out.get("exc"))[:500] if exec_out.get("exc") else None),
 		"item_code": item_code,
 		"warehouse": warehouse,
 		"duration": duration,
-		"sle_count": chain.get("sle_count"),
+		"stop_chain": bool(exec_out.get("stop_chain") or not exec_out.get("stopped")),
+		"stopped": bool(exec_out.get("stopped")),
+		"non_retryable": bool(exec_out.get("non_retryable")),
+		"attempts_exhausted": bool(exec_out.get("attempts_exhausted")),
+		"verify_failed": bool(exec_out.get("verify_failed")),
+		"issues_sample": exec_out.get("issues_sample"),
+		"retry_audit": exec_out.get("retry_audit"),
+		"db_retry": exec_out.get("retry_reason"),
 	}
 
 
@@ -928,9 +915,28 @@ def run_sequential(
 			results.append(out)
 			if out.get("ok"):
 				completed += 1
+			elif out.get("stopped"):
+				# Operator STOP during retry wait — pause, do not mark permanent Failed.
+				sess = get_seq_session() or sess
+				sess["status"] = "Paused"
+				_save_seq(sess)
+				sync_campaign_execution_state(
+					campaign, status=STATUS_PAUSED, session_id=session_id
+				)
+				frappe.db.commit()
+				stopped_by_flag = True
+				blocked_at = {
+					"index": i,
+					"reason": "STOP_FLAG",
+					"detail": "halted during resilient RIV retry wait",
+					"riv": out.get("riv"),
+					"item_code": row.item_code,
+					"warehouse": row.warehouse,
+				}
+				break
 			else:
 				failed += 1
-				# FAIL-FAST: persist evidence on session and stop scheduling.
+				# FAIL-FAST only after exhausted retries / non-retryable / integrity.
 				sess = get_seq_session() or sess
 				failure = {
 					"at": str(now_datetime()),
@@ -938,6 +944,8 @@ def run_sequential(
 					"warehouse": row.warehouse,
 					"riv": out.get("riv"),
 					"error": out.get("error") or out.get("issues_sample"),
+					"attempts_exhausted": out.get("attempts_exhausted"),
+					"non_retryable": out.get("non_retryable"),
 				}
 				sess["last_failure"] = failure
 				sess["status"] = "Failed"
@@ -1051,3 +1059,43 @@ def prepare_clean_start(campaign: str = "HRC-00001") -> dict[str, Any]:
 	reset = reset_campaign_planned(campaign)
 	session = start_sequential_session(campaign)
 	return {"deleted": deleted, "reset": reset, "session": session}
+
+
+def analyze_session_riv_reconcile(
+	session_id: str,
+	riv_name: str,
+	*,
+	item_code: str | None = None,
+	warehouse: str | None = None,
+) -> dict[str, Any]:
+	"""READ-ONLY operator helper: recommend reconcile steps for a Completed RIV race.
+
+	Does not mutate Production/Development data.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry import (
+		prepare_production_session_reconcile,
+		read_riv_status,
+	)
+
+	path = os.path.join(_session_dir(), f"session_{session_id}.json")
+	if not os.path.exists(path):
+		frappe.throw(f"session file missing: {session_id}")
+	with open(path, encoding="utf-8") as fh:
+		payload = json.load(fh)
+	meta = read_riv_status(riv_name) or {}
+	item = item_code or meta.get("item_code")
+	wh = warehouse or meta.get("warehouse")
+	plan = prepare_production_session_reconcile(
+		session_payload=payload,
+		riv_name=riv_name,
+		item_code=item or "",
+		warehouse=wh or "",
+	)
+	return {
+		"ok": True,
+		"session_id": session_id,
+		"riv": meta,
+		"plan": plan,
+		"writes": False,
+		"note": "Operator must apply reconcile manually after integrity verification.",
+	}
