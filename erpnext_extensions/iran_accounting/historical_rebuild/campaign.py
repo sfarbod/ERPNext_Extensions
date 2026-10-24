@@ -952,6 +952,41 @@ def full_rebuild_progress(campaign: str = "HRC-00001") -> dict:
 	return campaign_progress(campaign)
 
 
+def create_scoped(
+	company: str | None = None,
+	*,
+	seed_vouchers: list | None = None,
+	seed_identities: list | None = None,
+	posting_boundary_from: str | None = None,
+	scope_label: str = "scoped-test",
+	remarks: str | None = None,
+	use_default_569_scope: bool = False,
+) -> dict:
+	"""Create a Ready scoped HRC Manifest from seed vouchers/identities.
+
+	Does not discover the full company ledger. Expands seeds to all vouchers
+	that touch the resulting Item/Warehouse identities.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+		create_scoped_campaign,
+		default_569_validation_scope,
+	)
+
+	if use_default_569_scope:
+		scope = default_569_validation_scope()
+		seed_vouchers = scope["seed_vouchers"]
+		seed_identities = scope["seed_identities"]
+		scope_label = scope_label or "5.6.9-validation"
+	return create_scoped_campaign(
+		company=company,
+		seed_vouchers=seed_vouchers,
+		seed_identities=seed_identities,
+		posting_boundary_from=posting_boundary_from,
+		scope_label=scope_label,
+		remarks=remarks,
+	)
+
+
 def prepare_sequential_rebuild(campaign: str = "HRC-00001") -> dict:
 	"""Delete all RIVs, reset campaign to REPOST_PLANNED, open sequential session."""
 	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (

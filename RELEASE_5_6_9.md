@@ -60,7 +60,31 @@ confirming transient concurrency rather than permanent valuation failure.
 wait). Does not raise worker timeouts as a substitute.
 
 ### Tests
-`test_sequential_riv_1020_retry_v569`.
+`test_sequential_riv_1020_retry_v569`,
+`test_mariadb_1020_concurrency_v569` (two real MariaDB connections).
+
+### Concurrent writers (evidence boundary)
+Proven: Core `update_entries_after.update_data_in_repost` performs mid-repost
+`repost_doc.db_set` commits on `tabRepost Item Valuation`. Error 1020 means
+another transaction committed a change to that same RIV row after the
+reposting connection had read it (MariaDB CHECKREAD / snapshot conflict).
+
+Not proven from the truncated Production logs alone which *specific* peer
+writer won the race on each failed RIV. Plausible peers under Production
+worker topology (multiple short/default/long RQ workers + scheduler): a
+second RQ job on the same RIV, a progress/status updater, or
+`continue_reposting` dispatch. The sequential executor mitigates this with
+`MAX_ACTIVE_RIV=1`, `continue_reposting=False`, queue drain, and bounded
+1020 retry after rollback — it does not by itself identify the historical
+Production peer.
+
+### Scoped Development validation
+`scoped_campaign.create_scoped_campaign` / `campaign.create_scoped` builds a
+Manifest from seed vouchers + Item/Warehouse identities (dependency voucher
+expansion) without post-filtering a full-company Manifest. Sequential
+identity selection and coverage for scoped campaigns honour the persisted
+allowlist; unrelated co-voucher identities are excluded. Scoped runs do
+**not** claim full-company accounting verification.
 
 ### Production note
 Do **not** restart Production HRC until:

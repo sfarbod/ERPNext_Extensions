@@ -368,8 +368,12 @@ def restore_session_from_file(session_id: str | None = None) -> dict[str, Any]:
 
 
 def chronological_identities(campaign: str) -> list[dict[str, Any]]:
-	"""Distinct Item+WH ordered by earliest campaign SLE posting."""
-	return (
+	"""Distinct Item+WH ordered by earliest campaign SLE posting.
+
+	Scoped campaigns restrict to the persisted identity allowlist so shared
+	vouchers do not pull unrelated Item/Warehouse RIVs into the session.
+	"""
+	rows = (
 		frappe.db.sql(
 			"""
 			select sle.item_code, sle.warehouse,
@@ -394,6 +398,18 @@ def chronological_identities(campaign: str) -> list[dict[str, Any]]:
 		)
 		or []
 	)
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+			load_scoped_allowlist,
+		)
+
+		allow = load_scoped_allowlist(campaign)
+	except Exception:
+		allow = None
+	if allow:
+		allowed = set(allow)
+		rows = [r for r in rows if (r.item_code, r.warehouse) in allowed]
+	return rows
 
 
 def _assert_no_active_riv() -> None:
@@ -657,6 +673,19 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 					normalize_posting_time(r.posting_time),
 				)
 
+	# Scoped campaigns: only require coverage for allowlisted identities.
+	# Unrelated Item/WH lines sharing a dependency voucher are ignored for
+	# COVERED decisions (scoped test does not claim full-company verification).
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+			load_scoped_allowlist,
+		)
+
+		allow = load_scoped_allowlist(campaign)
+	except Exception:
+		allow = None
+	allowed = set(allow) if allow else None
+
 	items = frappe.get_all(
 		ITEM_DOCTYPE,
 		filters={"campaign": campaign, "item_status": ITEM_PENDING},
@@ -682,10 +711,22 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 			)
 			or []
 		)
+		if allowed is not None:
+			sles = [s for s in sles if (s.item_code, s.warehouse) in allowed]
 		if not sles:
 			basic = verify_voucher_basic(it.voucher_type, it.voucher_no)
 			if basic.get("ok"):
-				_mark(it.name, DIRECT_REPOSTED_AND_VERIFIED, None, {"reason": "no_sle"})
+				_mark(
+					it.name,
+					DIRECT_REPOSTED_AND_VERIFIED,
+					None,
+					{
+						"reason": "no_sle"
+						if allowed is None
+						else "no_allowlisted_sle",
+						"scoped": bool(allowed is not None),
+					},
+				)
 				covered += 1
 				direct += 1
 			else:
@@ -721,6 +762,7 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 				"covering_rivs": list(dict.fromkeys(covers)),
 				"reason": "sequential_session_cover",
 				"basic": basic.get("detail"),
+				"scoped": bool(allowed is not None),
 			},
 		)
 		covered += 1
