@@ -224,11 +224,60 @@ def rewrite_outgoing_bundle_after_core(self, sle, doc) -> AllocationPlan | None:
 	pool_q, pool_v = read_batch_pool(
 		item_code, batch_no, warehouse, exclude_voucher_detail_no=detail
 	)
-	out_qty = abs(flt(sle.get("actual_qty")))
-	if pool_q <= 0:
+	out_qty = _d(abs(flt(sle.get("actual_qty"))))
+	through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
+
+	# RIV may enqueue dependent Item/Warehouse pairs mid-chain so the visible
+	# batch pool can be temporarily thinner than the outgoing qty. Live submit
+	# remains fail-closed. During RIV only: audit + fall through so the caller
+	# integerizes Core MA (fractional rates must not persist).
+	if pool_q <= 0 or out_qty - pool_q > Decimal("1e-12"):
+		if through_riv:
+			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
+				log_riv_short_pool_event,
+			)
+
+			log_riv_short_pool_event(
+				item_code=item_code,
+				batch_no=batch_no,
+				warehouse=warehouse,
+				pool_qty=pool_q,
+				out_qty=out_qty,
+				voucher_type=voucher_type,
+				voucher_no=sle.get("voucher_no") if hasattr(sle, "get") else None,
+				bundle=bundle,
+			)
+			return None
 		raise AllocationError(
-			f"empty pool for batch {batch_no} @ {warehouse} (item {item_code})"
+			f"empty/short pool for batch {batch_no} @ {warehouse} "
+			f"(item {item_code}): pool_qty={pool_q} out_qty={out_qty}"
 		)
+
+	# Explicit auditable repair when historical SABE pool is fractional (Core MA float).
+	if pool_v != pool_v.to_integral_value():
+		from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
+			repair_batch_pool_fractional_irr,
+		)
+
+		company = getattr(self, "company", None) or (
+			sle.get("company") if hasattr(sle, "get") else None
+		)
+		repair_batch_pool_fractional_irr(
+			item_code,
+			batch_no,
+			warehouse,
+			company=company,
+			exclude_voucher_detail_no=detail,
+			reason="pre_two_slice_allocate",
+		)
+		pool_q, pool_v = read_batch_pool(
+			item_code, batch_no, warehouse, exclude_voucher_detail_no=detail
+		)
+		if pool_v != pool_v.to_integral_value():
+			raise AllocationError(
+				f"historical fractional pool_value={pool_v} remains after explicit "
+				f"SABE repair; batch={batch_no} warehouse={warehouse}"
+			)
 
 	plan = allocate_physical_two_slice(pool_q, pool_v, out_qty)
 	apply_plan_to_bundle(

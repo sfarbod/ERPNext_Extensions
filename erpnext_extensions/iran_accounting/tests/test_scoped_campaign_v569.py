@@ -80,12 +80,54 @@ class TestScopedCampaignNormalizeV569(unittest.TestCase):
 	def test_is_scoped_survives_seq_session_prefix(self):
 		from erpnext_extensions.iran_accounting.historical_rebuild import scoped_campaign as sc
 
-		with mock.patch.object(
-			sc.frappe.db,
-			"get_value",
-			return_value=f"SEQ_SESSION=20260101010101\n{SCOPED_REMARK_PREFIX}5.6.9-validation",
-		):
+		fake_frappe = mock.MagicMock()
+		fake_frappe.db.get_value.return_value = (
+			f"SEQ_SESSION=20260101010101\n{SCOPED_REMARK_PREFIX}5.6.9-validation"
+		)
+		with mock.patch.object(sc, "frappe", fake_frappe):
 			self.assertTrue(sc.is_scoped_campaign("HRC-TEST"))
+
+	def test_create_scoped_embeds_marker_with_custom_remarks(self):
+		"""Custom remarks must not drop SCOPED_HRC_TEST (allowlist depends on it)."""
+		from erpnext_extensions.iran_accounting.historical_rebuild import scoped_campaign as sc
+
+		captured = {}
+
+		class _Doc:
+			name = "HRC-TEST"
+
+			def insert(self, ignore_permissions=True):
+				return self
+
+		def _get_doc(payload):
+			captured["remarks"] = payload.get("remarks")
+			return _Doc()
+
+		fake_frappe = mock.MagicMock()
+		fake_frappe.get_doc.side_effect = _get_doc
+		fake_frappe.get_site_path.return_value = "/tmp"
+		with mock.patch.object(sc, "frappe", fake_frappe), mock.patch.object(
+			sc,
+			"build_scoped_manifest",
+			return_value={
+				"seed_vouchers": [],
+				"identities": [{"item_code": "I", "warehouse": "W"}],
+				"rows": [],
+				"total": 0,
+				"identity_count": 1,
+				"checksum": "x",
+				"doctype_counts": {},
+			},
+		), mock.patch.object(sc, "now_datetime", return_value="2026-10-24 21:00:00"), mock.patch(
+			"builtins.open", mock.mock_open()
+		), mock.patch("os.makedirs"):
+			sc.create_scoped_campaign(
+				company="C",
+				seed_identities=[("I", "W")],
+				remarks="custom operator note without marker",
+			)
+		self.assertIn(SCOPED_REMARK_PREFIX, captured["remarks"])
+		self.assertIn("custom operator note", captured["remarks"])
 
 
 if __name__ == "__main__":
