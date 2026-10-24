@@ -1354,6 +1354,7 @@ def _patch_stock_ledger_engine():
 		sl.update_entries_after.validate_negative_stock = make_validate_negative_stock_wrapper(live_neg)
 
 	_patch_serial_and_batch_bundle_negative_healing()
+	_patch_serial_and_batch_bundle_two_slice_duplicate()
 	_patch_serial_batch_irr_integer_guard(sl)
 
 	# Idempotent install of rate-first RIV wrapper (may run after older process_sle-only patch).
@@ -1406,19 +1407,52 @@ def _patch_serial_and_batch_bundle_negative_healing():
 		SerialandBatchBundle.validate_batch_inventory = make_validate_batch_inventory_wrapper(live_inv)
 
 
-def _patch_serial_batch_irr_integer_guard(sl):
-	"""Block NEW IRR Serial and Batch Entry rows with fractional rates/amounts.
+def _patch_serial_and_batch_bundle_two_slice_duplicate():
+	"""Scoped Physical Two-Slice duplicate-batch exception (v5.6.10). Idempotent."""
+	from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+		SerialandBatchBundle,
+	)
 
-	Does not invent an indivisible-MA Stock Adjustment policy. Historical RIV
-	(``through_repost_item_valuation``) is left alone so era data is not
-	reinterpreted mid-campaign.
+	from erpnext_extensions.iran_accounting.domain.physical_two_slice_bundle import (
+		make_validate_duplicate_wrapper,
+	)
+
+	live = SerialandBatchBundle.validate_duplicate_serial_and_batch_no
+	if getattr(live, "_iran_physical_two_slice", None):
+		return
+	SerialandBatchBundle._iran_original_validate_duplicate_serial_and_batch_no = live
+	SerialandBatchBundle.validate_duplicate_serial_and_batch_no = make_validate_duplicate_wrapper(
+		live
+	)
+
+
+def _patch_serial_batch_irr_integer_guard(sl):
+	"""Integerize IRR outgoing DN/SI SABE via Physical Two-Slice, then guard fractions.
+
+	Order (v5.6.10):
+	1. Core Moving Average valuation
+	2. Physical Two-Slice rewrite for Delivery Note / Sales Invoice outward
+	3. Existing fractional SABE guard (TVA exceptions unchanged)
+
+	Rewrite also runs during Repost Item Valuation so Core MA cannot reintroduce
+	fractional SABE rates on DN/SI. Historical non-DN/SI RIV still skips the
+	hard guard so era data is not reinterpreted mid-campaign.
 	"""
 	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
 
-	if getattr(sl.update_entries_after, "_iran_sabe_irr_integer_guard", None):
+	live = sl.update_entries_after.update_serial_batch_no_valuation
+	if getattr(live, "_iran_physical_two_slice_guard", None):
 		return
 
-	_orig = sl.update_entries_after.update_serial_batch_no_valuation
+	# Prefer deepest pre-Iran Core method when a prior Iran guard already stored it.
+	_orig = getattr(
+		sl.update_entries_after,
+		"_iran_original_update_serial_batch_no_valuation",
+		None,
+	)
+	if _orig is None:
+		_orig = live
+		sl.update_entries_after._iran_original_update_serial_batch_no_valuation = _orig
 
 	def update_serial_batch_no_valuation(self, sle, doc, prev_sle=None):
 		_orig(self, sle, doc, prev_sle=prev_sle)
@@ -1427,11 +1461,25 @@ def _patch_serial_batch_irr_integer_guard(sl):
 		)
 		if not company or not is_irr_company(company):
 			return
+
+		from erpnext_extensions.iran_accounting.domain.physical_two_slice_bundle import (
+			rewrite_outgoing_bundle_after_core,
+		)
+
+		# Fail closed on AllocationError / unexpected errors so DN/SI submit rolls back.
+		plan = rewrite_outgoing_bundle_after_core(self, sle, doc)
+		rewritten = plan is not None
+
+		through_riv = False
 		try:
-			if frappe.flags.get("through_repost_item_valuation"):
-				return
+			through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
 		except Exception:
-			pass
+			through_riv = False
+
+		# Historical RIV for non-rewritten vouchers: keep prior skip behaviour.
+		if through_riv and not rewritten:
+			return
+
 		bundle = sle.get("serial_and_batch_bundle") if hasattr(sle, "get") else None
 		if not bundle:
 			return
@@ -1535,9 +1583,15 @@ def _patch_serial_batch_irr_integer_guard(sl):
 					title=_("Integer IRR Batch Valuation"),
 				)
 
+	update_serial_batch_no_valuation._iran_sabe_irr_integer_guard = True
+	update_serial_batch_no_valuation._iran_physical_two_slice_guard = True
 	sl.update_entries_after.update_serial_batch_no_valuation = update_serial_batch_no_valuation
 	sl.update_entries_after._iran_sabe_irr_integer_guard = True
-	sl.update_entries_after._iran_original_update_serial_batch_no_valuation = _orig
+	sl.update_entries_after._iran_physical_two_slice_guard = True
+	if not getattr(
+		sl.update_entries_after, "_iran_original_update_serial_batch_no_valuation", None
+	):
+		sl.update_entries_after._iran_original_update_serial_batch_no_valuation = _orig
 
 
 def _patch_stock_ledger_report():
