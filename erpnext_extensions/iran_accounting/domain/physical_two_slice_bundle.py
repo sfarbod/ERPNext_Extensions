@@ -228,10 +228,25 @@ def rewrite_outgoing_bundle_after_core(self, sle, doc) -> AllocationPlan | None:
 	through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
 
 	# RIV may enqueue dependent Item/Warehouse pairs mid-chain so the visible
-	# batch pool can be temporarily thinner than the outgoing qty. Fail closed
-	# on live submit; during RIV fall through to Core MA + integerize path.
+	# batch pool can be temporarily thinner than the outgoing qty. Live submit
+	# remains fail-closed. During RIV only: audit + fall through so the caller
+	# integerizes Core MA (fractional rates must not persist).
 	if pool_q <= 0 or out_qty - pool_q > Decimal("1e-12"):
 		if through_riv:
+			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
+				log_riv_short_pool_event,
+			)
+
+			log_riv_short_pool_event(
+				item_code=item_code,
+				batch_no=batch_no,
+				warehouse=warehouse,
+				pool_qty=pool_q,
+				out_qty=out_qty,
+				voucher_type=voucher_type,
+				voucher_no=sle.get("voucher_no") if hasattr(sle, "get") else None,
+				bundle=bundle,
+			)
 			return None
 		raise AllocationError(
 			f"empty/short pool for batch {batch_no} @ {warehouse} "

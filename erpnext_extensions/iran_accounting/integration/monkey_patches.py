@@ -1485,6 +1485,9 @@ def _patch_serial_batch_irr_integer_guard(sl):
 		# explicitly so dependent DN pools stay integer-valued, and refresh
 		# ``doc`` totals that Core already stamped from float MA.
 		if through_riv and not rewritten:
+			# Includes RIV short-pool fallthrough (two-slice returned None after
+			# audit) and non-DN/SI Core MA paths. integerize_bundle_sabe asserts
+			# no residual fractional IRR rate/SVD may persist.
 			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
 				integerize_bundle_sabe,
 			)

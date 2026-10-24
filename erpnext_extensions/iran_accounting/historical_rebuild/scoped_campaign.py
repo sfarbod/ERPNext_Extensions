@@ -283,14 +283,18 @@ def create_scoped_campaign(
 		"identity_count": built["identity_count"],
 		"manifest_total": built["total"],
 	}
-	remark = remarks or f"{SCOPED_REMARK_PREFIX}{scope_label}"
+	# Always keep SCOPED_HRC_TEST marker so allowlist filtering cannot be
+	# accidentally disabled by custom remarks (SEQ_SESSION may prepend later).
+	base = remarks.strip() if remarks else scope_label
+	if SCOPED_REMARK_PREFIX not in base:
+		base = f"{SCOPED_REMARK_PREFIX}{base}"
 	doc = frappe.get_doc(
 		{
 			"doctype": CAMPAIGN_DOCTYPE,
 			"company": company,
 			"status": STATUS_DRAFT,
 			"posting_boundary_from": posting_boundary_from,
-			"remarks": remark[:1000],
+			"remarks": base[:1000],
 		}
 	)
 	doc.insert(ignore_permissions=True)
