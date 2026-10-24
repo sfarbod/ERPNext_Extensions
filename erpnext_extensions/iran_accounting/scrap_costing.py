@@ -1169,13 +1169,64 @@ def _erpnext_manufacture_state_is_valid(doc) -> bool:
 	return other_incoming <= outgoing + incoming_capitalized + quantum
 
 
+def historical_zero_product_reject_needs_repair(doc) -> bool:
+	"""True when a submitted Manufacture has MAIN_PRODUCT_REJECT at rate 0.
+
+	``allow_zero_valuation_rate`` must be unset: intentional bulk/zero scrap is
+	not repaired. Same-item product reject with qty>0 and zero basic/valuation
+	rate is a historical defect (e.g. MAT-STE-2026-27800 row 3).
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if cint(doc.get("docstatus")) != 1:
+		return False
+	if not is_irr_company(doc.get("company")):
+		return False
+	classified = classify_manufacture_outputs(doc)
+	rejects = classified.get(CLASS_MAIN_PRODUCT_REJECT) or []
+	if not rejects:
+		return False
+	fg_rows = classified.get(CLASS_MAIN_FG) or []
+	if len(fg_rows) != 1:
+		return False
+	for row in rejects:
+		if _row_qty(row) <= 0:
+			continue
+		if cint(row.get("allow_zero_valuation_rate")):
+			continue
+		if abs(flt(row.get("basic_rate"))) <= 1e-9 and abs(flt(row.get("valuation_rate"))) <= 1e-9:
+			return True
+	return False
+
+
+def repair_historical_zero_product_reject(doc) -> bool:
+	"""Apply absorbed-cost allocation to historical zero MAIN_PRODUCT_REJECT.
+
+	Does not stamp a v5.3.x contract version. Uses the existing
+	:func:`allocate_scrap_absorbed_cost` pool split (shared integer rate when
+	currency precision is 0). Returns True when rates were applied.
+	"""
+	if not historical_zero_product_reject_needs_repair(doc):
+		return False
+	applied = allocate_scrap_absorbed_cost(doc)
+	if applied:
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			claim_product_reject_ownership,
+		)
+
+		claim_product_reject_ownership(doc)
+	return bool(applied)
+
+
 def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	"""Canonical Iran Manufacture output contract (submit and RIV).
 
 	v5.3.3 drafts and stamped documents: Component Scrap at issued rate, then
 	equivalent-unit Stage Output allocation when Co-Products participate.
 	Submitted historical documents without a contract stamp are left untouched
-	so RIV cannot silently repair or re-cost them.
+	**except** when MAIN_PRODUCT_REJECT carries an illegal zero rate (qty>0 and
+	``allow_zero_valuation_rate`` unset): then absorbed-cost allocation runs so
+	Historical Rebuild / RIV cannot leave reject FG valued at zero.
 	"""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
 		return False
@@ -1202,7 +1253,7 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	)
 
 	if not uses_v533_contract(doc):
-		return False
+		return repair_historical_zero_product_reject(doc)
 
 	stamp_contract_version(doc)
 	clear_core_auto_valuation_for_stage_bridge(doc)

@@ -45,21 +45,52 @@ def diagnose_source_needs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 		return out
 
 	stale = [g for g in gaps if g.get("flags")]
+	# Zero MAIN_PRODUCT_REJECT on historical Manufacture must be source-repaired
+	# before RIV (MAT-STE-2026-27800 / 30200041 reject row).
+	reject_gap = _zero_product_reject_gap(voucher_no)
 	if not stale:
 		# Also check SED amount vs |SLE SVD| for native-outgoing style drift.
 		drift = _sed_sle_amount_drift(voucher_no)
-		if drift:
+		gaps_out = list(drift or [])
+		if reject_gap:
+			gaps_out.append(reject_gap)
+		if gaps_out:
 			out["required"] = True
 			out["status"] = SOURCE_REQUIRED
-			out["detail"] = f"SED/SLE amount drift on {len(drift)} row(s)"
-			out["gaps"] = drift
+			detail_parts = []
+			if drift:
+				detail_parts.append(f"SED/SLE amount drift on {len(drift)} row(s)")
+			if reject_gap:
+				detail_parts.append("zero_main_product_reject")
+			out["detail"] = "; ".join(detail_parts)
+			out["gaps"] = gaps_out
 		return out
 
 	out["required"] = True
 	out["status"] = SOURCE_REQUIRED
 	out["detail"] = f"stale SLE/SABB rate gaps={len(stale)}"
 	out["gaps"] = stale[:20]
+	if reject_gap:
+		out["gaps"].append(reject_gap)
+		out["detail"] += "; zero_main_product_reject"
 	return out
+
+
+def _zero_product_reject_gap(voucher_no: str) -> dict | None:
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if purpose != "Manufacture":
+		return None
+	try:
+		from erpnext_extensions.iran_accounting.scrap_costing import (
+			historical_zero_product_reject_needs_repair,
+		)
+
+		doc = frappe.get_doc("Stock Entry", voucher_no)
+		if historical_zero_product_reject_needs_repair(doc):
+			return {"voucher": voucher_no, "flags": ["zero_main_product_reject"]}
+	except Exception:
+		return None
+	return None
 
 
 def _sed_sle_amount_drift(voucher_no: str) -> list[dict]:
@@ -114,6 +145,24 @@ def apply_source_reconstruction(voucher_type: str, voucher_no: str) -> dict[str,
 		# Manufacture reconstructable roots via existing reconstruct API when purpose matches.
 		purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
 		if purpose == "Manufacture":
+			try:
+				from erpnext_extensions.iran_accounting.scrap_costing import (
+					historical_zero_product_reject_needs_repair,
+					repair_historical_zero_product_reject,
+				)
+
+				doc = frappe.get_doc("Stock Entry", voucher_no)
+				if historical_zero_product_reject_needs_repair(doc):
+					if repair_historical_zero_product_reject(doc):
+						for row in doc.get("items") or []:
+							if row.get("name"):
+								row.db_update()
+						if hasattr(doc, "set_total_incoming_outgoing_value"):
+							doc.set_total_incoming_outgoing_value()
+						doc.db_update()
+						actions.append("repair_historical_zero_product_reject")
+			except Exception as e:
+				actions.append(f"product_reject_repair_skip:{e}")
 			try:
 				from erpnext_extensions.iran_accounting.historical_stock.manufacture import (
 					preview_manufacture_voucher,

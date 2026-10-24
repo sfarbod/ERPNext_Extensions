@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 import frappe
-from frappe.utils import cint, now_datetime
+from frappe.utils import cint, flt, now_datetime
 
 from erpnext.controllers.stock_controller import create_item_wise_repost_entries
 from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
@@ -373,6 +373,52 @@ def _is_non_stock_only_purchase_receipt(voucher_no: str) -> bool:
 	return cint(rows[0].n) == cint(rows[0].non_stock)
 
 
+def manufacture_product_reject_rate_issues(voucher_no: str) -> list[dict[str, Any]]:
+	"""Detect illegal zero MAIN_PRODUCT_REJECT rates on a Manufacture voucher.
+
+	Coverage / Completed RIV alone must not certify such rows as verified.
+	"""
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if purpose != "Manufacture":
+		return []
+	try:
+		from erpnext_extensions.iran_accounting.scrap_costing import (
+			historical_zero_product_reject_needs_repair,
+		)
+
+		doc = frappe.get_doc("Stock Entry", voucher_no)
+		if not historical_zero_product_reject_needs_repair(doc):
+			return []
+		from erpnext_extensions.iran_accounting.scrap_costing import (
+			CLASS_MAIN_PRODUCT_REJECT,
+			classify_manufacture_outputs,
+		)
+
+		classified = classify_manufacture_outputs(doc)
+		issues = []
+		for row in classified.get(CLASS_MAIN_PRODUCT_REJECT) or []:
+			if cint(row.get("allow_zero_valuation_rate")):
+				continue
+			if abs(flt(row.get("basic_rate"))) > 1e-9 or abs(flt(row.get("valuation_rate"))) > 1e-9:
+				continue
+			qty = flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
+			if qty <= 0:
+				continue
+			issues.append(
+				{
+					"sed": row.get("name"),
+					"idx": row.get("idx"),
+					"item_code": row.get("item_code"),
+					"qty": qty,
+					"basic_rate": row.get("basic_rate"),
+					"reason": "zero_main_product_reject_rate",
+				}
+			)
+		return issues
+	except Exception:
+		return []
+
+
 def verify_voucher_basic(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 	"""Lightweight post-rebuild checks (non-destructive)."""
 	sle_count = cint(
@@ -410,6 +456,12 @@ def verify_voucher_basic(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 			detail += "; determinism_checked"
 		except Exception as e:
 			detail += f"; determinism_skip:{e}"
+	# Manufacture: zero MAIN_PRODUCT_REJECT with qty>0 is not financially verified.
+	if voucher_type == "Stock Entry" and ok:
+		reject_issues = manufacture_product_reject_rate_issues(voucher_no)
+		if reject_issues:
+			ok = False
+			detail += f"; zero_product_reject={len(reject_issues)}"
 	return {"ok": ok, "detail": detail}
 
 
