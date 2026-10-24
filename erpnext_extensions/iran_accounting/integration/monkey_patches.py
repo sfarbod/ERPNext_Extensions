@@ -1476,12 +1476,30 @@ def _patch_serial_batch_irr_integer_guard(sl):
 		except Exception:
 			through_riv = False
 
-		# Historical RIV for non-rewritten vouchers: keep prior skip behaviour.
-		if through_riv and not rewritten:
-			return
-
 		bundle = sle.get("serial_and_batch_bundle") if hasattr(sle, "get") else None
 		if not bundle:
+			return
+
+		# During RIV, Core MA reintroduces fractional SABE on Stock Entry / SR
+		# (two-slice rewrite applies only to DN/SI). Integerize those bundles
+		# explicitly so dependent DN pools stay integer-valued, and refresh
+		# ``doc`` totals that Core already stamped from float MA.
+		if through_riv and not rewritten:
+			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
+				integerize_bundle_sabe,
+			)
+
+			integerize_bundle_sabe(bundle, company=company)
+			rows = frappe.get_all(
+				"Serial and Batch Entry",
+				filters={"parent": bundle},
+				fields=["qty", "stock_value_difference"],
+			)
+			tq = sum(flt(r.qty) for r in rows)
+			ta = sum(flt(r.stock_value_difference) for r in rows)
+			avg = abs(ta / tq) if tq else 0.0
+			if doc is not None and hasattr(doc, "update"):
+				doc.update({"total_qty": tq, "total_amount": ta, "avg_rate": avg})
 			return
 		from frappe import _
 
