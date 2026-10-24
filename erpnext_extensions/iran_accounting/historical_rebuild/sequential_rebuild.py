@@ -368,8 +368,12 @@ def restore_session_from_file(session_id: str | None = None) -> dict[str, Any]:
 
 
 def chronological_identities(campaign: str) -> list[dict[str, Any]]:
-	"""Distinct Item+WH ordered by earliest campaign SLE posting."""
-	return (
+	"""Distinct Item+WH ordered by earliest campaign SLE posting.
+
+	Scoped campaigns restrict to the persisted identity allowlist so shared
+	vouchers do not pull unrelated Item/Warehouse RIVs into the session.
+	"""
+	rows = (
 		frappe.db.sql(
 			"""
 			select sle.item_code, sle.warehouse,
@@ -394,6 +398,18 @@ def chronological_identities(campaign: str) -> list[dict[str, Any]]:
 		)
 		or []
 	)
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+			load_scoped_allowlist,
+		)
+
+		allow = load_scoped_allowlist(campaign)
+	except Exception:
+		allow = None
+	if allow:
+		allowed = set(allow)
+		rows = [r for r in rows if (r.item_code, r.warehouse) in allowed]
+	return rows
 
 
 def _assert_no_active_riv() -> None:
@@ -460,12 +476,49 @@ def execute_one_identity(
 	frappe.db.commit()
 
 	t0 = time.time()
-	try:
+	# MariaDB 1020 / deadlock on concurrent RIV progress db_set must retry —
+	# Production HRC-00003 failed RIVs (h6vr92mt90 / tnf88cqqer / 7oivgc47g8)
+	# with QueryDeadlockError(1020) on tabRepost Item Valuation mid-repost.
+	from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
+		classify_db_concurrency_error,
+		run_with_db_concurrency_retry,
+	)
+
+	def _execute_once() -> dict[str, Any]:
 		_empty_rq()
-		execute_reposting_entry(name, continue_reposting=False)
-		frappe.db.commit()
-	except Exception as e:
-		frappe.db.rollback()
+		try:
+			execute_reposting_entry(name, continue_reposting=False)
+			frappe.db.commit()
+		except Exception as e:
+			frappe.db.rollback()
+			reason = classify_db_concurrency_error(e)
+			if reason:
+				return {
+					"ok": False,
+					"db_concurrency_retry": True,
+					"retry_reason": reason,
+					"error": str(e)[:500],
+				}
+			return {"ok": False, "error": str(e)[:500], "raised": True, "exc": e}
+		st = frappe.db.get_value("Repost Item Valuation", name, "status")
+		err = (frappe.db.get_value("Repost Item Valuation", name, "error_log") or "")[:500]
+		# Completed RIVs may still carry a stale 1020 error_log from a prior attempt.
+		if st == "Completed":
+			return {"ok": True, "status": st}
+		reason = classify_db_concurrency_error(Exception(err)) if err else None
+		if reason and st in ("Failed", "Queued", "In Progress"):
+			return {
+				"ok": False,
+				"db_concurrency_retry": True,
+				"retry_reason": reason,
+				"status": st,
+				"error": err,
+			}
+		return {"ok": False, "status": st, "error": err}
+
+	exec_out = run_with_db_concurrency_retry(_execute_once, max_attempts=4)
+	duration = round(time.time() - t0, 3)
+	if exec_out.get("raised"):
 		status = frappe.db.get_value("Repost Item Valuation", name, "status")
 		sess.setdefault("riv_failed", []).append(name)
 		_save_seq(sess)
@@ -473,16 +526,18 @@ def execute_one_identity(
 			"ok": False,
 			"riv": name,
 			"status": status,
-			"error": str(e)[:500],
+			"error": exec_out.get("error") or str(exec_out.get("exc"))[:500],
 			"item_code": item_code,
 			"warehouse": warehouse,
-			"duration": round(time.time() - t0, 3),
+			"duration": duration,
 		}
 
 	status = frappe.db.get_value("Repost Item Valuation", name, "status")
-	duration = round(time.time() - t0, 3)
-	if status != "Completed":
-		err = (frappe.db.get_value("Repost Item Valuation", name, "error_log") or "")[:500]
+	if status != "Completed" or not exec_out.get("ok"):
+		err = (
+			exec_out.get("error")
+			or (frappe.db.get_value("Repost Item Valuation", name, "error_log") or "")[:500]
+		)
 		sess.setdefault("riv_failed", []).append(name)
 		_save_seq(sess)
 		return {
@@ -494,6 +549,7 @@ def execute_one_identity(
 			"warehouse": warehouse,
 			"duration": duration,
 			"stop_chain": True,
+			"db_retry": exec_out.get("retry_reason") or exec_out.get("attempts"),
 		}
 
 	# Verify SLE continuity from RIV anchor forward
@@ -617,6 +673,19 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 					normalize_posting_time(r.posting_time),
 				)
 
+	# Scoped campaigns: only require coverage for allowlisted identities.
+	# Unrelated Item/WH lines sharing a dependency voucher are ignored for
+	# COVERED decisions (scoped test does not claim full-company verification).
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+			load_scoped_allowlist,
+		)
+
+		allow = load_scoped_allowlist(campaign)
+	except Exception:
+		allow = None
+	allowed = set(allow) if allow else None
+
 	items = frappe.get_all(
 		ITEM_DOCTYPE,
 		filters={"campaign": campaign, "item_status": ITEM_PENDING},
@@ -642,10 +711,22 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 			)
 			or []
 		)
+		if allowed is not None:
+			sles = [s for s in sles if (s.item_code, s.warehouse) in allowed]
 		if not sles:
 			basic = verify_voucher_basic(it.voucher_type, it.voucher_no)
 			if basic.get("ok"):
-				_mark(it.name, DIRECT_REPOSTED_AND_VERIFIED, None, {"reason": "no_sle"})
+				_mark(
+					it.name,
+					DIRECT_REPOSTED_AND_VERIFIED,
+					None,
+					{
+						"reason": "no_sle"
+						if allowed is None
+						else "no_allowlisted_sle",
+						"scoped": bool(allowed is not None),
+					},
+				)
 				covered += 1
 				direct += 1
 			else:
@@ -668,11 +749,21 @@ def mark_campaign_coverage(campaign: str, *, limit: int = 5000) -> dict[str, Any
 		if not ok:
 			still += 1
 			continue
+		# Refuse false COVERED when Manufacture still has zero MAIN_PRODUCT_REJECT.
+		basic = verify_voucher_basic(it.voucher_type, it.voucher_no)
+		if not basic.get("ok"):
+			still += 1
+			continue
 		_mark(
 			it.name,
 			COVERED_BY_REPOSTED_AND_VERIFIED,
 			covers[0],
-			{"covering_rivs": list(dict.fromkeys(covers)), "reason": "sequential_session_cover"},
+			{
+				"covering_rivs": list(dict.fromkeys(covers)),
+				"reason": "sequential_session_cover",
+				"basic": basic.get("detail"),
+				"scoped": bool(allowed is not None),
+			},
 		)
 		covered += 1
 	frappe.db.commit()
