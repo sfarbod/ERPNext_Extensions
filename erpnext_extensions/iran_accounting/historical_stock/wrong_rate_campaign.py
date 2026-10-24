@@ -54,6 +54,34 @@ def inventory(company=None, limit=2000) -> dict:
 	return out
 
 
+def classify_wrong_clusters(company=None, max_cluster=15) -> dict:
+	"""Cluster ready wrong-rate roots for the Repair Campaign Wizard."""
+	company = resolve_company(company)
+	inv = inventory(company=company, limit=2000)
+	ready = list(inv.get("ready_rows") or [])
+	clusters = cluster_independent_roots(ready, max_cluster=max_cluster)
+	out = {
+		"collected_at": datetime.utcnow().isoformat() + "Z",
+		"company": company,
+		"ready_wrong_rate": len(ready),
+		"clusters": clusters,
+		"promotion_status": "NOT_PROVEN",
+	}
+	dump_artifact("wrong_rate", "clusters.json", out)
+	return out
+
+
+def preview_wrong_campaign(company=None, max_roots=15) -> dict:
+	"""Dry-run the recommended smallest SAFE_GROUP (no writes)."""
+	cls = classify_wrong_clusters(company=company, max_cluster=max_roots)
+	group = (cls.get("clusters") or {}).get("recommended_first_group")
+	if not group or group.get("group_class") != SAFE_GROUP:
+		return {"ok": False, "reason": "no SAFE_GROUP available", "clusters": cls.get("clusters")}
+	roots = group.get("roots") or []
+	dry = prove_safe_group(roots, max_n=max_roots)
+	return {"ok": True, "group": group, "dry_run": dry, "clusters": cls.get("clusters")}
+
+
 def prove_single_root(row: dict, *, dry_run=False) -> dict:
 	"""Dry-run → apply → residual verify → second apply idempotency."""
 	t0 = perf_counter()
