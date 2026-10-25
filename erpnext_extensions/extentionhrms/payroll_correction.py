@@ -2,12 +2,17 @@
 # License: MIT
 """Narrowly scoped Payroll Entry correction API.
 
-Whitelisted method::
+Whitelisted methods::
 
     erpnext_extensions.extentionhrms.payroll_correction.payroll_remove_employee_accrual
+    erpnext_extensions.extentionhrms.payroll_correction.payroll_replace_accrual_je_draft
 
-Removes one verified employee from a submitted Payroll Entry and regenerates
-the accrual Journal Entry via ``PayrollEntryWithAccountingDimensions``.
+``payroll_remove_employee_accrual`` removes one verified employee from a
+submitted Payroll Entry and regenerates + submits the accrual Journal Entry.
+
+``payroll_replace_accrual_je_draft`` cancels/deletes the current submitted
+accrual JE and regenerates a **Draft** replacement (never submits), without
+changing employees or Salary Slip amounts.
 
 Security / safety invariants
 ----------------------------
@@ -745,4 +750,537 @@ def payroll_remove_employee_accrual(
 		response["completed"] = completed
 		frappe.cache().set_value(cache_key, completed, expires_in_sec=IDEMPOTENCY_TTL_SECONDS)
 		_log("execute_ok", {"new_je": result["new_je"]["name"], "payroll_entry": payroll_entry})
+		return response
+
+
+# ---------------------------------------------------------------------------
+# Replace submitted accrual JE with a regenerated Draft JE (no submit)
+# ---------------------------------------------------------------------------
+
+
+def _validate_replace_draft_params(
+	*,
+	action: str,
+	payroll_entry: str,
+	expected_je: str,
+	idempotency_key: str,
+	required_je_posting_date: str,
+) -> str:
+	action = (action or "").strip().lower()
+	if action not in ("dry_run", "execute"):
+		frappe.throw(_("action must be dry_run or execute"))
+	for label, value in (
+		("payroll_entry", payroll_entry),
+		("expected_je", expected_je),
+		("idempotency_key", idempotency_key),
+		("required_je_posting_date", required_je_posting_date),
+	):
+		if not value or not str(value).strip():
+			frappe.throw(_("{0} is required").format(label))
+	key = str(idempotency_key).strip()
+	if len(key) < 8 or len(key) > MAX_IDEMPOTENCY_KEY_LEN:
+		frappe.throw(_("idempotency_key length must be between 8 and {0}").format(MAX_IDEMPOTENCY_KEY_LEN))
+	getdate(required_je_posting_date)
+	return action
+
+
+def _verify_draft_replace_completed(
+	*,
+	payroll_entry: str,
+	expected_employees: int,
+	required_je_posting_date: str,
+	expected_je_debit: float,
+	expected_je_rows: int,
+	old_je: str,
+) -> dict[str, Any] | None:
+	"""True when exactly one Draft accrual JE matches gates.
+
+	Naming series may reuse the cancelled/deleted JE name; treat that as
+	completed when the linked document is Draft with matching totals.
+	If ``old_je`` still exists as a *different* document, not completed.
+	"""
+	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	if pe.docstatus != 1:
+		return None
+	unique = {r.employee for r in pe.employees}
+	if len(pe.employees) != expected_employees or len(unique) != expected_employees:
+		return None
+	fp = _ss_fingerprint(payroll_entry)
+	if fp[0] != expected_employees:
+		return None
+	jes = _active_jes(payroll_entry)
+	if len(jes) != 1:
+		return None
+	je = frappe.get_doc("Journal Entry", jes[0])
+	if int(je.docstatus) != 0:
+		return None
+	# Old submitted JE must not still exist under a different name.
+	if je.name != old_je and frappe.db.exists("Journal Entry", old_je):
+		return None
+	if getdate(je.posting_date) != getdate(required_je_posting_date):
+		return None
+	if abs(flt(je.total_debit) - flt(expected_je_debit)) > 0.01:
+		return None
+	if abs(flt(je.total_debit) - flt(je.total_credit)) > 0.01:
+		return None
+	if len(je.accounts) != int(expected_je_rows):
+		return None
+	active_gl = frappe.db.sql(
+		"""
+		SELECT COUNT(*) FROM `tabGL Entry`
+		WHERE voucher_type='Journal Entry' AND voucher_no=%s AND is_cancelled=0
+		""",
+		(je.name,),
+	)[0][0]
+	if active_gl:
+		return None
+	return {
+		"status": "ALREADY_COMPLETED",
+		"payroll_entry": payroll_entry,
+		"employees": len(pe.employees),
+		"ss_fingerprint": fp,
+		"journal_entry": {
+			"name": je.name,
+			"docstatus": je.docstatus,
+			"posting_date": str(je.posting_date),
+			"total_debit": je.total_debit,
+			"total_credit": je.total_credit,
+			"rows": len(je.accounts),
+		},
+		"naming_reused_old_je": je.name == old_je,
+	}
+
+
+def _preflight_replace_draft(
+	*,
+	payroll_entry: str,
+	expected_je: str,
+	expected_employees: int,
+	expected_je_debit: float,
+	expected_je_rows: int,
+	required_je_posting_date: str,
+	expected_ss_fingerprint: tuple | None = None,
+) -> dict[str, Any]:
+	out: dict[str, Any] = {"ok": True, "errors": [], "warnings": [], "state": {}}
+
+	def fail(msg: str) -> None:
+		out["ok"] = False
+		out["errors"].append(msg)
+
+	completed = _verify_draft_replace_completed(
+		payroll_entry=payroll_entry,
+		expected_employees=expected_employees,
+		required_je_posting_date=required_je_posting_date,
+		expected_je_debit=expected_je_debit,
+		expected_je_rows=expected_je_rows,
+		old_je=expected_je,
+	)
+	if completed:
+		out["state"]["already_corrected"] = True
+		out["state"]["completed"] = completed
+		out["warnings"].append("Draft replacement already applied — ALREADY_COMPLETED.")
+		return out
+	out["state"]["already_corrected"] = False
+
+	if not frappe.db.exists("Payroll Entry", payroll_entry):
+		fail(f"Payroll Entry not found: {payroll_entry}")
+		return out
+
+	frappe.db.get_value("Payroll Entry", payroll_entry, "name", for_update=True)
+	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	out["state"]["pe_docstatus"] = pe.docstatus
+	out["state"]["pe_status"] = pe.status
+	out["state"]["pe_posting_date"] = str(pe.posting_date)
+	out["state"]["pe_employees"] = len(pe.employees)
+	out["state"]["pe_number_of_employees"] = pe.number_of_employees
+
+	if pe.docstatus != 1:
+		fail(f"Payroll Entry must be submitted; docstatus={pe.docstatus}")
+
+	unique = {r.employee for r in pe.employees}
+	out["state"]["unique_employees"] = len(unique)
+	if len(pe.employees) != expected_employees or len(unique) != expected_employees:
+		fail(
+			f"Employee count mismatch: rows={len(pe.employees)} unique={len(unique)} "
+			f"expected={expected_employees}"
+		)
+
+	fp = _ss_fingerprint(payroll_entry)
+	out["state"]["ss_fingerprint"] = fp
+	if fp[0] != expected_employees:
+		fail(f"Submitted SS count {fp[0]} != expected {expected_employees}")
+	if expected_ss_fingerprint is not None:
+		exp = tuple(expected_ss_fingerprint)
+		if (
+			fp[0] != int(exp[0])
+			or abs(flt(fp[1]) - flt(exp[1])) > 0.01
+			or abs(flt(fp[2]) - flt(exp[2])) > 0.01
+			or abs(flt(fp[3]) - flt(exp[3])) > 0.01
+		):
+			fail(f"SS fingerprint mismatch: got={fp} expected={exp}")
+
+	jes = _active_jes(payroll_entry)
+	out["state"]["active_jes"] = jes
+	if len(jes) != 1:
+		fail(f"Expected exactly one active accrual JE on slips, found {jes}")
+	elif jes[0] != expected_je:
+		fail(f"Active JE {jes[0]} != expected {expected_je}")
+	else:
+		je = frappe.get_doc("Journal Entry", expected_je)
+		out["state"]["je"] = {
+			"name": je.name,
+			"docstatus": je.docstatus,
+			"posting_date": str(je.posting_date),
+			"total_debit": je.total_debit,
+			"total_credit": je.total_credit,
+			"rows": len(je.accounts),
+		}
+		if je.docstatus != 1:
+			fail(f"JE docstatus must be 1 (Submitted); got {je.docstatus}")
+		if abs(flt(je.total_debit) - flt(expected_je_debit)) > 0.01:
+			fail(f"JE debit {je.total_debit} != expected {expected_je_debit}")
+		if abs(flt(je.total_debit) - flt(je.total_credit)) > 0.01:
+			fail("JE not balanced")
+		if len(je.accounts) != int(expected_je_rows):
+			fail(f"JE rows {len(je.accounts)} != expected {expected_je_rows}")
+		if getdate(je.posting_date) != getdate(required_je_posting_date):
+			fail(
+				f"JE posting_date {je.posting_date} != required {required_je_posting_date}"
+			)
+
+	try:
+		pay_je = frappe.get_all(
+			"Payment Entry Reference",
+			filters={"reference_doctype": "Journal Entry", "reference_name": expected_je},
+			pluck="parent",
+		)
+		out["state"]["payment_refs_je"] = pay_je
+		if pay_je:
+			fail(f"Payment Entry references JE: {pay_je}")
+	except frappe.PermissionError:
+		out["warnings"].append("Could not read Payment Entry Reference (permission).")
+
+	out["state"]["required_je_posting_date"] = str(getdate(required_je_posting_date))
+	out["state"]["plan"] = [
+		"Cancel + delete submitted accrual JE",
+		"Clear Salary Slip journal_entry links",
+		"make_accrual_jv_entry (submit_journal_entry=False via override)",
+		"Leave new JE as Draft; verify debit=credit, rows, posting date, zero active GL",
+	]
+	return out
+
+
+def _execute_replace_draft(
+	*,
+	payroll_entry: str,
+	expected_je: str,
+	required_je_posting_date: str,
+	expected_employees: int,
+	expected_je_debit: float,
+	expected_je_rows: int,
+	ss_fingerprint: tuple,
+) -> dict[str, Any]:
+	"""Cancel/delete submitted accrual JE and regenerate as Draft. Never submits."""
+	result: dict[str, Any] = {"steps": [], "checkpoints": []}
+
+	def checkpoint(name: str) -> None:
+		frappe.db.commit()
+		result["checkpoints"].append(name)
+
+	if not frappe.db.exists("Journal Entry", expected_je):
+		frappe.throw(_("Journal Entry {0} missing at execute time").format(expected_je))
+	je_ds = frappe.db.sql(
+		"SELECT docstatus FROM `tabJournal Entry` WHERE name=%s FOR UPDATE", (expected_je,)
+	)[0][0]
+	resumed_cancel = False
+	if je_ds == 1:
+		je = frappe.get_doc("Journal Entry", expected_je)
+		je.meta.queue_in_background = 1
+		je._cancel()
+		checkpoint("je_cancelled")
+	elif je_ds == 2:
+		resumed_cancel = True
+		checkpoint("je_already_cancelled")
+	else:
+		frappe.throw(_("Journal Entry {0} has unexpected docstatus {1}").format(expected_je, je_ds))
+
+	je_ds = frappe.db.sql(
+		"SELECT docstatus FROM `tabJournal Entry` WHERE name=%s", (expected_je,)
+	)[0][0]
+	if je_ds != 2:
+		frappe.throw(_("JE cancel did not set docstatus=2 (got {0})").format(je_ds))
+	active_gl = frappe.db.sql(
+		"""
+		SELECT COUNT(*) FROM `tabGL Entry`
+		WHERE voucher_type='Journal Entry' AND voucher_no=%s AND is_cancelled=0
+		""",
+		(expected_je,),
+	)[0][0]
+	if active_gl:
+		frappe.throw(_("Active GL rows remain after JE cancel: {0}").format(active_gl))
+	result["steps"].append({"cancel_je": expected_je, "ok": True, "resumed": resumed_cancel})
+
+	frappe.delete_doc("Journal Entry", expected_je, force=0)
+	checkpoint("je_deleted")
+	if frappe.db.exists("Journal Entry", expected_je):
+		frappe.throw(_("JE still exists after delete"))
+	result["steps"].append({"delete_je": expected_je, "ok": True})
+
+	_clear_ss_journal_links(payroll_entry)
+	checkpoint("ss_je_links_cleared")
+
+	# Salary Slip amounts must be unchanged
+	fp_now = _ss_fingerprint(payroll_entry)
+	if (
+		fp_now[0] != int(ss_fingerprint[0])
+		or abs(flt(fp_now[1]) - flt(ss_fingerprint[1])) > 0.01
+		or abs(flt(fp_now[2]) - flt(ss_fingerprint[2])) > 0.01
+		or abs(flt(fp_now[3]) - flt(ss_fingerprint[3])) > 0.01
+	):
+		frappe.throw(_("Salary Slip fingerprint changed unexpectedly: {0}").format(fp_now))
+
+	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	if pe.docstatus != 1:
+		frappe.throw(_("Payroll Entry is no longer submitted"))
+	if len(pe.employees) != expected_employees:
+		frappe.throw(_("Employee Details count changed: {0}").format(len(pe.employees)))
+	pe_db_posting = pe.posting_date
+	if pe.__class__.__name__ != "PayrollEntryWithAccountingDimensions":
+		frappe.throw(_("Unexpected Payroll Entry controller: {0}").format(pe.__class__.__name__))
+
+	pe.posting_date = getdate(required_je_posting_date)  # in-memory only
+	submitted = frappe.get_all(
+		"Salary Slip",
+		filters={"payroll_entry": payroll_entry, "docstatus": 1},
+		pluck="name",
+		order_by="name",
+	)
+	if len(submitted) != expected_employees:
+		frappe.throw(
+			_("Expected {0} submitted slips, found {1}").format(expected_employees, len(submitted))
+		)
+	slip_docs = [frappe.get_doc("Salary Slip", n) for n in submitted]
+	if any(s.journal_entry for s in slip_docs):
+		frappe.throw(_("Some Salary Slips still reference a Journal Entry"))
+
+	pe.make_accrual_jv_entry(slip_docs)
+	checkpoint("je_regenerated_draft")
+
+	if str(getdate(frappe.db.get_value("Payroll Entry", payroll_entry, "posting_date"))) != str(
+		getdate(pe_db_posting)
+	):
+		frappe.throw(_("Payroll Entry posting_date was unexpectedly changed"))
+
+	new_jes = _active_jes(payroll_entry)
+	if len(new_jes) != 1:
+		frappe.throw(_("Expected one new JE on slips, found {0}").format(new_jes))
+	new_je = frappe.get_doc("Journal Entry", new_jes[0])
+
+	# Never submit — force Draft if somehow submitted (should not happen with override).
+	if int(new_je.docstatus) == 1:
+		frappe.throw(
+			_("New JE {0} was submitted; refusing to leave a submitted replacement").format(new_je.name)
+		)
+	if int(new_je.docstatus) != 0:
+		frappe.throw(_("New JE unexpected docstatus {0}").format(new_je.docstatus))
+
+	if getdate(new_je.posting_date) != getdate(required_je_posting_date):
+		new_je.posting_date = getdate(required_je_posting_date)
+		new_je.save()
+		checkpoint("je_posting_date_corrected")
+		new_je.reload()
+
+	if getdate(new_je.posting_date) != getdate(required_je_posting_date):
+		frappe.throw(
+			_("JE posting_date is {0}, required {1}").format(new_je.posting_date, required_je_posting_date)
+		)
+	if abs(flt(new_je.total_debit) - flt(new_je.total_credit)) > 0.5:
+		frappe.throw(_("New JE unbalanced; refusing to accept Draft"))
+	if abs(flt(new_je.total_debit) - flt(expected_je_debit)) > 0.01:
+		frappe.throw(
+			_("Draft JE debit {0} != expected {1}").format(new_je.total_debit, expected_je_debit)
+		)
+	if len(new_je.accounts) != int(expected_je_rows):
+		frappe.throw(
+			_("Draft JE rows {0} != expected {1}").format(len(new_je.accounts), expected_je_rows)
+		)
+
+	active_gl_new = frappe.db.sql(
+		"""
+		SELECT COUNT(*) FROM `tabGL Entry`
+		WHERE voucher_type='Journal Entry' AND voucher_no=%s AND is_cancelled=0
+		""",
+		(new_je.name,),
+	)[0][0]
+	if active_gl_new:
+		frappe.throw(_("Draft JE has active GL rows: {0}").format(active_gl_new))
+
+	# Final PE / SS integrity
+	pe.reload()
+	if pe.docstatus != 1 or len(pe.employees) != expected_employees:
+		frappe.throw(_("Payroll Entry integrity check failed after regen"))
+	fp_final = _ss_fingerprint(payroll_entry)
+	if (
+		fp_final[0] != int(ss_fingerprint[0])
+		or abs(flt(fp_final[1]) - flt(ss_fingerprint[1])) > 0.01
+		or abs(flt(fp_final[2]) - flt(ss_fingerprint[2])) > 0.01
+		or abs(flt(fp_final[3]) - flt(ss_fingerprint[3])) > 0.01
+	):
+		frappe.throw(_("Final Salary Slip fingerprint mismatch: {0}").format(fp_final))
+
+	result["new_je"] = {
+		"name": new_je.name,
+		"docstatus": new_je.docstatus,
+		"posting_date": str(new_je.posting_date),
+		"total_debit": new_je.total_debit,
+		"total_credit": new_je.total_credit,
+		"rows": len(new_je.accounts),
+	}
+	result["ss_fingerprint"] = fp_final
+	result["steps"].append({"regenerate_draft": new_je.name, "ok": True})
+	return result
+
+
+@frappe.whitelist(methods=["POST"], allow_guest=False)
+def payroll_replace_accrual_je_draft(
+	action: str,
+	payroll_entry: str,
+	expected_je: str,
+	expected_employees: int | str,
+	expected_je_debit: float | str,
+	expected_je_rows: int | str,
+	required_je_posting_date: str,
+	idempotency_key: str,
+	expected_ss_fingerprint: list | str | None = None,
+) -> dict[str, Any]:
+	"""Cancel/delete a submitted payroll accrual JE and regenerate it as Draft.
+
+	Does **not** submit the replacement. Does **not** modify employees or Salary
+	Slip amounts. Uses ``PayrollEntryWithAccountingDimensions.make_accrual_jv_entry``
+	(which already saves with ``submit_journal_entry=False``).
+	"""
+	_assert_permission()
+	action = _validate_replace_draft_params(
+		action=action,
+		payroll_entry=payroll_entry,
+		expected_je=expected_je,
+		idempotency_key=idempotency_key,
+		required_je_posting_date=required_je_posting_date,
+	)
+
+	expected_employees = cint(expected_employees)
+	expected_je_debit = flt(expected_je_debit)
+	expected_je_rows = cint(expected_je_rows)
+	if isinstance(expected_ss_fingerprint, str) and expected_ss_fingerprint:
+		expected_ss_fingerprint = json.loads(expected_ss_fingerprint)
+
+	cache_key = _idempotency_cache_key(f"draft_replace:{str(idempotency_key).strip()}")
+	prior = frappe.cache().get_value(cache_key)
+	if prior and action == "execute" and prior.get("status") == "ALREADY_COMPLETED":
+		return {
+			"action": action,
+			"status": "ALREADY_COMPLETED",
+			"idempotent_replay": True,
+			"prior_result": prior,
+			"generated_at": str(now_datetime()),
+			"mutated": False,
+		}
+
+	preflight_kwargs = dict(
+		payroll_entry=payroll_entry,
+		expected_je=expected_je,
+		expected_employees=expected_employees,
+		expected_je_debit=expected_je_debit,
+		expected_je_rows=expected_je_rows,
+		required_je_posting_date=required_je_posting_date,
+		expected_ss_fingerprint=expected_ss_fingerprint,
+	)
+
+	if action == "dry_run":
+		pre = _preflight_replace_draft(**preflight_kwargs)
+		response = {
+			"action": action,
+			"generated_at": str(now_datetime()),
+			"site": frappe.local.site,
+			"preflight": pre,
+			"mutated": False,
+		}
+		if pre["state"].get("already_corrected"):
+			response["status"] = "ALREADY_COMPLETED"
+			response["dry_run_result"] = "DRY_RUN_PASS"
+			response["completed"] = pre["state"].get("completed")
+		elif pre["ok"]:
+			response["status"] = "READY"
+			response["dry_run_result"] = "DRY_RUN_PASS"
+		else:
+			response["status"] = "BLOCKED"
+			response["dry_run_result"] = "DRY_RUN_BLOCKED"
+		_log("draft_replace_dry_run", {"status": response["status"], "payroll_entry": payroll_entry})
+		return response
+
+	with _payroll_entry_lock(payroll_entry, f"draft:{str(idempotency_key).strip()}"):
+		pre = _preflight_replace_draft(**preflight_kwargs)
+		response: dict[str, Any] = {
+			"action": action,
+			"generated_at": str(now_datetime()),
+			"site": frappe.local.site,
+			"preflight": pre,
+			"mutated": False,
+		}
+
+		if pre["state"].get("already_corrected"):
+			completed = pre["state"]["completed"]
+			response["status"] = "ALREADY_COMPLETED"
+			response["completed"] = completed
+			frappe.cache().set_value(
+				cache_key,
+				{**completed, "response_meta": {"site": frappe.local.site}},
+				expires_in_sec=IDEMPOTENCY_TTL_SECONDS,
+			)
+			return response
+
+		if not pre["ok"]:
+			frappe.throw(_("Preflight failed: {0}").format("; ".join(pre["errors"])))
+
+		ss_fp = tuple(pre["state"]["ss_fingerprint"])
+		try:
+			result = _execute_replace_draft(
+				payroll_entry=payroll_entry,
+				expected_je=expected_je,
+				required_je_posting_date=required_je_posting_date,
+				expected_employees=expected_employees,
+				expected_je_debit=expected_je_debit,
+				expected_je_rows=expected_je_rows,
+				ss_fingerprint=ss_fp,
+			)
+		except Exception as exc:
+			frappe.db.rollback()
+			_log(
+				"draft_replace_failed",
+				{
+					"payroll_entry": payroll_entry,
+					"error_type": type(exc).__name__,
+					"recovery": "Restore from verified DB backup if checkpoints were committed",
+				},
+			)
+			raise
+
+		completed = {
+			"status": "ALREADY_COMPLETED",
+			"payroll_entry": payroll_entry,
+			"employees": expected_employees,
+			"ss_fingerprint": result["ss_fingerprint"],
+			"journal_entry": result["new_je"],
+			"executed_at": str(now_datetime()),
+			"idempotency_key": str(idempotency_key).strip(),
+		}
+		response["mutated"] = True
+		response["status"] = "EXECUTED"
+		response["result"] = result
+		response["completed"] = completed
+		frappe.cache().set_value(cache_key, completed, expires_in_sec=IDEMPOTENCY_TTL_SECONDS)
+		_log(
+			"draft_replace_ok",
+			{"new_je": result["new_je"]["name"], "payroll_entry": payroll_entry, "docstatus": 0},
+		)
 		return response
