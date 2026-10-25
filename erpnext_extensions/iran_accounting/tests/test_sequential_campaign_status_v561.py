@@ -142,8 +142,21 @@ class TestSequentialCampaignStatus(unittest.TestCase):
 			},
 		}
 
+		counters = {
+			"total": 15968,
+			"completed": 0,
+			"skipped_covered": 0,
+			"pending": 15968,
+			"failed": 0,
+			"blocked": 0,
+			"riv_created": 0,
+			"riv_completed": 0,
+			"riv_queued": 0,
+			"riv_in_progress": 0,
+			"riv_failed": 0,
+		}
 		with mock.patch.object(camp, "_require_campaign", return_value=fake_doc), mock.patch.object(
-			camp, "_refresh_counters", return_value={"total": 15968, "pending": 15968}
+			camp, "_compute_campaign_counters", return_value=counters
 		), mock.patch(
 			"erpnext_extensions.iran_accounting.historical_rebuild.campaign.frappe.get_all",
 			return_value=[],
@@ -159,9 +172,6 @@ class TestSequentialCampaignStatus(unittest.TestCase):
 		), mock.patch(
 			"erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild.parse_campaign_session_id",
 			return_value="20261018160151",
-		), mock.patch(
-			"erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild.chronological_identities",
-			return_value=[mock.Mock()] * 4517,
 		):
 			out = camp.status("HRC-00001")
 
@@ -171,6 +181,8 @@ class TestSequentialCampaignStatus(unittest.TestCase):
 		self.assertEqual(out["session_last_failure"]["riv"], "btua40o4u4")
 		self.assertIn("Active Session:", out["text"])
 		self.assertIn("counters", out)
+		self.assertIn("progress", out)
+		self.assertTrue(out.get("read_only"))
 		self.assertIn("campaign", out)
 		self.assertIn("status", out)
 
@@ -202,7 +214,21 @@ class TestSequentialCampaignStatus(unittest.TestCase):
 			"status": "Running",
 		}
 		with mock.patch.object(camp, "_require_campaign", return_value=fake_doc), mock.patch.object(
-			camp, "_refresh_counters", return_value={"total": 10}
+			camp,
+			"_compute_campaign_counters",
+			return_value={
+				"total": 10,
+				"completed": 0,
+				"skipped_covered": 0,
+				"pending": 10,
+				"failed": 0,
+				"blocked": 0,
+				"riv_created": 0,
+				"riv_completed": 0,
+				"riv_queued": 0,
+				"riv_in_progress": 0,
+				"riv_failed": 0,
+			},
 		), mock.patch(
 			"erpnext_extensions.iran_accounting.historical_rebuild.campaign.frappe.get_all",
 			return_value=[],
