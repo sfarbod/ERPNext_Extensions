@@ -281,9 +281,13 @@ def sync_campaign_execution_state(
 			pass
 
 
+def _executor_lock_key(campaign: str) -> str:
+	return f"{CACHE_SEQ_LOCK}:{campaign}"
+
+
 def _acquire_executor_lock(campaign: str, session_id: str) -> None:
 	"""Only one sequential executor may operate on a campaign at a time."""
-	key = f"{CACHE_SEQ_LOCK}:{campaign}"
+	key = _executor_lock_key(campaign)
 	held = frappe.cache().get_value(key)
 	if held and held != session_id:
 		frappe.throw(
@@ -294,10 +298,23 @@ def _acquire_executor_lock(campaign: str, session_id: str) -> None:
 
 
 def _release_executor_lock(campaign: str, session_id: str) -> None:
-	key = f"{CACHE_SEQ_LOCK}:{campaign}"
+	key = _executor_lock_key(campaign)
 	held = frappe.cache().get_value(key)
 	if held == session_id:
 		frappe.cache().delete_value(key)
+
+
+def _executor_lock_owned(campaign: str, session_id: str) -> bool:
+	held = frappe.cache().get_value(_executor_lock_key(campaign))
+	return bool(held == session_id)
+
+
+def _refresh_executor_lock(campaign: str, session_id: str) -> None:
+	"""Heartbeat: extend TTL only if we still own the lock."""
+	key = _executor_lock_key(campaign)
+	held = frappe.cache().get_value(key)
+	if held == session_id:
+		frappe.cache().set_value(key, session_id, expires_in_sec=60 * 60 * 6)
 
 
 def start_sequential_session(campaign: str = "HRC-00001") -> dict[str, Any]:
@@ -438,15 +455,47 @@ def chronological_identities(campaign: str) -> list[dict[str, Any]]:
 	return rows
 
 
-def _assert_no_active_riv() -> None:
-	n = cint(
-		frappe.db.count(
-			"Repost Item Valuation",
-			{"docstatus": 1, "status": ("in", ["Queued", "In Progress"])},
-		)
+def _wait_until_riv_queue_clear(
+	*,
+	campaign: str | None = None,
+	sess: dict | None = None,
+) -> dict[str, Any]:
+	"""WAIT → RECHECK → CONTINUE for site-wide Queued/In Progress RIVs (v5.6.14).
+
+	Replaces the old hard fail of ``_assert_no_active_riv``. Does not create RIVs
+	and does not mark Campaign Failed while waiting.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_queue_wait import (
+		wait_for_riv_queue_drain,
 	)
-	if n > 0:
-		frappe.throw(f"Active RIV present ({n}); sequential policy forbids starting another")
+
+	session = sess or get_seq_session()
+	sid = (session or {}).get("session_id")
+	camp = campaign or (session or {}).get("campaign")
+
+	def _lock_ok() -> bool:
+		if not camp or not sid:
+			return True
+		return _executor_lock_owned(camp, sid)
+
+	def _heartbeat() -> None:
+		if camp and sid:
+			_refresh_executor_lock(camp, sid)
+
+	# Idle DB before sleep loops.
+	try:
+		frappe.db.commit()
+	except Exception:
+		frappe.db.rollback()
+
+	return wait_for_riv_queue_drain(
+		sess=session,
+		save_session=_save_seq if session else None,
+		stop_check=_stop_requested,
+		lock_ok=_lock_ok if camp and sid else None,
+		heartbeat=_heartbeat if camp and sid else None,
+		campaign=camp,
+	)
 
 
 def execute_one_identity(
@@ -456,11 +505,11 @@ def execute_one_identity(
 	posting_time,
 	*,
 	company: str,
+	campaign: str | None = None,
 ) -> dict[str, Any]:
 	"""Create exactly one RIV, execute sync, verify chain — terminal before return."""
 	_ensure_bootstrap()
 	_empty_rq()
-	_assert_no_active_riv()
 	sess = get_seq_session()
 	if not sess:
 		frappe.throw("No sequential session — call start_sequential_session()")
@@ -469,6 +518,40 @@ def execute_one_identity(
 	key = f"{item_code}|{warehouse}"
 	if key in (sess.get("identities_done") or []):
 		return {"ok": True, "skipped_done": True, "item_code": item_code, "warehouse": warehouse}
+
+	# v5.6.14: wait for site-wide RIV queue (do not fail-start on temporary occupancy).
+	qwait = _wait_until_riv_queue_clear(campaign=campaign or sess.get("campaign"), sess=sess)
+	if qwait.get("stopped") or qwait.get("lock_lost"):
+		return {
+			"ok": False,
+			"stopped": bool(qwait.get("stopped")),
+			"lock_lost": bool(qwait.get("lock_lost")),
+			"queue_wait": qwait,
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"error": "stopped_during_riv_queue_wait"
+			if qwait.get("stopped")
+			else "executor_lock_lost_during_riv_queue_wait",
+		}
+
+	# Recheck immediately before create (close check→create race under our lock).
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_queue_wait import (
+		count_active_rivs,
+	)
+
+	if count_active_rivs() > 0:
+		qwait2 = _wait_until_riv_queue_clear(campaign=campaign or sess.get("campaign"), sess=sess)
+		if qwait2.get("stopped") or qwait2.get("lock_lost") or count_active_rivs() > 0:
+			return {
+				"ok": False,
+				"stopped": bool(qwait2.get("stopped")),
+				"lock_lost": bool(qwait2.get("lock_lost")),
+				"queue_wait": qwait2,
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"error": "riv_queue_not_drained_before_create",
+				"stop_chain": not bool(qwait2.get("stopped") or qwait2.get("lock_lost")),
+			}
 
 	create_repost_item_valuation_entry(
 		frappe._dict(
@@ -873,6 +956,30 @@ def run_sequential(
 	)
 	frappe.db.commit()
 
+	# Drain any site-wide Queued/In Progress RIVs before the first create.
+	qwait0 = _wait_until_riv_queue_clear(campaign=campaign, sess=sess)
+	if qwait0.get("stopped") or qwait0.get("lock_lost"):
+		sess = get_seq_session() or sess
+		sess["status"] = "Paused"
+		_save_seq(sess)
+		sync_campaign_execution_state(
+			campaign, status=STATUS_PAUSED, session_id=session_id
+		)
+		frappe.db.commit()
+		_release_executor_lock(campaign, session_id)
+		return {
+			"session_id": session_id,
+			"campaign": campaign,
+			"campaign_status": STATUS_PAUSED,
+			"stopped_by_flag": bool(qwait0.get("stopped")),
+			"lock_lost": bool(qwait0.get("lock_lost")),
+			"queue_wait": qwait0,
+			"gates_ok": False,
+			"identities_attempted": 0,
+			"identities_completed": 0,
+			"identities_failed": 0,
+		}
+
 	results = []
 	completed = 0
 	failed = 0
@@ -886,6 +993,14 @@ def run_sequential(
 					"index": i,
 					"reason": "STOP_FLAG",
 					"detail": "halted before creating next RIV",
+				}
+				break
+			if not _executor_lock_owned(campaign, session_id):
+				stopped_by_flag = True
+				blocked_at = {
+					"index": i,
+					"reason": "LOCK_LOST",
+					"detail": "executor lock no longer owned; refuse further creates",
 				}
 				break
 			_empty_rq()
@@ -902,6 +1017,7 @@ def run_sequential(
 				row.posting_date,
 				row.posting_time,
 				company=company,
+				campaign=campaign,
 			)
 			if out.get("riv"):
 				sync_campaign_execution_state(
@@ -915,8 +1031,8 @@ def run_sequential(
 			results.append(out)
 			if out.get("ok"):
 				completed += 1
-			elif out.get("stopped"):
-				# Operator STOP during retry wait — pause, do not mark permanent Failed.
+			elif out.get("stopped") or out.get("lock_lost"):
+				# STOP during queue/retry wait, or lock loss — pause, not Failed.
 				sess = get_seq_session() or sess
 				sess["status"] = "Paused"
 				_save_seq(sess)
@@ -927,11 +1043,16 @@ def run_sequential(
 				stopped_by_flag = True
 				blocked_at = {
 					"index": i,
-					"reason": "STOP_FLAG",
-					"detail": "halted during resilient RIV retry wait",
+					"reason": "LOCK_LOST" if out.get("lock_lost") else "STOP_FLAG",
+					"detail": (
+						"executor lock lost during wait"
+						if out.get("lock_lost")
+						else "halted during RIV queue or resilient retry wait"
+					),
 					"riv": out.get("riv"),
 					"item_code": row.item_code,
 					"warehouse": row.warehouse,
+					"queue_wait": out.get("queue_wait"),
 				}
 				break
 			else:
