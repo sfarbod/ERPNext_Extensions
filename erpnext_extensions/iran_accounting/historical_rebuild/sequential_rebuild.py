@@ -581,6 +581,9 @@ def execute_one_identity(
 		return {"ok": False, "reason": "create_failed", "item_code": item_code, "warehouse": warehouse}
 
 	sess.setdefault("riv_created", []).append(name)
+	sess["current_item_code"] = item_code
+	sess["current_warehouse"] = warehouse
+	sess["current_riv"] = name
 	_save_seq(sess)
 	frappe.db.commit()
 
@@ -946,6 +949,9 @@ def run_sequential(
 		todo = todo[: cint(max_identities)]
 
 	clear_sequential_stop()
+	# Persist plan_size once so status() can report identity progress without
+	# re-scanning chronological_identities on every operator poll.
+	sess["plan_size"] = len(idents)
 	sess["status"] = "Running"
 	_save_seq(sess)
 	sync_campaign_execution_state(

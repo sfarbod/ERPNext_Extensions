@@ -71,7 +71,22 @@ def _append_log(campaign: str, message: str, level: str = "INFO", voucher_type=N
 	frappe.db.commit()
 
 
-def _refresh_counters(campaign: str) -> dict[str, int]:
+def _compute_campaign_counters(campaign: str) -> dict[str, int]:
+	"""Read-only aggregation of Campaign Item status + manifest-linked RIV names.
+
+	Scopes (do not conflate):
+	- ``completed`` / ``pending`` / ``skipped_covered`` / ``failed`` / ``blocked``:
+	  Campaign Item ``item_status`` counts (document-level, current verified Manifest).
+	  Sequential coverage marks verified docs as ``Skipped Covered``, not ``Completed``.
+	- ``riv_*``: distinct names from Item.``riv_names`` JSON (legacy identity-drain /
+	  processor-linked RIVs). Sequential RIVs are tracked in the Session JSON and are
+	  intentionally NOT written into ``riv_names`` — see ``sequential`` / ``progress``.
+
+	Invariant (mutually exclusive item_status buckets used here):
+	  total == completed + pending + skipped_covered + failed + blocked
+	  (pending includes ``RIV Linked``; Processing/Source Rebuild fold into pending-like
+	  remainder only when present — those rare statuses are added to pending below).
+	"""
 	rows = frappe.db.sql(
 		f"""
 		select item_status, count(*) as c
@@ -85,13 +100,25 @@ def _refresh_counters(campaign: str) -> dict[str, int]:
 	counts = {r.item_status: cint(r.c) for r in rows}
 	total = sum(counts.values())
 	completed = counts.get(ITEM_COMPLETED, 0)
-	pending = counts.get(ITEM_PENDING, 0) + counts.get(ITEM_RIV_LINKED, 0)
+	skipped = counts.get(ITEM_SKIPPED, 0)
 	failed = counts.get(ITEM_FAILED, 0)
 	blocked = counts.get(ITEM_BLOCKED, 0)
-	skipped = counts.get(ITEM_SKIPPED, 0)
+	# Pending work: Pending + RIV Linked + any transitional statuses not in finals.
+	known_final = {
+		ITEM_COMPLETED,
+		ITEM_SKIPPED,
+		ITEM_FAILED,
+		ITEM_BLOCKED,
+		ITEM_PENDING,
+		ITEM_RIV_LINKED,
+	}
+	pending = counts.get(ITEM_PENDING, 0) + counts.get(ITEM_RIV_LINKED, 0)
+	for st, n in counts.items():
+		if st not in known_final:
+			pending += n
 
-	# RIV stats from linked names (best-effort aggregate).
-	riv_names = set()
+	# Manifest-linked RIV stats (legacy / processor path — not Sequential session RIVs).
+	riv_names: set[str] = set()
 	raw_rows = frappe.db.sql(
 		f"""
 		select riv_names from `tab{ITEM_DOCTYPE}`
@@ -137,22 +164,6 @@ def _refresh_counters(campaign: str) -> dict[str, int]:
 			else:
 				riv_stats[key] = n
 
-	frappe.db.set_value(
-		CAMPAIGN_DOCTYPE,
-		campaign,
-		{
-			"total_documents": total,
-			"completed": completed,
-			"pending": pending,
-			"failed": failed,
-			"blocked": blocked,
-			"skipped_covered": skipped,
-			**riv_stats,
-			"last_activity": now_datetime(),
-		},
-		update_modified=False,
-	)
-	frappe.db.commit()
 	return {
 		"total": total,
 		"completed": completed,
@@ -161,6 +172,156 @@ def _refresh_counters(campaign: str) -> dict[str, int]:
 		"blocked": blocked,
 		"skipped_covered": skipped,
 		**riv_stats,
+	}
+
+
+def _persist_campaign_counters(campaign: str, counters: dict[str, int]) -> None:
+	"""Write computed counters onto the Campaign header (executor / mutation paths)."""
+	frappe.db.set_value(
+		CAMPAIGN_DOCTYPE,
+		campaign,
+		{
+			"total_documents": cint(counters.get("total")),
+			"completed": cint(counters.get("completed")),
+			"pending": cint(counters.get("pending")),
+			"failed": cint(counters.get("failed")),
+			"blocked": cint(counters.get("blocked")),
+			"skipped_covered": cint(counters.get("skipped_covered")),
+			"riv_created": cint(counters.get("riv_created")),
+			"riv_completed": cint(counters.get("riv_completed")),
+			"riv_queued": cint(counters.get("riv_queued")),
+			"riv_in_progress": cint(counters.get("riv_in_progress")),
+			"riv_failed": cint(counters.get("riv_failed")),
+			"last_activity": now_datetime(),
+		},
+		update_modified=False,
+	)
+	frappe.db.commit()
+
+
+def _refresh_counters(campaign: str) -> dict[str, int]:
+	"""Compute + persist Campaign Item counters (mutation — not for status())."""
+	counters = _compute_campaign_counters(campaign)
+	_persist_campaign_counters(campaign, counters)
+	return counters
+
+
+COUNTER_SEMANTICS = {
+	"counters.total": {
+		"scope": "campaign_manifest",
+		"source": "Campaign Item count",
+		"meaning": "Total documents in the Campaign manifest",
+	},
+	"counters.completed": {
+		"scope": "campaign_manifest",
+		"source": "item_status=Completed",
+		"meaning": "Documents completed by non-sequential processor path",
+	},
+	"counters.skipped_covered": {
+		"scope": "campaign_manifest",
+		"source": "item_status=Skipped Covered",
+		"meaning": "Documents verified via Sequential coverage (direct or covered)",
+	},
+	"counters.pending": {
+		"scope": "campaign_manifest",
+		"source": "item_status Pending/RIV Linked/transitional",
+		"meaning": "Documents not yet verified; decreases only after coverage mark",
+	},
+	"counters.riv_*": {
+		"scope": "campaign_manifest_linked_riv",
+		"source": "Item.riv_names → Repost Item Valuation.status",
+		"meaning": "Legacy/processor-linked RIVs — NOT Sequential session RIVs",
+	},
+	"sequential.session_riv_*": {
+		"scope": "current_session",
+		"source": "Session JSON (Redis+disk)",
+		"meaning": "RIVs created/completed/failed in the active Sequential session",
+	},
+	"sequential.identities_done": {
+		"scope": "current_session",
+		"source": "Session JSON identities_done",
+		"meaning": "Distinct Item+WH identities finished in the current session",
+	},
+	"sequential.direct_verified / covered_verified": {
+		"scope": "campaign_manifest",
+		"source": "Campaign Item.verification_class",
+		"meaning": "Document verification class counts (persisted by mark_campaign_coverage)",
+	},
+	"progress.verified_documents": {
+		"scope": "campaign_manifest",
+		"source": "completed + skipped_covered",
+		"meaning": "Verified manifest coverage (never derived from RIV count alone)",
+	},
+}
+
+
+def _build_progress_view(counters: dict[str, int], seq: dict) -> dict[str, Any]:
+	"""Operator-facing progress with explicit scopes (no fabricated identity totals)."""
+	total = cint(counters.get("total", 0))
+	completed = cint(counters.get("completed", 0))
+	skipped = cint(counters.get("skipped_covered", 0))
+	pending = cint(counters.get("pending", 0))
+	failed = cint(counters.get("failed", 0))
+	blocked = cint(counters.get("blocked", 0))
+	verified = completed + skipped
+	doc_pct = round((verified / total) * 100.0, 3) if total else 0.0
+
+	# Identity plan size only when the executor recorded it (cheap; never invent).
+	plan_size = seq.get("plan_size")
+	identities_done = cint(seq.get("identities_done") or 0)
+	id_pct = None
+	if plan_size is not None and cint(plan_size) > 0:
+		id_pct = round((identities_done / cint(plan_size)) * 100.0, 3)
+
+	invariant_ok = total == (completed + pending + skipped + failed + blocked)
+
+	return {
+		"documents": {
+			"scope": "campaign_manifest",
+			"total": total,
+			"verified": verified,
+			"completed": completed,
+			"skipped_covered": skipped,
+			"pending": pending,
+			"failed": failed,
+			"blocked": blocked,
+			"progress_pct": doc_pct,
+			"invariant_ok": invariant_ok,
+			"invariant": "total = completed + pending + skipped_covered + failed + blocked",
+		},
+		"identities": {
+			"scope": "current_session",
+			"verified": identities_done,
+			"total": cint(plan_size) if plan_size is not None else None,
+			"pending": (
+				max(cint(plan_size) - identities_done, 0) if plan_size is not None else None
+			),
+			"progress_pct": id_pct,
+		},
+		"sequential_riv": {
+			"scope": "current_session",
+			"created": cint(seq.get("session_riv_created") or 0),
+			"completed": cint(seq.get("session_riv_completed") or 0),
+			"failed": cint(seq.get("session_riv_failed") or 0),
+			"in_progress": 1 if (seq.get("session_status") == "Running" and seq.get("current_riv")) else 0,
+			"current_riv": seq.get("current_riv"),
+			"current_session_id": seq.get("active_session_id"),
+		},
+		"manifest_linked_riv": {
+			"scope": "campaign_manifest_linked_riv",
+			"created": cint(counters.get("riv_created") or 0),
+			"completed": cint(counters.get("riv_completed") or 0),
+			"queued": cint(counters.get("riv_queued") or 0),
+			"in_progress": cint(counters.get("riv_in_progress") or 0),
+			"failed": cint(counters.get("riv_failed") or 0),
+			"note": "Separate from Sequential session RIVs; stays 0 under Sequential-only runs",
+		},
+		"verification_class": {
+			"scope": "campaign_manifest",
+			"direct_verified": cint(seq.get("direct_verified") or 0),
+			"covered_verified": cint(seq.get("covered_verified") or 0),
+			"pending_verification": cint(seq.get("pending_verification") or 0),
+		},
 	}
 
 
@@ -612,7 +773,12 @@ def resume_identity_drain(
 
 
 def _sequential_status_block(campaign: str) -> dict:
-	"""Active sequential session progress (canonical under HRC-00001)."""
+	"""Active sequential session progress (Session JSON + Item verification_class).
+
+	Does not invent identity totals: ``plan_size`` is only reported when the
+	executor persisted it on the session. Avoids heavy chronological_identities()
+	scans inside status().
+	"""
 	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
 		get_seq_session,
 		parse_campaign_session_id,
@@ -638,16 +804,23 @@ def _sequential_status_block(campaign: str) -> dict:
 			"session_riv_failed": 0,
 			"session_riv_created": 0,
 			"identities_done": 0,
+			"plan_size": None,
 			"last_failure": None,
 			"elapsed_seconds": None,
 			"avg_riv_seconds": None,
 			"estimated_remaining_seconds": None,
+			"direct_verified": 0,
+			"covered_verified": 0,
+			"pending_verification": 0,
+			"current_riv": None,
+			"current_identity": None,
 		}
 
 	completed = list(sess.get("riv_completed") or [])
 	failed = list(sess.get("riv_failed") or [])
 	created = list(sess.get("riv_created") or [])
 	done = list(sess.get("identities_done") or [])
+	plan_size = sess.get("plan_size")
 	started_at = sess.get("started_at")
 	elapsed = None
 	avg = None
@@ -660,14 +833,10 @@ def _sequential_status_block(campaign: str) -> dict:
 			n = len(completed)
 			if n > 0 and elapsed is not None:
 				avg = elapsed / n
-				# Remaining distinct identities from chronological plan.
-				from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
-					chronological_identities,
-				)
-
-				total_id = len(chronological_identities(campaign) or [])
-				remaining_id = max(total_id - len(done), 0)
-				eta = avg * remaining_id
+				# ETA only when executor recorded plan_size (no heavy recompute).
+				if plan_size is not None:
+					remaining_id = max(cint(plan_size) - len(done), 0)
+					eta = avg * remaining_id
 	except Exception:
 		pass
 
@@ -695,6 +864,18 @@ def _sequential_status_block(campaign: str) -> dict:
 		elif r.verification_class in (REPOST_PLANNED, None, ""):
 			pending_v += cint(r.c)
 
+	cur_identity = None
+	if done:
+		parts = str(done[-1]).split("|", 1)
+		if len(parts) == 2:
+			cur_identity = {"item_code": parts[0], "warehouse": parts[1]}
+	# Prefer live current from session if present.
+	if sess.get("current_item_code") and sess.get("current_warehouse"):
+		cur_identity = {
+			"item_code": sess.get("current_item_code"),
+			"warehouse": sess.get("current_warehouse"),
+		}
+
 	return {
 		"active_session_id": sess.get("session_id") or active_sid,
 		"session_status": sess.get("status"),
@@ -702,6 +883,7 @@ def _sequential_status_block(campaign: str) -> dict:
 		"session_riv_failed": len(failed),
 		"session_riv_created": len(created),
 		"identities_done": len(done),
+		"plan_size": cint(plan_size) if plan_size is not None else None,
 		"last_failure": sess.get("last_failure"),
 		"elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
 		"avg_riv_seconds": round(avg, 3) if avg is not None else None,
@@ -709,16 +891,23 @@ def _sequential_status_block(campaign: str) -> dict:
 		"direct_verified": direct,
 		"covered_verified": covered,
 		"pending_verification": pending_v,
-		"current_riv": created[-1] if created else None,
+		"current_riv": sess.get("current_riv") or (created[-1] if created else None),
+		"current_identity": cur_identity,
+		"revision": sess.get("revision"),
 	}
 
 
 def status(campaign: str) -> dict:
-	"""Read-only campaign progress + recent logs."""
+	"""Read-only campaign progress + recent logs.
+
+	Does **not** mutate Campaign counters, Session JSON, Redis, SLE, GL, SABE, or RIV.
+	Document progress uses Campaign Item statuses; Sequential RIV progress uses Session.
+	"""
 	doc = _require_campaign(campaign)
-	counters = _refresh_counters(campaign)
-	doc.reload()
+	# Read-only compute — never persist from status().
+	counters = _compute_campaign_counters(campaign)
 	seq = _sequential_status_block(campaign)
+	progress = _build_progress_view(counters, seq)
 	logs = []
 	for row in reversed(list(doc.execution_logs or [])[-15:]):
 		logs.append(
@@ -757,14 +946,17 @@ def status(campaign: str) -> dict:
 			{"docstatus": 1, "status": ("in", ["Queued", "In Progress"])},
 		)
 	)
-	remaining = (
-		cint(counters.get("total", 0))
-		- cint(counters.get("completed", 0))
-		- cint(counters.get("skipped_covered", 0))
-	)
-	# Session-aware RIV counters (do not treat old-session Completed as coverage).
+	verified = cint(progress["documents"]["verified"])
+	remaining = max(cint(counters.get("total", 0)) - verified, 0)
 	session_completed = cint(seq.get("session_riv_completed") or 0)
 	session_failed = cint(seq.get("session_riv_failed") or 0)
+	session_created = cint(seq.get("session_riv_created") or 0)
+	id_total = seq.get("plan_size")
+	id_line = (
+		f"{seq.get('identities_done', 0):,} / {cint(id_total):,}"
+		if id_total is not None
+		else f"{seq.get('identities_done', 0):,} / (plan_size not recorded)"
+	)
 	text = f"""
 HISTORICAL REBUILD CAMPAIGN
 
@@ -780,17 +972,25 @@ Active Session:
 Session Status:
 {seq.get('session_status') or '—'}
 
+--- Document progress (Campaign Manifest; verified ≠ RIV count) ---
+
 Total Documents:
 {counters.get('total', 0):,}
 
-Completed:
+Verified Documents (Completed + Skipped Covered):
+{verified:,}  ({progress['documents']['progress_pct']}%)
+
+Completed (processor path):
 {counters.get('completed', 0):,}
 
-Remaining:
-{max(remaining, 0):,}
+Skipped Covered (Sequential verified):
+{counters.get('skipped_covered', 0):,}
 
-Pending:
+Pending (unverified):
 {counters.get('pending', 0):,}
+
+Remaining (total − verified):
+{remaining:,}
 
 Failed:
 {counters.get('failed', 0):,}
@@ -798,34 +998,47 @@ Failed:
 Blocked:
 {counters.get('blocked', 0):,}
 
-Skipped Covered:
-{counters.get('skipped_covered', 0):,}
-
 Direct Verified:
 {seq.get('direct_verified', 0):,}
 
 Covered Verified:
 {seq.get('covered_verified', 0):,}
 
-Session RIV Completed:
+--- Identity / Sequential RIV (Current Session) ---
+
+Identities Done / Plan:
+{id_line}
+
+Sequential RIV Created:
+{session_created:,}
+
+Sequential RIV Completed:
 {session_completed:,}
 
-Session RIV Failed:
+Sequential RIV Failed:
 {session_failed:,}
 
-Core RIV Created:
+Current RIV:
+{seq.get('current_riv') or '—'}
+
+Current Identity:
+{json.dumps(seq.get('current_identity'), default=str)}
+
+--- Manifest-linked RIV (legacy Item.riv_names; not Sequential) ---
+
+Manifest-linked RIV Created:
 {counters.get('riv_created', 0):,}
 
-Core RIV Completed:
+Manifest-linked RIV Completed:
 {counters.get('riv_completed', 0):,}
 
-Core RIV Queued:
+Manifest-linked RIV Queued:
 {counters.get('riv_queued', 0):,}
 
-Core RIV In Progress:
+Manifest-linked RIV In Progress:
 {counters.get('riv_in_progress', 0):,}
 
-Core RIV Failed:
+Manifest-linked RIV Failed:
 {counters.get('riv_failed', 0):,}
 
 Distinct Failed Identities:
@@ -833,12 +1046,6 @@ Distinct Failed Identities:
 
 Queue Pressure (outstanding RIV):
 {outstanding_riv} / {MAX_OUTSTANDING_RIV}
-
-Current:
-{(doc.current_voucher_type or '')} {(doc.current_voucher_no or '')}
-
-Current Item / Warehouse:
-{(doc.last_voucher_type or '')} / {(doc.last_voucher_no or '')}
 
 Last Failure:
 {json.dumps(seq.get('last_failure'), default=str)}
@@ -859,6 +1066,9 @@ Recent Logs:
 		"campaign": doc.name,
 		"status": doc.status,
 		"counters": counters,
+		"progress": progress,
+		"counter_semantics": COUNTER_SEMANTICS,
+		"read_only": True,
 		"sequential": seq,
 		"active_session_id": seq.get("active_session_id"),
 		"session_status": seq.get("session_status"),
@@ -866,7 +1076,8 @@ Recent Logs:
 		"session_last_failure": seq.get("last_failure") or (sess_failed[0] if sess_failed else None),
 		"queue_pressure": {"outstanding": outstanding_riv, "cap": MAX_OUTSTANDING_RIV},
 		"current": {"type": doc.current_voucher_type, "name": doc.current_voucher_no},
-		"current_identity": {
+		"current_identity": seq.get("current_identity")
+		or {
 			"item_code": doc.last_voucher_type,
 			"warehouse": doc.last_voucher_no,
 		},
