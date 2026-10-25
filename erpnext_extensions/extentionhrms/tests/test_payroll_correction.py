@@ -144,5 +144,50 @@ class TestPayrollCorrectionValidation(unittest.TestCase):
 			)
 
 
+class TestPayrollReplaceDraftValidation(unittest.TestCase):
+	def setUp(self):
+		self.mod, self.frappe = _load_module_with_frappe_stub()
+
+	def test_replace_draft_valid_params(self):
+		action = self.mod._validate_replace_draft_params(
+			action="dry_run",
+			payroll_entry="شهریور 1405",
+			expected_je="ACC-JV-1405-172143",
+			idempotency_key="abcdefgh",
+			required_je_posting_date="2026-09-22",
+		)
+		self.assertEqual(action, "dry_run")
+
+	def test_replace_draft_rejects_bad_action(self):
+		with self.assertRaises(Exception):
+			self.mod._validate_replace_draft_params(
+				action="submit",
+				payroll_entry="شهریور 1405",
+				expected_je="ACC-JV-1405-172143",
+				idempotency_key="abcdefgh",
+				required_je_posting_date="2026-09-22",
+			)
+
+	def test_replace_draft_requires_fields(self):
+		with self.assertRaises(Exception):
+			self.mod._validate_replace_draft_params(
+				action="execute",
+				payroll_entry="",
+				expected_je="ACC-JV-1405-172143",
+				idempotency_key="abcdefgh",
+				required_je_posting_date="2026-09-22",
+			)
+
+	def test_replace_draft_idempotency_too_short(self):
+		with self.assertRaises(Exception):
+			self.mod._validate_replace_draft_params(
+				action="execute",
+				payroll_entry="شهریور 1405",
+				expected_je="ACC-JV-1405-172143",
+				idempotency_key="short",
+				required_je_posting_date="2026-09-22",
+			)
+
+
 if __name__ == "__main__":
 	unittest.main()
