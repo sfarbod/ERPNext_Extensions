@@ -291,8 +291,9 @@ class TestResilientExecutionV5612(unittest.TestCase):
 			)
 		self.assertFalse(out["ok"])
 		self.assertTrue(out.get("attempts_exhausted") or out.get("retry_reason"))
-		# 4 waits between 5 attempts
-		self.assertAlmostEqual(sum(clock.sleeps), 480.0, places=3)
+		# 4 waits between 5 attempts + 1 post-exhaust final barrier grace
+		self.assertAlmostEqual(sum(clock.sleeps), 600.0, places=3)
+		self.assertTrue(out.get("final_barrier"))
 
 	def test_completed_while_waiting_after_1020(self):
 		"""Production race: 1020 raised, then RIV becomes Completed before retry execute."""
@@ -568,6 +569,77 @@ class TestResilientExecutionV5612(unittest.TestCase):
 				max_attempts=5,
 			)
 		self.assertTrue(out.get("non_retryable"))
+
+	def test_exhaustion_then_late_completed_via_final_barrier(self):
+		"""5× 1020 then RIV becomes Completed during post-exhaust grace."""
+		clock = _FakeClock()
+		configure_retry_clock(sleep_fn=clock.sleep, now_fn=clock.time)
+		# 5 execute attempts each: pre-read Queued + post-exc Queued; then barrier Completed
+		statuses = ["Queued", "Queued"] * 5 + ["Queued", "Completed"]
+		reader, _ = self._patch_riv(statuses)
+
+		def execute_fn(_):
+			raise frappe.QueryDeadlockError((1020, "Record has changed"))
+
+		sess = {"identities_done": [], "riv_completed": [], "riv_failed": []}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry.read_riv_status",
+			side_effect=reader,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry.frappe"
+		) as f:
+			f.db.rollback.return_value = None
+			out = run_resilient_riv_execution(
+				riv_name="d3829ku65b",
+				item_code="I",
+				warehouse="W",
+				posting_date="2026-01-01",
+				posting_time="00:00:00",
+				company="C",
+				sess=sess,
+				execute_fn=execute_fn,
+				verify_chain=lambda *a, **k: {"dirty": False, "sle_count": 4},
+				delay_s=120,
+				max_attempts=5,
+			)
+		self.assertTrue(out["ok"], out)
+		self.assertTrue(out.get("final_barrier") or out.get("reconciled_after_exhaustion"))
+		self.assertEqual(sess["identities_done"], ["I|W"])
+		self.assertAlmostEqual(sum(clock.sleeps), 600.0, places=3)
+
+	def test_dependency_i5_fail_closed_no_retry(self):
+		reader, _ = self._patch_riv(["Queued"])
+
+		def execute_fn(_):
+			raise Exception(
+				"Stock valuation integrity (I5) secondary incoming exceeds pool "
+				"voucher=MAT-STE-2026-25106"
+			)
+
+		sess = {"identities_done": [], "riv_completed": []}
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry.read_riv_status",
+			side_effect=reader,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry.frappe"
+		) as f:
+			f.db.rollback.return_value = None
+			out = run_resilient_riv_execution(
+				riv_name="5s61kqov83",
+				item_code="30200016",
+				warehouse="Q",
+				posting_date="2026-01-01",
+				posting_time="00:00:00",
+				company="C",
+				sess=sess,
+				execute_fn=execute_fn,
+				verify_chain=lambda *a, **k: {"dirty": False},
+				delay_s=120,
+				max_attempts=5,
+			)
+		self.assertTrue(out.get("non_retryable"))
+		self.assertFalse(out["ok"])
+		self.assertEqual(sess.get("identities_done"), [])
 
 	def test_production_reconcile_recommendation(self):
 		payload = {
