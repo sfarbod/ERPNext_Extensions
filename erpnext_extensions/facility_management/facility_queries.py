@@ -8,6 +8,42 @@ from frappe.desk.reportview import build_match_conditions
 from frappe.utils import cint
 
 
+def _normalize_link_filters(filters) -> frappe._dict:
+	"""Accept dict or Frappe list-style filters from Link controls."""
+	if not filters:
+		return frappe._dict()
+	if isinstance(filters, dict):
+		return frappe._dict(filters)
+	if isinstance(filters, str):
+		import json
+
+		filters = json.loads(filters)
+		if isinstance(filters, dict):
+			return frappe._dict(filters)
+	if isinstance(filters, (list, tuple)):
+		out = frappe._dict()
+		for row in filters:
+			if not row:
+				continue
+			# [doctype, fieldname, operator, value] or [fieldname, operator, value]
+			if len(row) == 4:
+				_dt, fieldname, operator, value = row
+			elif len(row) == 3:
+				fieldname, operator, value = row
+			elif len(row) == 2:
+				fieldname, value = row
+				operator = "="
+			else:
+				continue
+			if operator in ("=", "==", "Equals", "equals") or operator is None:
+				out[fieldname] = value
+			elif fieldname not in out:
+				# Keep first equality-like mapping; complex ops unused by callers today.
+				out[fieldname] = value
+		return out
+	return frappe._dict()
+
+
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def facility_type_link_query(doctype, txt, searchfield, start, page_len, filters):
@@ -28,9 +64,15 @@ def facility_type_link_query(doctype, txt, searchfield, start, page_len, filters
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def facility_link_query(doctype, txt, searchfield, start, page_len, filters):
-	"""Search Facility by ID, facility name, and bank (Active facilities for repayments)."""
-	filters = frappe._dict(filters or {})
-	txt = f"%{txt}%"
+	"""Search Facility by ID, facility name / loan number, and bank.
+
+	Eligibility:
+	- ``status`` filter is applied when provided.
+	- ``repayment_select`` (legacy virtual filter from Facility Repayment) means
+	  ``status = 'Active'`` — repayments are only allowed against Active Facilities.
+	"""
+	filters = _normalize_link_filters(filters)
+	txt = f"%{(txt or '').strip()}%"
 	conditions = [
 		"(name LIKE %(txt)s OR facility_name LIKE %(txt)s OR bank LIKE %(txt)s OR IFNULL(remarks, '') LIKE %(txt)s)"
 	]
@@ -39,22 +81,30 @@ def facility_link_query(doctype, txt, searchfield, start, page_len, filters):
 	if filters.get("company"):
 		conditions.append("company = %(company)s")
 		params["company"] = filters.company
-	if filters.get("status"):
+
+	status = filters.get("status")
+	if status:
 		conditions.append("status = %(status)s")
-		params["status"] = filters.status
-	elif filters.get("repayment_select"):
+		params["status"] = status
+	elif cint(filters.get("repayment_select")):
+		# Preserve historical Facility Repayment set_query contract.
 		conditions.append("status = 'Active'")
 
 	match_conditions = build_match_conditions("Facility")
 	if match_conditions:
 		conditions.append(match_conditions)
 
+	# Columns shown in Link dropdown: ID, Facility Name, Bank, Status
 	return frappe.db.sql(
 		f"""
 		SELECT name, facility_name, bank, status
 		FROM `tabFacility`
 		WHERE {" AND ".join(conditions)}
-		ORDER BY facility_name ASC, name ASC
+		ORDER BY
+			CASE WHEN name LIKE %(txt)s THEN 0 ELSE 1 END,
+			CASE WHEN facility_name LIKE %(txt)s THEN 0 ELSE 1 END,
+			facility_name ASC,
+			name ASC
 		LIMIT %(page_len)s OFFSET %(start)s
 		""",
 		params,

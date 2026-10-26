@@ -245,7 +245,13 @@ class DebtPurchaseDbFixtureMixin:
 		self.assertEqual(doc.cheque_status, CHEQUE_STATUS_DEBT_PURCHASE_IN_COLLECTION)
 		return doc.name
 
-	def _new_active_facility(self, *, principal: float = 10000, profit: float = 2000) -> str:
+	def _new_active_facility(
+		self,
+		*,
+		principal: float = 10000,
+		profit: float = 2000,
+		allocated_pdcs: list[str] | None = None,
+	) -> str:
 		settings = get_facility_settings_doc(self.company)
 		bank = frappe.db.get_value("Bank", {}, "name", order_by="creation asc") or ensure_bank_master()
 		cc = resolve_repayment_cost_center(facility=None, settings=settings)
@@ -261,6 +267,15 @@ class DebtPurchaseDbFixtureMixin:
 		apply_facility_test_accounts(fac)
 		if cc and not fac.cost_center:
 			fac.cost_center = cc
+		if not fac.department:
+			dept = frappe.db.get_value(
+				"Department", {"company": self.company, "disabled": 0}, "name", order_by="modified desc"
+			) or frappe.db.get_value("Department", {"company": self.company}, "name")
+			if dept:
+				fac.department = dept
+		# v5.6.20: Debt Purchase activation requires allocated PDC total == principal+profit.
+		for pdc_name in allocated_pdcs or []:
+			fac.append("debt_purchase_pdcs", {"post_dated_cheque": pdc_name})
 		fac.insert(ignore_permissions=True)
 		frappe.db.commit()
 		create_receipt_journal_entry(fac.name)
@@ -288,7 +303,9 @@ class TestDebtPurchaseSettlementE2E(DebtPurchaseDbFixtureMixin, unittest.TestCas
 		principal, profit = 900.0, 100.0
 		amount = principal + profit
 		pdc_name = self._new_assigned_pdc(amount=amount)
-		fac_name = self._new_active_facility()
+		fac_name = self._new_active_facility(
+			principal=principal, profit=profit, allocated_pdcs=[pdc_name]
+		)
 		bal_before = get_facility_balance_row(fac_name)
 
 		assign_refs = _refs(pdc_name, purpose=PURPOSE_ASSIGNMENT)
@@ -378,7 +395,9 @@ class TestDebtPurchaseSettlementE2E(DebtPurchaseDbFixtureMixin, unittest.TestCas
 	def test_cancel_failure_keeps_settled_state(self):
 		principal, profit = 800.0, 200.0
 		pdc_name = self._new_assigned_pdc(amount=principal + profit)
-		fac_name = self._new_active_facility()
+		fac_name = self._new_active_facility(
+			principal=principal, profit=profit, allocated_pdcs=[pdc_name]
+		)
 		rep_name = self._new_dp_repayment(fac_name, pdc_name, principal=principal, profit=profit)
 		rep = frappe.get_doc("Facility Repayment", rep_name)
 		rep.submit()
@@ -412,7 +431,9 @@ class TestDebtPurchaseSettlementE2E(DebtPurchaseDbFixtureMixin, unittest.TestCas
 	def test_settlement_reference_helpers_idempotent(self):
 		principal, profit = 700.0, 300.0
 		pdc_name = self._new_assigned_pdc(amount=principal + profit)
-		fac_name = self._new_active_facility()
+		fac_name = self._new_active_facility(
+			principal=principal, profit=profit, allocated_pdcs=[pdc_name]
+		)
 		rep_name = self._new_dp_repayment(fac_name, pdc_name, principal=principal, profit=profit)
 		rep = frappe.get_doc("Facility Repayment", rep_name)
 		rep.submit()
@@ -444,7 +465,9 @@ class TestDebtPurchaseSettlementE2E(DebtPurchaseDbFixtureMixin, unittest.TestCas
 	def test_repeated_settle_rejected(self):
 		principal, profit = 600.0, 400.0
 		pdc_name = self._new_assigned_pdc(amount=principal + profit)
-		fac_name = self._new_active_facility()
+		fac_name = self._new_active_facility(
+			principal=principal, profit=profit, allocated_pdcs=[pdc_name]
+		)
 		rep1 = self._new_dp_repayment(fac_name, pdc_name, principal=principal, profit=profit)
 		rep2 = self._new_dp_repayment(fac_name, pdc_name, principal=principal, profit=profit)
 		frappe.get_doc("Facility Repayment", rep1).submit()
@@ -463,7 +486,11 @@ class TestDebtPurchaseConcurrency(DebtPurchaseDbFixtureMixin, unittest.TestCase)
 		principal, profit = 900.0, 100.0
 		amount = principal + profit
 		pdc_name = self._new_assigned_pdc(amount=amount)
-		fac_name = self._new_active_facility(principal=20000, profit=5000)
+		# Facility total 25000; allocate settlement PDC + cover PDC for activation equality.
+		cover = self._new_assigned_pdc(amount=24000.0)
+		fac_name = self._new_active_facility(
+			principal=20000, profit=5000, allocated_pdcs=[pdc_name, cover]
+		)
 		rep_a = self._new_dp_repayment(fac_name, pdc_name, principal=principal, profit=profit)
 		rep_b = self._new_dp_repayment(fac_name, pdc_name, principal=principal, profit=profit)
 		frappe.db.commit()
@@ -546,7 +573,10 @@ class TestDebtPurchaseRejectionE2E(DebtPurchaseDbFixtureMixin, unittest.TestCase
 		links_before = (pdc_before.debt_purchase_facility, pdc_before.debt_purchase_repayment)
 		assign_refs_before = _refs(pdc_name, purpose=PURPOSE_ASSIGNMENT)
 
-		fac_name = self._new_active_facility(principal=10000, profit=2000)
+		cover = self._new_assigned_pdc(amount=12000.0)
+		fac_name = self._new_active_facility(
+			principal=10000, profit=2000, allocated_pdcs=[cover]
+		)
 		frappe.db.set_value("Facility", fac_name, "facility_type", non_dp, update_modified=False)
 		frappe.db.commit()
 		je_count_after_facility = frappe.db.count("Journal Entry", {"docstatus": 1})

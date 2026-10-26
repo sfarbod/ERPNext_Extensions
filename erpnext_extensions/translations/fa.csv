@@ -72,3 +72,25 @@ Real GL vouchers — with inventory filters: only vouchers with scoped SLE,اس�
 Real GL — with inventory filters: documents related to scoped stock movements,دفتر کل واقعی — با فیلتر موجودی: اسناد مرتبط با حرکات موجودی انتخاب‌شده
 Stock valuation — peer of Item Group / Item,ارزش‌گذاری موجودی — هم‌تراز گروه کالا / کالا
 General Ledger — not compared to stock Inward/Outward,دفتر کل — با ارزش ورودی/خروجی موجودی مقایسه نمی‌شود
+Debt Purchase Cheques,چک‌های خرید دین
+Cheque Count,تعداد چک
+Cheque Total,جمع مبلغ چک‌ها
+Principal,اصل
+Profit,فرع
+Facility Total,جمع تسهیلات
+Difference,اختلاف
+matched,تراز
+mismatch,عدم تراز
+Difference is zero,اختلاف صفر است
+Cheque total does not equal Facility total,جمع مبلغ چک‌ها با جمع تسهیلات برابر نیست
+Installment Count,تعداد اقساط
+Total Principal,جمع اصل
+Total Profit,جمع سود
+Total Installments,جمع کل اقساط
+PDC,چک
+Cheque No,شماره چک
+Due Date,سررسید
+Bank,بانک
+Amount,مبلغ
+Status,وضعیت
+Facility PDC Allocation,تخصیص چک خرید دین تسهیلات

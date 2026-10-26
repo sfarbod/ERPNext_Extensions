@@ -1,0 +1,85 @@
+{
+ "creation": "2026-10-26 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "post_dated_cheque",
+  "cheque_no",
+  "cheque_due_date",
+  "drawer_bank_name",
+  "cheque_amount",
+  "cheque_status"
+ ],
+ "fields": [
+  {
+   "columns": 2,
+   "fieldname": "post_dated_cheque",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "PDC",
+   "options": "Post Dated Cheque",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "columns": 2,
+   "fetch_from": "post_dated_cheque.cheque_no",
+   "fieldname": "cheque_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Cheque No",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fetch_from": "post_dated_cheque.cheque_due_date",
+   "fieldname": "cheque_due_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Due Date",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fetch_from": "post_dated_cheque.drawer_bank_name",
+   "fieldname": "drawer_bank_name",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Bank",
+   "options": "Bank",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fetch_from": "post_dated_cheque.cheque_amount",
+   "fieldname": "cheque_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fetch_from": "post_dated_cheque.cheque_status",
+   "fieldname": "cheque_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status",
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-10-26 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Facility Management",
+ "name": "Facility PDC Allocation",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

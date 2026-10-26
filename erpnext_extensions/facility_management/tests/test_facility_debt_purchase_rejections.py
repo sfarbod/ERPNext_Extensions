@@ -107,6 +107,10 @@ class TestDebtPurchaseRejectionValidations(unittest.TestCase):
 				"erpnext_extensions.facility_management.facility_debt_purchase.frappe.get_cached_value",
 				return_value="IRR",
 			),
+			patch(
+				"erpnext_extensions.facility_management.facility_pdc_allocation.pdc_is_allocated_to_facility",
+				return_value=True,
+			),
 		):
 			return validate_debt_purchase_cheque_repayment(repayment, facility=facility)
 
