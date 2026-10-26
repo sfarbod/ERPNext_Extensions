@@ -1,2 +1,2 @@
 app_name = "erpnext_extensions"
-__version__ = "5.6.19"
+__version__ = "5.6.20"

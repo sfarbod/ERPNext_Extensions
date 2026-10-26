@@ -28,7 +28,10 @@ boot_session = ["erpnext_extensions.desk_boot.extend_bootinfo"]
 # ------------------
 
 # include js, css files in header of desk.html
-app_include_css = "/assets/erpnext_extensions/css/petty_management_desk.css"
+app_include_css = [
+	"/assets/erpnext_extensions/css/petty_management_desk.css",
+	"/assets/erpnext_extensions/css/facility_grid_footer.css",
+]
 # app_include_js = "/assets/erpnext_extensions/js/erpnext_extensions.js"
 
 # include js, css files in header of web template
@@ -82,6 +85,7 @@ doctype_js = {
 		"facility_management/public/js/facility_dimension_link_queries.js",
 		"facility_management/public/js/facility_settings_defaults.js",
 		"facility_management/public/js/facility_je_preview_dialog.js",
+		"facility_management/public/js/facility_grid_footer.js",
 	],
 	"Facility Repayment": [
 		"facility_management/public/js/facility_settings_defaults.js",

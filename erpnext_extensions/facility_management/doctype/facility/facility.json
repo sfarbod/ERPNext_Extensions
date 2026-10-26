@@ -15,6 +15,7 @@
   "section_main",
   "facility_name",
   "facility_type",
+  "is_debt_purchase",
   "company",
   "bank",
   "status",
@@ -58,6 +59,8 @@
   "penalty_expense_account",
   "section_accounting",
   "receipt_journal_entry",
+  "section_debt_purchase_pdcs",
+  "debt_purchase_pdcs",
   "section_schedule",
   "repayment_schedule",
   "section_templates",
@@ -87,6 +90,15 @@
    "in_standard_filter": 1,
    "label": "Facility Type",
    "options": "Facility Type"
+  },
+  {
+   "default": "0",
+   "fetch_from": "facility_type.is_debt_purchase",
+   "fieldname": "is_debt_purchase",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Is Debt Purchase",
+   "read_only": 1
   },
   {
    "fieldname": "company",
@@ -361,6 +373,20 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:cint(doc.is_debt_purchase)==1",
+   "fieldname": "section_debt_purchase_pdcs",
+   "fieldtype": "Section Break",
+   "label": "Debt Purchase Cheques"
+  },
+  {
+   "depends_on": "eval:cint(doc.is_debt_purchase)==1",
+   "fieldname": "debt_purchase_pdcs",
+   "fieldtype": "Table",
+   "label": "",
+   "no_copy": 1,
+   "options": "Facility PDC Allocation"
+  },
+  {
    "fieldname": "section_schedule",
    "fieldtype": "Section Break",
    "label": "Repayment Schedule"
@@ -405,7 +431,9 @@
  "name": "Facility",
  "naming_rule": "Expression",
  "owner": "Administrator",
- "search_fields": "facility_name,bank,facility_type",
+ "search_fields": "facility_name,bank,facility_type,status",
+ "show_title_field_in_link": 1,
+ "title_field": "facility_name",
  "permissions": [
   {
    "create": 1,
