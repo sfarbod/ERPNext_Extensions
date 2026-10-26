@@ -34,6 +34,9 @@ from frappe.utils import cint, flt
 from hrms.payroll.doctype.payroll_entry.payroll_entry import PayrollEntry
 
 from erpnext_extensions.extentionhrms.custom_fields import PROCESS_BASED_ON_EMPLOYEE_FIELD
+from erpnext_extensions.extentionhrms.payroll.exclusive_relieving import (
+	exclusive_payable_end_date,
+)
 from erpnext_extensions.extentionhrms.payroll_accrual_grouping import (
 	AccrualConfig,
 	ComponentAmount,
@@ -51,6 +54,20 @@ ROUND_OFF_DEPARTMENT_CUSTOM_FIELD = "custom_payroll_round_off_department"
 class PayrollEntryWithAccountingDimensions(PayrollEntry):
 	"""Payroll Entry that books the accrual grouped by Account + Cost Center +
 	Department, sourcing Department from each Salary Slip."""
+
+	def get_payroll_dates_for_employee(self, employee_details: dict) -> tuple:
+		"""Align unmarked-attendance date windows with exclusive relieving.
+
+		HRMS Core already includes employees with ``relieving_date >= start_date``
+		(so first-day relieving stays on the Payroll Entry). This only shortens
+		the per-employee attendance window so the relieving day is not treated
+		as an unmarked payable day.
+		"""
+		start_date, end_date = super().get_payroll_dates_for_employee(employee_details)
+		end_date = exclusive_payable_end_date(
+			start_date, end_date, employee_details.get("relieving_date")
+		)
+		return start_date, end_date
 
 	def make_accrual_jv_entry(self, submitted_salary_slips):
 		employee_wise = cint(

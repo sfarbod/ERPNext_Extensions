@@ -73,7 +73,10 @@ the same Party on every component that maps to a shared payable account.
 | --- | --- | --- |
 | `payroll_accrual_grouping.py` | ✅ pure Python | grouping / splitting / round-off logic |
 | `tests/test_payroll_accrual_grouping.py` | ✅ `pytest` | 50 unit + randomised property tests |
-| `payroll_entry_override.py` | ❌ needs Frappe/HRMS | DB read + `make_accrual_jv_entry` override |
+| `payroll_entry_override.py` | ❌ needs Frappe/HRMS | DB read + `make_accrual_jv_entry` override + exclusive relieving attendance window |
+| `payroll/exclusive_relieving.py` | ✅ pure Python | exclusive relieving payable-end helpers |
+| `payroll/salary_slip_relieving.py` | ❌ needs Frappe/HRMS | `extend_doctype_class` Salary Slip mixin |
+| `tests/test_exclusive_relieving.py` | ✅ `pytest` | exclusive relieving payment-day matrix |
 
 ## Running the tests
 
@@ -125,3 +128,25 @@ separate Leave Type; the deduction hits the same entitlement balance.
 Known v1 limitation: one leave application per calendar day (the stock
 overlap validation is kept), so a second hourly leave on the same day is
 rejected.
+
+---
+
+## Exclusive relieving date (payment days)
+
+HRMS Core treats `Employee.relieving_date` as the **last payable day**. Local
+policy treats it as the **first non-payable day**.
+
+- Wired with `extend_doctype_class` on **Salary Slip**
+  (`payroll/salary_slip_relieving.py`) — does not replace the HRMS controller.
+- Shortens `actual_end_date` to `relieving_date - 1` when relieving falls in the
+  slip period (including the last day of the period).
+- Relieving on the payroll **start** date yields `payment_days = 0` while the
+  employee remains eligible for Payroll Entry (stock filter already uses
+  `relieving_date >= start_date`) and keeps a Salary Slip with normal
+  `total_working_days`.
+- Leave-based LWP skips the relieving day so it is not deducted twice.
+- Payroll Entry unmarked-attendance windows use the same exclusive end via
+  `PayrollEntryWithAccountingDimensions.get_payroll_dates_for_employee`.
+
+Pure helpers + pytest: `payroll/exclusive_relieving.py`,
+`tests/test_exclusive_relieving.py`.

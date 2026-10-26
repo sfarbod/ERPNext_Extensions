@@ -246,6 +246,14 @@ override_doctype_class = {
 	),
 }
 
+# Compose exclusive-relieving payment-day rules onto Salary Slip without
+# replacing the HRMS controller. See ``extentionhrms/payroll/salary_slip_relieving.py``.
+extend_doctype_class = {
+	"Salary Slip": [
+		"erpnext_extensions.extentionhrms.payroll.salary_slip_relieving.SalarySlipExclusiveRelieving"
+	],
+}
+
 # Document Events
 # ---------------
 # Hook on document methods and events
