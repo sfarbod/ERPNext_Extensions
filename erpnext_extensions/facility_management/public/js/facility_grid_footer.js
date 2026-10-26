@@ -1,8 +1,9 @@
 // Copyright (c) 2026, ERPNext Extensions contributors
-// Shared read-only footers for Facility child tables (presentation only).
+// Compact summary bars for Facility child tables (presentation only).
+// Labels use __() with English source strings (translated via fa.csv).
 //
-// IMPORTANT: Attach footers to the *field* $wrapper (outside grid.wrapper) so
-// Frappe grid.make()/refresh rebuilds cannot wipe them.
+// Attach to the field $wrapper (outside grid.wrapper) so grid.make()/refresh
+// rebuilds cannot wipe the summary.
 
 frappe.provide("erpnext_extensions.facility_management.grid_footer");
 
@@ -38,22 +39,31 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 		if (!field || !field.$wrapper || !field.$wrapper.length) {
 			return null;
 		}
-		const cls = `ee-facility-grid-footer ee-facility-grid-footer-${key}`;
+		const cls = `ee-facility-summary ee-facility-grid-footer ee-facility-grid-footer-${key}`;
 		let $el = field.$wrapper.find(`.ee-facility-grid-footer-${key}`);
 		if (!$el.length) {
-			$el = $(`<div class="${cls}" style="
-				padding:10px 12px;
-				margin:8px 0 4px 0;
-				border:1px solid var(--border-color);
-				border-radius:var(--border-radius);
-				background:var(--control-bg);
-				font-size:var(--text-md);
-				line-height:1.7;
-			"></div>`);
-			// Place after the grid control, still inside the field wrapper.
+			$el = $(`<div class="${cls}" role="group"></div>`);
 			field.$wrapper.append($el);
+		} else {
+			$el.attr("class", cls);
+			$el.removeAttr("style");
 		}
 		return $el;
+	}
+
+	function itemHtml(label, value, opts) {
+		opts = opts || {};
+		const extra = opts.extraClass ? ` ${opts.extraClass}` : "";
+		const hint = opts.hint
+			? `<span class="ee-facility-summary__hint">· ${frappe.utils.escape_html(opts.hint)}</span>`
+			: "";
+		const title = opts.title ? ` title="${frappe.utils.escape_html(opts.title)}"` : "";
+		return `
+			<div class="ee-facility-summary__item${extra}"${title}>
+				<span class="ee-facility-summary__label">${frappe.utils.escape_html(label)}</span>
+				<span class="ee-facility-summary__value">${frappe.utils.escape_html(String(value))} ${hint}</span>
+			</div>
+		`;
 	}
 
 	ns.render_html = function (frm, fieldname, key, html) {
@@ -74,6 +84,7 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 
 	ns.format_irr = formatIrr;
 	ns.parse_amount = parseAmount;
+	ns.item_html = itemHtml;
 
 	ns.refresh_schedule_footer = function (frm) {
 		if (!frm.fields_dict.repayment_schedule) {
@@ -84,12 +95,11 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 		const principal = ns.sum_field(rows, "principal_amount");
 		const profit = ns.sum_field(rows, "profit_amount");
 		const total = principal + profit;
-		const html = `
-			<div><strong>${__("تعداد اقساط")}:</strong> ${count}</div>
-			<div><strong>${__("جمع اصل")}:</strong> ${formatIrr(principal)} ${__("ریال")}</div>
-			<div><strong>${__("جمع سود")}:</strong> ${formatIrr(profit)} ${__("ریال")}</div>
-			<div><strong>${__("جمع کل اقساط")}:</strong> ${formatIrr(total)} ${__("ریال")}</div>
-		`;
+		const html =
+			itemHtml(__("Installment Count"), count) +
+			itemHtml(__("Total Principal"), formatIrr(principal)) +
+			itemHtml(__("Total Profit"), formatIrr(profit)) +
+			itemHtml(__("Total Installments"), formatIrr(total));
 		ns.render_html(frm, "repayment_schedule", "schedule", html);
 	};
 
@@ -97,7 +107,15 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 		if (!frm.fields_dict.debt_purchase_pdcs) {
 			return;
 		}
-		// Keep footer in DOM even when section is depends_on-hidden; visibility follows section.
+		if (!cint(frm.doc.is_debt_purchase)) {
+			const $el = frm.fields_dict.debt_purchase_pdcs.$wrapper.find(
+				".ee-facility-grid-footer-pdc"
+			);
+			if ($el.length) {
+				$el.empty().hide();
+			}
+			return;
+		}
 		const rows = frm.doc.debt_purchase_pdcs || [];
 		const count = rows.length;
 		const allocated = ns.sum_field(rows, "cheque_amount");
@@ -105,14 +123,25 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 		const profit = parseAmount(frm.doc.profit_amount);
 		const facilityTotal = principal + profit;
 		const diff = allocated - facilityTotal;
-		const html = `
-			<div><strong>${__("تعداد چک‌ها")}:</strong> ${count}</div>
-			<div><strong>${__("جمع مبلغ چک‌ها")}:</strong> ${formatIrr(allocated)} ${__("ریال")}</div>
-			<div><strong>${__("اصل تسهیلات")}:</strong> ${formatIrr(principal)} ${__("ریال")}</div>
-			<div><strong>${__("فرع تسهیلات")}:</strong> ${formatIrr(profit)} ${__("ریال")}</div>
-			<div><strong>${__("جمع تسهیلات")}:</strong> ${formatIrr(facilityTotal)} ${__("ریال")}</div>
-			<div><strong>${__("اختلاف (چک − تسهیلات)")}:</strong> ${formatIrr(diff)} ${__("ریال")}</div>
-		`;
+		const matched = diff === 0;
+		const diffOpts = matched
+			? {
+					extraClass: "ee-facility-summary__item--ok",
+					hint: __("matched"),
+					title: __("Difference is zero"),
+			  }
+			: {
+					extraClass: "ee-facility-summary__item--warn",
+					hint: __("mismatch"),
+					title: __("Cheque total does not equal Facility total"),
+			  };
+		const html =
+			itemHtml(__("Cheque Count"), count) +
+			itemHtml(__("Cheque Total"), formatIrr(allocated)) +
+			itemHtml(__("Principal"), formatIrr(principal)) +
+			itemHtml(__("Profit"), formatIrr(profit)) +
+			itemHtml(__("Facility Total"), formatIrr(facilityTotal)) +
+			itemHtml(__("Difference"), formatIrr(diff), diffOpts);
 		ns.render_html(frm, "debt_purchase_pdcs", "pdc", html);
 	};
 

@@ -376,13 +376,13 @@
    "depends_on": "eval:cint(doc.is_debt_purchase)==1",
    "fieldname": "section_debt_purchase_pdcs",
    "fieldtype": "Section Break",
-   "label": "چک‌های خرید دین"
+   "label": "Debt Purchase Cheques"
   },
   {
    "depends_on": "eval:cint(doc.is_debt_purchase)==1",
    "fieldname": "debt_purchase_pdcs",
    "fieldtype": "Table",
-   "label": "چک‌های خرید دین",
+   "label": "",
    "no_copy": 1,
    "options": "Facility PDC Allocation"
   },

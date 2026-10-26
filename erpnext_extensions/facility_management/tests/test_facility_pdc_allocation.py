@@ -376,3 +376,63 @@ class TestFacilityDebtPurchaseUiMeta(DebtPurchaseDbFixtureMixin, unittest.TestCa
 		self.assertIn("is_debt_purchase", table.depends_on or "")
 		flag = meta.get_field("is_debt_purchase")
 		self.assertEqual(flag.fetch_from, "facility_type.is_debt_purchase")
+
+	def test_section_label_is_english_source(self):
+		section = frappe.get_meta("Facility").get_field("section_debt_purchase_pdcs")
+		self.assertEqual(section.label, "Debt Purchase Cheques")
+		# Table label left empty so section heading is not duplicated.
+		table = frappe.get_meta("Facility").get_field("debt_purchase_pdcs")
+		self.assertFalse((table.label or "").strip())
+
+	def test_footer_js_uses_english_source_strings(self):
+		from pathlib import Path
+
+		path = Path(frappe.get_app_path("erpnext_extensions")).joinpath(
+			"facility_management", "public", "js", "facility_grid_footer.js"
+		)
+		src = path.read_text(encoding="utf-8")
+		# Must not hardcode Persian UI copy in JS.
+		for forbidden in ("تعداد چک", "جمع مبلغ چک", "اصل تسهیلات", "تعداد اقساط", "جمع اصل"):
+			self.assertNotIn(forbidden, src)
+		for required in (
+			'__("Cheque Count")',
+			'__("Cheque Total")',
+			'__("Installment Count")',
+			'__("Total Principal")',
+			'__("Difference")',
+			'__("matched")',
+			'__("mismatch")',
+		):
+			self.assertIn(required, src)
+
+	def test_fa_translations_cover_footer_labels(self):
+		from pathlib import Path
+
+		csv_path = Path(frappe.get_app_path("erpnext_extensions")).joinpath("translations", "fa.csv")
+		text = csv_path.read_text(encoding="utf-8")
+		for en in (
+			"Debt Purchase Cheques",
+			"Cheque Count",
+			"Cheque Total",
+			"Facility Total",
+			"Difference",
+			"Installment Count",
+			"Total Principal",
+			"Total Profit",
+			"Total Installments",
+			"matched",
+			"mismatch",
+		):
+			self.assertIn(en + ",", text)
+
+	def test_pdc_child_columns_prioritized(self):
+		meta = frappe.get_meta("Facility PDC Allocation")
+		# Prefer short English labels for grid readability.
+		self.assertEqual(meta.get_field("post_dated_cheque").label, "PDC")
+		self.assertEqual(meta.get_field("cheque_no").label, "Cheque No")
+		self.assertEqual(meta.get_field("cheque_due_date").label, "Due Date")
+		self.assertEqual(meta.get_field("drawer_bank_name").label, "Bank")
+		self.assertEqual(meta.get_field("cheque_amount").label, "Amount")
+		self.assertEqual(meta.get_field("cheque_status").label, "Status")
+		self.assertTrue(meta.get_field("post_dated_cheque").in_list_view)
+		self.assertTrue(meta.get_field("cheque_amount").in_list_view)

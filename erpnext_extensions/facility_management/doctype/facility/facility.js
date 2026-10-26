@@ -150,6 +150,11 @@ function toggle_pdc_grid_editable(frm) {
 	}
 	const closed = frm.doc.status === "Closed";
 	frm.set_df_property("debt_purchase_pdcs", "read_only", closed ? 1 : 0);
+	// Section Break already titles the block; avoid a second identical table label.
+	const field = frm.fields_dict.debt_purchase_pdcs;
+	if (field && field.$wrapper) {
+		field.$wrapper.addClass("ee-hide-table-label");
+	}
 }
 
 /**
