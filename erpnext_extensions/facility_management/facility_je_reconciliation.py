@@ -25,10 +25,10 @@ from typing import Any
 
 import frappe
 from frappe.utils import cint, flt, now_datetime
-from frappe.utils.synchronization import filelock
 
 from erpnext_extensions.facility_management.facility_accounting import refresh_facility_paid_fields
 from erpnext_extensions.facility_management.facility_balances import get_facility_balance_row
+from erpnext_extensions.facility_management.facility_identity import acquire_facility_repair_lock
 
 CLASS_SAFE = "SAFE_AUTO_REPAIR"
 CLASS_MANUAL = "MANUAL_REVIEW_REQUIRED"
@@ -1195,37 +1195,36 @@ def repair_facility(
 			"manual_issues": manual,
 		}
 
-	lock_name = f"facility_repair_{facility}"
 	frappe.flags[FLAG_IN_RECEIPT_REPAIR] = True
 	try:
-		with filelock(lock_name, timeout=30):
-			# Re-check fingerprint inside lock
-			live = _snapshot_facility(facility)
-			if _facility_fingerprint(live) != before_fp:
-				return {
-					"facility": facility,
-					"dry_run": False,
-					"repaired": False,
-					"reason": "STALE_FINGERPRINT",
-					"before": before,
-					"after": live,
-					"actions": [],
-				}
-			if updates:
-				# Narrow db_set — avoid full validate which may reject Active without JE mid-flight
-				frappe.db.set_value("Facility", facility, updates, update_modified=True)
-				actions.append({"action": "db_set", "fields": list(updates.keys())})
-			if amount_fix and not ownership_issues:
-				refresh_facility_paid_fields(facility)
-				actions.append({"action": "refresh_paid_fields"})
-			elif updates:
-				refresh_facility_paid_fields(facility)
-				# After clear, received_amount must stay 0
-				if updates.get("receipt_journal_entry") is None and "received_amount" in updates:
-					frappe.db.set_value(
-						"Facility", facility, "received_amount", 0, update_modified=False
-					)
-				actions.append({"action": "refresh_paid_fields"})
+		acquire_facility_repair_lock(facility)
+		# Re-check fingerprint inside cross-worker lock
+		live = _snapshot_facility(facility)
+		if _facility_fingerprint(live) != before_fp:
+			return {
+				"facility": facility,
+				"dry_run": False,
+				"repaired": False,
+				"reason": "STALE_FINGERPRINT",
+				"before": before,
+				"after": live,
+				"actions": [],
+			}
+		if updates:
+			# Narrow db_set — avoid full validate which may reject Active without JE mid-flight
+			frappe.db.set_value("Facility", facility, updates, update_modified=True)
+			actions.append({"action": "db_set", "fields": list(updates.keys())})
+		if amount_fix and not ownership_issues:
+			refresh_facility_paid_fields(facility)
+			actions.append({"action": "refresh_paid_fields"})
+		elif updates:
+			refresh_facility_paid_fields(facility)
+			# After clear, received_amount must stay 0
+			if updates.get("receipt_journal_entry") is None and "received_amount" in updates:
+				frappe.db.set_value(
+					"Facility", facility, "received_amount", 0, update_modified=False
+				)
+			actions.append({"action": "refresh_paid_fields"})
 	finally:
 		frappe.flags[FLAG_IN_RECEIPT_REPAIR] = False
 

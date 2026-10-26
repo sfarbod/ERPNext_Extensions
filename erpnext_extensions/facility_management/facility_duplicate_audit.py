@@ -114,15 +114,17 @@ def _digits_only(s: str) -> str:
 	return "".join(ch for ch in (s or "") if ch.isdigit())
 
 
+CLASS_EXACT = "EXACT_DUPLICATE"
+CLASS_HIGH = "HIGH_CONFIDENCE_POTENTIAL"
+CLASS_REVIEW = "NEEDS_FINANCE_REVIEW"
+
+
 def _potential_groups(facilities: list[dict[str, Any]], exact: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
 	"""Rank near-duplicates using multiple signals (never amount-only).
 
-	A candidate pair must have a primary identity signal:
-	- near-identical / similar normalized facility number, or
-	- digit substring / transcription pattern, or
-	- shared receipt Journal Entry
-
-	Amount/date/account signals only reinforce a primary signal.
+	Primary identity signal required (number similarity / typo / shared JE).
+	Secondary amount/date signals only reinforce. Low-confidence noise is dropped
+	unless reinforced by same principal+profit+contract or Draft+Active.
 	"""
 	exact_names = {f["name"] for g in exact for f in g}
 	by_cb: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -145,10 +147,7 @@ def _potential_groups(facilities: list[dict[str, Any]], exact: list[list[dict[st
 				if pair in seen_pairs:
 					continue
 				na, nb = a["normalized_number"], b["normalized_number"]
-				if not na or not nb:
-					continue
-				if na == nb:
-					# Exact key without being in exact groups means missing company/bank earlier
+				if not na or not nb or na == nb:
 					continue
 
 				sim = _similarity(na, nb)
@@ -158,38 +157,42 @@ def _potential_groups(facilities: list[dict[str, Any]], exact: list[list[dict[st
 				reasons: list[str] = []
 				score = 0.0
 				primary = False
+				strong_number = False
 
-				if sim >= 0.92 or digit_sim >= 0.95:
-					score += 45
+				if sim >= 0.95 or digit_sim >= 0.97:
+					score += 50
 					reasons.append(f"Near-identical facility number (sim={sim:.2f})")
 					primary = True
-				elif sim >= 0.85 or digit_sim >= 0.90:
-					score += 30
+					strong_number = True
+				elif sim >= 0.90 or digit_sim >= 0.93:
+					score += 35
 					reasons.append(f"Similar facility number (sim={sim:.2f})")
 					primary = True
+					strong_number = True
 				elif (
 					da
 					and db
-					and min(len(da), len(db)) >= 7
+					and min(len(da), len(db)) >= 8
 					and (da in db or db in da)
-					and abs(len(da) - len(db)) <= 4
+					and abs(len(da) - len(db)) <= 3
 				):
-					score += 35
+					score += 40
 					reasons.append("Facility number substring / possible transcription error")
 					primary = True
-				elif da and db and len(da) >= 10 and len(db) >= 10:
-					# Edit-distance style: allow one short digit run difference (typo)
-					if digit_sim >= 0.82 and abs(len(da) - len(db)) <= 2:
-						score += 28
+					strong_number = True
+				elif da and db and len(da) >= 12 and len(db) >= 12:
+					if digit_sim >= 0.88 and abs(len(da) - len(db)) <= 2:
+						score += 32
 						reasons.append(f"Possible typo in facility number digits (sim={digit_sim:.2f})")
 						primary = True
+						strong_number = True
 
 				same_je = bool(
 					a.get("receipt_journal_entry")
 					and a.get("receipt_journal_entry") == b.get("receipt_journal_entry")
 				)
 				if same_je:
-					score += 40
+					score += 45
 					reasons.append("Same receipt Journal Entry")
 					primary = True
 
@@ -209,39 +212,47 @@ def _potential_groups(facilities: list[dict[str, Any]], exact: list[list[dict[st
 				same_bank_acct = bool(a.get("bank_account") and a.get("bank_account") == b.get("bank_account"))
 				draft_active = {a.get("status"), b.get("status")} == {"Draft", "Active"}
 
+				reinforce = 0
 				if same_principal:
-					score += 12
+					reinforce += 12
 					reasons.append("Same principal amount")
 				if same_profit:
-					score += 10
+					reinforce += 10
 					reasons.append("Same profit amount")
 				if same_contract:
-					score += 10
+					reinforce += 10
 					reasons.append("Same contract date")
 				if same_receive:
-					score += 8
+					reinforce += 8
 					reasons.append("Same receive date")
 				if same_bank_acct:
-					score += 6
+					reinforce += 6
 					reasons.append("Same bank account")
 				if draft_active:
-					score += 15
+					reinforce += 15
 					reasons.append("Draft + Active pair")
+				score += reinforce
 
-				if score < 40:
+				# Drop weak number-only noise (no reinforcement, not shared JE)
+				if not same_je and not strong_number:
+					continue
+				if not same_je and reinforce < 12 and digit_sim < 0.93:
+					continue
+				if score < 50:
 					continue
 
 				seen_pairs.add(pair)
-				if score >= 70:
+				if same_je or (strong_number and reinforce >= 20) or score >= 75:
+					confidence = CLASS_HIGH
 					similarity = "High"
-				elif score >= 55:
-					similarity = "Medium"
 				else:
-					similarity = "Low"
+					confidence = CLASS_REVIEW
+					similarity = "Medium" if score >= 60 else "Low"
 				groups.append(
 					{
 						"members": [a, b],
 						"similarity": similarity,
+						"confidence": confidence,
 						"score": score,
 						"reasons": reasons,
 					}
@@ -287,23 +298,39 @@ def build_audit_rows(*, exclude_test_artifacts: bool = True) -> tuple[list[dict[
 		owner = _suggest_owner(group)
 		action = _recommended_action(group, exact=True)
 		for m in sorted(group, key=lambda x: x["name"]):
-			rows.append(_row(group_id, m, "Exact", "Exact match: company+bank+normalized facility_name", owner, action))
+			rows.append(
+				_row(
+					group_id,
+					m,
+					"Exact",
+					CLASS_EXACT,
+					"Exact match: company+bank+normalized facility_name",
+					owner,
+					action,
+				)
+			)
 
 	for group in potential:
 		gid += 1
-		group_id = f"POTENTIAL-{gid:04d}"
+		confidence = group.get("confidence") or CLASS_REVIEW
+		prefix = "HIGH" if confidence == CLASS_HIGH else "REVIEW"
+		group_id = f"{prefix}-{gid:04d}"
 		owner = _suggest_owner(group["members"])
 		action = _recommended_action(group["members"], exact=False)
 		reason = "; ".join(group["reasons"])
 		for m in sorted(group["members"], key=lambda x: x["name"]):
 			rows.append(
-				_row(group_id, m, group["similarity"], reason, owner, action)
+				_row(group_id, m, group["similarity"], confidence, reason, owner, action)
 			)
 
+	high = [g for g in potential if g.get("confidence") == CLASS_HIGH]
+	review = [g for g in potential if g.get("confidence") != CLASS_HIGH]
 	summary = {
 		"facilities_scanned": len(facilities),
 		"exact_groups": len(exact),
 		"exact_facilities": sum(len(g) for g in exact),
+		"high_confidence_groups": len(high),
+		"needs_finance_review_groups": len(review),
 		"potential_groups": len(potential),
 		"potential_facilities": sum(len(g["members"]) for g in potential),
 		"report_rows": len(rows),
@@ -315,6 +342,7 @@ def _row(
 	group_id: str,
 	m: dict[str, Any],
 	similarity: str,
+	confidence: str,
 	reason: str,
 	owner: str,
 	action: str,
@@ -335,6 +363,7 @@ def _row(
 		"repayment_count": cint(m.get("repayment_count")),
 		"paid_amount": flt(m.get("paid_amount")),
 		"similarity": similarity,
+		"confidence": confidence,
 		"reason": reason,
 		"suggested_owner": owner,
 		"recommended_action": action,
@@ -360,6 +389,7 @@ CSV_COLUMNS = [
 	"repayment_count",
 	"paid_amount",
 	"similarity",
+	"confidence",
 	"reason",
 	"suggested_owner",
 	"recommended_action",
@@ -393,21 +423,23 @@ def write_markdown(rows: list[dict[str, Any]], summary: dict[str, Any], path: st
 		"",
 		"## Summary",
 		"",
-		f"| Metric | Value |",
-		f"|---|---|",
+		"| Metric | Value |",
+		"|---|---|",
 		f"| Facilities scanned | {summary['facilities_scanned']} |",
-		f"| Exact duplicate groups | {summary['exact_groups']} |",
+		f"| EXACT_DUPLICATE groups | {summary['exact_groups']} |",
 		f"| Facilities in exact groups | {summary['exact_facilities']} |",
-		f"| Potential duplicate groups | {summary['potential_groups']} |",
-		f"| Facilities in potential groups | {summary['potential_facilities']} |",
+		f"| HIGH_CONFIDENCE_POTENTIAL groups | {summary.get('high_confidence_groups', 0)} |",
+		f"| NEEDS_FINANCE_REVIEW groups | {summary.get('needs_finance_review_groups', 0)} |",
+		f"| Potential groups (total) | {summary['potential_groups']} |",
 		f"| Report rows | {summary['report_rows']} |",
 		"",
 		"## Legend",
 		"",
-		"| Similarity | Meaning |",
+		"| Confidence | Meaning |",
 		"|---|---|",
-		"| Exact | Same Company + Bank + normalized facility number |",
-		"| High / Medium / Low | Multi-signal near-duplicate ranking |",
+		"| EXACT_DUPLICATE | Same Company + Bank + normalized facility number |",
+		"| HIGH_CONFIDENCE_POTENTIAL | Strong number/JE match reinforced by contract signals |",
+		"| NEEDS_FINANCE_REVIEW | Suspicious but not conclusive — verify manually |",
 		"",
 		"## Groups",
 		"",
@@ -417,7 +449,9 @@ def write_markdown(rows: list[dict[str, Any]], summary: dict[str, Any], path: st
 	for r in rows:
 		if r["group_id"] != current:
 			current = r["group_id"]
-			lines.append(f"### {current} — {r['similarity']}")
+			lines.append(f"### {current} — {r.get('confidence') or r['similarity']}")
+			lines.append("")
+			lines.append(f"**Confidence:** `{r.get('confidence') or ''}`")
 			lines.append("")
 			lines.append(f"**Reason:** {r['reason']}")
 			lines.append("")

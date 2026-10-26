@@ -34,6 +34,9 @@ class Facility(Document):
 	def before_insert(self):
 		# Duplicate / Copy must never inherit receipt ownership or derived receipt state.
 		clear_inherited_receipt_state(self)
+		# Re-assert under the same DB named lock immediately before naming/insert so
+		# concurrent workers cannot both pass validate then race tabSeries.
+		assert_facility_number_unique(self)
 
 	def validate(self):
 		apply_facility_settings_defaults(self, overwrite=False)

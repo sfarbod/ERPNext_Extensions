@@ -28,9 +28,17 @@ Finance duplicate-audit report.
   not recommended while ownership is invalid; opening partial schedules are not
   false-positive H; known profit cases stay MANUAL_REVIEW_REQUIRED.
 
+### Concurrency (cross-worker)
+Local filesystem locks are **not** used. Uniqueness and receipt-JE assignment
+serialize via MariaDB `GET_LOCK` named locks (same pattern as Petty Management
+allocation), held until transaction commit/rollback. This works across Docker
+workers that share the database. Identity uniqueness is re-checked in
+`before_insert` immediately before naming so concurrent inserts cannot both
+pass `validate` then race `tabSeries`.
+
 ### Database uniqueness (staged)
 Existing Production duplicates prevent a safe UNIQUE index today. Application
-validation + identity file locks protect new writes. After Finance resolves
+validation + MariaDB named locks protect new writes. After Finance resolves
 historical duplicates, a follow-up patch may add a stored `facility_number_key`
 with a UNIQUE index. Until then, do not enable an unsafe constraint.
 
@@ -41,11 +49,24 @@ with a UNIQUE index. Until then, do not enable an unsafe constraint.
 - `facility_management/facility_duplicate_audit.py` — Finance MD/CSV audit
 - Tests: `facility_management/tests/test_facility_integrity_guards.py`
 
+### Finance duplicate audit
+READ-ONLY reports classify groups as:
+
+- `EXACT_DUPLICATE`
+- `HIGH_CONFIDENCE_POTENTIAL`
+- `NEEDS_FINANCE_REVIEW`
+
+Deliverables:
+
+- `docs/facility_management/facility_duplicate_audit_20261026.md`
+- `docs/facility_management/facility_duplicate_audit_20261026.csv`
+
 ### Non-goals
 - No automatic Facility / JE deletion or merge
 - No Production data modification in this release
 - No Frappe / ERPNext Core changes
 - No repayment schedule rewrites
+- No UNIQUE DB index while historical duplicates remain
 
 ### Version
 **5.6.19**

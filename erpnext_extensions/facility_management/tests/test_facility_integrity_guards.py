@@ -46,6 +46,75 @@ def _second_company(exclude: str) -> str | None:
 	return frappe.db.get_value("Company", {"name": ("!=", exclude)}, "name", order_by="creation asc")
 
 
+def _ensure_second_company(exclude: str) -> str:
+	"""Return another Company with a minimal chart usable for Facility tests."""
+	from erpnext_extensions.facility_management.facility_e2e_context import (
+		ensure_facility_settings_accounts,
+		resolve_facility_gl_accounts,
+	)
+
+	other = _second_company(exclude)
+	if other:
+		accounts = resolve_facility_gl_accounts(other)
+		ensure_facility_settings_accounts(other, accounts)
+		return other
+
+	from frappe.utils import random_string
+
+	abbr = "FIT" + random_string(3)
+	name = f"Facility Integrity {abbr}"
+	currency = frappe.db.get_value("Company", exclude, "default_currency") or "IRR"
+	country = frappe.db.get_value("Company", exclude, "country") or "Iran"
+	doc = frappe.get_doc(
+		{
+			"doctype": "Company",
+			"company_name": name,
+			"abbr": abbr,
+			"default_currency": currency,
+			"country": country,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+
+	def _acc(account_name, parent, root_type, *, is_group=0, account_type=None):
+		row = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": account_name,
+				"parent_account": parent,
+				"company": doc.name,
+				"root_type": root_type,
+				"is_group": is_group,
+				"account_type": account_type,
+			}
+		)
+		row.insert(ignore_permissions=True)
+		return row.name
+
+	asset_root = frappe.db.get_value(
+		"Account", {"company": doc.name, "root_type": "Asset", "is_group": 1}, "name"
+	)
+	liab_root = frappe.db.get_value(
+		"Account", {"company": doc.name, "root_type": "Liability", "is_group": 1}, "name"
+	)
+	exp_root = frappe.db.get_value(
+		"Account", {"company": doc.name, "root_type": "Expense", "is_group": 1}, "name"
+	)
+	if asset_root:
+		bank_group = _acc("FIT Banks", asset_root, "Asset", is_group=1, account_type="Bank")
+		_acc("FIT Bank GL", bank_group, "Asset", account_type="Bank")
+	if liab_root:
+		_acc("FIT Loan Payable", liab_root, "Liability")
+		_acc("FIT Deferred Interest", liab_root, "Liability")
+	if exp_root:
+		_acc("FIT Interest Exp", exp_root, "Expense")
+		_acc("FIT Penalty Exp", exp_root, "Expense")
+	frappe.db.commit()
+	accounts = resolve_facility_gl_accounts(doc.name)
+	ensure_facility_settings_accounts(doc.name, accounts)
+	return doc.name
+
+
 def _second_bank(exclude: str) -> str:
 	other = frappe.db.get_value("Bank", {"name": ("!=", exclude)}, "name", order_by="creation asc")
 	if other:
@@ -126,20 +195,20 @@ class TestFacilityNumberUniqueness(unittest.TestCase):
 
 	def test_03_different_company_allowed(self):
 		company = _company()
-		other = _second_company(company)
-		if not other:
-			self.skipTest("Need two companies")
+		other = _ensure_second_company(company)
 		bank = ensure_bank_master()
 		loan = f"DUPC-{frappe.generate_hash(length=8)}"
-		# Other company may lack Facility Settings accounts — try/skip
 		a = _make_facility(facility_name=loan, company=company, bank=bank)
-		try:
-			b = _make_facility(facility_name=loan, company=other, bank=bank)
-		except frappe.ValidationError as exc:
-			if "Account" in str(exc) or "required" in str(exc).lower():
-				self.skipTest(f"Second company lacks Facility accounts: {exc}")
-			raise
+		b = _make_facility(facility_name=loan, company=other, bank=bank)
 		self.assertNotEqual(a, b)
+		self.assertEqual(
+			frappe.db.get_value("Facility", a, "company"),
+			company,
+		)
+		self.assertEqual(
+			frappe.db.get_value("Facility", b, "company"),
+			other,
+		)
 
 	def test_04_persian_vs_english_blocked(self):
 		company = _company()
@@ -356,31 +425,44 @@ class TestSAFEClear(unittest.TestCase):
 
 	def test_21_safe_clear_ambiguous_blocked(self):
 		wrong = _make_facility()
-		# Link to a JE with empty cheque_no (ambiguous)
+		# Link to a submitted JE with empty cheque_no (ambiguous ownership)
 		company = _company()
-		acc = frappe.db.get_value(
-			"Account", {"company": company, "is_group": 0}, "name", order_by="modified desc"
-		)
-		if not acc:
-			self.skipTest("No account")
+		fac = frappe.get_doc("Facility", wrong)
+		debit_acc = fac.bank_account
+		credit_acc = fac.loan_payable_account
+		self.assertTrue(debit_acc and credit_acc, "Need Bank + Loan Payable on Facility")
+		# Avoid Payable/Receivable accounts that require Party
+		acc_type = frappe.db.get_value("Account", credit_acc, "account_type")
+		if acc_type in ("Payable", "Receivable"):
+			credit_acc = frappe.db.get_value(
+				"Account",
+				{
+					"company": company,
+					"is_group": 0,
+					"root_type": "Liability",
+					"account_type": ("not in", ["Payable", "Receivable"]),
+				},
+				"name",
+				order_by="modified desc",
+			)
+		self.assertTrue(credit_acc, "Need non-party Liability account")
 		je = frappe.new_doc("Journal Entry")
-		je.voucher_type = "Bank Entry"
+		# Journal Entry (not Bank Entry) so empty cheque_no does not trip bank-reference rules
+		je.voucher_type = "Journal Entry"
 		je.company = company
 		je.posting_date = today()
 		je.cheque_no = ""
 		je.append(
 			"accounts",
-			{"account": acc, "debit_in_account_currency": 100, "credit_in_account_currency": 0},
+			{"account": debit_acc, "debit_in_account_currency": 100, "credit_in_account_currency": 0},
 		)
 		je.append(
 			"accounts",
-			{"account": acc, "debit_in_account_currency": 0, "credit_in_account_currency": 100},
+			{"account": credit_acc, "debit_in_account_currency": 0, "credit_in_account_currency": 100},
 		)
-		try:
-			je.insert(ignore_permissions=True)
-			je.submit()
-		except frappe.ValidationError:
-			self.skipTest("Could not create ambiguous JE")
+		je.insert(ignore_permissions=True)
+		je.submit()
+		frappe.db.commit()
 		frappe.db.set_value("Facility", wrong, "receipt_journal_entry", je.name)
 		elig = evaluate_safe_clear_wrong_ownership(wrong)
 		self.assertFalse(elig.get("eligible"))
@@ -479,6 +561,128 @@ class TestScannerOpeningAndProfit(unittest.TestCase):
 		self.assertEqual(before.receipt_journal_entry, out["journal_entry"])
 
 
+def _cross_process_insert_facility(
+	site: str,
+	company: str,
+	bank: str,
+	loan: str,
+	accounts: dict,
+	result_path: str,
+) -> None:
+	"""Independent process worker: insert Facility with given loan number.
+
+	``accounts`` is pre-resolved by the parent so workers do not contend on
+	Facility Settings updates.
+	"""
+	import json
+	import os
+	import traceback
+
+	os.environ["FRAPPE_SITE"] = site
+	import frappe as _frappe
+
+	_frappe.init(site=site)
+	_frappe.connect()
+	_frappe.set_user("Administrator")
+	payload = {"ok": False, "name": None, "error": None}
+	try:
+		from frappe.utils import today as _today
+
+		doc = _frappe.new_doc("Facility")
+		doc.facility_name = loan
+		doc.company = company
+		doc.bank = bank
+		doc.status = "Draft"
+		doc.contract_date = _today()
+		doc.receive_date = _today()
+		doc.principal_amount = 1_000_000
+		doc.profit_amount = 100_000
+		doc.installment_count = 1
+		doc.bank_account = accounts.get("bank_gl")
+		doc.loan_payable_account = accounts.get("loan_payable")
+		doc.deferred_loan_interest_account = accounts.get("deferred")
+		doc.interest_expense_account = accounts.get("interest")
+		doc.penalty_expense_account = accounts.get("penalty") or accounts.get("interest")
+		doc.cost_center = accounts.get("cost_center")
+		last_exc = None
+		for _attempt in range(4):
+			try:
+				doc.insert(ignore_permissions=True)
+				_frappe.db.commit()
+				payload["ok"] = True
+				payload["name"] = doc.name
+				last_exc = None
+				break
+			except _frappe.ValidationError as exc:
+				_frappe.db.rollback()
+				last_exc = exc
+				break
+			except Exception as exc:
+				_frappe.db.rollback()
+				last_exc = exc
+				# Retry naming-series races; uniqueness lock should then block
+				if "Deadlock" in type(exc).__name__ or "1020" in str(exc) or "1213" in str(exc):
+					doc = _frappe.new_doc("Facility")
+					doc.facility_name = loan
+					doc.company = company
+					doc.bank = bank
+					doc.status = "Draft"
+					doc.contract_date = _today()
+					doc.receive_date = _today()
+					doc.principal_amount = 1_000_000
+					doc.profit_amount = 100_000
+					doc.installment_count = 1
+					doc.bank_account = accounts.get("bank_gl")
+					doc.loan_payable_account = accounts.get("loan_payable")
+					doc.deferred_loan_interest_account = accounts.get("deferred")
+					doc.interest_expense_account = accounts.get("interest")
+					doc.penalty_expense_account = accounts.get("penalty") or accounts.get("interest")
+					doc.cost_center = accounts.get("cost_center")
+					continue
+				break
+		if last_exc is not None and not payload["ok"]:
+			payload["error"] = f"{type(last_exc).__name__}: {last_exc}"
+			payload["trace"] = traceback.format_exc()[-1500:]
+	except Exception as exc:
+		_frappe.db.rollback()
+		payload["error"] = f"{type(exc).__name__}: {exc}"
+		payload["trace"] = traceback.format_exc()[-1500:]
+	finally:
+		with open(result_path, "w", encoding="utf-8") as fh:
+			json.dump(payload, fh)
+		_frappe.destroy()
+
+
+def _cross_process_assign_je(site: str, facility: str, je: str, result_path: str) -> None:
+	import json
+	import os
+	import traceback
+
+	os.environ["FRAPPE_SITE"] = site
+	import frappe as _frappe
+
+	_frappe.init(site=site)
+	_frappe.connect()
+	_frappe.set_user("Administrator")
+	payload = {"ok": False, "error": None}
+	try:
+		from erpnext_extensions.facility_management.facility_identity import (
+			assign_receipt_journal_entry as _assign,
+		)
+
+		_assign(facility, je, received_amount=1, status="Active")
+		_frappe.db.commit()
+		payload["ok"] = True
+	except Exception as exc:
+		_frappe.db.rollback()
+		payload["error"] = f"{type(exc).__name__}: {exc}"
+		payload["trace"] = traceback.format_exc()[-1500:]
+	finally:
+		with open(result_path, "w", encoding="utf-8") as fh:
+			json.dump(payload, fh)
+		_frappe.destroy()
+
+
 class TestConcurrentGuards(unittest.TestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -488,44 +692,124 @@ class TestConcurrentGuards(unittest.TestCase):
 		frappe.db.rollback()
 
 	def test_15_concurrent_duplicate_facility_creation(self):
-		"""Only one of two concurrent inserts with same identity should succeed."""
+		"""Independent processes: only one insert with the same identity succeeds."""
+		import json
+		import multiprocessing as mp
+		import tempfile
+		from pathlib import Path
+
+		from erpnext_extensions.facility_management.facility_e2e_context import (
+			resolve_facility_gl_accounts,
+		)
+
 		company = _company()
 		bank = ensure_bank_master()
-		loan = f"CONC-{frappe.generate_hash(length=8)}"
+		accounts = resolve_facility_gl_accounts(company)
+		# Ensure settings once in parent (workers receive account names only)
+		probe = frappe.new_doc("Facility")
+		probe.company = company
+		apply_facility_test_accounts(probe, company=company)
+		suffix = f"{abs(hash(frappe.generate_hash(length=8))) % 10_000_000:07d}"
+		loan = f"990004835-{suffix}"
+		site = frappe.local.site
+		acct = {
+			"bank_gl": accounts.get("bank_gl") or probe.bank_account,
+			"loan_payable": accounts.get("loan_payable") or probe.loan_payable_account,
+			"deferred": accounts.get("deferred") or probe.deferred_loan_interest_account,
+			"interest": accounts.get("interest") or probe.interest_expense_account,
+			"penalty": accounts.get("penalty") or probe.penalty_expense_account,
+			"cost_center": accounts.get("cost_center") or probe.cost_center,
+		}
 
-		# Pre-create first so second path is deterministic under lock
-		_make_facility(facility_name=loan, company=company, bank=bank)
+		with tempfile.TemporaryDirectory() as tmp:
+			p1 = str(Path(tmp) / "r1.json")
+			p2 = str(Path(tmp) / "r2.json")
+			procs = [
+				mp.Process(
+					target=_cross_process_insert_facility,
+					args=(site, company, bank, loan, acct, p1),
+				),
+				mp.Process(
+					target=_cross_process_insert_facility,
+					args=(site, company, bank, loan, acct, p2),
+				),
+			]
+			for p in procs:
+				p.start()
+			for p in procs:
+				p.join(timeout=120)
+				self.assertFalse(p.is_alive(), "worker hung")
+			r1 = json.loads(Path(p1).read_text())
+			r2 = json.loads(Path(p2).read_text())
 
-		errors = []
-		success = []
+		oks = [r for r in (r1, r2) if r.get("ok")]
+		errs = [r for r in (r1, r2) if not r.get("ok")]
+		self.assertEqual(len(oks), 1, {"r1": r1, "r2": r2})
+		self.assertEqual(len(errs), 1, {"r1": r1, "r2": r2})
+		err = errs[0].get("error") or ""
+		self.assertIn("Duplicate Facility Number", err, errs[0])
+		# End parent snapshot so committed worker rows are visible (REPEATABLE READ)
+		frappe.db.commit()
+		from erpnext_extensions.facility_management.facility_identity import (
+			normalize_facility_number,
+		)
 
-		def _try_insert(suffix: str):
-			try:
-				# New DB connection context in thread is complex; use sequential lock simulation
-				name = _make_facility(facility_name=loan, company=company, bank=bank)
-				success.append(name)
-			except Exception as exc:
-				errors.append(str(exc))
-
-		_try_insert("a")
-		self.assertEqual(success, [])
-		self.assertTrue(any("Duplicate Facility Number" in e for e in errors), errors)
+		norm = normalize_facility_number(loan)
+		peers = frappe.get_all(
+			"Facility",
+			filters={"company": company, "bank": bank},
+			fields=["name", "facility_name"],
+		)
+		same = [p.name for p in peers if normalize_facility_number(p.facility_name) == norm]
+		self.assertEqual(len(same), 1, same)
+		self.assertEqual(same[0], oks[0]["name"])
 
 	def test_16_concurrent_je_assignment(self):
+		"""Independent processes: only one Facility can claim the same receipt JE."""
+		import json
+		import multiprocessing as mp
+		import tempfile
+		from pathlib import Path
+
 		from erpnext_extensions.facility_management.facility_identity import assign_receipt_journal_entry
 
 		a = _make_facility()
 		b = _make_facility()
 		out = create_receipt_journal_entry(a)
 		je = out["journal_entry"]
+		# Clear owner link so both processes race to assign the same submitted JE
+		# (cheque_no still equals A — B must fail cheque check OR exclusivity).
+		# For exclusivity race: create JE owned by nobody by clearing A's pointer,
+		# then set cheque_no empty? Business rule requires cheque_no == facility.
+		# Race: two facilities cannot both assign when cheque matches only one.
+		# Use sequential exclusive check still required:
 		with self.assertRaises(frappe.ValidationError):
 			assign_receipt_journal_entry(b, je, received_amount=1, status="Active")
 
-
-def cint_safe(v):
-	from frappe.utils import cint
-
-	return cint(v)
+		# Cross-process race on a JE whose cheque_no we temporarily align is unrealistic;
+		# race two assigns of the same JE after clearing the owner pointer but keeping cheque=A.
+		frappe.db.set_value("Facility", a, "receipt_journal_entry", None)
+		frappe.db.commit()
+		site = frappe.local.site
+		with tempfile.TemporaryDirectory() as tmp:
+			p1 = str(Path(tmp) / "a.json")
+			p2 = str(Path(tmp) / "b.json")
+			# Process 1 assigns to A (cheque matches). Process 2 tries B (cheque mismatch).
+			procs = [
+				mp.Process(target=_cross_process_assign_je, args=(site, a, je, p1)),
+				mp.Process(target=_cross_process_assign_je, args=(site, b, je, p2)),
+			]
+			for p in procs:
+				p.start()
+			for p in procs:
+				p.join(timeout=120)
+			r1 = json.loads(Path(p1).read_text())
+			r2 = json.loads(Path(p2).read_text())
+		# Exactly one may succeed (A); B fails cheque or exclusivity
+		self.assertTrue(r1.get("ok"), r1)
+		self.assertFalse(r2.get("ok"), r2)
+		owners = frappe.get_all("Facility", filters={"receipt_journal_entry": je}, pluck="name")
+		self.assertEqual(owners, [a])
 
 
 # Silence unused import in some runners
