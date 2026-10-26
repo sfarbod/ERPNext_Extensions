@@ -13,6 +13,11 @@ from erpnext_extensions.facility_management.facility_accounting import (
 	refresh_facility_paid_fields,
 )
 from erpnext_extensions.facility_management.facility_balances import get_facility_balance_row
+from erpnext_extensions.facility_management.facility_identity import (
+	assert_exclusive_receipt_je,
+	assert_facility_number_unique,
+	clear_inherited_receipt_state,
+)
 from erpnext_extensions.facility_management.facility_monetary import (
 	FACILITY_INPUT_CURRENCY_FIELDS,
 	persist_exact_currency_fields,
@@ -26,6 +31,13 @@ from erpnext_extensions.facility_management.facility_settings_doc import (
 
 
 class Facility(Document):
+	def before_insert(self):
+		# Duplicate / Copy must never inherit receipt ownership or derived receipt state.
+		clear_inherited_receipt_state(self)
+		# Re-assert under the same DB named lock immediately before naming/insert so
+		# concurrent workers cannot both pass validate then race tabSeries.
+		assert_facility_number_unique(self)
+
 	def validate(self):
 		apply_facility_settings_defaults(self, overwrite=False)
 		self._exact_currency = {}
@@ -39,6 +51,8 @@ class Facility(Document):
 				val = self.get(fn)
 			if val not in (None, "") and isinstance(val, str):
 				self._exact_currency[fn] = val
+		assert_facility_number_unique(self)
+		assert_exclusive_receipt_je(self)
 		self._validate_accounts()
 		self._validate_installment_count()
 		self._validate_opening_amounts()
@@ -185,15 +199,17 @@ def preview_receipt_journal_entry(name: str) -> dict:
 
 @frappe.whitelist()
 def create_receipt_journal_entry(name: str) -> dict:
+	from erpnext_extensions.facility_management.facility_identity import assign_receipt_journal_entry
+
 	doc = frappe.get_doc("Facility", name)
 	if cint(doc.is_opening_facility):
 		frappe.throw(_("Opening / migrated facilities must not create a Receipt Journal Entry."))
 	je_name = create_and_submit_receipt_je(doc)
-	frappe.db.set_value(
-		"Facility",
+	assign_receipt_journal_entry(
 		name,
-		{"receipt_journal_entry": je_name, "received_amount": flt(doc.principal_amount), "status": "Active"},
-		update_modified=True,
+		je_name,
+		received_amount=flt(doc.principal_amount),
+		status="Active",
 	)
 	refresh_facility_paid_fields(name)
 	frappe.db.commit()
