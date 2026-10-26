@@ -1,5 +1,8 @@
 // Copyright (c) 2026, ERPNext Extensions contributors
 // Shared read-only footers for Facility child tables (presentation only).
+//
+// IMPORTANT: Attach footers to the *field* $wrapper (outside grid.wrapper) so
+// Frappe grid.make()/refresh rebuilds cannot wipe them.
 
 frappe.provide("erpnext_extensions.facility_management.grid_footer");
 
@@ -17,7 +20,6 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 		if (!cleaned) {
 			return 0;
 		}
-		// Integer-safe IRR: round half-up to whole rial for display/totals.
 		const n = Number(cleaned);
 		if (!Number.isFinite(n)) {
 			return 0;
@@ -31,26 +33,34 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 		return (n < 0 ? "-" : "") + formatted;
 	}
 
-	function ensureFooterEl(grid, key) {
-		if (!grid || !grid.wrapper) {
+	function ensureFooterEl(frm, fieldname, key) {
+		const field = frm.fields_dict[fieldname];
+		if (!field || !field.$wrapper || !field.$wrapper.length) {
 			return null;
 		}
 		const cls = `ee-facility-grid-footer ee-facility-grid-footer-${key}`;
-		let $el = grid.wrapper.find(`.ee-facility-grid-footer-${key}`);
+		let $el = field.$wrapper.find(`.ee-facility-grid-footer-${key}`);
 		if (!$el.length) {
-			$el = $(`<div class="${cls}" style="padding:8px 12px;margin-top:4px;border-top:1px solid var(--border-color);font-size:var(--text-md);line-height:1.7;"></div>`);
-			grid.wrapper.find(".grid-footer").before($el);
-			if (!$el.prev().length && !grid.wrapper.find(".grid-footer").length) {
-				grid.wrapper.append($el);
-			}
+			$el = $(`<div class="${cls}" style="
+				padding:10px 12px;
+				margin:8px 0 4px 0;
+				border:1px solid var(--border-color);
+				border-radius:var(--border-radius);
+				background:var(--control-bg);
+				font-size:var(--text-md);
+				line-height:1.7;
+			"></div>`);
+			// Place after the grid control, still inside the field wrapper.
+			field.$wrapper.append($el);
 		}
 		return $el;
 	}
 
-	ns.render_html = function (grid, key, html) {
-		const $el = ensureFooterEl(grid, key);
+	ns.render_html = function (frm, fieldname, key, html) {
+		const $el = ensureFooterEl(frm, fieldname, key);
 		if ($el) {
 			$el.html(html || "");
+			$el.toggle(true);
 		}
 	};
 
@@ -66,8 +76,7 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 	ns.parse_amount = parseAmount;
 
 	ns.refresh_schedule_footer = function (frm) {
-		const grid = frm.fields_dict.repayment_schedule && frm.fields_dict.repayment_schedule.grid;
-		if (!grid) {
+		if (!frm.fields_dict.repayment_schedule) {
 			return;
 		}
 		const rows = frm.doc.repayment_schedule || [];
@@ -81,14 +90,14 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 			<div><strong>${__("جمع سود")}:</strong> ${formatIrr(profit)} ${__("ریال")}</div>
 			<div><strong>${__("جمع کل اقساط")}:</strong> ${formatIrr(total)} ${__("ریال")}</div>
 		`;
-		ns.render_html(grid, "schedule", html);
+		ns.render_html(frm, "repayment_schedule", "schedule", html);
 	};
 
 	ns.refresh_pdc_allocation_footer = function (frm) {
-		const grid = frm.fields_dict.debt_purchase_pdcs && frm.fields_dict.debt_purchase_pdcs.grid;
-		if (!grid) {
+		if (!frm.fields_dict.debt_purchase_pdcs) {
 			return;
 		}
+		// Keep footer in DOM even when section is depends_on-hidden; visibility follows section.
 		const rows = frm.doc.debt_purchase_pdcs || [];
 		const count = rows.length;
 		const allocated = ns.sum_field(rows, "cheque_amount");
@@ -104,6 +113,11 @@ frappe.provide("erpnext_extensions.facility_management.grid_footer");
 			<div><strong>${__("جمع تسهیلات")}:</strong> ${formatIrr(facilityTotal)} ${__("ریال")}</div>
 			<div><strong>${__("اختلاف (چک − تسهیلات)")}:</strong> ${formatIrr(diff)} ${__("ریال")}</div>
 		`;
-		ns.render_html(grid, "pdc", html);
+		ns.render_html(frm, "debt_purchase_pdcs", "pdc", html);
+	};
+
+	ns.refresh_all = function (frm) {
+		ns.refresh_schedule_footer(frm);
+		ns.refresh_pdc_allocation_footer(frm);
 	};
 })();

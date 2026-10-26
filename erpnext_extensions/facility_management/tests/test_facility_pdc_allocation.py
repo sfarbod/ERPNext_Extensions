@@ -351,3 +351,28 @@ class TestFacilityScheduleFooterHelpers(unittest.TestCase):
 		self.assertEqual(principal, Decimal("300"))
 		self.assertEqual(profit, Decimal("30"))
 		self.assertEqual(principal + profit, Decimal("330"))
+
+
+class TestFacilityDebtPurchaseUiMeta(DebtPurchaseDbFixtureMixin, unittest.TestCase):
+	"""Regression guards for Desk visibility of DP PDC table (v5.6.20 UI fix)."""
+
+	def test_is_debt_purchase_synced_on_validate(self):
+		fac = frappe.new_doc("Facility")
+		fac.facility_name = f"UI-META-{random_string(8)}"
+		fac.company = self.company
+		fac.facility_type = self.ft
+		fac.bank = frappe.db.get_value("Bank", {}, "name", order_by="creation asc") or ensure_bank_master()
+		fac.contract_date = today()
+		fac.principal_amount = 1000
+		fac.profit_amount = 0
+		apply_facility_test_accounts(fac)
+		fac.insert(ignore_permissions=True)
+		frappe.db.commit()
+		self.assertEqual(int(fac.is_debt_purchase or 0), 1)
+		meta = frappe.get_meta("Facility")
+		section = meta.get_field("section_debt_purchase_pdcs")
+		table = meta.get_field("debt_purchase_pdcs")
+		self.assertIn("is_debt_purchase", section.depends_on or "")
+		self.assertIn("is_debt_purchase", table.depends_on or "")
+		flag = meta.get_field("is_debt_purchase")
+		self.assertEqual(flag.fetch_from, "facility_type.is_debt_purchase")

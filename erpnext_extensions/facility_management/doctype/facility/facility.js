@@ -3,12 +3,19 @@
 frappe.provide("erpnext_extensions.facility_management.dimension_queries");
 
 frappe.ui.form.on("Facility", {
+	onload(frm) {
+		setup_pdc_allocation_query(frm);
+	},
 	refresh(frm) {
 		erpnext_extensions.facility_management.dimension_queries.setup?.(frm);
-		setup_debt_purchase_section(frm);
 		setup_pdc_allocation_query(frm);
-		refresh_facility_footers(frm);
-		toggle_pdc_grid_editable(frm);
+		sync_debt_purchase_flag(frm).then(() => {
+			toggle_pdc_grid_editable(frm);
+			refresh_facility_footers(frm);
+			// Re-apply after grid finish rendering (survives grid.make rebuild).
+			setTimeout(() => refresh_facility_footers(frm), 0);
+			setTimeout(() => refresh_facility_footers(frm), 200);
+		});
 		if (frm.is_new() || frm.doc.status === "Closed") {
 			return;
 		}
@@ -41,7 +48,10 @@ frappe.ui.form.on("Facility", {
 		}
 	},
 	facility_type(frm) {
-		setup_debt_purchase_section(frm);
+		sync_debt_purchase_flag(frm).then(() => refresh_facility_footers(frm));
+	},
+	is_debt_purchase(frm) {
+		toggle_pdc_grid_editable(frm);
 		refresh_facility_footers(frm);
 	},
 	principal_amount(frm) {
@@ -53,6 +63,19 @@ frappe.ui.form.on("Facility", {
 	status(frm) {
 		toggle_pdc_grid_editable(frm);
 	},
+	// Child-table row add/remove events belong on the parent controller.
+	repayment_schedule_add(frm) {
+		refresh_facility_footers(frm);
+	},
+	repayment_schedule_remove(frm) {
+		setTimeout(() => refresh_facility_footers(frm), 0);
+	},
+	debt_purchase_pdcs_add(frm) {
+		refresh_facility_footers(frm);
+	},
+	debt_purchase_pdcs_remove(frm) {
+		setTimeout(() => refresh_facility_footers(frm), 0);
+	},
 });
 
 frappe.ui.form.on("Facility Repayment Schedule", {
@@ -60,12 +83,6 @@ frappe.ui.form.on("Facility Repayment Schedule", {
 		refresh_facility_footers(frm);
 	},
 	profit_amount(frm) {
-		refresh_facility_footers(frm);
-	},
-	repayment_schedule_add(frm) {
-		refresh_facility_footers(frm);
-	},
-	repayment_schedule_remove(frm) {
 		refresh_facility_footers(frm);
 	},
 });
@@ -103,21 +120,17 @@ frappe.ui.form.on("Facility PDC Allocation", {
 			}
 		);
 	},
-	debt_purchase_pdcs_add(frm) {
-		refresh_facility_footers(frm);
-	},
-	debt_purchase_pdcs_remove(frm) {
+	cheque_amount(frm) {
 		refresh_facility_footers(frm);
 	},
 });
 
 function refresh_facility_footers(frm) {
 	const footer = erpnext_extensions.facility_management.grid_footer;
-	if (!footer) {
+	if (!footer || !footer.refresh_all) {
 		return;
 	}
-	footer.refresh_schedule_footer(frm);
-	footer.refresh_pdc_allocation_footer(frm);
+	footer.refresh_all(frm);
 }
 
 function setup_pdc_allocation_query(frm) {
@@ -132,28 +145,34 @@ function setup_pdc_allocation_query(frm) {
 }
 
 function toggle_pdc_grid_editable(frm) {
-	const grid = frm.fields_dict.debt_purchase_pdcs && frm.fields_dict.debt_purchase_pdcs.grid;
-	if (!grid) {
+	if (!frm.fields_dict.debt_purchase_pdcs) {
 		return;
 	}
 	const closed = frm.doc.status === "Closed";
 	frm.set_df_property("debt_purchase_pdcs", "read_only", closed ? 1 : 0);
 }
 
-function setup_debt_purchase_section(frm) {
+/**
+ * Keep hidden Check `is_debt_purchase` in sync with Facility Type.
+ * drives depends_on for the PDC section without fragile display toggles.
+ */
+function sync_debt_purchase_flag(frm) {
 	if (!frm.doc.facility_type) {
-		frm.toggle_display("section_debt_purchase_pdcs", false);
-		frm.toggle_display("debt_purchase_pdcs", false);
-		return;
-	}
-	frappe.db.get_value("Facility Type", frm.doc.facility_type, "is_debt_purchase", (r) => {
-		const show = cint(r && r.is_debt_purchase);
-		frm.toggle_display("section_debt_purchase_pdcs", !!show);
-		frm.toggle_display("debt_purchase_pdcs", !!show);
-		if (show) {
-			refresh_facility_footers(frm);
+		if (cint(frm.doc.is_debt_purchase)) {
+			frm.set_value("is_debt_purchase", 0);
 		}
-	});
+		return Promise.resolve(0);
+	}
+	return frappe.db
+		.get_value("Facility Type", frm.doc.facility_type, "is_debt_purchase")
+		.then((r) => {
+			const val = cint(r && r.message && r.message.is_debt_purchase);
+			if (cint(frm.doc.is_debt_purchase) !== val) {
+				frm.set_value("is_debt_purchase", val);
+			}
+			return val;
+		})
+		.catch(() => 0);
 }
 
 function can_preview_or_create_receipt(frm) {

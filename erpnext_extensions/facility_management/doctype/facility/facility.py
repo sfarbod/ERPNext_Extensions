@@ -55,6 +55,7 @@ class Facility(Document):
 				val = self.get(fn)
 			if val not in (None, "") and isinstance(val, str):
 				self._exact_currency[fn] = val
+		self._sync_is_debt_purchase()
 		assert_facility_number_unique(self)
 		assert_exclusive_receipt_je(self)
 		self._validate_accounts()
@@ -64,6 +65,13 @@ class Facility(Document):
 		validate_facility_pdc_allocations(self)
 		self._recalculate_totals()
 		self._sync_balance_fields()
+
+	def _sync_is_debt_purchase(self):
+		"""Keep hidden Check in sync with Facility Type for form depends_on."""
+		flag = 0
+		if self.facility_type:
+			flag = 1 if frappe.db.get_value("Facility Type", self.facility_type, "is_debt_purchase") else 0
+		self.is_debt_purchase = flag
 
 	def after_insert(self):
 		persist_exact_currency_fields("Facility", self.name, getattr(self, "_exact_currency", {}))
