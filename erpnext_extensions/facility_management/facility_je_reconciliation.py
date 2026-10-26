@@ -19,11 +19,13 @@ Usage (bench execute)::
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
 import frappe
 from frappe.utils import cint, flt, now_datetime
+from frappe.utils.synchronization import filelock
 
 from erpnext_extensions.facility_management.facility_accounting import refresh_facility_paid_fields
 from erpnext_extensions.facility_management.facility_balances import get_facility_balance_row
@@ -41,6 +43,28 @@ CATEGORY_E = "E_AMOUNT_INCONSISTENCY"
 CATEGORY_F = "F_REPLACEMENT_DOCUMENT"
 CATEGORY_G = "G_DOWNSTREAM_DEPENDENCY"
 CATEGORY_H = "H_SCHEDULE_INCONSISTENCY"
+CATEGORY_I = "I_WRONG_RECEIPT_OWNERSHIP"
+
+# Opening Facilities with intentional partial remaining schedules (Phase 1).
+OPENING_PARTIAL_SCHEDULE_FACILITIES = frozenset(
+	{
+		"FAC-2026-06465",
+		"FAC-2026-06474",
+		"FAC-2026-06489",
+		"FAC-2026-06493",
+		"FAC-2026-06494",
+		"FAC-2026-06495",
+	}
+)
+
+# Profit / schedule mismatches reserved for Finance confirmation (do not auto-repair).
+PROFIT_MANUAL_REVIEW_FACILITIES = frozenset(
+	{
+		"FAC-2026-07293",
+		"FAC-2026-07294",
+		"FAC-2026-07295",
+	}
+)
 
 # Set while Facility Repayment.on_cancel cancels its own JE (avoid double work / recursion).
 FLAG_IN_REPAYMENT_CANCEL = "in_facility_repayment_je_cancel"
@@ -110,6 +134,158 @@ def _candidate_replacement_receipt_jes(facility_name: str, *, exclude: str | Non
 		)
 	)
 	return [n for n in names if n not in repay_jes]
+
+
+def _facility_fingerprint(snapshot: dict[str, Any]) -> str:
+	payload = {
+		"name": snapshot.get("name"),
+		"status": snapshot.get("status"),
+		"receipt_journal_entry": snapshot.get("receipt_journal_entry") or "",
+		"received_amount": flt(snapshot.get("received_amount")),
+		"principal_amount": flt(snapshot.get("principal_amount")),
+		"company": snapshot.get("company") or "",
+	}
+	raw = json.dumps(payload, sort_keys=True, default=str)
+	return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _receipt_ownership_signals(facility_name: str, je_name: str, je: dict[str, Any] | None) -> dict[str, Any]:
+	"""Independent ownership signals — cheque_no alone is never sufficient."""
+	cheque = ((je or {}).get("cheque_no") or "").strip()
+	owners = frappe.get_all(
+		"Facility",
+		filters={"receipt_journal_entry": je_name},
+		fields=["name", "status", "facility_name", "received_amount", "principal_amount"],
+		order_by="name asc",
+	)
+	other_owners = [o for o in owners if o.name != facility_name]
+	cheque_matches_self = bool(cheque) and cheque == facility_name
+	cheque_matches_other = bool(cheque) and any(cheque == o.name for o in other_owners)
+	# Legitimate owner: another Facility whose name equals JE.cheque_no
+	legitimate = None
+	if cheque:
+		if frappe.db.exists("Facility", cheque):
+			legitimate = cheque
+		elif cheque_matches_other:
+			legitimate = cheque
+	return {
+		"cheque_no": cheque or None,
+		"cheque_matches_self": cheque_matches_self,
+		"cheque_matches_other": cheque_matches_other,
+		"cheque_empty": not bool(cheque),
+		"owners": [o.name for o in owners],
+		"other_owners": [o.name for o in other_owners],
+		"legitimate_owner": legitimate,
+		"shared": len(owners) > 1,
+	}
+
+
+def evaluate_safe_clear_wrong_ownership(facility_name: str) -> dict[str, Any]:
+	"""Return eligibility for SAFE_CLEAR of an incorrectly linked submitted receipt JE.
+
+	Never clears when ownership cannot be proven independently of a single signal.
+	"""
+	result: dict[str, Any] = {
+		"eligible": False,
+		"classification": CLASS_MANUAL,
+		"reason": "",
+		"legitimate_owner": None,
+		"fingerprint": None,
+		"expected_after": {
+			"receipt_journal_entry": None,
+			"received_amount": 0,
+			"status": "Draft",
+		},
+	}
+	if not frappe.db.exists("Facility", facility_name):
+		result["reason"] = "Facility not found"
+		result["classification"] = CLASS_BLOCKED
+		return result
+
+	snap = _snapshot_facility(facility_name)
+	result["fingerprint"] = _facility_fingerprint(snap)
+	receipt_je = (snap.get("receipt_journal_entry") or "").strip() or None
+	if not receipt_je:
+		result["reason"] = "No receipt JE linked"
+		result["classification"] = CLASS_OK
+		return result
+
+	je = _je_meta(receipt_je)
+	if not je:
+		result["reason"] = "Linked receipt JE missing"
+		return result
+	if cint(je.docstatus) != 1:
+		result["reason"] = f"Linked JE docstatus={je.docstatus} (SAFE_CLEAR is for submitted shared/wrong ownership)"
+		return result
+
+	reps = _submitted_repayments(facility_name)
+	if reps:
+		result["reason"] = "Submitted repayments exist — cannot clear receipt ownership"
+		result["classification"] = CLASS_BLOCKED
+		return result
+
+	# Expected Facility state for incorrect-link clear: Draft (or already Draft)
+	if snap.get("status") not in ("Draft", "Active"):
+		result["reason"] = f"Facility status {snap.get('status')} not eligible for SAFE_CLEAR"
+		return result
+
+	signals = _receipt_ownership_signals(facility_name, receipt_je, je)
+	result["signals"] = signals
+	result["legitimate_owner"] = signals.get("legitimate_owner")
+
+	# Must prove JE belongs to another Facility via multiple independent checks
+	if signals["cheque_empty"]:
+		result["reason"] = "Empty cheque_no — MANUAL_REVIEW_REQUIRED (not proof of ownership)"
+		return result
+	if signals["cheque_matches_self"]:
+		result["reason"] = "cheque_no matches this Facility — not a wrong-ownership clear candidate"
+		return result
+	if not signals["legitimate_owner"]:
+		result["reason"] = "Cannot identify legitimate JE owner — MANUAL_REVIEW_REQUIRED"
+		return result
+	if signals["legitimate_owner"] == facility_name:
+		result["reason"] = "Legitimate owner is this Facility"
+		return result
+
+	legit = signals["legitimate_owner"]
+	legit_receipt = frappe.db.get_value("Facility", legit, "receipt_journal_entry")
+	# Legitimate owner should independently hold (or be the cheque target of) this JE
+	if legit_receipt and legit_receipt != receipt_je:
+		result["reason"] = (
+			f"Legitimate owner {legit} points to different JE {legit_receipt} — MANUAL_REVIEW_REQUIRED"
+		)
+		return result
+
+	# This Facility must not be the legitimate owner of the JE
+	if signals["cheque_matches_self"]:
+		result["reason"] = "Self owns by cheque_no"
+		return result
+
+	# Shared OR cheque points at another Facility while this Facility still links it
+	proven_wrong = (signals["shared"] and signals["cheque_matches_other"]) or (
+		not signals["cheque_matches_self"] and signals["cheque_matches_other"]
+	) or (signals["legitimate_owner"] and signals["legitimate_owner"] != facility_name and not signals["cheque_matches_self"])
+
+	if not proven_wrong:
+		result["reason"] = "Ownership ambiguous — MANUAL_REVIEW_REQUIRED"
+		return result
+
+	# Target Facility has no legitimate ownership of that JE
+	if signals["cheque_matches_self"]:
+		result["reason"] = "Target Facility appears to own JE"
+		return result
+
+	result["eligible"] = True
+	result["classification"] = CLASS_SAFE
+	result["reason"] = (
+		f"SAFE_CLEAR: JE {receipt_je} owned by {legit} (cheque_no); "
+		f"clear incorrect link on {facility_name}"
+	)
+	if not cint(snap.get("is_opening_facility")):
+		result["expected_after"]["status"] = "Draft"
+	else:
+		result["expected_after"]["status"] = snap.get("status")
+	return result
 
 
 def _issue(
@@ -281,7 +457,7 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 					)
 				)
 		elif cint(je.docstatus) == 1:
-			# Valid submitted receipt — check company mismatch / cheque_no
+			# Submitted receipt — check company / cheque_no (ownership validated below)
 			if je.company and je.company != fac.company:
 				issues.append(
 					_issue(
@@ -295,7 +471,22 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 						details={"je_company": je.company, "facility_company": fac.company},
 					)
 				)
-			if je.cheque_no and je.cheque_no != facility_name:
+			if not (je.cheque_no or "").strip():
+				issues.append(
+					_issue(
+						category=CATEGORY_C,
+						classification=CLASS_MANUAL,
+						facility=facility_name,
+						reference_field="receipt_journal_entry",
+						journal_entry=receipt_je,
+						je_docstatus=1,
+						recommended_action=(
+							"Receipt JE has empty cheque_no — not sufficient evidence of ownership"
+						),
+						details={"cheque_no": None},
+					)
+				)
+			elif je.cheque_no != facility_name:
 				issues.append(
 					_issue(
 						category=CATEGORY_C,
@@ -309,7 +500,6 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 					)
 				)
 			if len(replacements) >= 1:
-				# Multiple submitted receipt-like JEs while one is linked
 				extras = [n for n in replacements if n != receipt_je]
 				if extras:
 					issues.append(
@@ -337,27 +527,65 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 				)
 			)
 
-	# Shared receipt JE across facilities
+	# Shared / wrong-ownership receipt JE (always report shared; SAFE_CLEAR when proven)
+	ownership_invalid = False
 	if receipt_je:
 		others = frappe.get_all(
 			"Facility",
 			filters={"receipt_journal_entry": receipt_je, "name": ("!=", facility_name)},
 			pluck="name",
 		)
-		if others:
-			issues.append(
-				_issue(
-					category=CATEGORY_F,
-					classification=CLASS_MANUAL,
-					facility=facility_name,
-					reference_field="receipt_journal_entry",
-					journal_entry=receipt_je,
-					recommended_action="Receipt JE shared by multiple Facilities",
-					details={"other_facilities": others},
+		safe_clear = evaluate_safe_clear_wrong_ownership(facility_name)
+		if others or (je and cint(je.docstatus) == 1 and (je.cheque_no or "") != facility_name):
+			ownership_invalid = True
+			if safe_clear.get("eligible"):
+				issues.append(
+					_issue(
+						category=CATEGORY_I,
+						classification=CLASS_SAFE,
+						facility=facility_name,
+						reference_field="receipt_journal_entry",
+						journal_entry=receipt_je,
+						je_docstatus=cint(je.docstatus) if je else None,
+						current_status=fac.status,
+						expected_status=safe_clear["expected_after"]["status"],
+						current_amounts={
+							"received_amount": flt(fac.received_amount),
+						},
+						expected_amounts={"received_amount": 0.0},
+						recommended_action=safe_clear["reason"],
+						details={
+							"repair_mode": "SAFE_CLEAR",
+							"other_facilities": others,
+							"legitimate_owner": safe_clear.get("legitimate_owner"),
+							"fingerprint": safe_clear.get("fingerprint"),
+							"signals": safe_clear.get("signals") or {},
+						},
+					)
 				)
-			)
+			else:
+				issues.append(
+					_issue(
+						category=CATEGORY_F if others else CATEGORY_I,
+						classification=CLASS_MANUAL,
+						facility=facility_name,
+						reference_field="receipt_journal_entry",
+						journal_entry=receipt_je,
+						je_docstatus=cint(je.docstatus) if je else None,
+						recommended_action=(
+							"Receipt JE shared by multiple Facilities — MANUAL_REVIEW_REQUIRED"
+							if others
+							else safe_clear.get("reason") or "Wrong receipt ownership — MANUAL_REVIEW_REQUIRED"
+						),
+						details={
+							"other_facilities": others,
+							"safe_clear": safe_clear,
+						},
+					)
+				)
 
 	# --- Amount consistency (existing balance rules) ---
+	# Do not treat an invalid-ownership submitted JE as a valid receipt for received_amount.
 	bal = get_facility_balance_row(fac)
 	amount_fields = (
 		("paid_principal_amount", "paid_principal"),
@@ -373,7 +601,14 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 		exp = flt(bal.get(bal_fn))
 		if abs(cur - exp) > 0.01:
 			mismatches[fac_fn] = {"current": cur, "expected": exp}
-	if receipt_je and je and cint(je.docstatus) == 1:
+	valid_owned_receipt = (
+		receipt_je
+		and je
+		and cint(je.docstatus) == 1
+		and not ownership_invalid
+		and (je.cheque_no or "").strip() == facility_name
+	)
+	if valid_owned_receipt:
 		exp_received = flt(fac.principal_amount)
 		if abs(flt(fac.received_amount) - exp_received) > 0.01:
 			mismatches["received_amount"] = {
@@ -384,26 +619,37 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 		not receipt_je or (je and cint(je.docstatus) == 2) or (receipt_je and je is None)
 	):
 		if flt(fac.received_amount) and not (je and cint(je.docstatus) == 1):
-			# stale received_amount when no valid receipt (non-opening facilities only)
 			if "received_amount" not in mismatches and abs(flt(fac.received_amount)) > 0.01:
 				mismatches["received_amount"] = {
 					"current": flt(fac.received_amount),
 					"expected": 0.0,
 				}
+	# Strip received_amount from E when ownership is the primary problem
+	if ownership_invalid and "received_amount" in mismatches:
+		del mismatches["received_amount"]
 	if mismatches:
+		# Never recommend amount-only repair that would leave an incorrect JE intact
+		e_class = CLASS_SAFE
+		if ownership_invalid:
+			e_class = CLASS_MANUAL
+		if any(i["classification"] == CLASS_BLOCKED for i in issues):
+			e_class = CLASS_BLOCKED
+		if facility_name in PROFIT_MANUAL_REVIEW_FACILITIES:
+			e_class = CLASS_MANUAL
 		issues.append(
 			_issue(
 				category=CATEGORY_E,
-				classification=CLASS_SAFE if not any(
-					i["classification"] == CLASS_BLOCKED for i in issues
-				)
-				else CLASS_BLOCKED,
+				classification=e_class,
 				facility=facility_name,
 				current_status=fac.status,
 				current_amounts={k: v["current"] for k, v in mismatches.items()},
 				expected_amounts={k: v["expected"] for k, v in mismatches.items()},
-				recommended_action="Refresh paid/remaining fields from submitted repayments",
-				details={"mismatches": mismatches},
+				recommended_action=(
+					"Ownership invalid — resolve receipt JE ownership before amount repair"
+					if ownership_invalid
+					else "Refresh paid/remaining fields from submitted repayments"
+				),
+				details={"mismatches": mismatches, "ownership_invalid": ownership_invalid},
 			)
 		)
 
@@ -412,28 +658,62 @@ def scan_facility(facility_name: str) -> list[dict[str, Any]]:
 	if sched:
 		sum_p = sum(flt(r.principal_amount) for r in sched)
 		sum_profit = sum(flt(r.profit_amount) for r in sched)
-		# Informational only when totals diverge materially from facility contract
-		if abs(sum_p - flt(fac.principal_amount)) > 0.01 or abs(sum_profit - flt(fac.profit_amount)) > 0.01:
-			issues.append(
-				_issue(
-					category=CATEGORY_H,
-					classification=CLASS_MANUAL,
-					facility=facility_name,
-					recommended_action=(
-						"Repayment Schedule contractual totals differ from Facility amounts "
-						"(schedule has no JE references; do not auto-regenerate)"
-					),
-					current_amounts={
-						"schedule_principal": sum_p,
-						"schedule_profit": sum_profit,
-					},
-					expected_amounts={
-						"principal_amount": flt(fac.principal_amount),
-						"profit_amount": flt(fac.profit_amount),
-					},
-					details={"note": "Facility Repayment Schedule is contractual; JE refs live on Facility Repayment"},
-				)
+		contract_p = flt(fac.principal_amount)
+		contract_profit = flt(fac.profit_amount)
+		differs = abs(sum_p - contract_p) > 0.01 or abs(sum_profit - contract_profit) > 0.01
+		if differs:
+			# Opening / migrated facilities often keep only remaining installment rows
+			is_opening_partial = cint(fac.is_opening_facility) and (
+				sum_p <= contract_p + 0.01 and sum_profit <= contract_profit + 0.01
 			)
+			known_opening = facility_name in OPENING_PARTIAL_SCHEDULE_FACILITIES
+			if is_opening_partial or known_opening:
+				# Do not classify intentional opening partial schedules as H errors
+				pass
+			elif facility_name in PROFIT_MANUAL_REVIEW_FACILITIES:
+				issues.append(
+					_issue(
+						category=CATEGORY_H,
+						classification=CLASS_MANUAL,
+						facility=facility_name,
+						recommended_action=(
+							"Unresolved profit/schedule mismatch — Finance confirmation required "
+							"(do not modify contractual amounts)"
+						),
+						current_amounts={
+							"schedule_principal": sum_p,
+							"schedule_profit": sum_profit,
+						},
+						expected_amounts={
+							"principal_amount": contract_p,
+							"profit_amount": contract_profit,
+						},
+						details={"note": "Reserved for Finance review; no auto-repair"},
+					)
+				)
+			else:
+				issues.append(
+					_issue(
+						category=CATEGORY_H,
+						classification=CLASS_MANUAL,
+						facility=facility_name,
+						recommended_action=(
+							"Repayment Schedule contractual totals differ from Facility amounts "
+							"(schedule has no JE references; do not auto-regenerate)"
+						),
+						current_amounts={
+							"schedule_principal": sum_p,
+							"schedule_profit": sum_profit,
+						},
+						expected_amounts={
+							"principal_amount": contract_p,
+							"profit_amount": contract_profit,
+						},
+						details={
+							"note": "Facility Repayment Schedule is contractual; JE refs live on Facility Repayment"
+						},
+					)
+				)
 
 	# --- Repayments under this facility ---
 	for rep in frappe.get_all(
@@ -665,6 +945,7 @@ def _summarize(issues: list[dict[str, Any]], *, facility_count: int) -> dict[str
 		"replacement_conflicts": by_cat.get(CATEGORY_F, 0),
 		"downstream_deps": by_cat.get(CATEGORY_G, 0),
 		"schedule_inconsistencies": by_cat.get(CATEGORY_H, 0),
+		"wrong_receipt_ownership": by_cat.get(CATEGORY_I, 0),
 		"safe_auto_repair": by_class.get(CLASS_SAFE, 0),
 		"manual_review": by_class.get(CLASS_MANUAL, 0),
 		"blocked": by_class.get(CLASS_BLOCKED, 0),
@@ -722,15 +1003,33 @@ def repair_facility(
 	dry_run: bool = True,
 	confirm: bool = False,
 	allow_relink: bool = True,
+	allow_safe_clear: bool = True,
+	expected_fingerprint: str | None = None,
 ) -> dict[str, Any]:
-	"""Repair a single Facility's cancelled/missing receipt JE reference.
+	"""Repair a single Facility's cancelled/missing/wrong-ownership receipt JE reference.
 
 	Requires confirm=True when dry_run=False.
+	SAFE_CLEAR clears an incorrect submitted receipt pointer without touching the JE
+	or the legitimate owner Facility.
 	"""
 	if not dry_run and not confirm:
 		frappe.throw("Production/live repair requires confirm=True (and dry_run=False).")
 
 	before = _snapshot_facility(facility)
+	before_fp = _facility_fingerprint(before)
+	if expected_fingerprint and expected_fingerprint != before_fp:
+		return {
+			"facility": facility,
+			"dry_run": dry_run,
+			"repaired": False,
+			"reason": "STALE_FINGERPRINT",
+			"before": before,
+			"after": before,
+			"expected_fingerprint": expected_fingerprint,
+			"actual_fingerprint": before_fp,
+			"actions": [],
+		}
+
 	issues = [i for i in scan_facility(facility) if i["classification"] != CLASS_OK]
 	actions: list[dict[str, Any]] = []
 
@@ -749,29 +1048,107 @@ def repair_facility(
 
 	safe = [i for i in issues if i["classification"] == CLASS_SAFE]
 	manual = [i for i in issues if i["classification"] == CLASS_MANUAL]
-	# Prefer relink (F) over clear (A)
+	# Prefer SAFE_CLEAR (I) / relink (F) over cancelled clear (A); never amount-fix with bad ownership
+	safe_clear = next(
+		(
+			i
+			for i in safe
+			if i["category"] == CATEGORY_I and (i.get("details") or {}).get("repair_mode") == "SAFE_CLEAR"
+		),
+		None,
+	)
 	relink = next(
 		(i for i in safe if i["category"] == CATEGORY_F and (i.get("details") or {}).get("replacement_je")),
 		None,
 	)
 	clear = next((i for i in safe if i["category"] in (CATEGORY_A, CATEGORY_C)), None)
-	amount_fix = next((i for i in safe if i["category"] == CATEGORY_E), None)
+	# Amount-only repair blocked when ownership issues exist
+	ownership_issues = [
+		i
+		for i in issues
+		if i["category"] in (CATEGORY_I, CATEGORY_F)
+		and i.get("reference_field") == "receipt_journal_entry"
+	]
+	amount_fix = None
+	if not ownership_issues:
+		amount_fix = next((i for i in safe if i["category"] == CATEGORY_E), None)
+	elif any(i["category"] == CATEGORY_E for i in safe):
+		# Downgrade: do not apply SAFE_E while ownership is unresolved
+		manual.append(
+			{
+				"category": CATEGORY_E,
+				"classification": CLASS_MANUAL,
+				"facility": facility,
+				"recommended_action": "Amount-only repair blocked — invalid JE ownership must be resolved first",
+			}
+		)
 
 	updates: dict[str, Any] = {}
-	if relink and allow_relink:
+	if safe_clear and allow_safe_clear:
+		# Re-evaluate eligibility under lock for concurrency safety
+		eligibility = evaluate_safe_clear_wrong_ownership(facility)
+		if not eligibility.get("eligible"):
+			return {
+				"facility": facility,
+				"dry_run": dry_run,
+				"repaired": False,
+				"reason": eligibility.get("reason") or CLASS_MANUAL,
+				"before": before,
+				"after": before,
+				"actions": [],
+				"manual_issues": manual,
+			}
+		updates["receipt_journal_entry"] = None
+		updates["received_amount"] = 0
+		if not cint(before.get("is_opening_facility")):
+			updates["status"] = "Draft"
+		actions.append(
+			{
+				"action": "safe_clear_wrong_receipt_je",
+				"from": before.get("receipt_journal_entry"),
+				"legitimate_owner": eligibility.get("legitimate_owner"),
+				"fingerprint": before_fp,
+			}
+		)
+	elif relink and allow_relink:
 		replacement = relink["details"]["replacement_je"]
+		# Exclusive ownership check before relink
+		from erpnext_extensions.facility_management.facility_identity import receipt_je_owners
+
+		other_owners = [n for n in receipt_je_owners(replacement) if n != facility]
+		if other_owners:
+			return {
+				"facility": facility,
+				"dry_run": dry_run,
+				"repaired": False,
+				"reason": "SHARED_REPLACEMENT_JE",
+				"before": before,
+				"after": before,
+				"actions": [],
+				"manual_issues": manual
+				+ [
+					{
+						"recommended_action": f"Replacement JE {replacement} owned by {other_owners}",
+						"classification": CLASS_MANUAL,
+					}
+				],
+			}
 		updates["receipt_journal_entry"] = replacement
 		updates["status"] = "Active"
-		updates["received_amount"] = flt(before.get("principal_amount") or frappe.db.get_value("Facility", facility, "principal_amount"))
+		updates["received_amount"] = flt(
+			before.get("principal_amount")
+			or frappe.db.get_value("Facility", facility, "principal_amount")
+		)
 		actions.append({"action": "relink_receipt_je", "to": replacement})
 	elif clear and clear["category"] in (CATEGORY_A, CATEGORY_C):
-		# Only clear when recommended action is clear (not company mismatch manuals)
 		if clear["classification"] == CLASS_SAFE:
 			updates["receipt_journal_entry"] = None
 			updates["received_amount"] = 0
 			if not cint(before.get("is_opening_facility")):
 				updates["status"] = "Draft"
-			actions.append({"action": "clear_cancelled_receipt_je", "from": before.get("receipt_journal_entry")})
+			actions.append(
+				{"action": "clear_cancelled_receipt_je", "from": before.get("receipt_journal_entry")}
+			)
 
 	if dry_run:
 		return {
@@ -782,38 +1159,73 @@ def repair_facility(
 			"actions": actions,
 			"before": before,
 			"after": {**before, **updates} if updates else before,
+			"fingerprint": before_fp,
 			"safe_issues": safe,
 			"manual_issues": manual,
 			"blocked_issues": blocked,
 		}
 
+	# Idempotent SAFE_CLEAR: already cleared → success no-op
+	if (
+		safe_clear
+		and allow_safe_clear
+		and not before.get("receipt_journal_entry")
+		and flt(before.get("received_amount")) == 0
+	):
+		return {
+			"facility": facility,
+			"dry_run": False,
+			"repaired": True,
+			"idempotent": True,
+			"actions": [{"action": "safe_clear_already_applied"}],
+			"before": before,
+			"after": before,
+			"manual_issues": manual,
+		}
+
 	if not updates and not amount_fix:
-		# Still refresh amounts if only E
-		if amount_fix:
-			refresh_facility_paid_fields(facility)
-			actions.append({"action": "refresh_paid_fields"})
 		after = _snapshot_facility(facility)
 		return {
 			"facility": facility,
 			"dry_run": False,
-			"repaired": bool(actions),
+			"repaired": False,
 			"actions": actions,
 			"before": before,
 			"after": after,
 			"manual_issues": manual,
 		}
 
+	lock_name = f"facility_repair_{facility}"
 	frappe.flags[FLAG_IN_RECEIPT_REPAIR] = True
 	try:
-		if updates:
-			# Narrow db_set — avoid full validate which may reject Active without JE mid-flight
-			frappe.db.set_value("Facility", facility, updates, update_modified=True)
-			actions.append({"action": "db_set", "fields": list(updates.keys())})
-		refresh_facility_paid_fields(facility)
-		# After clear, received_amount must stay 0
-		if updates.get("receipt_journal_entry") is None and "received_amount" in updates:
-			frappe.db.set_value("Facility", facility, "received_amount", 0, update_modified=False)
-		actions.append({"action": "refresh_paid_fields"})
+		with filelock(lock_name, timeout=30):
+			# Re-check fingerprint inside lock
+			live = _snapshot_facility(facility)
+			if _facility_fingerprint(live) != before_fp:
+				return {
+					"facility": facility,
+					"dry_run": False,
+					"repaired": False,
+					"reason": "STALE_FINGERPRINT",
+					"before": before,
+					"after": live,
+					"actions": [],
+				}
+			if updates:
+				# Narrow db_set — avoid full validate which may reject Active without JE mid-flight
+				frappe.db.set_value("Facility", facility, updates, update_modified=True)
+				actions.append({"action": "db_set", "fields": list(updates.keys())})
+			if amount_fix and not ownership_issues:
+				refresh_facility_paid_fields(facility)
+				actions.append({"action": "refresh_paid_fields"})
+			elif updates:
+				refresh_facility_paid_fields(facility)
+				# After clear, received_amount must stay 0
+				if updates.get("receipt_journal_entry") is None and "received_amount" in updates:
+					frappe.db.set_value(
+						"Facility", facility, "received_amount", 0, update_modified=False
+					)
+				actions.append({"action": "refresh_paid_fields"})
 	finally:
 		frappe.flags[FLAG_IN_RECEIPT_REPAIR] = False
 
@@ -826,6 +1238,7 @@ def repair_facility(
 		"actions": actions,
 		"before": before,
 		"after": after,
+		"fingerprint": before_fp,
 		"manual_issues": manual,
 	}
 
