@@ -20,13 +20,12 @@ frappe.ui.form.on("Facility Repayment", {
 		if (frm.doc.docstatus === 0) {
 			erpnext_extensions.facility_management.defaults.init_form(frm);
 		}
+		setup_facility_link_query(frm);
 		setup_debt_purchase_cheque_query(frm);
 	},
 	refresh(frm) {
 		recalculate_total_payment(frm);
-		frm.set_query("facility", () => ({
-			filters: { repayment_select: 1 },
-		}));
+		setup_facility_link_query(frm);
 		sync_repayment_accounts_dimensions_read_only(frm);
 		toggle_repayment_method_fields(frm);
 		setup_debt_purchase_cheque_query(frm);
@@ -66,6 +65,22 @@ frappe.ui.form.on("Facility Repayment", {
 		recalculate_total_payment(frm);
 	},
 });
+
+function setup_facility_link_query(frm) {
+	// Eligible repayments require Active Facility (server also validates).
+	// Search matches Facility ID, facility_name / loan number, bank, remarks.
+	frm.set_query("facility", () => {
+		const filters = { status: "Active" };
+		if (frm.doc.company) {
+			filters.company = frm.doc.company;
+		}
+		return {
+			query:
+				"erpnext_extensions.facility_management.facility_queries.facility_link_query",
+			filters,
+		};
+	});
+}
 
 function setup_debt_purchase_cheque_query(frm) {
 	frm.set_query("post_dated_cheque", () => ({

@@ -88,14 +88,41 @@ totals under the Repayment Schedule and Debt Purchase cheque grids.
 - Persian: translated labels; RTL from Desk; difference `عدم تراز` on incomplete.
 - Responsive: no summary overflow at 1440 / 1280 / 768.
 
+### Facility Repayment Link Search Improvement
+**Previous behavior:** Facility Repayment Link used a virtual filter
+`repayment_select = 1` (shown as “Repayment Select equals 1”). That flag is
+**not** a Facility DocType field; the shared `facility_link_query` treated it as
+“Active only”. Facility List searches (no eligibility filter) therefore returned
+Draft Facilities whose `facility_name` contained terms like `662`, while the
+Repayment Link correctly excluded them — which looked like a broken name search.
+
+**Root cause:** Eligibility filter (Active-only) was intentional but opaque;
+Link UX did not emphasize `facility_name` / loan number as the title.
+
+**Corrected behavior:**
+- Facility Repayment `set_query` uses `facility_link_query` with
+  `filters: { status: "Active" }` (optional company).
+- Dropdown filter text: `Status equals "Active"`.
+- Search matches Facility ID, `facility_name` (loan number), bank, remarks.
+- Facility `title_field = facility_name`, `show_title_field_in_link = 1`,
+  `search_fields` includes status.
+- Query accepts list-style Link filters without crashing.
+- Legacy `repayment_select` still maps to Active for compatibility.
+- Server validation unchanged: repayment requires Active Facility.
+
+**Preserved:** Draft/Closed Facilities stay excluded; permissions via
+`build_match_conditions`; Debt Purchase / accounting rules untouched.
+
 ### Tests (development.localhost)
 | Suite | Result |
 |---|---|
+| `test_facility_link_query` | 5 PASS |
 | `test_facility_pdc_allocation` | 22 PASS (incl. localization / meta UI guards) |
 | `test_facility_debt_purchase_e2e` | 6 PASS |
 | `test_facility_debt_purchase_rejections` | 12 PASS |
 | `test_facility_debt_purchase_repayment` | 2 PASS |
 | `test_facility_integrity_guards` | 28 PASS |
+| `test_facility_repayment_usability` | 3 PASS, 1 SKIP, 2 ERROR (prep fixtures / opening receipt — unrelated to Link search; `test_link_query_by_facility_name` PASS) |
 
 ### Ops applied (development only)
 - `bench --site development.localhost migrate`

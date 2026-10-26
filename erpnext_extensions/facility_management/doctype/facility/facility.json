@@ -431,7 +431,9 @@
  "name": "Facility",
  "naming_rule": "Expression",
  "owner": "Administrator",
- "search_fields": "facility_name,bank,facility_type",
+ "search_fields": "facility_name,bank,facility_type,status",
+ "show_title_field_in_link": 1,
+ "title_field": "facility_name",
  "permissions": [
   {
    "create": 1,
