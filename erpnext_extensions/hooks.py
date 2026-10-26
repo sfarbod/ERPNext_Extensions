@@ -82,6 +82,7 @@ doctype_js = {
 		"facility_management/public/js/facility_dimension_link_queries.js",
 		"facility_management/public/js/facility_settings_defaults.js",
 		"facility_management/public/js/facility_je_preview_dialog.js",
+		"facility_management/public/js/facility_grid_footer.js",
 	],
 	"Facility Repayment": [
 		"facility_management/public/js/facility_settings_defaults.js",

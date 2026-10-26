@@ -22,6 +22,10 @@ from erpnext_extensions.facility_management.facility_monetary import (
 	FACILITY_INPUT_CURRENCY_FIELDS,
 	persist_exact_currency_fields,
 )
+from erpnext_extensions.facility_management.facility_pdc_allocation import (
+	assert_activation_allocation_equals_facility_total,
+	validate_facility_pdc_allocations,
+)
 from erpnext_extensions.facility_management.facility_settings_doc import (
 	apply_facility_settings_defaults,
 	get_facility_settings_defaults_payload,
@@ -57,6 +61,7 @@ class Facility(Document):
 		self._validate_installment_count()
 		self._validate_opening_amounts()
 		self._validate_status_rules()
+		validate_facility_pdc_allocations(self)
 		self._recalculate_totals()
 		self._sync_balance_fields()
 
@@ -204,6 +209,8 @@ def create_receipt_journal_entry(name: str) -> dict:
 	doc = frappe.get_doc("Facility", name)
 	if cint(doc.is_opening_facility):
 		frappe.throw(_("Opening / migrated facilities must not create a Receipt Journal Entry."))
+	# Activation via receipt JE must enforce Debt Purchase PDC total equality.
+	assert_activation_allocation_equals_facility_total(doc)
 	je_name = create_and_submit_receipt_je(doc)
 	assign_receipt_journal_entry(
 		name,

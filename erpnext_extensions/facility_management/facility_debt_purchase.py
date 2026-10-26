@@ -152,6 +152,13 @@ def validate_debt_purchase_cheque_repayment(repayment, facility=None) -> dict[st
 			title=_("Debt Purchase Cheque"),
 		)
 
+	# New repayments: PDC must appear on Facility.debt_purchase_pdcs.
+	from erpnext_extensions.facility_management.facility_pdc_allocation import (
+		assert_repayment_pdc_allocated,
+	)
+
+	assert_repayment_pdc_allocated(repayment, facility)
+
 	principal = parse_facility_amount(getattr(repayment, "principal_amount", 0))
 	profit = parse_facility_amount(getattr(repayment, "profit_amount", 0))
 	cheque_amt = parse_facility_amount(getattr(pdc, "cheque_amount", 0))
@@ -350,26 +357,105 @@ def cancel_debt_purchase_settlement(repayment, *, settlement_je: str | None = No
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def debt_purchase_cheque_query(doctype, txt, searchfield, start, page_len, filters):
-	"""Eligible Assigned DP cheques for Facility Repayment link field."""
-	company = (filters or {}).get("company")
+	"""Eligible Assigned DP cheques for Facility Repayment link field.
+
+	When ``facility`` is provided, only PDCs allocated on that Facility's
+	``debt_purchase_pdcs`` table are returned.
+	"""
+	filters = filters or {}
+	company = filters.get("company")
+	facility = (filters.get("facility") or "").strip()
+	# JOIN placeholders appear before WHERE placeholders in the SQL string.
+	join_sql = ""
+	join_params: list[Any] = []
+	if facility:
+		join_sql = """
+			INNER JOIN `tabFacility PDC Allocation` alloc
+				ON alloc.post_dated_cheque = `tabPost Dated Cheque`.name
+				AND alloc.parenttype = 'Facility'
+				AND alloc.parent = %s
+		"""
+		join_params.append(facility)
 	conds = [
-		"cheque_direction = %s",
-		"workflow_state = %s",
-		"docstatus = 1",
-		"(debt_purchase_repayment IS NULL OR debt_purchase_repayment = '')",
+		"`tabPost Dated Cheque`.cheque_direction = %s",
+		"`tabPost Dated Cheque`.workflow_state = %s",
+		"`tabPost Dated Cheque`.docstatus < 2",
+		"(`tabPost Dated Cheque`.debt_purchase_repayment IS NULL OR `tabPost Dated Cheque`.debt_purchase_repayment = '')",
 	]
-	params: list[Any] = [CHEQUE_DIRECTION_RECEIVABLE, WORKFLOW_ASSIGNED_DEBT_PURCHASE]
+	where_params: list[Any] = [CHEQUE_DIRECTION_RECEIVABLE, WORKFLOW_ASSIGNED_DEBT_PURCHASE]
 	if company:
-		conds.append("company = %s")
+		conds.append("`tabPost Dated Cheque`.company = %s")
+		where_params.append(company)
+	conds.append(f"`tabPost Dated Cheque`.{searchfield} LIKE %s")
+	where_params.append(f"%{txt}%")
+	params = join_params + where_params + [page_len, start]
+	return frappe.db.sql(
+		f"""
+		SELECT `tabPost Dated Cheque`.name, `tabPost Dated Cheque`.cheque_no,
+			`tabPost Dated Cheque`.cheque_amount, `tabPost Dated Cheque`.party
+		FROM `tabPost Dated Cheque`
+		{join_sql}
+		WHERE {' AND '.join(conds)}
+		ORDER BY `tabPost Dated Cheque`.modified DESC
+		LIMIT %s OFFSET %s
+		""",
+		tuple(params),
+	)
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def facility_allocation_pdc_query(doctype, txt, searchfield, start, page_len, filters):
+	"""PDCs selectable on Facility.debt_purchase_pdcs.
+
+	- Assigned + not yet settled repayments (normal path).
+	- Settled PDCs already linked to this Facility (historical documentation).
+	"""
+	filters = filters or {}
+	company = filters.get("company")
+	exclude_facility = (filters.get("facility") or "").strip()
+	conds = [
+		"`tabPost Dated Cheque`.cheque_direction = %s",
+		"`tabPost Dated Cheque`.docstatus < 2",
+		"""(
+			(
+				`tabPost Dated Cheque`.workflow_state = %s
+				AND (`tabPost Dated Cheque`.debt_purchase_repayment IS NULL
+					OR `tabPost Dated Cheque`.debt_purchase_repayment = '')
+			)
+			OR (
+				`tabPost Dated Cheque`.workflow_state = %s
+				AND %s != ''
+				AND `tabPost Dated Cheque`.debt_purchase_facility = %s
+			)
+		)""",
+		"""NOT EXISTS (
+			SELECT 1 FROM `tabFacility PDC Allocation` alloc
+			WHERE alloc.post_dated_cheque = `tabPost Dated Cheque`.name
+			  AND alloc.parenttype = 'Facility'
+			  AND IFNULL(alloc.parent, '') != %s
+		)""",
+	]
+	params: list[Any] = [
+		CHEQUE_DIRECTION_RECEIVABLE,
+		WORKFLOW_ASSIGNED_DEBT_PURCHASE,
+		WORKFLOW_DEBT_PURCHASE_SETTLED,
+		exclude_facility or "",
+		exclude_facility or "",
+		exclude_facility or "",
+	]
+	if company:
+		conds.append("`tabPost Dated Cheque`.company = %s")
 		params.append(company)
 	conds.append(f"`tabPost Dated Cheque`.{searchfield} LIKE %s")
 	params.append(f"%{txt}%")
 	return frappe.db.sql(
 		f"""
-		SELECT name, cheque_no, cheque_amount, party
+		SELECT `tabPost Dated Cheque`.name, `tabPost Dated Cheque`.cheque_no,
+			`tabPost Dated Cheque`.cheque_amount, `tabPost Dated Cheque`.party
 		FROM `tabPost Dated Cheque`
 		WHERE {' AND '.join(conds)}
-		ORDER BY modified DESC
+		ORDER BY `tabPost Dated Cheque`.modified DESC
 		LIMIT %s OFFSET %s
 		""",
 		tuple(params + [page_len, start]),
@@ -390,4 +476,5 @@ __all__ = [
 	"settle_debt_purchase_on_submit",
 	"cancel_debt_purchase_settlement",
 	"debt_purchase_cheque_query",
+	"facility_allocation_pdc_query",
 ]

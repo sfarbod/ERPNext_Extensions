@@ -58,6 +58,8 @@
   "penalty_expense_account",
   "section_accounting",
   "receipt_journal_entry",
+  "section_debt_purchase_pdcs",
+  "debt_purchase_pdcs",
   "section_schedule",
   "repayment_schedule",
   "section_templates",
@@ -359,6 +361,19 @@
    "label": "Receipt Journal Entry",
    "options": "Journal Entry",
    "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.facility_type",
+   "fieldname": "section_debt_purchase_pdcs",
+   "fieldtype": "Section Break",
+   "label": "چک‌های خرید دین"
+  },
+  {
+   "fieldname": "debt_purchase_pdcs",
+   "fieldtype": "Table",
+   "label": "چک‌های خرید دین",
+   "no_copy": 1,
+   "options": "Facility PDC Allocation"
   },
   {
    "fieldname": "section_schedule",

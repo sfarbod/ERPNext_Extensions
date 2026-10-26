@@ -49,10 +49,12 @@ frappe.ui.form.on("Facility Repayment", {
 			frm.set_value("bank_account", null);
 		}
 		toggle_repayment_method_fields(frm);
+		setup_debt_purchase_cheque_query(frm);
 	},
 	facility(frm) {
 		recalculate_total_payment(frm);
 		setup_debt_purchase_cheque_query(frm);
+		clear_incompatible_pdc(frm);
 	},
 	principal_amount(frm) {
 		recalculate_total_payment(frm);
@@ -71,8 +73,37 @@ function setup_debt_purchase_cheque_query(frm) {
 			"erpnext_extensions.facility_management.facility_debt_purchase.debt_purchase_cheque_query",
 		filters: {
 			company: frm.doc.company || undefined,
+			facility: frm.doc.facility || undefined,
 		},
 	}));
+}
+
+function clear_incompatible_pdc(frm) {
+	if (frm.doc.docstatus !== 0 || !frm.doc.post_dated_cheque || !frm.doc.facility) {
+		return;
+	}
+	const method = (frm.doc.repayment_method || METHOD_BANK).trim() || METHOD_BANK;
+	if (method !== METHOD_DP) {
+		return;
+	}
+	frappe.call({
+		method: "frappe.client.get_list",
+		args: {
+			doctype: "Facility PDC Allocation",
+			filters: {
+				parent: frm.doc.facility,
+				parenttype: "Facility",
+				post_dated_cheque: frm.doc.post_dated_cheque,
+			},
+			fields: ["name"],
+			limit_page_length: 1,
+		},
+		callback(r) {
+			if (!(r.message && r.message.length)) {
+				frm.set_value("post_dated_cheque", null);
+			}
+		},
+	});
 }
 
 function toggle_repayment_method_fields(frm) {
