@@ -48,6 +48,34 @@ def apply_monkey_patches():
 	_patch_pr_pi_landed_cost_compat()
 	# Idempotent: Core get_reposting_data must not JSONDecodeError on empty/shared files.
 	_patch_reposting_data_json_safety()
+	# Idempotent: every RIV entry point re-applies bootstrap (workers / bare execute).
+	_patch_repost_entry_bootstrap()
+
+
+def _patch_repost_entry_bootstrap():
+	"""Ensure Iran patches are loaded before any Repost Item Valuation execution.
+
+	``before_job`` / ``before_request`` already call bootstrap for workers and Desk.
+	Bare ``bench execute`` / in-process campaign calls can still reach Core RIV
+	without that hook. Wrapping ``execute_reposting_entry`` makes the first line
+	of every supported RIV path re-enter :func:`bootstrap.apply` (idempotent).
+	"""
+	import erpnext.stock.doctype.repost_item_valuation.repost_item_valuation as riv_mod
+
+	if getattr(riv_mod.execute_reposting_entry, "_iran_bootstrap_wrapped", None):
+		return
+
+	_orig = riv_mod.execute_reposting_entry
+
+	def execute_reposting_entry(name, continue_reposting=False):
+		from erpnext_extensions.iran_accounting.integration.bootstrap import apply as bootstrap_apply
+
+		bootstrap_apply()
+		return _orig(name, continue_reposting=continue_reposting)
+
+	execute_reposting_entry._iran_bootstrap_wrapped = True
+	execute_reposting_entry._iran_original = _orig
+	riv_mod.execute_reposting_entry = execute_reposting_entry
 
 
 def _patch_reposting_data_json_safety():

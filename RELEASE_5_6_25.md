@@ -80,9 +80,13 @@ Validated LCV E2E: qty 800, LCV 1,500 → SLE 800,001,500; GRNI 0.
 
 ### Reposting behavior
 - Corrected PR/PI/LCV queue standard Item+Warehouse RIV.
-- Repairs and verification **must** call `apply_monkey_patches()` (or run under
-  request/worker bootstrap). Bare `execute_reposting_entry` without patches
-  leaves sticky Material Issue/Transfer outgoing rates.
+- **Automatic patch initialization:** `hooks.before_request` and
+  `hooks.before_job` call `integration.bootstrap.apply`. Additionally,
+  `execute_reposting_entry` is wrapped to re-enter bootstrap (idempotent) so
+  campaign/`execute_job` RIV paths load Iran patches without a manual
+  `apply_monkey_patches()` call.
+- A brand-new process that invokes Core RIV before any bootstrap still needs
+  one job/`execute_job` path (or one explicit bootstrap).
 - Idempotent re-RIV with patches preserves corrected totals.
 
 ### Historical campaign functionality
@@ -95,7 +99,37 @@ version 5.6.25) classify:
 | B | `B_LANDED_COST_ROUNDING` | LCV integer VR inflation / GRNI residual / transfer pair |
 | C | `C_REPOSTING_INCONSISTENCY` | Failed / Skipped / Queued RIV |
 
-Repair remains standard RIV + verification — no manual JE balancing.
+#### Repair orchestration (final gate)
+Module: `historical_rebuild/purchase_valuation_repair.py`
+
+| Question | Result |
+|----------|--------|
+| Does **RIV alone** fix Category A when VR still provisional? | **No** — `amount_difference` may already be correct while `valuation_rate`/SLE lag |
+| Does **RIV alone** fix Category B integer VR inflation? | **No** — document VR must be realigned first |
+| Prerequisite | Core `adjust_incoming_rate_for_pr` (recalculates VR from base+PI diff+LCV) |
+| If SLE correct but PR GL stale | Core `make_reverse_gl_entries` + `make_gl_entries(from_repost=True)` |
+| Then | Scoped Item+Warehouse RIV via `execute_job` (triggers `before_job` bootstrap) |
+
+API: `repair_one(pr, execute=False|True)`, `repair_from_scan(company, ...)`.
+Dry-run by default. Explicit `execute=True` required. Idempotent re-run →
+`idempotent_skip` when clean.
+
+#### Proven gate evidence
+| Scenario | Detected | Diff | Repair | Final SLE | GRNI |
+|----------|----------|------|--------|-----------|------|
+| A PI 1000×26,900,332 | Category A | −25,900,332,000 | adjust → GL regen → RIV | 26,900,332,000 | 0 |
+| B LCV 800×1,500 | Category B + GRNI | +100 SLE / −100 GRNI | adjust → RIV | 800,001,500 | 0 |
+| Valid control | none | — | — | — | — |
+
+Note: this environment’s Category B GRNI residual was **100 IRR** (not the
+historical 200 IRR sample); both SLE and GRNI cleared after repair.
+
+#### Unsupported / blocked
+- Ambiguous unbilled PRs (never auto-flagged as GRNI defects).
+- Unrelated site-wide Queued RIVs for the same item (repair scopes to the PR’s
+  warehouses / newly spawned RIVs only).
+- Cases where `adjust_incoming_rate_for_pr` or GL regenerate throws — marked
+  `blocked` with reason; no silent skip.
 
 ### Combined E2E evidence (development.localhost)
 Documents: `MAT-PRE-2026-02150`, `MAT-STE-2026-42854` (Issue 300),
@@ -122,10 +156,12 @@ Invariant check: issue + remaining = acquisition ✓
 | `test_pr_legacy_uvr_float_v5528` (11) | PASS |
 | `test_transfer_inward_conservation_v5625` (3) | PASS |
 | `test_purchase_valuation_detection_v5625` (5) | PASS |
+| `test_purchase_valuation_repair_v5625` (2) | PASS |
+| Historical gate E2E (bootstrap / control / A / B) | PASS |
 | LCV E2E FIX4 (800 / 1,500) | PASS |
 | Combined PR→Issue→Transfer→PI→LCV | PASS (after patched RIV) |
-| Playwright UI | **NOT EXECUTED** — Python `playwright` package unavailable in this environment (`npx playwright` CLI present only) |
-| Full Iran regression suite | Not fully re-run in this session; focused purchase/LCV/transfer suites green |
+| Playwright UI | **SKIPPED** — Python `playwright` package unavailable |
+| Full Iran regression suite | Not fully re-run; focused purchase/LCV/transfer/campaign suites green |
 
 ### Known limitations
 - Development site often has **no RQ workers**; RIV stays Queued until executed
@@ -138,22 +174,30 @@ Invariant check: issue + remaining = acquisition ✓
 
 ### Deployment considerations
 1. Deploy `erpnext_extensions` 5.6.25 only (no Frappe/ERPNext core edits).
-2. Ensure worker processes load Iran monkey patches (existing hooks).
-3. Dry-run `dry_run_purchase_valuation_scan` before any campaign apply.
-4. For each repair: RIV from PR posting time → verify SLE/GL/GRNI → re-scan.
+2. Keep RQ workers running so `before_job` bootstrap applies on standard RIV jobs.
+3. Dry-run `dry_run_purchase_valuation_scan` / `repair_one(..., execute=False)` first.
+4. Execute allowlisted `repair_one(..., execute=True)`; verify SLE/GL/GRNI; re-scan.
 
 ### Historical repair instructions
-1. Dry-run detection; export findings (root cause, related PI/LCV, eligibility).
-2. For Category A/B: `apply_monkey_patches()` then RIV Item+Warehouse from PR.
-3. Verify: acquisition SLE = base+PI diff+LCV; GRNI=0 if fully billed; transfer
-   src+dst = 0; no new GRNI residual.
-4. Category C: execute or clear Failed/Queued RIVs; never mark success without
+1. Dry-run: `dry_run_purchase_valuation_scan(company)` or `repair_one(pr, execute=False)`.
+2. Review eligibility / `riv_alone_sufficient` / `recommended_action`.
+3. Execute: `repair_one(pr, execute=True)` (or allowlisted `repair_from_scan`).
+4. Verify: SLE = base+PI diff+LCV; active PR inventory GL = SLE; GRNI=0 if fully
+   billed; transfer src+dst = 0 when applicable.
+5. Re-run dry-run / `repair_one` — expect `idempotent_skip`.
+6. Category C: drain Failed/Queued RIVs via job path; never mark success without
    SLE/GL checks.
-5. Re-run dry-run — Category A/B for repaired vouchers should clear.
 
 ### Rollback
 Revert to 5.6.21 app revision. Accounting already posted under 5.6.25 remains;
 re-RIV may be needed if rolling back mid-repair. Do not reverse via balancing JE.
 
+### Final gate regression (this package)
+| Suite | Result |
+|-------|--------|
+| Prior 34 unit tests + 2 repair assess | **36 PASS** |
+| Historical gate E2E (bootstrap, control, A, B) | **PASS** |
+| Playwright smoke | **SKIPPED** — Python `playwright` package not installed |
+
 ### Version
-`erpnext_extensions.__version__` → **5.6.25**
+`erpnext_extensions.__version__` → **5.6.25** (unchanged)
