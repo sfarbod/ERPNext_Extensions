@@ -150,7 +150,7 @@ class TestPartyIdentityPersistenceV5621(unittest.TestCase):
 			self.assertEqual(row.get("party_type"), "Customer")
 			self.assertEqual(row.get("party"), "CUS-00003")
 
-	def test_stock_identity_unsupported(self):
+	def test_identity_item_axis_uses_commercial_source(self):
 		data = get_item_summary(
 			_payload(
 				"item",
@@ -160,11 +160,12 @@ class TestPartyIdentityPersistenceV5621(unittest.TestCase):
 				},
 			)
 		)
-		self.assertEqual(data.get("rows"), [])
-		self.assertTrue(data.get("unsupported_filter_combination"))
-		self.assertEqual(
-			data["unsupported_filter_combination"]["reason"], "sle_has_no_party_attribution"
-		)
+		self.assertEqual(data.get("analysis_source"), "commercial_transactions")
+		self.assertFalse(data.get("unsupported_filter_combination"))
+		self.assertGreater(len(data.get("rows") or []), 0)
+		for row in data["rows"]:
+			self.assertEqual(row.get("party"), "CUS-00003")
+			self.assertEqual(row.get("transaction_direction"), "Sales")
 
 	def test_query_spec_resolves_selected_members(self):
 		spec = AccountExplorerQuerySpec_from_client(

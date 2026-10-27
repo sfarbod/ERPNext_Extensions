@@ -97,14 +97,26 @@ def _run_summary_builder(spec: AccountExplorerQuerySpec) -> dict:
 
 		return build_voucher_gl_line_summary(spec)
 	if axis == "item_group":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			build_commercial_item_group_summary,
+			identity_requires_commercial_item_mode,
+		)
 		from erpnext_extensions.iran_accounting.account_explorer.item_group_summary import (
 			build_item_group_summary,
 		)
 
+		if identity_requires_commercial_item_mode(spec):
+			return build_commercial_item_group_summary(spec)
 		return build_item_group_summary(spec)
 	if axis == "item":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			build_commercial_item_summary,
+			identity_requires_commercial_item_mode,
+		)
 		from erpnext_extensions.iran_accounting.account_explorer.item_summary import build_item_summary
 
+		if identity_requires_commercial_item_mode(spec):
+			return build_commercial_item_summary(spec)
 		return build_item_summary(spec)
 	if axis == "inventory_account":
 		from erpnext_extensions.iran_accounting.account_explorer.inventory_account_summary import (
@@ -340,6 +352,21 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "cost_center", "label": _("Cost Center")},
 		]
 	if axis == "item_group":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			identity_requires_commercial_item_mode,
+		)
+
+		if identity_requires_commercial_item_mode(spec):
+			return [
+				{"fieldname": "analysis_source", "label": _("Analysis Source")},
+				{"fieldname": "display_code", "label": _("Item Group")},
+				{"fieldname": "display_title", "label": _("Title")},
+				{"fieldname": "sales_base_net_amount", "label": _("Sales Net (Base)")},
+				{"fieldname": "purchase_base_net_amount", "label": _("Purchase Net (Base)")},
+				{"fieldname": "return_base_net_amount", "label": _("Return Amount (Base)")},
+				{"fieldname": "document_count", "label": _("Documents")},
+				{"fieldname": "item_count", "label": _("Items")},
+			]
 		return [
 			{"fieldname": "display_code", "label": _("Item Group")},
 			{"fieldname": "display_title", "label": _("Title")},
@@ -349,6 +376,29 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "credit_balance", "label": _("Credit Balance")},
 		]
 	if axis == "item":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			identity_requires_commercial_item_mode,
+		)
+
+		if identity_requires_commercial_item_mode(spec):
+			return [
+				{"fieldname": "analysis_source", "label": _("Analysis Source")},
+				{"fieldname": "display_code", "label": _("Item")},
+				{"fieldname": "display_title", "label": _("Item Name")},
+				{"fieldname": "item_group", "label": _("Item Group")},
+				{"fieldname": "transaction_direction", "label": _("Direction")},
+				{"fieldname": "party_type", "label": _("Party Type")},
+				{"fieldname": "party", "label": _("Party")},
+				{"fieldname": "quantity", "label": _("Quantity")},
+				{"fieldname": "stock_quantity", "label": _("Stock Qty")},
+				{"fieldname": "uom", "label": _("UOM")},
+				{"fieldname": "net_amount", "label": _("Net Amount")},
+				{"fieldname": "base_net_amount", "label": _("Base Net Amount")},
+				{"fieldname": "currency", "label": _("Currency")},
+				{"fieldname": "document_count", "label": _("Documents")},
+				{"fieldname": "return_quantity", "label": _("Return Qty")},
+				{"fieldname": "return_base_net_amount", "label": _("Return Amount (Base)")},
+			]
 		return [
 			{"fieldname": "display_code", "label": _("Item")},
 			{"fieldname": "display_title", "label": _("Item Name")},

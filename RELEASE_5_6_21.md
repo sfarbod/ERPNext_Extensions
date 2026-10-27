@@ -16,6 +16,9 @@ were visible but clicks did nothing in the real UI.
 (OR tuples, editable roles, cross-axis), plus Account hierarchy exclusion
 transparency (Persian warning + details dialog + Included/Excluded reconciliation).
 
+**Follow-up 3 (same 5.6.21):** Party-to-Item / Item Group commercial analysis under
+active Unified Party identity, plus final cross-axis release validation.
+
 **Version remains 5.6.21** (no bump).
 
 ### Persistent Unified Party identity filter
@@ -26,8 +29,41 @@ transparency (Persian warning + details dialog + Included/Excluded reconciliatio
 - Filter Summary shows Unified Party, Identifier, and `Roles: A OR B OR C`.
 - Survives axis switches (Account Levels, Dimensions, Currencies, Vouchers, Parties),
   level changes, sort/pagination, and Apply. Cleared only via chip remove / Clear Identity.
-- Item / Item Group: explicitly **unsupported** when identity is active
-  (`sle_has_no_party_attribution`) — no silent company-wide stock totals.
+- Item / Item Group with identity: switches to **Commercial Transactions** mode
+  (submitted Sales/Purchase Invoice Items) — never silent company-wide SLE totals.
+
+### Party-to-Item / Item Group commercial analysis
+**Root cause of prior block:** SLE has no Party Type/Party fields, so identity
+filters could not attribute Case A stock valuation. Blanket rejection prevented
+legitimate commercial item analysis.
+
+**Analytical sources (never mixed):**
+| Source | Mode key | Measures |
+|--------|----------|----------|
+| Commercial | `commercial_transactions` | Submitted SI/PI item qty & net amounts |
+| Stock | `stock_movements` (Case A) | SLE qty/value — unchanged when identity off |
+| Accounting | `accounting_gl` (Case B) | Posted GL — Parties/AL/Dimensions/etc. |
+
+**Authoritative commercial documents:**
+- Sales amounts → submitted Sales Invoice Items (`docstatus=1`)
+- Purchase amounts → submitted Purchase Invoice Items (`docstatus=1`)
+- Delivery Note / Purchase Receipt / SO / PO are **not** added to commercial totals
+  (prevents triple-counting the same sale/purchase)
+- Returns / credit notes: signed `is_return` invoice lines (qty & base_net_amount)
+- Cancelled/amended: only current submitted invoices
+- Shareholder: no item transaction source → clear empty state (FA+EN); never invent links
+- Customer OR Supplier roles: show supported sales/purchase; Shareholder co-selected
+  yields sales/purchase plus an explicit unsupported-role warning
+
+**Filters:** Company, FY, From/To Date, Item, Item Group (with descendants), Warehouse
+(on invoice item rows). Finance Book is **not** silently applied to commercial rows
+(documented warning — FB is GL semantics).
+
+**UI:** Filter Summary shows Analysis Source; Item/Item Group columns switch to
+commercial fields (Direction, Party, Qty, Base Net, Returns, Documents). Export
+CSV/XLSX includes `analysis_source` and `transaction_direction`.
+
+**Unfiltered Item / Item Group behavior unchanged** (Case A SLE stock).
 
 ### Account hierarchy exclusion transparency
 Root cause on restored snapshot (3 accounts with activity, `account_number` NULL):
@@ -177,6 +213,8 @@ Debit/Credit Turnover, Debit/Credit Balance, Analyze.
 | Account Levels first page (API) | ~2450–2700 ms | ~460–800 ms |
 | Parties first page (with Related Roles) | ~36–160 ms | ~180–200 ms (identity batch; still interactive) |
 | Voucher first page | ~2.8 s | ~2.8 s |
+| Commercial Item (identity, FY1405) | n/a | median ~3 ms / P95 ~206 ms |
+| Commercial Item Group (identity) | n/a | median ~4 ms / P95 ~11 ms |
 
 1. Currency discovery no longer full-scans `tabGL Entry` on every cold open.
 2. Covering GL index `ae_gl_co_iscancel_posting_acct`
@@ -197,18 +235,21 @@ Experimental Redis financial caches were **not** activated.
 CSV/XLSX (All Filtered / Selected; Jalali / Gregorian) include:
 Party Type, Party, Party Name, Identifier Field, Related Roles.
 Identifiers exported as text (leading zeros preserved).
+Commercial Item/Item Group export adds Analysis Source + Direction and matches
+the active identity roles (no company-wide leakage).
 
 ### N. Tests / Playwright / Build
 - Unit/regression including `test_account_explorer_party_identity_analysis_v5621`
   (customer-only, multi-role, missing/disabled identifiers, filters, isolation,
   no duplicate GL, Analyze presence rules) — **OK** (11 tests).
+- `test_account_explorer_commercial_item_v5621` — Customer/Supplier/Shareholder
+  commercial Item + Item Group, DN dedup, cancelled exclusion, export columns,
+  company isolation, performance median/P95.
 - Playwright `playwright_account_explorer_party_identity_v5621.mjs` — **OK**
-  with **real DOM Analyze click** on CUS-00003:
-  - identity API observed from click (~39 ms)
-  - visible panel + scoped grid (~280 ms)
-  - Analysis Path changed; navigate back restores scope
-  - Account Levels Analyze scopes; remount survives; Vouchers have no Analyze
-- Currency Analyze click spot-check: handler fires and applies currency filter.
+  with **real DOM Analyze click** on CUS-00003.
+- Playwright `playwright_account_explorer_commercial_item_v5621.mjs` — Milan Pars
+  → Item Groups/Items commercial scope, role toggles, Shareholder empty state,
+  cross-axis identity (AL/Dimensions/Currencies/Vouchers).
 - `bench build --app erpnext_extensions` — **OK**.
 
 ### O. Migration requirements

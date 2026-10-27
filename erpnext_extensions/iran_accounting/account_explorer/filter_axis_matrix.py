@@ -119,6 +119,18 @@ FILTER_AXIS_COMPATIBILITY = {
 		"no_effect": [],
 		"behavior": "Scopes GL party measures; may cross-filter SLE via voucher EXISTS.",
 	},
+	"party_identity": {
+		"affects": sorted(GL_FAMILY_AXES | STOCK_FAMILY_AXES),
+		"no_effect": [],
+		"behavior": (
+			"Persistent Unified Party identity OR-tuples. "
+			"On GL axes: exact (party_type, party) OR filter. "
+			"On Item / Item Group: switches to commercial_transactions mode "
+			"(submitted Sales/Purchase Invoice Items for Customer/Supplier roles). "
+			"Shareholder has no item transaction source. "
+			"Does not replace Case A SLE stock valuation with invoice amounts."
+		),
+	},
 	"dimension": {
 		"affects": sorted(GL_FAMILY_AXES | STOCK_FAMILY_AXES),
 		"no_effect": [],

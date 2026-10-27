@@ -2808,6 +2808,26 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			});
 		}
 
+		// Active analysis source (commercial / stock / GL) when identity scopes Items.
+		if (this.analysis_source || this.get_analysis_filters().party_identity) {
+			const source_labels = {
+				commercial_transactions: __("Commercial Transactions"),
+				stock_movements: __("Stock Movements"),
+				accounting_gl: __("Accounting GL"),
+			};
+			const source_key = this.analysis_source || (
+				["item", "item_group"].includes(this.analysis_context?.view_axis)
+					? "commercial_transactions"
+					: "accounting_gl"
+			);
+			const $src = $('<div class="ae-filter-summary-source text-muted small"></div>').appendTo(
+				this.$filter_summary
+			);
+			$src.text(
+				`${__("Analysis Source")}: ${source_labels[source_key] || source_key}`
+			);
+		}
+
 		const render_group = (title, group_rows) => {
 			if (!group_rows.length) {
 				return;
@@ -4885,6 +4905,21 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		);
 	}
 
+	is_commercial_item_mode() {
+		if (this.analysis_source === "commercial_transactions") {
+			return true;
+		}
+		const axis = this.analysis_context?.view_axis;
+		if (!["item", "item_group"].includes(axis)) {
+			return false;
+		}
+		return !!(
+			this.get_analysis_filters?.()?.party_identity ||
+			this.analysis_context?.party_scope?.unified_identity ||
+			(this.analysis_context?.party_scope?.identity_members || []).length
+		);
+	}
+
 	apply_scope() {
 		this.sync_document_scope_from_controls();
 		if (!this.document_scope.company) {
@@ -5138,6 +5173,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.totals_currency = data.totals_currency || data.currency?.code || this.currency_code;
 			this.pagination = data.pagination || this.pagination;
 			this.warnings = data.warnings || [];
+			this.analysis_source = data.analysis_source || null;
+			this.commercial_semantics = data.commercial_semantics || null;
+			this.unsupported_filter_combination = data.unsupported_filter_combination || null;
 			this.classification_residual = data.classification_residual || null;
 			this.account_fact_engine = data.account_fact_engine || null;
 			this.construction_meta = {
@@ -5200,12 +5238,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			const pagination_started = performance.now();
 			this.render_pagination();
 			const pagination_ms = Math.round(performance.now() - pagination_started);
-			// Keep Unified Party / Party Identity panels visible across summary refresh.
+			// Keep Unified Party / Party Identity panels visible across summary refresh
+			// on every axis while the persistent party_identity filter is active.
 			const keep_party_identity_panel =
-				this.analysis_context.view_axis === "party" &&
+				!!this.get_analysis_filters?.()?.party_identity ||
 				!!this.analysis_context.party_scope?.unified_identity;
 			if (this.analysis_context.view_axis !== "unified_party" && !keep_party_identity_panel) {
 				this.hide_member_panel();
+			} else if (keep_party_identity_panel && this.get_analysis_filters?.()?.party_identity) {
+				// Re-paint role editor after axis switch so Selected Roles remain editable.
+				this.render_party_identity_role_editor({ append_only: false });
 			}
 			this.events.emit("summary:loaded", { data, validation });
 			this.end_grid_perf({
@@ -5342,22 +5384,35 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 					[__("Scoped Credit"), payload.totals.scoped_credit, "voucher_scoped_credit_mismatch"],
 				];
 			} else if (axis === "item_group") {
-				checks = [
-					[__("Inward Value"), payload.totals.inward_value, "item_group_inward_mismatch"],
-					[__("Outward Value"), payload.totals.outward_value, "item_group_outward_mismatch"],
-					[__("Debit Balance"), payload.totals.debit_balance, "item_group_debit_balance_mismatch"],
-					[__("Credit Balance"), payload.totals.credit_balance, "item_group_credit_balance_mismatch"],
-				];
+				if (this.is_commercial_item_mode()) {
+					checks = [
+						[__("Sales Net (Base)"), flt(totals.sales_base_net_amount), "item_group_sales_mismatch"],
+						[__("Purchase Net (Base)"), flt(totals.purchase_base_net_amount), "item_group_purchase_mismatch"],
+					];
+				} else {
+					checks = [
+						[__("Inward Value"), payload.totals.inward_value, "item_group_inward_mismatch"],
+						[__("Outward Value"), payload.totals.outward_value, "item_group_outward_mismatch"],
+						[__("Debit Balance"), payload.totals.debit_balance, "item_group_debit_balance_mismatch"],
+						[__("Credit Balance"), payload.totals.credit_balance, "item_group_credit_balance_mismatch"],
+					];
+				}
 			} else if (axis === "item") {
-				checks = [
-					[__("In Qty"), payload.totals.in_qty, "item_in_qty_mismatch"],
-					[__("Out Qty"), payload.totals.out_qty, "item_out_qty_mismatch"],
-					[__("Balance Qty"), payload.totals.balance_qty, "item_balance_qty_mismatch"],
-					[__("Inward Value"), payload.totals.inward_value, "item_inward_mismatch"],
-					[__("Outward Value"), payload.totals.outward_value, "item_outward_mismatch"],
-					[__("Debit Balance"), payload.totals.debit_balance, "item_debit_balance_mismatch"],
-					[__("Credit Balance"), payload.totals.credit_balance, "item_credit_balance_mismatch"],
-				];
+				if (this.is_commercial_item_mode()) {
+					checks = [
+						[__("Base Net Amount"), flt(totals.base_net_amount), "item_base_net_mismatch"],
+					];
+				} else {
+					checks = [
+						[__("In Qty"), payload.totals.in_qty, "item_in_qty_mismatch"],
+						[__("Out Qty"), payload.totals.out_qty, "item_out_qty_mismatch"],
+						[__("Balance Qty"), payload.totals.balance_qty, "item_balance_qty_mismatch"],
+						[__("Inward Value"), payload.totals.inward_value, "item_inward_mismatch"],
+						[__("Outward Value"), payload.totals.outward_value, "item_outward_mismatch"],
+						[__("Debit Balance"), payload.totals.debit_balance, "item_debit_balance_mismatch"],
+						[__("Credit Balance"), payload.totals.credit_balance, "item_credit_balance_mismatch"],
+					];
+				}
 			} else {
 				checks = [
 					[__("Debit Turnover"), payload.totals.debit_turnover, "debit_turnover_mismatch"],
@@ -5606,6 +5661,17 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			];
 		}
 		if (axis === "item_group") {
+			if (this.is_commercial_item_mode()) {
+				return [
+					"display_code",
+					"display_title",
+					"sales_base_net_amount",
+					"purchase_base_net_amount",
+					"return_base_net_amount",
+					"document_count",
+					"item_count",
+				];
+			}
 			const cols = (this.metadata?.item_group_columns || [])
 				.map((col) => col.id)
 				.filter(Boolean);
@@ -5622,6 +5688,25 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			];
 		}
 		if (axis === "item") {
+			if (this.is_commercial_item_mode()) {
+				return [
+					"display_code",
+					"display_title",
+					"item_group",
+					"transaction_direction",
+					"party_type",
+					"party",
+					"quantity",
+					"stock_quantity",
+					"uom",
+					"net_amount",
+					"base_net_amount",
+					"currency",
+					"document_count",
+					"return_quantity",
+					"return_base_net_amount",
+				];
+			}
 			const cols = (this.metadata?.item_columns || []).map((col) => col.id).filter(Boolean);
 			if (cols.length) {
 				return cols;
@@ -7696,22 +7781,40 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				["net", __("Net")],
 			];
 		} else if (this.analysis_context.view_axis === "item_group") {
-			items = [
-				["inward_value", __("Inward Value")],
-				["outward_value", __("Outward Value")],
-				["debit_balance", __("Debit Balance")],
-				["credit_balance", __("Credit Balance")],
-			];
+			if (this.is_commercial_item_mode()) {
+				items = [
+					["sales_base_net_amount", __("Sales Net (Base)")],
+					["purchase_base_net_amount", __("Purchase Net (Base)")],
+					["return_base_net_amount", __("Return Amount (Base)")],
+					["document_count", __("Documents")],
+					["item_count", __("Items")],
+				];
+			} else {
+				items = [
+					["inward_value", __("Inward Value")],
+					["outward_value", __("Outward Value")],
+					["debit_balance", __("Debit Balance")],
+					["credit_balance", __("Credit Balance")],
+				];
+			}
 		} else if (this.analysis_context.view_axis === "item") {
-			items = [
-				["in_qty", __("In Qty")],
-				["out_qty", __("Out Qty")],
-				["balance_qty", __("Balance Qty")],
-				["inward_value", __("Inward Value")],
-				["outward_value", __("Outward Value")],
-				["debit_balance", __("Debit Balance")],
-				["credit_balance", __("Credit Balance")],
-			];
+			if (this.is_commercial_item_mode()) {
+				items = [
+					["base_net_amount", __("Base Net Amount")],
+					["return_base_net_amount", __("Return Amount (Base)")],
+					["document_count", __("Documents")],
+				];
+			} else {
+				items = [
+					["in_qty", __("In Qty")],
+					["out_qty", __("Out Qty")],
+					["balance_qty", __("Balance Qty")],
+					["inward_value", __("Inward Value")],
+					["outward_value", __("Outward Value")],
+					["debit_balance", __("Debit Balance")],
+					["credit_balance", __("Credit Balance")],
+				];
+			}
 		} else if (this.analysis_context.view_axis === "inventory_account") {
 			items = [
 				["inward_value", __("Inward Value")],

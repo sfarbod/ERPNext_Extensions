@@ -136,6 +136,41 @@ ITEM_SORTABLE_FIELDS = frozenset(
 	}
 )
 
+COMMERCIAL_ITEM_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"item_code",
+		"item_group",
+		"transaction_direction",
+		"party_type",
+		"party",
+		"quantity",
+		"stock_quantity",
+		"uom",
+		"net_amount",
+		"base_net_amount",
+		"currency",
+		"document_count",
+		"return_quantity",
+		"return_base_net_amount",
+	}
+)
+
+COMMERCIAL_ITEM_GROUP_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"item_group",
+		"sales_base_net_amount",
+		"purchase_base_net_amount",
+		"return_base_net_amount",
+		"base_net_amount",
+		"document_count",
+		"item_count",
+	}
+)
+
 INVENTORY_ACCOUNT_SORTABLE_FIELDS = frozenset(
 	{
 		"display_code",
