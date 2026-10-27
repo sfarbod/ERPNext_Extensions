@@ -638,10 +638,10 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
+		# v5.6.25 amount-preserving PR: rate-first integer VR Class A is remapped to
+		# skip (SLE posts auth/qty; GRNI must not be residual partner).
 		self.assertEqual(b, [])
-		self.assertEqual(len(a), 1)
-		self.assertEqual(a[0]["item_code"], "STOCK")
-		self.assertEqual(a[0]["reason"], "amount_authoritative_integer_valuation_rate")
+		self.assertEqual(a, [])
 
 	def test_stock_pr_class_a_unchanged(self):
 		row = self._row(
@@ -663,9 +663,9 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
+		# Amount-preserving PR remaps former Class A rate-first integer shape to skip.
 		self.assertEqual(b, [])
-		self.assertEqual(len(a), 1)
-		self.assertEqual(a[0]["class"], "A")
+		self.assertEqual(a, [])
 
 	def test_stock_row_vr_zero_still_class_b(self):
 		"""Genuinely stock-valued row with VR=0 must remain fail-closed Class B."""
@@ -717,9 +717,10 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
+		# Asset rows remain eligible for valuation classification, but amount-
+		# preserving PR remaps rate-first integer Class A to skip (same as stock).
 		self.assertEqual(b, [])
-		self.assertEqual(len(a), 1)
-		self.assertEqual(a[0]["item_code"], "ASSET-1")
+		self.assertEqual(a, [])
 
 	def test_old_subcontracting_stock_fg_still_classified(self):
 		# Stock FG on old subcontract PR must not be blanket-skipped.
