@@ -747,6 +747,23 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			event.stopPropagation();
 			const source_row = this.datatable_adapter.resolve_row_from_event(event);
 			const action = $(event.currentTarget).data("action");
+			// Analyze is available on analytical axes — never route through voucher actions
+			// (handle_voucher_row_action intentionally no-ops analyze for Vouchers).
+			if (action === "analyze") {
+				if (
+					this.analysis_context.view_axis === "account_level" &&
+					this.is_account_construction_mode()
+				) {
+					this.handle_account_construction_row_action(source_row, action);
+					return;
+				}
+				if (this.analysis_context.view_axis === "inventory_account") {
+					this.handle_inventory_account_row_action(source_row, action);
+					return;
+				}
+				this.analyze_row_as_filter(source_row);
+				return;
+			}
 			if (this.analysis_context.view_axis === "inventory_account") {
 				this.handle_inventory_account_row_action(source_row, action);
 				return;
@@ -754,7 +771,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			if (
 				this.analysis_context.view_axis === "account_level" &&
 				this.is_account_construction_mode() &&
-				["constructed", "posted_gl", "analyze"].includes(action)
+				["constructed", "posted_gl"].includes(action)
 			) {
 				this.handle_account_construction_row_action(source_row, action);
 				return;
@@ -3259,6 +3276,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				unified_identity: 0,
 				identity_members: null,
 			};
+			this.hide_member_panel();
 			return;
 		}
 		if (view_axis === "unified_party") {
@@ -5123,7 +5141,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			const pagination_started = performance.now();
 			this.render_pagination();
 			const pagination_ms = Math.round(performance.now() - pagination_started);
-			if (this.analysis_context.view_axis !== "unified_party") {
+			// Keep Unified Party / Party Identity panels visible across summary refresh.
+			const keep_party_identity_panel =
+				this.analysis_context.view_axis === "party" &&
+				!!this.analysis_context.party_scope?.unified_identity;
+			if (this.analysis_context.view_axis !== "unified_party" && !keep_party_identity_panel) {
 				this.hide_member_panel();
 			}
 			this.events.emit("summary:loaded", { data, validation });
@@ -7013,19 +7035,49 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 						? { party_type: pair[0], party: pair[1] }
 						: { party_type: pair.party_type, party: pair.party }
 				);
+				const identity = data.identity || {};
+				const label =
+					identity.display_title ||
+					row.display_title ||
+					row.party ||
+					__("Party Identity");
 				this.analysis_context.party_scope = {
 					...(this.analysis_context.party_scope || {}),
 					party_type: row.party_type,
 					selected_party: row.party,
 					unified_identity: 1,
 					identity_members: members,
+					identifier_query: identity.party_identifier || row.party_identifier || null,
 				};
+				// Keep filter controls aligned so Apply / sync does not wipe Analyze scope.
+				this.filter_controls.unified_identity?.set_value?.(1);
+				this.filter_controls.party_type?.set_value?.(row.party_type || "");
+				this.filter_controls.party?.set_value?.(row.party || "");
+				if (identity.party_identifier || row.party_identifier) {
+					this.filter_controls.identifier_query?.set_value?.(
+						identity.party_identifier || row.party_identifier
+					);
+				}
+				this.push_breadcrumb({
+					label: __("Identity: {0}", [label]),
+					axis: "party",
+					party_type: row.party_type,
+					selected_party: row.party,
+					unified_identity: 1,
+					identity_members: members,
+					party_identifier: identity.party_identifier || row.party_identifier || null,
+				});
 				this.render_party_identity_panel(row, data);
+				this.render_breadcrumbs();
 				this.render_filter_summary();
+				this.update_context_actions();
 				this._sync_store_context({ emit: true });
+				this.schedule_workspace_url_update({ push: true });
+				this.analysis_context.page = 1;
 				this.announce_grid_status(
 					__("Party identity analysis ready — related roles listed without merging GL balances")
 				);
+				this.refresh_summary({ new_execution: true, reason: "party_identity_analyze" });
 			},
 		});
 	}
@@ -7190,9 +7242,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		} else if (last.axis === "party") {
 			this.analysis_context.view_axis = "party";
 			this.analysis_context.party_scope = {
-				party_type: last.party_type,
-				selected_party: last.selected_party,
+				...(this.analysis_context.party_scope || {}),
+				party_type: last.party_type || null,
+				selected_party: last.selected_party || null,
+				unified_identity: last.unified_identity ? 1 : 0,
+				identity_members: last.identity_members || null,
+				identifier_query: last.party_identifier || this.analysis_context.party_scope?.identifier_query || null,
 			};
+			if (!last.unified_identity) {
+				this.hide_member_panel();
+			}
 		} else if (last.axis === "dimension") {
 			this.analysis_context.view_axis = "dimension";
 			this.analysis_context.dimension_scope.dimension_type =
@@ -7268,6 +7327,17 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.evaluate_analysis_filter_lifetimes({ consume_temporary: false });
 			this.render_filter_summary();
 			if (!this.breadcrumbs.length) {
+				this.hide_member_panel();
+				if (this.analysis_context.view_axis === "party") {
+					this.analysis_context.party_scope = {
+						...(this.analysis_context.party_scope || {}),
+						party_type: null,
+						selected_party: null,
+						unified_identity: 0,
+						identity_members: null,
+						identifier_query: null,
+					};
+				}
 				this.navigate_to_axis_root(this.get_path_source_axis());
 				return;
 			}

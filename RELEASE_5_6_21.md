@@ -9,7 +9,37 @@ per-role financial isolation, makes Analyze navigation consistent across axes,
 removes expand/collapse drill icons from all axes, and optimizes Account Explorer
 first-load performance on large GL volumes.
 
+**Follow-up (same 5.6.21):** Fixes release-blocking defect where Analyze buttons
+were visible but clicks did nothing in the real UI.
+
 **Version remains 5.6.21** (no bump).
+
+### Analyze click root cause (P0 functional fix)
+**Symptom:** Analyze rendered on Parties / Account Levels / etc., but clicking
+produced no panel, no API call, and no Analysis Path change.
+
+**Root cause:** DataTable delegated `.ae-voucher-action` clicks for non-voucher
+axes fell through to `handle_voucher_row_action()`, which **intentionally
+no-ops `action === "analyze"`** (Vouchers must not Analyze). Party / Account /
+Dimension / Currency / Item Analyze never reached `analyze_row_as_filter()`.
+
+**Secondary bug:** After Party identity API success, `refresh_summary()` always
+called `hide_member_panel()` whenever `view_axis !== "unified_party"`, wiping
+the Unified Party Analysis panel immediately after paint.
+
+**Why prior Playwright passed:** It called `ae.analyze_party_identity(row)`
+programmatically and only asserted button presence — it never clicked the DOM
+button through the broken handler.
+
+**Fix:**
+1. Route `action === "analyze"` to `analyze_row_as_filter()` (or construction /
+   inventory handlers) before voucher actions.
+2. Keep the Party identity panel across summary refresh when
+   `party_scope.unified_identity` is set.
+3. Push Analysis Path breadcrumb, sync filter controls, and refresh the Parties
+   grid to the identity member scope after Analyze.
+4. Rewrite Playwright to dispatch a real Analyze click, wait for
+   `get_party_identity_analysis`, assert panel + scoped grid + path change.
 
 ### A. Production backup restore (Development only)
 - **Source backup:** `20261027_111248-erp_espadpharmed_com-database.sql.gz` (432 MB, gzip OK, MariaDB dump).
@@ -140,10 +170,14 @@ Identifiers exported as text (leading zeros preserved).
 ### N. Tests / Playwright / Build
 - Unit/regression including `test_account_explorer_party_identity_analysis_v5621`
   (customer-only, multi-role, missing/disabled identifiers, filters, isolation,
-  no duplicate GL, Analyze presence rules) — **OK**.
+  no duplicate GL, Analyze presence rules) — **OK** (11 tests).
 - Playwright `playwright_account_explorer_party_identity_v5621.mjs` — **OK**
-  (میلان پارس roles, Analyze on AL/Parties, none on Vouchers, no expand icons,
-  identity panel).
+  with **real DOM Analyze click** on CUS-00003:
+  - identity API observed from click (~39 ms)
+  - visible panel + scoped grid (~280 ms)
+  - Analysis Path changed; navigate back restores scope
+  - Account Levels Analyze scopes; remount survives; Vouchers have no Analyze
+- Currency Analyze click spot-check: handler fires and applies currency filter.
 - `bench build --app erpnext_extensions` — **OK**.
 
 ### O. Migration requirements
