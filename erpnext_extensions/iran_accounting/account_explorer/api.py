@@ -41,7 +41,8 @@ PARTY_COLUMNS = [
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 120},
 	{"id": "display_code", "label": "Party", "fieldtype": "Data", "width": 140},
 	{"id": "display_title", "label": "Party Name", "fieldtype": "Data", "width": 220},
-	{"id": "party_identifier", "label": "Identifier", "fieldtype": "Data", "width": 140},
+	{"id": "party_identifier", "label": "Identifier Field", "fieldtype": "Data", "width": 160},
+	{"id": "related_roles_label", "label": "Related Roles", "fieldtype": "Data", "width": 200},
 	{"id": "period_debit", "label": "Debit Turnover", "fieldtype": "Currency", "width": 180},
 	{"id": "period_credit", "label": "Credit Turnover", "fieldtype": "Currency", "width": 180},
 	{"id": "debit_balance", "label": "Debit Balance", "fieldtype": "Currency", "width": 180},
@@ -80,8 +81,8 @@ VOUCHER_COLUMNS = [
 	{"id": "account", "label": "Account", "fieldtype": "Link", "width": 160},
 	{"id": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 160},
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 100},
-	{"id": "party_name", "label": "Party", "fieldtype": "Data", "width": 160},
-	{"id": "party", "label": "Party ID", "fieldtype": "Data", "width": 120},
+	{"id": "party_name", "label": "Party Name", "fieldtype": "Data", "width": 220},
+	{"id": "party", "label": "Party", "fieldtype": "Data", "width": 120},
 	{"id": "debit", "label": "Debit", "fieldtype": "Currency", "width": 130},
 	{"id": "credit", "label": "Credit", "fieldtype": "Currency", "width": 130},
 	{"id": "account_currency", "label": "Account Currency", "fieldtype": "Data", "width": 100},
@@ -109,7 +110,7 @@ GL_GROUP_BASE_COLUMNS = [
 	{"id": "account", "label": "Account", "fieldtype": "Link", "width": 140},
 	{"id": "account_name", "label": "Account Name", "fieldtype": "Data", "width": 180},
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 110},
-	{"id": "party_name", "label": "Party", "fieldtype": "Data", "width": 160},
+	{"id": "party_name", "label": "Party Name", "fieldtype": "Data", "width": 220},
 ]
 
 GL_GROUP_COMPACT_COLUMN = {
@@ -493,6 +494,29 @@ def get_party_summary(payload) -> dict:
 	return _summary_response(spec, PARTY_COLUMNS, result)
 
 
+def get_party_identity_analysis(payload) -> dict:
+	"""Party Analyze: related roles + per-role finances + combined analytical totals."""
+	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+	raw = payload if isinstance(payload, dict) else frappe.parse_json(payload) or {}
+	analysis = raw.get("analysis_context") or {}
+	party_scope = analysis.get("party_scope") or {}
+	party_type = party_scope.get("party_type") or raw.get("party_type")
+	party = party_scope.get("selected_party") or raw.get("party")
+	if not party_type or not party:
+		frappe.throw(frappe._("Party Type and Party are required for identity analysis."))
+	from erpnext_extensions.iran_accounting.account_explorer.party_identity import (
+		build_party_identity_analysis,
+	)
+
+	result = build_party_identity_analysis(spec, party_type=party_type, party=party)
+	return {
+		**result,
+		"document_scope": _document_scope_response(spec),
+		"analysis_context": _analysis_context_response(spec),
+		"columns": PARTY_COLUMNS,
+	}
+
+
 def get_unified_party_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "unified_party":
@@ -600,11 +624,20 @@ def get_item_group_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "item_group":
 		frappe.throw(frappe._("Invalid axis for item group summary."))
+	from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+		COMMERCIAL_ITEM_GROUP_COLUMNS,
+		build_commercial_item_group_summary,
+		identity_requires_commercial_item_mode,
+	)
 	from erpnext_extensions.iran_accounting.account_explorer.item_group_summary import (
 		ITEM_GROUP_COLUMNS,
 		build_item_group_summary,
 	)
 
+	# Identity OR-filter → commercial invoice analysis (not SLE stock valuation).
+	if identity_requires_commercial_item_mode(spec):
+		result = build_commercial_item_group_summary(spec)
+		return _summary_response(spec, COMMERCIAL_ITEM_GROUP_COLUMNS, result)
 	result = build_item_group_summary(spec)
 	return _summary_response(spec, ITEM_GROUP_COLUMNS, result)
 
@@ -613,10 +646,42 @@ def get_item_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "item":
 		frappe.throw(frappe._("Invalid axis for item summary."))
+	from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+		COMMERCIAL_ITEM_COLUMNS,
+		build_commercial_item_summary,
+		identity_requires_commercial_item_mode,
+	)
 	from erpnext_extensions.iran_accounting.account_explorer.item_summary import ITEM_COLUMNS, build_item_summary
 
+	# Identity OR-filter → commercial invoice analysis (not SLE stock valuation).
+	if identity_requires_commercial_item_mode(spec):
+		result = build_commercial_item_summary(spec)
+		return _summary_response(spec, COMMERCIAL_ITEM_COLUMNS, result)
 	result = build_item_summary(spec)
 	return _summary_response(spec, ITEM_COLUMNS, result)
+
+
+def get_classification_exclusion_details(payload) -> dict:
+	"""Return enriched Account hierarchy exclusion details for the active scope."""
+	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+	if spec.view_axis != "account_level":
+		frappe.throw(frappe._("Exclusion details are only available on Account Levels."))
+	from erpnext_extensions.iran_accounting.account_explorer.query_builder import (
+		build_account_level_summary,
+	)
+
+	spec.analysis.view_axis = "account_level"
+	result = build_account_level_summary(spec)
+	residual = result.get("classification_residual") or {}
+	details = residual.get("excluded_account_details") or residual.get("excluded_accounts") or []
+	return {
+		"excluded_account_count": residual.get("excluded_account_count") or len(details),
+		"rows": details,
+		"reconciliation": residual.get("reconciliation"),
+		"message_fa": residual.get("message_fa"),
+		"document_scope": _document_scope_response(spec),
+		"context": _analysis_context_response(spec),
+	}
 
 
 def get_inventory_account_summary(payload) -> dict:
@@ -887,6 +952,15 @@ def _analysis_context_response(spec: AccountExplorerQuerySpec) -> dict:
 		"party_scope": {
 			"party_type": spec.party_scope.party_type,
 			"selected_party": spec.party_scope.selected_party,
+			"party_name_query": spec.party_scope.party_name_query,
+			"identifier_query": spec.party_scope.identifier_query,
+			"unified_identity": int(spec.party_scope.unified_identity or 0),
+			"identity_members": [
+				{"party_type": pt, "party": p} for pt, p in (spec.party_scope.identity_members or [])
+			],
+			"identity_available_members": spec.party_scope.identity_available_members or [],
+			"identity_display_title": spec.party_scope.identity_display_title,
+			"identity_identifier": spec.party_scope.identity_identifier,
 		},
 		"unified_party_scope": {
 			"selected_unified_party": spec.unified_party_scope.selected_unified_party,

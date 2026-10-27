@@ -97,14 +97,26 @@ def _run_summary_builder(spec: AccountExplorerQuerySpec) -> dict:
 
 		return build_voucher_gl_line_summary(spec)
 	if axis == "item_group":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			build_commercial_item_group_summary,
+			identity_requires_commercial_item_mode,
+		)
 		from erpnext_extensions.iran_accounting.account_explorer.item_group_summary import (
 			build_item_group_summary,
 		)
 
+		if identity_requires_commercial_item_mode(spec):
+			return build_commercial_item_group_summary(spec)
 		return build_item_group_summary(spec)
 	if axis == "item":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			build_commercial_item_summary,
+			identity_requires_commercial_item_mode,
+		)
 		from erpnext_extensions.iran_accounting.account_explorer.item_summary import build_item_summary
 
+		if identity_requires_commercial_item_mode(spec):
+			return build_commercial_item_summary(spec)
 		return build_item_summary(spec)
 	if axis == "inventory_account":
 		from erpnext_extensions.iran_accounting.account_explorer.inventory_account_summary import (
@@ -282,6 +294,8 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "party_type", "label": _("Party Type")},
 			{"fieldname": "display_code", "label": _("Party")},
 			{"fieldname": "display_title", "label": _("Party Name")},
+			{"fieldname": "party_identifier", "label": _("Identifier Field")},
+			{"fieldname": "related_roles_label", "label": _("Related Roles")},
 			{"fieldname": "period_debit", "label": _("Debit Turnover")},
 			{"fieldname": "period_credit", "label": _("Credit Turnover")},
 			{"fieldname": "debit_balance", "label": _("Debit Balance")},
@@ -334,10 +348,27 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "credit", "label": _("Credit")},
 			{"fieldname": "account_currency", "label": _("Account Currency")},
 			{"fieldname": "remarks", "label": _("Description")},
+			{"fieldname": "party_type", "label": _("Party Type")},
+			{"fieldname": "party_name", "label": _("Party Name")},
 			{"fieldname": "party", "label": _("Party")},
 			{"fieldname": "cost_center", "label": _("Cost Center")},
 		]
 	if axis == "item_group":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			identity_requires_commercial_item_mode,
+		)
+
+		if identity_requires_commercial_item_mode(spec):
+			return [
+				{"fieldname": "analysis_source", "label": _("Analysis Source")},
+				{"fieldname": "display_code", "label": _("Item Group")},
+				{"fieldname": "display_title", "label": _("Title")},
+				{"fieldname": "sales_base_net_amount", "label": _("Sales Net (Base)")},
+				{"fieldname": "purchase_base_net_amount", "label": _("Purchase Net (Base)")},
+				{"fieldname": "return_base_net_amount", "label": _("Return Amount (Base)")},
+				{"fieldname": "document_count", "label": _("Documents")},
+				{"fieldname": "item_count", "label": _("Items")},
+			]
 		return [
 			{"fieldname": "display_code", "label": _("Item Group")},
 			{"fieldname": "display_title", "label": _("Title")},
@@ -347,6 +378,30 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "credit_balance", "label": _("Credit Balance")},
 		]
 	if axis == "item":
+		from erpnext_extensions.iran_accounting.account_explorer.commercial_item_analysis import (
+			identity_requires_commercial_item_mode,
+		)
+
+		if identity_requires_commercial_item_mode(spec):
+			return [
+				{"fieldname": "analysis_source", "label": _("Analysis Source")},
+				{"fieldname": "display_code", "label": _("Item")},
+				{"fieldname": "display_title", "label": _("Item Name")},
+				{"fieldname": "item_group", "label": _("Item Group")},
+				{"fieldname": "transaction_direction", "label": _("Direction")},
+				{"fieldname": "party_type", "label": _("Party Type")},
+				{"fieldname": "party_name", "label": _("Party Name")},
+				{"fieldname": "party", "label": _("Party")},
+				{"fieldname": "quantity", "label": _("Quantity")},
+				{"fieldname": "stock_quantity", "label": _("Stock Qty")},
+				{"fieldname": "uom", "label": _("UOM")},
+				{"fieldname": "net_amount", "label": _("Net Amount")},
+				{"fieldname": "base_net_amount", "label": _("Base Net Amount")},
+				{"fieldname": "currency", "label": _("Currency")},
+				{"fieldname": "document_count", "label": _("Documents")},
+				{"fieldname": "return_quantity", "label": _("Return Qty")},
+				{"fieldname": "return_base_net_amount", "label": _("Return Amount (Base)")},
+			]
 		return [
 			{"fieldname": "display_code", "label": _("Item")},
 			{"fieldname": "display_title", "label": _("Item Name")},
@@ -379,6 +434,24 @@ def _normalize_export_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> 
 	return [{**row, "dimension_type": row.get("dimension_type") or dimension_type} for row in rows]
 
 
+_TEXT_IDENTIFIER_FIELDS = frozenset(
+	{
+		"party_identifier",
+		"identifier_summary",
+		"display_code",
+		"party",
+		"related_roles_label",
+	}
+)
+
+
+def _format_export_identifier(value: Any) -> Any:
+	"""Keep identifier / party codes as text (preserve leading zeros)."""
+	if value is None or value == "":
+		return value
+	return cstr(value)
+
+
 def rows_to_matrix(
 	rows: list[dict],
 	columns: list[dict[str, str]],
@@ -391,9 +464,13 @@ def rows_to_matrix(
 		line = []
 		for column in columns:
 			value = row.get(column["fieldname"])
-			fieldtype = column.get("fieldtype") or _infer_export_fieldtype(column["fieldname"], value)
+			fieldname = column["fieldname"]
+			fieldtype = column.get("fieldtype") or _infer_export_fieldtype(fieldname, value)
 			if fieldtype in {"Date", "Datetime"}:
 				value = _format_export_date(value, fieldtype, date_format)
+			elif fieldname in _TEXT_IDENTIFIER_FIELDS or fieldtype == "Data":
+				if fieldname in _TEXT_IDENTIFIER_FIELDS:
+					value = _format_export_identifier(value)
 			line.append(value)
 		data.append(line)
 	return headers, data
@@ -405,6 +482,8 @@ def _infer_export_fieldtype(fieldname: str, value: Any) -> str | None:
 		if "time" in name or name in {"creation", "modified"}:
 			return "Datetime"
 		return "Date"
+	if name in _TEXT_IDENTIFIER_FIELDS:
+		return "Data"
 	return None
 
 
@@ -463,50 +542,84 @@ def _voucher_export_fieldnames(columns: list[dict[str, str]]) -> list[str]:
 	return [column["fieldname"] for column in columns]
 
 
-def _tuple_to_export_values(row: tuple, fieldnames: list[str], *, date_format: str = "jalali") -> list[Any]:
-	"""Map lean GL-line SQL tuple → export column order.
+def _voucher_row_to_export_values(row: dict | tuple, fieldnames: list[str], *, date_format: str = "jalali") -> list[Any]:
+	"""Map lean GL-line export row → export column order by field name.
 
-	Tuple layout:
-	gl_entry, posting_date, voucher_type, voucher_no, account_code, account_name,
-	debit, credit, account_currency, remarks, party, cost_center, account
+	Preferred contract is a named ``dict``. Legacy positional tuples remain
+	accepted only for the documented 15-field layout so older call sites fail
+	loudly if they drift.
 	"""
-	(
-		gl_entry,
-		posting_date,
-		voucher_type,
-		voucher_no,
-		account_code,
-		account_name,
-		debit,
-		credit,
-		account_currency,
-		remarks,
-		party,
-		cost_center,
-		account,
-	) = row
-	debit = flt(debit)
-	credit = flt(credit)
+	if isinstance(row, dict):
+		source = row
+	else:
+		# Legacy compatibility for the fixed 15-field layout introduced in 5.6.21.
+		if len(row) != 15:
+			frappe.throw(
+				_("Voucher export row has unexpected shape ({0} fields).").format(len(row))
+			)
+		(
+			gl_entry,
+			posting_date,
+			voucher_type,
+			voucher_no,
+			account_code,
+			account_name,
+			debit,
+			credit,
+			account_currency,
+			remarks,
+			party_type,
+			party_name,
+			party,
+			cost_center,
+			account,
+		) = row
+		source = {
+			"gl_entry": gl_entry,
+			"posting_date": posting_date,
+			"voucher_type": voucher_type,
+			"voucher_no": voucher_no,
+			"account_code": account_code,
+			"account_name": account_name,
+			"debit": debit,
+			"credit": credit,
+			"account_currency": account_currency,
+			"remarks": remarks,
+			"party_type": party_type,
+			"party_name": party_name,
+			"party": party,
+			"cost_center": cost_center,
+			"account": account,
+		}
+
+	debit = flt(source.get("debit"))
+	credit = flt(source.get("credit"))
 	values = {
-		"gl_entry": gl_entry,
-		"posting_date": _format_export_date(posting_date, "Date", date_format),
-		"voucher_type": voucher_type,
-		"voucher_no": voucher_no,
-		"account_code": cstr(account_code or ""),
-		"account_name": account_name,
-		"account": account,
+		"gl_entry": source.get("gl_entry"),
+		"posting_date": _format_export_date(source.get("posting_date"), "Date", date_format),
+		"voucher_type": source.get("voucher_type"),
+		"voucher_no": source.get("voucher_no"),
+		"account_code": cstr(source.get("account_code") or ""),
+		"account_name": source.get("account_name"),
+		"account": source.get("account"),
 		"debit": debit,
 		"credit": credit,
-		"account_currency": account_currency,
-		"remarks": remarks,
-		"party": party,
-		"cost_center": cost_center,
+		"account_currency": source.get("account_currency"),
+		"remarks": source.get("remarks"),
+		"party_type": source.get("party_type") or "",
+		"party_name": source.get("party_name") or "",
+		"party": source.get("party"),
+		"cost_center": source.get("cost_center"),
 		# Legacy aliases
 		"scoped_debit": debit,
 		"scoped_credit": credit,
 		"scoped_net": debit - credit,
 	}
 	return [values.get(name) for name in fieldnames]
+
+
+# Backward-compatible alias used by older local scripts / tests.
+_tuple_to_export_values = _voucher_row_to_export_values
 
 
 def _format_export_date(value: Any, fieldtype: str, date_format: str) -> Any:

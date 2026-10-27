@@ -8,9 +8,7 @@ from frappe.utils.caching import request_cache
 
 from erpnext_extensions.iran_accounting.account_explorer.constants import NATIVE_PARTY_TYPES
 from erpnext_extensions.iran_accounting.account_explorer.request_cache_helpers import (
-	get_buying_supplier_naming_mode,
 	get_iran_accounting_settings,
-	get_selling_customer_naming_mode,
 )
 
 
@@ -118,42 +116,36 @@ def resolve_party_display_name(party_type: str, party: str) -> str:
 
 
 def get_party_display_title(party_type: str, party: str) -> str:
-	"""Party-axis display title (respects Customer/Supplier naming settings)."""
-	if party_type in ("Customer", "Supplier"):
-		if party_type == "Customer":
-			naming = get_selling_customer_naming_mode()
-			name_field = "customer_name"
-		else:
-			naming = get_buying_supplier_naming_mode()
-			name_field = "supplier_name"
-		if naming == "Naming Series":
-			return _safe_party_field_value(party_type, party, name_field) or party
-		return party
-	if party_type in ("Employee", "Shareholder") or party_type not in NATIVE_PARTY_TYPES:
-		return resolve_party_display_name(party_type, party)
-	return party
+	"""Party-axis Party Name: always prefer the master display field.
+
+	Party ID stays on ``display_code`` / ``party``. Selling/Buying naming
+	settings must not hide ``customer_name`` / ``supplier_name`` when the
+	document name is a series id (common Production mismatch).
+	"""
+	return resolve_party_display_name(party_type, party)
+
+
+def format_party_name_with_id(display_name: str | None, party: str | None) -> str:
+	"""Preferred combined label: ``Party Name (Party ID)``.
+
+	Falls back to whichever side is available. Never invents a name.
+	"""
+	name = (display_name or "").strip()
+	party_id = (party or "").strip()
+	if name and party_id and name != party_id:
+		return f"{name} ({party_id})"
+	return name or party_id
 
 
 def batch_party_display_titles(party_type: str, parties: list[str]) -> dict[str, str]:
-	"""Batch-resolve display titles for one party type."""
+	"""Batch-resolve Party Name from the master display field."""
 	parties = [party for party in parties if party]
 	if not party_type or not parties:
 		return {}
 
-	if party_type == "Customer":
-		naming = get_selling_customer_naming_mode()
-		if naming != "Naming Series":
-			return {party: party for party in parties}
-		field = "customer_name"
-	elif party_type == "Supplier":
-		naming = get_buying_supplier_naming_mode()
-		if naming != "Naming Series":
-			return {party: party for party in parties}
-		field = "supplier_name"
-	else:
-		field = _party_type_display_field(party_type)
-		if not field:
-			return {party: party for party in parties}
+	field = _party_type_display_field(party_type)
+	if not field:
+		return {party: party for party in parties}
 
 	rows = frappe.get_all(
 		party_type,
@@ -163,6 +155,53 @@ def batch_party_display_titles(party_type: str, parties: list[str]) -> dict[str,
 	)
 	title_map = {row.name: row.get(field) or row.name for row in rows}
 	return {party: title_map.get(party, party) for party in parties}
+
+
+def batch_party_display_titles_for_pairs(
+	pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], str]:
+	"""Batch-resolve Party Names for mixed (party_type, party) pairs."""
+	by_type: dict[str, list[str]] = {}
+	for party_type, party in pairs or []:
+		pt = (party_type or "").strip()
+		p = (party or "").strip()
+		if not pt or not p:
+			continue
+		by_type.setdefault(pt, []).append(p)
+
+	resolved: dict[tuple[str, str], str] = {}
+	for party_type, parties in by_type.items():
+		unique = list(dict.fromkeys(parties))
+		titles = batch_party_display_titles(party_type, unique)
+		for party in unique:
+			resolved[(party_type, party)] = titles.get(party, party)
+	return resolved
+
+
+def enrich_rows_with_party_names(
+	rows: list[dict],
+	*,
+	party_type_key: str = "party_type",
+	party_key: str = "party",
+	name_key: str = "party_name",
+) -> None:
+	"""In-place batched Party Name enrichment for any row list with party fields."""
+	if not rows:
+		return
+	pairs: list[tuple[str, str]] = []
+	for row in rows:
+		party_type = row.get(party_type_key)
+		party = row.get(party_key)
+		if party_type and party:
+			pairs.append((str(party_type), str(party)))
+	titles = batch_party_display_titles_for_pairs(pairs)
+	for row in rows:
+		party_type = row.get(party_type_key)
+		party = row.get(party_key)
+		if not party_type or not party:
+			row.setdefault(name_key, "")
+			continue
+		row[name_key] = titles.get((str(party_type), str(party)), str(party))
 
 
 def batch_party_identifiers(
@@ -223,6 +262,12 @@ def enrich_party_rows(
 			continue
 		row["display_title"] = titles.get(party_type, {}).get(party, party)
 		row["party_identifier"] = identifiers.get(party_type, {}).get(party)
+
+	from erpnext_extensions.iran_accounting.account_explorer.party_identity import (
+		enrich_party_rows_with_related_roles,
+	)
+
+	enrich_party_rows_with_related_roles(rows, source_by_type=source_by_type)
 
 
 def validate_party_type(party_type: str) -> None:

@@ -7,7 +7,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import cint, getdate
+from frappe.utils import cint, cstr, getdate
 
 from erpnext_extensions.iran_accounting.account_explorer.account_scope import resolve_account_scope
 from erpnext_extensions.iran_accounting.account_explorer.constants import (
@@ -246,11 +246,70 @@ def build_account_scope(raw: dict) -> AccountScope:
 	)
 
 
+def _parse_identity_member_tuples(raw_members) -> list[tuple[str, str]] | None:
+	if not isinstance(raw_members, (list, tuple)):
+		return None
+	parsed: list[tuple[str, str]] = []
+	for item in raw_members:
+		if isinstance(item, (list, tuple)) and len(item) >= 2 and item[0] and item[1]:
+			parsed.append((str(item[0]), str(item[1])))
+		elif isinstance(item, dict) and item.get("party_type") and item.get("party"):
+			parsed.append((str(item["party_type"]), str(item["party"])))
+	return parsed or None
+
+
+def _parse_identity_available_members(raw_members) -> list[dict] | None:
+	if not isinstance(raw_members, (list, tuple)):
+		return None
+	out: list[dict] = []
+	for item in raw_members:
+		if isinstance(item, dict) and item.get("party_type") and item.get("party"):
+			out.append(
+				{
+					"party_type": str(item["party_type"]),
+					"party": str(item["party"]),
+					"display_title": item.get("display_title") or item.get("party_name") or str(item["party"]),
+					"party_identifier": item.get("party_identifier"),
+				}
+			)
+		elif isinstance(item, (list, tuple)) and len(item) >= 2 and item[0] and item[1]:
+			out.append(
+				{
+					"party_type": str(item[0]),
+					"party": str(item[1]),
+					"display_title": str(item[1]),
+					"party_identifier": None,
+				}
+			)
+	return out or None
+
+
 def build_party_scope(raw: dict) -> PartyScope:
 	scope_raw = raw.get("party_scope") or {}
+	identity_members = _parse_identity_member_tuples(scope_raw.get("identity_members"))
+	available = _parse_identity_available_members(
+		scope_raw.get("identity_available_members") or scope_raw.get("available_members")
+	)
+	# Selected defaults to full catalog when unified identity is on and selection omitted.
+	if (
+		bool(cint(scope_raw.get("unified_identity")))
+		and not identity_members
+		and available
+	):
+		identity_members = [(m["party_type"], m["party"]) for m in available]
 	return PartyScope(
 		party_type=scope_raw.get("party_type") or None,
 		selected_party=scope_raw.get("selected_party") or None,
+		party_name_query=(scope_raw.get("party_name_query") or None),
+		identifier_query=(scope_raw.get("identifier_query") or None),
+		unified_identity=bool(cint(scope_raw.get("unified_identity"))),
+		identity_members=identity_members,
+		identity_available_members=available,
+		identity_display_title=scope_raw.get("identity_display_title")
+		or scope_raw.get("display_title")
+		or None,
+		identity_identifier=cstr(scope_raw.get("identity_identifier") or scope_raw.get("party_identifier") or "")
+		or None,
 	)
 
 
@@ -450,4 +509,20 @@ def AccountExplorerQuerySpec_from_client(
 				)
 			)
 		spec.resolved_member_tuples = get_member_tuples(spec.unified_party_scope.selected_unified_party)
+	elif spec.party_scope.identity_members:
+		spec.resolved_member_tuples = list(spec.party_scope.identity_members)
+	elif spec.party_scope.unified_identity and (
+		spec.party_scope.selected_party or spec.party_scope.identifier_query
+	):
+		from erpnext_extensions.iran_accounting.account_explorer.party_identity import (
+			resolve_identity_members,
+		)
+
+		members = resolve_identity_members(
+			party_type=spec.party_scope.party_type,
+			party=spec.party_scope.selected_party,
+			identifier_value=spec.party_scope.identifier_query,
+		)
+		if members:
+			spec.resolved_member_tuples = [(m["party_type"], m["party"]) for m in members]
 	return spec

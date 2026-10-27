@@ -26,7 +26,9 @@ SORTABLE_FIELDS = frozenset(
 	}
 )
 
-PARTY_SORTABLE_FIELDS = SORTABLE_FIELDS | frozenset({"party_type", "party", "party_identifier"})
+PARTY_SORTABLE_FIELDS = SORTABLE_FIELDS | frozenset(
+	{"party_type", "party", "party_identifier", "related_roles_label"}
+)
 
 UNIFIED_PARTY_SORTABLE_FIELDS = SORTABLE_FIELDS | frozenset(
 	{
@@ -131,6 +133,42 @@ ITEM_SORTABLE_FIELDS = frozenset(
 		"debit_balance",
 		"credit_balance",
 		"balance_value",
+	}
+)
+
+COMMERCIAL_ITEM_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"item_code",
+		"item_group",
+		"transaction_direction",
+		"party_type",
+		"party_name",
+		"party",
+		"quantity",
+		"stock_quantity",
+		"uom",
+		"net_amount",
+		"base_net_amount",
+		"currency",
+		"document_count",
+		"return_quantity",
+		"return_base_net_amount",
+	}
+)
+
+COMMERCIAL_ITEM_GROUP_SORTABLE_FIELDS = frozenset(
+	{
+		"display_code",
+		"display_title",
+		"item_group",
+		"sales_base_net_amount",
+		"purchase_base_net_amount",
+		"return_base_net_amount",
+		"base_net_amount",
+		"document_count",
+		"item_count",
 	}
 )
 

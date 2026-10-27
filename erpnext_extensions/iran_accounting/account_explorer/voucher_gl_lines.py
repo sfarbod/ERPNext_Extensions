@@ -20,7 +20,9 @@ from erpnext_extensions.iran_accounting.account_explorer.gle_filters import (
 	collect_scope_warnings,
 )
 from erpnext_extensions.iran_accounting.account_explorer.schemas import AccountExplorerQuerySpec
-from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import _party_name
+from erpnext_extensions.iran_accounting.account_explorer.party_sources import (
+	enrich_rows_with_party_names,
+)
 
 _SQL_SORT_MAP = {
 	"posting_date": "gle.posting_date",
@@ -72,8 +74,28 @@ def build_voucher_gl_line_summary(spec: AccountExplorerQuerySpec) -> dict:
 	}
 
 
+# Named export-row fields for streaming voucher CSV/XLSX (never rely on tuple offsets).
+VOUCHER_EXPORT_ROW_FIELDS = (
+	"gl_entry",
+	"posting_date",
+	"voucher_type",
+	"voucher_no",
+	"account_code",
+	"account_name",
+	"debit",
+	"credit",
+	"account_currency",
+	"remarks",
+	"party_type",
+	"party_name",
+	"party",
+	"cost_center",
+	"account",
+)
+
+
 def iter_voucher_gl_line_export_batches(spec: AccountExplorerQuerySpec, *, batch_size: int = 5000):
-	"""Yield lean GL-line tuples for streaming export (keyset on gle.name)."""
+	"""Yield lean GL-line dict batches for streaming export (keyset on gle.name)."""
 	batch_size = max(cint(batch_size) or 5000, 1)
 	dimensions = filter_usable_gl_dimensions(get_discovered_dimensions())
 	totals, total_rows = _gl_line_totals(spec)
@@ -87,7 +109,7 @@ def iter_voucher_gl_line_export_batches(spec: AccountExplorerQuerySpec, *, batch
 		if not batch:
 			break
 		yield batch, totals, total_rows
-		last_name = batch[-1][0]  # gle.name
+		last_name = batch[-1].get("gl_entry")
 		if len(batch) < batch_size:
 			break
 
@@ -170,7 +192,9 @@ def _paged_gl_lines(
 			""",
 			as_dict=True,
 		)
-		return [_row_dict(row, dimensions) for row in rows], totals, total_rows
+		page_rows = [_row_dict(row, dimensions) for row in rows]
+		enrich_rows_with_party_names(page_rows)
+		return page_rows, totals, total_rows
 
 	rows = frappe.db.sql(
 		f"""
@@ -195,7 +219,9 @@ def _paged_gl_lines(
 
 	totals, total_rows = _totals_dict(rows[0]._total_debit, rows[0]._total_credit, rows[0]._total_rows)
 	_store_cached_voucher_totals(spec, totals, total_rows)
-	return [_row_dict(row, dimensions) for row in rows], totals, total_rows
+	page_rows = [_row_dict(row, dimensions) for row in rows]
+	enrich_rows_with_party_names(page_rows)
+	return page_rows, totals, total_rows
 
 
 def _get_cached_voucher_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int] | None:
@@ -359,7 +385,7 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 		"against_account": row.get("against_account") or "",
 		"party_type": party_type,
 		"party": party,
-		"party_name": _party_name(party_type, party),
+		"party_name": "",  # Batched after page materialization.
 		"debit": debit,
 		"credit": credit,
 		"account_currency": row.get("account_currency") or "",
@@ -405,7 +431,8 @@ def _export_batch(
 	*,
 	batch_size: int,
 	after_name: str | None,
-) -> list[tuple]:
+) -> list[dict]:
+	"""Return named export rows — field keys are the contract, not tuple indexes."""
 	gle = frappe.qb.DocType("GL Entry")
 	acc = frappe.qb.DocType("Account")
 	query = _base_line_query(spec, gle, acc, dimensions)
@@ -413,24 +440,28 @@ def _export_batch(
 	if after_name:
 		query = query.where(gle.name > after_name)
 	raw = query.run(as_dict=True)
-	out = []
+	# Batch Party Name once per export page (no per-row N+1).
+	enrich_rows_with_party_names(raw)
+	out: list[dict] = []
 	for row in raw:
 		out.append(
-			(
-				row.get("gl_entry") or row.get("name"),
-				row.get("posting_date"),
-				row.get("voucher_type"),
-				row.get("voucher_no"),
-				row.get("account_code"),
-				row.get("account_name"),
-				row.get("debit"),
-				row.get("credit"),
-				row.get("account_currency"),
-				row.get("remarks"),
-				row.get("party"),
-				row.get("cost_center"),
-				row.get("account"),
-			)
+			{
+				"gl_entry": row.get("gl_entry") or row.get("name"),
+				"posting_date": row.get("posting_date"),
+				"voucher_type": row.get("voucher_type"),
+				"voucher_no": row.get("voucher_no"),
+				"account_code": row.get("account_code"),
+				"account_name": row.get("account_name"),
+				"debit": row.get("debit"),
+				"credit": row.get("credit"),
+				"account_currency": row.get("account_currency"),
+				"remarks": row.get("remarks"),
+				"party_type": row.get("party_type") or "",
+				"party_name": row.get("party_name") or "",
+				"party": row.get("party"),
+				"cost_center": row.get("cost_center"),
+				"account": row.get("account"),
+			}
 		)
 	return out
 

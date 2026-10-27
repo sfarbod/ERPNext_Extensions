@@ -217,8 +217,14 @@ def _get_account_wise_measures_e1_single_pass(
 	query = apply_document_scope_filters(query, gle, spec)
 	if restrict_accounts:
 		query = query.where(gle.account.isin(restrict_accounts))
-	# Prefer company index: the planner otherwise walks the account index (~750k rows).
-	query = query.force_index("company")
+	# Prefer covering range index (company, is_cancelled, posting_date, account).
+	# Measured on restored Production GL (~766k rows): ~420ms vs ~2700ms with
+	# FORCE INDEX(company). Falls back to company if the patch index is absent.
+	from erpnext_extensions.iran_accounting.account_explorer.gl_index import (
+		force_gl_company_range_index,
+	)
+
+	query = force_gl_company_range_index(query)
 	query = query.groupby(gle.account)
 
 	rows = query.run(as_dict=True)

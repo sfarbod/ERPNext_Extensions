@@ -4,7 +4,17 @@ frappe.provide("erpnext_extensions.account_explorer.core");
  * Analysis Filters — normalize, lifetime, legacy scope mapping, summary rows.
  * ADR-3B-004. No rendering, grid access, or SQL.
  */
-const AE_AF_TOP_KEYS = ["account", "party", "unified_party", "voucher", "currency", "item_group", "item", "warehouse"];
+const AE_AF_TOP_KEYS = [
+	"account",
+	"party",
+	"party_identity",
+	"unified_party",
+	"voucher",
+	"currency",
+	"item_group",
+	"item",
+	"warehouse",
+];
 const AE_AF_LIFETIMES = new Set(["session", "drill", "temporary"]);
 const AE_AF_ORIGINS = new Set([
 	"drill_graph",
@@ -50,6 +60,7 @@ function ae_af_empty_bag() {
 	return {
 		account: null,
 		party: null,
+		party_identity: null,
 		unified_party: null,
 		voucher: null,
 		currency: null,
@@ -374,7 +385,26 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 			}
 		}
 
-		if (filters.party) {
+		if (filters.party_identity) {
+			const value =
+				typeof filters.party_identity.value === "object"
+					? filters.party_identity.value
+					: { display_title: filters.party_identity.value };
+			const selected = Array.isArray(value.selected_members) ? value.selected_members : [];
+			const available = Array.isArray(value.available_members) ? value.available_members : selected;
+			party_scope.unified_identity = 1;
+			party_scope.identity_display_title = value.display_title || null;
+			party_scope.identity_identifier = value.party_identifier || null;
+			party_scope.identifier_query = value.party_identifier || party_scope.identifier_query || null;
+			party_scope.identity_available_members = available;
+			party_scope.identity_members = selected
+				.filter((m) => m && m.party_type && m.party)
+				.map((m) =>
+					Array.isArray(m) ? m : [m.party_type, m.party]
+				);
+			party_scope.party_type = value.seed_party_type || selected[0]?.party_type || party_scope.party_type;
+			party_scope.selected_party = value.seed_party || selected[0]?.party || party_scope.selected_party;
+		} else if (filters.party) {
 			const value = filters.party.value;
 			const meta = filters.party.meta || {};
 			party_scope.selected_party = typeof value === "object" ? value.party || value.selected_party : value;
@@ -382,6 +412,9 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				meta.party_type ||
 				(typeof value === "object" ? value.party_type : null) ||
 				party_scope.party_type;
+			party_scope.unified_identity = 0;
+			party_scope.identity_members = null;
+			party_scope.identity_available_members = null;
 			if (accounting.party && String(accounting.party) !== String(party_scope.selected_party)) {
 				warnings.push({
 					code: "analysis_overrides_document",
@@ -521,7 +554,57 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 		}
 
 		const party = ctx.party_scope || {};
-		if (!next.party && party.selected_party) {
+		if (
+			!next.party_identity &&
+			party.unified_identity &&
+			(party.identity_members || party.identity_available_members)
+		) {
+			const available = (party.identity_available_members || []).map((m) => ({
+				party_type: m.party_type,
+				party: m.party,
+				display_title: m.display_title || m.party,
+				party_identifier: m.party_identifier || party.identity_identifier || null,
+			}));
+			const selected = (party.identity_members || []).map((pair) =>
+				Array.isArray(pair)
+					? { party_type: pair[0], party: pair[1] }
+					: { party_type: pair.party_type, party: pair.party }
+			);
+			const catalog =
+				available.length > 0
+					? available
+					: selected.map((m) => ({
+							...m,
+							display_title: m.party,
+							party_identifier: party.identity_identifier || null,
+					  }));
+			next = this.set_entry(
+				next,
+				{
+					key: "party_identity",
+					value: {
+						display_title:
+							party.identity_display_title || party.selected_party || __("Party Identity"),
+						party_identifier: party.identity_identifier || party.identifier_query || null,
+						available_members: catalog,
+						selected_members: selected.length ? selected : catalog.map((m) => ({
+							party_type: m.party_type,
+							party: m.party,
+						})),
+						seed_party_type: party.party_type || null,
+						seed_party: party.selected_party || null,
+					},
+					origin,
+					lifetime: "session",
+					removable: true,
+					meta: {
+						display_label:
+							party.identity_display_title || party.selected_party || __("Party Identity"),
+					},
+				},
+				{ key: "party_identity", origin, lifetime: "session" }
+			);
+		} else if (!next.party && party.selected_party && !party.unified_identity) {
 			next = this.set_entry(
 				next,
 				{
