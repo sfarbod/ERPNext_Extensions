@@ -204,6 +204,12 @@ def enrich_party_rows(
 		row["display_title"] = titles.get(party_type, {}).get(party, party)
 		row["party_identifier"] = identifiers.get(party_type, {}).get(party)
 
+	from erpnext_extensions.iran_accounting.account_explorer.party_identity import (
+		enrich_party_rows_with_related_roles,
+	)
+
+	enrich_party_rows_with_related_roles(rows, source_by_type=source_by_type)
+
 
 def validate_party_type(party_type: str) -> None:
 	if party_type not in NATIVE_PARTY_TYPES:

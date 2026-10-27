@@ -556,20 +556,7 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		if (source_col?.fieldtype === "Date") {
 			display = format_ae_date(value);
 		}
-		const col_index = this._column_defs.findIndex((col) => col.id === source_col.id);
-		// Account-code rows are navigated via hierarchy tabs, not row expansion.
-		const is_account_code_row = String(source_row?.row_key || "").startsWith("account:");
-		const drillable =
-			col_index === 0 &&
-			source_row &&
-			!is_account_code_row &&
-			source_row.drill_down_enabled !== 0 &&
-			source_row.drill_down_enabled !== false;
-		if (drillable) {
-			const label = frappe.utils.escape_html(String(display));
-			const full = frappe.utils.escape_html(String(display));
-			return `<span class="ae-drill-cell" title="${full}" aria-label="${full}"><span class="ae-drill-icon" aria-hidden="true">›</span><span class="ae-drill-label ae-dt-cell-text">${label}</span></span>`;
-		}
+		// v5.6.21: no expand/collapse icons on any axis — Analyze is the scoped entry.
 		return this._format_text_cell(display, {
 			multiline: AE_DT_MULTILINE_COLUMN_IDS.has(source_col.id),
 		});
@@ -713,19 +700,10 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		if (!element) {
 			return;
 		}
-		const is_account_code_row = String(source_row?.row_key || "").startsWith("account:");
-		const drillable =
-			source_row &&
-			!is_account_code_row &&
-			source_row.drill_down_enabled !== 0 &&
-			source_row.drill_down_enabled !== false;
-		element.classList.toggle("ae-grid-row--drillable", !!drillable);
+		// Expand/collapse drill affordances removed across all axes.
+		element.classList.remove("ae-grid-row--drillable");
 		element.classList.toggle("ae-grid-row--active", row_index === this._active_row_index);
-		if (drillable) {
-			element.setAttribute("title", __("Click to select · Double-click to drill down"));
-		} else {
-			element.removeAttribute("title");
-		}
+		element.removeAttribute("title");
 		if (row_index === this._active_row_index) {
 			element.setAttribute("aria-selected", "true");
 		} else {

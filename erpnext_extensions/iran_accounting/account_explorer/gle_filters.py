@@ -41,7 +41,14 @@ def apply_document_scope_filters(query, gle, spec: AccountExplorerQuerySpec):
 
 	query = _apply_finance_book_filters(query, gle, document_scope)
 	query = _apply_document_voucher_filters(query, gle, document_scope)
-	query = _apply_document_accounting_filters(query, gle, document_scope)
+	# When Unified Identity / Party Analyze supplies exact (party_type, party) tuples,
+	# document Party Type / Party filters must not exclude related roles.
+	query = _apply_document_accounting_filters(
+		query,
+		gle,
+		document_scope,
+		skip_party_filters=bool(spec.resolved_member_tuples),
+	)
 	query = _apply_document_dimension_filters(query, gle, document_scope)
 	query = _apply_document_currency_filters(query, gle, document_scope)
 	return query
@@ -64,16 +71,23 @@ def _apply_document_voucher_filters(query, gle, document_scope: DocumentScope):
 	return query
 
 
-def _apply_document_accounting_filters(query, gle, document_scope: DocumentScope):
+def _apply_document_accounting_filters(
+	query,
+	gle,
+	document_scope: DocumentScope,
+	*,
+	skip_party_filters: bool = False,
+):
 	accounting = document_scope.accounting
 	accounts = normalize_filter_values(accounting.account)
 	if accounts:
 		query = query.where(gle.account.isin(accounts))
-	if accounting.party_type:
-		query = query.where(gle.party_type == accounting.party_type)
-	parties = normalize_filter_values(accounting.party)
-	if parties:
-		query = query.where(gle.party.isin(parties))
+	if not skip_party_filters:
+		if accounting.party_type:
+			query = query.where(gle.party_type == accounting.party_type)
+		parties = normalize_filter_values(accounting.party)
+		if parties:
+			query = query.where(gle.party.isin(parties))
 	return query
 
 

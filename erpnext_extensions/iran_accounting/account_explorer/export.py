@@ -283,6 +283,7 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "display_code", "label": _("Party")},
 			{"fieldname": "display_title", "label": _("Party Name")},
 			{"fieldname": "party_identifier", "label": _("Identifier Field")},
+			{"fieldname": "related_roles_label", "label": _("Related Roles")},
 			{"fieldname": "period_debit", "label": _("Debit Turnover")},
 			{"fieldname": "period_credit", "label": _("Credit Turnover")},
 			{"fieldname": "debit_balance", "label": _("Debit Balance")},
@@ -386,6 +387,7 @@ _TEXT_IDENTIFIER_FIELDS = frozenset(
 		"identifier_summary",
 		"display_code",
 		"party",
+		"related_roles_label",
 	}
 )
 

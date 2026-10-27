@@ -26,7 +26,9 @@ SORTABLE_FIELDS = frozenset(
 	}
 )
 
-PARTY_SORTABLE_FIELDS = SORTABLE_FIELDS | frozenset({"party_type", "party", "party_identifier"})
+PARTY_SORTABLE_FIELDS = SORTABLE_FIELDS | frozenset(
+	{"party_type", "party", "party_identifier", "related_roles_label"}
+)
 
 UNIFIED_PARTY_SORTABLE_FIELDS = SORTABLE_FIELDS | frozenset(
 	{

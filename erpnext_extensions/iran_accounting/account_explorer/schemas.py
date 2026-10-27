@@ -75,6 +75,14 @@ class AccountScope:
 class PartyScope:
 	party_type: str | None = None
 	selected_party: str | None = None
+	# Text search against Party Name (display title).
+	party_name_query: str | None = None
+	# Text search against configured Identifier Field values.
+	identifier_query: str | None = None
+	# When 1, expand selected party / identifier to all related roles.
+	unified_identity: bool = False
+	# Explicit member tuples from Party Analyze (party_type, party).
+	identity_members: list[tuple[str, str]] | None = None
 
 
 @dataclass

@@ -42,6 +42,7 @@ PARTY_COLUMNS = [
 	{"id": "display_code", "label": "Party", "fieldtype": "Data", "width": 140},
 	{"id": "display_title", "label": "Party Name", "fieldtype": "Data", "width": 220},
 	{"id": "party_identifier", "label": "Identifier Field", "fieldtype": "Data", "width": 160},
+	{"id": "related_roles_label", "label": "Related Roles", "fieldtype": "Data", "width": 200},
 	{"id": "period_debit", "label": "Debit Turnover", "fieldtype": "Currency", "width": 180},
 	{"id": "period_credit", "label": "Credit Turnover", "fieldtype": "Currency", "width": 180},
 	{"id": "debit_balance", "label": "Debit Balance", "fieldtype": "Currency", "width": 180},
@@ -493,6 +494,29 @@ def get_party_summary(payload) -> dict:
 	return _summary_response(spec, PARTY_COLUMNS, result)
 
 
+def get_party_identity_analysis(payload) -> dict:
+	"""Party Analyze: related roles + per-role finances + combined analytical totals."""
+	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+	raw = payload if isinstance(payload, dict) else frappe.parse_json(payload) or {}
+	analysis = raw.get("analysis_context") or {}
+	party_scope = analysis.get("party_scope") or {}
+	party_type = party_scope.get("party_type") or raw.get("party_type")
+	party = party_scope.get("selected_party") or raw.get("party")
+	if not party_type or not party:
+		frappe.throw(frappe._("Party Type and Party are required for identity analysis."))
+	from erpnext_extensions.iran_accounting.account_explorer.party_identity import (
+		build_party_identity_analysis,
+	)
+
+	result = build_party_identity_analysis(spec, party_type=party_type, party=party)
+	return {
+		**result,
+		"document_scope": _document_scope_response(spec),
+		"analysis_context": _analysis_context_response(spec),
+		"columns": PARTY_COLUMNS,
+	}
+
+
 def get_unified_party_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "unified_party":
@@ -887,6 +911,12 @@ def _analysis_context_response(spec: AccountExplorerQuerySpec) -> dict:
 		"party_scope": {
 			"party_type": spec.party_scope.party_type,
 			"selected_party": spec.party_scope.selected_party,
+			"party_name_query": spec.party_scope.party_name_query,
+			"identifier_query": spec.party_scope.identifier_query,
+			"unified_identity": int(spec.party_scope.unified_identity or 0),
+			"identity_members": [
+				{"party_type": pt, "party": p} for pt, p in (spec.party_scope.identity_members or [])
+			],
 		},
 		"unified_party_scope": {
 			"selected_unified_party": spec.unified_party_scope.selected_unified_party,
