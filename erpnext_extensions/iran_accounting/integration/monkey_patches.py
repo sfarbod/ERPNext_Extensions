@@ -48,6 +48,10 @@ def apply_monkey_patches():
 	_patch_pr_pi_landed_cost_compat()
 	# Idempotent: Core get_reposting_data must not JSONDecodeError on empty/shared files.
 	_patch_reposting_data_json_safety()
+	# RIV bootstrap: do NOT wrap execute_reposting_entry with a nested function.
+	# pickle-safe module-level ``riv_execute_guard.execute_reposting_entry`` already
+	# calls ``_ensure_iran_runtime_for_riv`` → ``bootstrap.apply`` on every public
+	# and private RIV executor path (RQ workers, enqueue, campaign, execute_job).
 
 
 def _patch_reposting_data_json_safety():

@@ -1,9 +1,10 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""5.5.28: historical Purchase Receipt UVR float valuation_rate → Class A.
+"""5.5.28 / 5.6.25: historical Purchase Receipt UVR float valuation_rate.
 
-Reproduces MAT-PRE-2026-00780 (IRR multi-row IEEE float) and
-MAT-PRE-2026-00707 (EUR→IRR + LCV, DECIMAL(30,9) float) shapes without
-mutating documents. True non-integer mismatches stay Class B.
+Through 5.5.28 these shapes became Class A (integerize VR, absorb residual).
+v5.6.25 amount-preserving acquisition keeps fractional VR when qty×VR reconstructs
+auth; classification then **skips** (no invented residual / no GRNI partner).
+True non-integer mismatches stay Class B.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ class TestLegacyUvrFloatDetection(unittest.TestCase):
 
 
 class TestClassifyLegacyUvrFloat(unittest.TestCase):
-	def test_00780_row1_becomes_class_a(self):
+	def test_00780_row1_amount_preserving_skip(self):
 		out = classify_amount_rate_residual(
 			qty=15.0,
 			authoritative_amount=488767096.0,
@@ -62,13 +63,12 @@ class TestClassifyLegacyUvrFloat(unittest.TestCase):
 			item_code="16800200",
 			idx=1,
 		)
-		self.assertEqual(out["class"], "A")
-		self.assertEqual(out["reason"], "amount_authoritative_legacy_uvr_float_rate")
-		self.assertEqual(out["expected_valuation_rate"], 32584473.0)
-		self.assertEqual(out["residual"], 1.0)
+		self.assertEqual(out["class"], "skip")
+		self.assertEqual(out["reason"], "amount_preserving_fractional_vr_zero_residual")
+		self.assertEqual(out["residual"], 0)
 		self.assertEqual(out["legacy_uvr_float_valuation_rate"], 32584473.066666666)
 
-	def test_00780_row2_negative_residual_class_a(self):
+	def test_00780_row2_amount_preserving_skip(self):
 		out = classify_amount_rate_residual(
 			qty=6.0,
 			authoritative_amount=557769509.0,
@@ -77,11 +77,10 @@ class TestClassifyLegacyUvrFloat(unittest.TestCase):
 			item_code="16800203",
 			idx=2,
 		)
-		self.assertEqual(out["class"], "A")
-		self.assertEqual(out["residual"], -1.0)
+		self.assertEqual(out["class"], "skip")
+		self.assertEqual(out["residual"], 0)
 
-	def test_00707_lcv_large_qty_class_a(self):
-		# residual 37419 < path_derived_bound(135000)
+	def test_00707_lcv_large_qty_amount_preserving_skip(self):
 		out = classify_amount_rate_residual(
 			qty=135000.0,
 			authoritative_amount=12104137419.0,
@@ -90,11 +89,9 @@ class TestClassifyLegacyUvrFloat(unittest.TestCase):
 			item_code="13100018",
 			idx=1,
 		)
-		self.assertEqual(out["class"], "A")
-		self.assertEqual(out["reason"], "amount_authoritative_legacy_uvr_float_rate")
-		self.assertEqual(out["expected_valuation_rate"], 89660.0)
-		self.assertEqual(out["residual"], 37419.0)
-		self.assertLess(abs(out["residual"]), out["path_derived_bound"])
+		self.assertEqual(out["class"], "skip")
+		self.assertEqual(out["reason"], "amount_preserving_fractional_vr_zero_residual")
+		self.assertEqual(out["residual"], 0)
 
 	def test_true_mismatch_stays_class_b(self):
 		out = classify_amount_rate_residual(
@@ -210,11 +207,11 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 		):
 			a, b = classify_document_residuals(doc)
 		self.assertEqual(b, [])
-		self.assertEqual(len(a), 2)
-		self.assertTrue(all(r["reason"] == "amount_authoritative_legacy_uvr_float_rate" for r in a))
+		# Amount-preserving: reconstructing float VRs skip (no Class A residual).
+		self.assertEqual(a, [])
 
-	def test_pr_00707_shape_lcv_class_a_ready(self):
-		"""EUR receipt + LCV: auth = base_net + LCV; DECIMAL(30,9) float VR."""
+	def test_pr_00707_shape_lcv_amount_preserving_bypass(self):
+		"""EUR receipt + LCV: auth = base_net + LCV; DECIMAL(30,9) float VR → skip."""
 		row = self._row(
 			item_code="13100018",
 			idx=1,
@@ -259,10 +256,8 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 			a, b = classify_document_residuals(doc)
 			decision = evaluate_irr_rate_rounding_residual(doc)
 		self.assertEqual(b, [])
-		self.assertEqual(len(a), 1)
-		self.assertEqual(a[0]["residual"], 37419.0)
-		self.assertNotEqual(decision.status, STATUS_CLASS_B)
-		self.assertEqual(decision.status, STATUS_READY)
+		self.assertEqual(a, [])
+		self.assertEqual(decision.status, STATUS_BYPASS)
 
 
 if __name__ == "__main__":

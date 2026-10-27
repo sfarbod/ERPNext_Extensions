@@ -632,6 +632,16 @@ def run_full_scan(
 	tva_findings = scan_open_tva_identities(company)
 	buckets["open_tva"] = tva_findings
 	findings.extend(tva_findings)
+
+	# v5.6.25 purchase valuation / LCV / GRNI / transfer / RIV detection
+	from erpnext_extensions.iran_accounting.historical_rebuild.purchase_valuation_detection import (
+		dry_run_purchase_valuation_scan,
+	)
+
+	purchase_scan = dry_run_purchase_valuation_scan(company, campaign=campaign)
+	buckets["purchase_valuation_v5625"] = purchase_scan.get("findings") or []
+	findings.extend(buckets["purchase_valuation_v5625"])
+
 	_attach_campaign_membership(findings, campaign)
 	_related_rivs_for_findings(findings)
 
@@ -664,7 +674,7 @@ def run_full_scan(
 		"generated_at": str(now_datetime()),
 		"company": company,
 		"campaign": campaign,
-		"scanner_version": "5.6.1",
+		"scanner_version": "5.6.25",
 		"runtime_seconds": round(elapsed, 3),
 		"finding_count": len(unique),
 		"dirty_identity_count": len(dirty),

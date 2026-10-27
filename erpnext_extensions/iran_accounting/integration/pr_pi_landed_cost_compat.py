@@ -10,8 +10,13 @@ Discount. Official fix compares to ``item.base_net_amount``.
 
 This module wraps ``update_billing_percentage`` narrowly:
 - If Core already contains #59476 → pass through (no override).
-- Else → run Core billing % without rate adjust, apply upstream amt_diff formula
-  using Core billed-qty helpers, then call Core ``adjust_incoming_rate_for_pr``.
+- Else when ``adjust_incoming_rate=False`` → Core path unchanged (over-billing intact).
+- Else when ``adjust_incoming_rate=True`` → apply upstream #59476 amt_diff once,
+  update ``per_billed``/status without Core over-billing or legacy gross-rate amt_diff,
+  then call Core ``adjust_incoming_rate_for_pr`` once.
+
+Do **not** call Core with ``adjust_incoming_rate=False`` on the True path — that
+incorrectly activates over-billing validation which Core skips when adjusting.
 
 Lifecycle: remove when the site ERPNext image includes #59476 / equivalent.
 """
@@ -152,6 +157,59 @@ def apply_59476_amount_differences(pr_doc) -> float:
 	return pi_landed_cost_amount
 
 
+def _update_billing_status_without_rate_adjust(pr_doc, update_modified=True, pi_landed_cost_amount=0.0):
+	"""Mirror Core ``update_billing_percentage`` aggregation for ``per_billed`` / status.
+
+	Intentionally omits:
+	- legacy / #59476 ``amount_difference_with_purchase_invoice`` writes
+	- Core ``adjust_incoming_rate_for_pr``
+	- the ``adjust_incoming_rate=False`` over-billing ``elif`` branch
+
+	When invoice-based valuation is enabled, Core's True path also skips over-billing;
+	this helper preserves that control-flow while leaving amt_diff to #59476 apply.
+	"""
+	from erpnext.stock.doctype.purchase_receipt.purchase_receipt import (
+		get_item_wise_returned_qty,
+	)
+
+	buying_settings = frappe.get_single("Buying Settings")
+	total_amount, total_billed_amount = 0.0, 0.0
+	item_wise_returned_qty = get_item_wise_returned_qty(pr_doc)
+
+	for item in pr_doc.items:
+		returned_qty = flt(item_wise_returned_qty.get(item.name))
+		returned_amount = flt(returned_qty) * flt(item.rate)
+		pending_amount = flt(item.amount) - returned_amount
+
+		rejected_amount = 0.0
+		if buying_settings.bill_for_rejected_quantity_in_purchase_invoice:
+			rejected_amount = flt(item.rejected_qty * item.rate, item.precision("amount"))
+			pending_amount = flt(item.amount) + rejected_amount
+
+		total_billable_amount = abs(flt(item.amount) + rejected_amount)
+		if pending_amount > 0:
+			total_billable_amount = pending_amount if item.billed_amt <= pending_amount else item.billed_amt
+
+		total_amount += total_billable_amount
+		total_billed_amount += abs(flt(item.billed_amt))
+
+		if pr_doc.get("is_return") and not total_amount and total_billed_amount:
+			total_amount = total_billed_amount
+
+	# Match Core: negative PI landed-cost (price decrease) inflates billed basis for %.
+	if flt(pi_landed_cost_amount) < 0:
+		total_billed_amount += abs(flt(pi_landed_cost_amount))
+
+	percent_billed = round(100 * (total_billed_amount / (total_amount or 1)), 6)
+	pr_doc.db_set("per_billed", percent_billed)
+
+	if update_modified:
+		pr_doc.set_status(update=True)
+		pr_doc.notify_update()
+
+	return percent_billed
+
+
 def _wrapped_update_billing_percentage(
 	pr_doc, update_modified=True, adjust_incoming_rate=False
 ):
@@ -169,14 +227,23 @@ def _wrapped_update_billing_percentage(
 			pr_doc, update_modified=update_modified, adjust_incoming_rate=adjust_incoming_rate
 		)
 
+	# Legitimate over-billing controls remain on Core's False path.
 	if not adjust_incoming_rate:
 		return orig(pr_doc, update_modified=update_modified, adjust_incoming_rate=False)
 
-	# Billing % / status via Core without applying the defective rate adjust.
-	# (adjust_incoming_rate=False leaves per_billed based on billed_amt only —
-	# avoiding the legacy path that inflated % using the wrong negative amt_diff.)
-	orig(pr_doc, update_modified=update_modified, adjust_incoming_rate=False)
-	apply_59476_amount_differences(pr_doc)
+	# Invoice-based valuation path (Buying Settings flag → adjust_incoming_rate=True):
+	# Do NOT call orig(..., False) — that activates over-billing validation which Core
+	# skips when adjusting. Do NOT call orig(..., True) — that applies legacy gross-rate
+	# amt_diff and would double-adjust with apply_59476 + adjust_incoming_rate_for_pr.
+	#
+	# Correct control flow (mirrors upstream #59476 True path):
+	#   1) #59476 amt_diff once
+	#   2) per_billed / status without over-bill / without legacy amt_diff
+	#   3) adjust_incoming_rate_for_pr once
+	pi_landed = apply_59476_amount_differences(pr_doc)
+	_update_billing_status_without_rate_adjust(
+		pr_doc, update_modified=update_modified, pi_landed_cost_amount=pi_landed
+	)
 	adjust_incoming_rate_for_pr(pr_doc)
 
 
