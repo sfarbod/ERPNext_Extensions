@@ -638,10 +638,12 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
-		# v5.6.25 amount-preserving PR: rate-first integer VR Class A is remapped to
-		# skip (SLE posts auth/qty; GRNI must not be residual partner).
+		# Domestic IRR PR: integer amount-authoritative Class A remains Class A
+		# (FX standalone SA is currency-gated; domestic keeps partner contract).
 		self.assertEqual(b, [])
-		self.assertEqual(a, [])
+		self.assertEqual(len(a), 1)
+		self.assertEqual(a[0]["class"], "A")
+		self.assertFalse(a[0].get("fx_integer_rate_standalone_sa"))
 
 	def test_stock_pr_class_a_unchanged(self):
 		row = self._row(
@@ -661,11 +663,16 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 				"erpnext_extensions.iran_accounting.domain.irr_residual_classification.get_company_currency",
 				return_value="IRR",
 			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.qty_rate_amount.rounding.get_company_currency",
+				return_value="IRR",
+			),
 		):
 			a, b = classify_document_residuals(doc)
-		# Amount-preserving PR remaps former Class A rate-first integer shape to skip.
 		self.assertEqual(b, [])
-		self.assertEqual(a, [])
+		self.assertEqual(len(a), 1)
+		self.assertEqual(a[0]["class"], "A")
+		self.assertEqual(a[0]["residual"], 1)
 
 	def test_stock_row_vr_zero_still_class_b(self):
 		"""Genuinely stock-valued row with VR=0 must remain fail-closed Class B."""
@@ -717,10 +724,10 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
-		# Asset rows remain eligible for valuation classification, but amount-
-		# preserving PR remaps rate-first integer Class A to skip (same as stock).
+		# Asset rows remain eligible; domestic integer Class A is not remapped away.
 		self.assertEqual(b, [])
-		self.assertEqual(a, [])
+		self.assertEqual(len(a), 1)
+		self.assertEqual(a[0]["class"], "A")
 
 	def test_old_subcontracting_stock_fg_still_classified(self):
 		# Stock FG on old subcontract PR must not be blanket-skipped.

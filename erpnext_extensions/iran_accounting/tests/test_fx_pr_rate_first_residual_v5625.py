@@ -1,8 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""MAT-PRE-2026-01642 shape: FX rate-first integer VR vs amount-preserving auth.
+"""MAT-PRE-2026-01642 shape: FX integer IRR VR + Stock Adjustment (v5.6.26).
 
-EUR 0.4 × FX 2_830_792 = 1_132_316.8 → historically integerized to 1_132_317.
-qty 51_000 × integer VR overstates SLE by 10_200 vs base_net (EUR×FX).
+EUR 0.4 × FX 2_830_792 = 1_132_316.8 → ROUND_HALF_UP → 1_132_317.
+qty 51_000 × integer VR overstates inventory by 10_200 vs commercial base_net.
+GRNI stays at commercial auth; Stock Adjustment credits the 10_200 gap.
 """
 
 from __future__ import annotations
@@ -13,10 +14,14 @@ from unittest import mock
 from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
-	STATUS_BYPASS,
+	STATUS_READY,
 	classify_amount_rate_residual,
 	classify_document_residuals,
 	evaluate_irr_rate_rounding_residual,
+)
+from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+	_align_purchase_valuation_rate_amount_preserving,
+	_is_fx_purchase_doc,
 )
 from erpnext_extensions.iran_accounting.historical_rebuild.purchase_valuation_detection import (
 	classify_pr_item_discrepancy,
@@ -59,9 +64,38 @@ class TestFxRateFirstMath(unittest.TestCase):
 		self.assertAlmostEqual(QTY * PRESERVING_VR, AUTH, places=6)
 
 
-class TestFxPrResidualSkip(unittest.TestCase):
-	def test_generic_classifier_still_marks_class_a(self):
-		# Generic helper keeps Class A provenance; PR document path remaps to skip.
+class TestFxPrIntegerVrAlignment(unittest.TestCase):
+	def test_fx_doc_detected(self):
+		doc = _PR(_Row())
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.qty_rate_amount.rounding.get_company_currency",
+			return_value="IRR",
+		):
+			self.assertTrue(_is_fx_purchase_doc(doc))
+
+	def test_fx_align_forces_integer_vr(self):
+		row = _Row(
+			qty=QTY,
+			stock_qty=QTY,
+			conversion_factor=1,
+			valuation_rate=PRESERVING_VR,
+			base_net_amount=AUTH,
+			base_amount=QTY * INT_VR,
+			item_tax_amount=0,
+			landed_cost_voucher_amount=0,
+			amount_difference_with_purchase_invoice=0,
+		)
+		doc = _PR(row)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.qty_rate_amount.rounding.get_company_currency",
+			return_value="IRR",
+		):
+			_align_purchase_valuation_rate_amount_preserving(row, doc)
+		self.assertEqual(flt(row.valuation_rate), INT_VR)
+
+
+class TestFxPrStandaloneStockAdjustment(unittest.TestCase):
+	def test_generic_classifier_marks_class_a(self):
 		out = classify_amount_rate_residual(
 			qty=QTY,
 			authoritative_amount=AUTH,
@@ -73,7 +107,7 @@ class TestFxPrResidualSkip(unittest.TestCase):
 		self.assertEqual(out["class"], "A")
 		self.assertEqual(flt(out["residual"]), -GAP)
 
-	def test_pr_document_path_skips_amount_preserving(self):
+	def test_pr_document_path_standalone_sa_inverts_sign(self):
 		row = _Row(
 			item_code="13100023",
 			idx=1,
@@ -105,46 +139,80 @@ class TestFxPrResidualSkip(unittest.TestCase):
 				"erpnext_extensions.iran_accounting.domain.irr_residual_classification.get_purchase_receipt_stock_valuation_eligible_item_codes",
 				return_value=frozenset({"13100023"}),
 			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.qty_rate_amount.rounding.get_company_currency",
+				return_value="IRR",
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_stock_adjustment_residual",
+				return_value={"account": "SA", "cost_center": "CC"},
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.validate_stock_adjustment_residual_configuration",
+			),
+			mock.patch(
+				"erpnext_extensions.iran_accounting.domain.irr_residual_classification.resolve_round_off_dimensions",
+				return_value={},
+			),
 		):
 			a, b = classify_document_residuals(doc)
 			decision = evaluate_irr_rate_rounding_residual(doc, gl_entries=None)
-		self.assertEqual(a, [])
 		self.assertEqual(b, [])
-		self.assertEqual(decision.status, STATUS_BYPASS)
-		self.assertEqual(flt(decision.net_signed_debit), 0)
+		self.assertEqual(len(a), 1)
+		self.assertTrue(a[0].get("fx_integer_rate_standalone_sa"))
+		# Inverted vs default incoming (−residual): residual −10200 → SA credit.
+		self.assertEqual(flt(a[0]["round_off_debit"]), -GAP)
+		self.assertEqual(decision.status, STATUS_READY)
+		self.assertTrue(decision.standalone_sa)
+		self.assertEqual(flt(decision.net_signed_debit), -GAP)
+		self.assertIn("standalone_sa", decision.messages[0])
 
 
 class TestFxPrDetection(unittest.TestCase):
-	def test_unbilled_rate_first_flagged(self):
+	def test_fractional_vr_flagged_for_integer_sa(self):
 		row = {
 			"qty": QTY,
 			"stock_qty": QTY,
 			"base_net_amount": AUTH,
-			"base_amount": QTY * INT_VR,
-			"valuation_rate": INT_VR,
+			"base_amount": AUTH,
+			"valuation_rate": PRESERVING_VR,
 			"billed_amt": 0,
 			"per_billed": 0,
 			"landed_cost_voucher_amount": 0,
 			"amount_difference_with_purchase_invoice": 0,
 			"item_code": "13100023",
 		}
-		out = classify_pr_item_discrepancy(row, sle_svd=QTY * INT_VR)
+		out = classify_pr_item_discrepancy(row, sle_svd=AUTH)
 		self.assertIsNotNone(out)
-		self.assertEqual(out["difference"], GAP)
-		self.assertEqual(out["expected"], AUTH)
-		self.assertIn("unbilled_rate_first_integer_vr_sle_ne_auth", out["notes"])
+		self.assertIn("unbilled_fx_fractional_vr_needs_integer_sa", out["notes"])
+		self.assertEqual(out["repair_eligibility"], "FX_INTEGER_VR_STOCK_ADJUSTMENT")
+		self.assertEqual(out["fx_rounding_gap"], GAP)
 
-	def test_unbilled_matching_sle_not_flagged(self):
+	def test_correct_integer_inventory_not_flagged(self):
 		row = {
 			"qty": QTY,
 			"base_net_amount": AUTH,
-			"valuation_rate": PRESERVING_VR,
+			"valuation_rate": INT_VR,
 			"billed_amt": 0,
 			"per_billed": 0,
 			"landed_cost_voucher_amount": 0,
 			"amount_difference_with_purchase_invoice": 0,
 		}
-		self.assertIsNone(classify_pr_item_discrepancy(row, sle_svd=AUTH))
+		self.assertIsNone(classify_pr_item_discrepancy(row, sle_svd=QTY * INT_VR))
+
+	def test_integer_vr_sle_lag_flagged(self):
+		row = {
+			"qty": QTY,
+			"base_net_amount": AUTH,
+			"valuation_rate": INT_VR,
+			"billed_amt": 0,
+			"per_billed": 0,
+			"landed_cost_voucher_amount": 0,
+			"amount_difference_with_purchase_invoice": 0,
+		}
+		out = classify_pr_item_discrepancy(row, sle_svd=AUTH)
+		self.assertIsNotNone(out)
+		self.assertIn("unbilled_fx_integer_vr_sle_lags_inventory", out["notes"])
 
 	def test_expected_acquisition_uses_base_net(self):
 		self.assertEqual(
@@ -153,8 +221,8 @@ class TestFxPrDetection(unittest.TestCase):
 		)
 
 
-class TestAuthoritativeAcquisitionPrefersAmountPreserving(unittest.TestCase):
-	def test_stale_integer_vr_yields_preserving_rate(self):
+class TestAuthoritativeAcquisitionKeepsDocumentIntegerVr(unittest.TestCase):
+	def test_document_integer_vr_is_authoritative(self):
 		from erpnext_extensions.iran_accounting.domain import stock_ledger_deterministic as sld
 
 		sle = {
@@ -164,33 +232,9 @@ class TestAuthoritativeAcquisitionPrefersAmountPreserving(unittest.TestCase):
 			"item_code": "13100023",
 			"actual_qty": QTY,
 		}
-		parent = mock.Mock()
-		parent.is_return = 0
-		parent.is_internal_supplier = 0
-		parent.get = lambda k, d=None: getattr(parent, k, d)
-		parent.is_old_subcontracting_flow = 0
+		row = {"item_code": "13100023", "valuation_rate": INT_VR}
 
-		row = {
-			"item_code": "13100023",
-			"valuation_rate": INT_VR,
-			"qty": QTY,
-			"stock_qty": QTY,
-			"conversion_factor": 1,
-			"base_net_amount": AUTH,
-			"base_amount": QTY * INT_VR,
-			"item_tax_amount": 0,
-			"landed_cost_voucher_amount": 0,
-			"amount_difference_with_purchase_invoice": 0,
-			"sales_incoming_rate": 0,
-			"rejected_qty": 0,
-			"net_rate": 0,
-			"rm_supp_cost": 0,
-		}
-
-		with (
-			mock.patch("frappe.db.get_value") as gv,
-			mock.patch("frappe.get_doc", return_value=parent),
-		):
+		with mock.patch("frappe.db.get_value") as gv:
 
 			def _gv(dt, name, fields=None, as_dict=False):
 				if dt == "Purchase Receipt":
@@ -201,8 +245,7 @@ class TestAuthoritativeAcquisitionPrefersAmountPreserving(unittest.TestCase):
 
 			gv.side_effect = _gv
 			rate = sld.authoritative_acquisition_incoming_rate(sle, "IRR")
-		self.assertAlmostEqual(flt(rate), PRESERVING_VR, places=6)
-		self.assertAlmostEqual(flt(rate) * QTY, AUTH, places=4)
+		self.assertEqual(flt(rate), INT_VR)
 
 
 if __name__ == "__main__":

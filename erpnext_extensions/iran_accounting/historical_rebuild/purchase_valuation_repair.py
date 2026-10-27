@@ -42,7 +42,18 @@ def _bootstrap() -> None:
 	bootstrap_apply()
 
 
+def _pr_is_fx(pr_name: str) -> bool:
+	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import _is_fx_purchase_doc
+
+	pr = frappe.get_doc("Purchase Receipt", pr_name)
+	return bool(_is_fx_purchase_doc(pr))
+
+
 def _fingerprint_pr(pr_name: str) -> dict[str, Any]:
+	from erpnext_extensions.iran_accounting.domain.currency import (
+		integer_valuation_rate_from_amount,
+	)
+
 	rows = frappe.db.sql(
 		"""
 		select pri.name, pri.item_code, pri.warehouse, pri.qty, pri.valuation_rate,
@@ -59,23 +70,43 @@ def _fingerprint_pr(pr_name: str) -> dict[str, Any]:
 		(pr_name, pr_name),
 		as_dict=True,
 	) or []
+	is_fx = _pr_is_fx(pr_name)
 	out = []
 	for r in rows:
 		exp = expected_acquisition_amount(r)
+		qty = flt(r.qty)
+		int_vr = integer_valuation_rate_from_amount(exp, qty, "IRR") if qty else None
+		inventory_expected = (
+			flt(int_vr) * qty if is_fx and int_vr is not None else exp
+		)
 		out.append(
 			{
 				"item_row": r.name,
 				"item_code": r.item_code,
 				"warehouse": r.warehouse,
 				"expected": exp,
+				"inventory_expected": inventory_expected,
 				"sle_svd": flt(r.sle_svd),
-				"difference": flt(r.sle_svd) - exp if r.sle_svd is not None else None,
+				# Inventory check: FX compares SLE to qty×integer VR; domestic to auth.
+				"difference": (
+					flt(r.sle_svd) - inventory_expected if r.sle_svd is not None else None
+				),
 				"valuation_rate": flt(r.valuation_rate),
+				"integer_valuation_rate": flt(int_vr) if int_vr is not None else None,
+				"fx_rounding_gap": (
+					flt(inventory_expected) - exp if is_fx else 0.0
+				),
 				"pi_diff": flt(r.amount_difference_with_purchase_invoice),
 				"lcv": flt(r.landed_cost_voucher_amount),
+				"is_fx": is_fx,
 			}
 		)
-	return {"purchase_receipt": pr_name, "items": out, "at": str(now_datetime())}
+	return {
+		"purchase_receipt": pr_name,
+		"items": out,
+		"is_fx": is_fx,
+		"at": str(now_datetime()),
+	}
 
 
 def _grni_net(company: str, vouchers: list[str]) -> float:
@@ -175,20 +206,18 @@ def assess_repair(pr_name: str, company: str | None = None) -> dict[str, Any]:
 	categories = {f.get("root_cause_category") for f in findings}
 	# Document VR / amount_difference may already encode expected economics while
 	# SLE lags (Category A historical). RIV alone only helps when document
-	# valuation_rate already equals expected/qty; otherwise refresh first.
+	# valuation_rate already equals the inventory target (domestic: auth/qty;
+	# FX: integer ROUND(auth/qty)); otherwise refresh first.
 	riv_alone = True
 	for item in fp["items"]:
-		exp = flt(item["expected"])
 		qty = flt(
 			frappe.db.get_value("Purchase Receipt Item", item["item_row"], "qty") or 0
 		)
 		vr = flt(item["valuation_rate"])
-		if qty > 0 and abs(vr * qty - exp) > TOL:
+		inv_exp = flt(item.get("inventory_expected") or item["expected"])
+		if qty > 0 and abs(vr * qty - inv_exp) > TOL:
 			riv_alone = False
 			break
-		if item["sle_svd"] is not None and abs(flt(item["sle_svd"]) - exp) > TOL:
-			# SLE wrong but VR matches expected → RIV with authoritative acquisition may fix
-			pass
 
 	action = "riv_only" if riv_alone else "adjust_incoming_rate_then_riv"
 	return {
@@ -422,7 +451,29 @@ def repair_one(
 	result["expected_grni_after"] = expected_grni
 	result["grni_ok"] = grni_ok
 
-	if mismatches or not grni_ok:
+	sa_ok = True
+	if after.get("is_fx"):
+		sa_account = frappe.db.get_value("Company", company, "stock_adjustment_account")
+		expected_sa_credit = sum(flt(i.get("fx_rounding_gap") or 0) for i in after.get("items") or [])
+		sa_net = 0.0
+		if sa_account:
+			sa_net = flt(
+				frappe.db.sql(
+					"""
+					select coalesce(sum(credit)-sum(debit), 0)
+					from `tabGL Entry`
+					where voucher_type='Purchase Receipt' and voucher_no=%s
+					  and account=%s and is_cancelled=0
+					""",
+					(pr_name, sa_account),
+				)[0][0]
+			)
+		sa_ok = abs(sa_net - expected_sa_credit) <= TOL
+		result["stock_adjustment_net_credit"] = sa_net
+		result["expected_stock_adjustment_credit"] = expected_sa_credit
+		result["sa_ok"] = sa_ok
+
+	if mismatches or not grni_ok or not sa_ok:
 		result["status"] = "blocked"
 		result["blocked_reason"] = "verification_failed"
 		result["remaining_mismatches"] = mismatches

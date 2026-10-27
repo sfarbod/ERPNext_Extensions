@@ -91,36 +91,90 @@ def classify_pr_item_discrepancy(row: dict, sle_svd: float | None, tol: float = 
 	pi_diff = flt(row.get("amount_difference_with_purchase_invoice") or 0)
 
 	if billed_amt <= 0 and per_billed < 99.99:
-		# Unbilled: still flag FX / rate-first integer VR overvaluation when SLE
-		# equals qty×ROUND(auth/qty) but auth (EUR×FX / base_net) differs — this
-		# is what aborts RIV via residual partner_error (GRNI forbidden). Do not
-		# flag ordinary open GRNI with matching SLE.
+		# Unbilled FX / rate-first shapes:
+		# - Integer VR with SLE = qty×VR ≠ auth is the *correct* inventory side under
+		#   v5.6.26 when Stock Adjustment carries the gap and GRNI stays at auth.
+		# - Flag only when SLE still equals commercial auth via a fractional
+		#   amount-preserving VR (pre-5.6.26 repair) or when integer VR SLE drifts.
+		from erpnext_extensions.iran_accounting.domain.currency import (
+			integer_valuation_rate_from_amount,
+		)
+
+		int_vr = (
+			integer_valuation_rate_from_amount(expected, qty, "IRR") if expected and qty else None
+		)
+		inventory_at_integer = flt(int_vr) * qty if int_vr is not None else None
+		fx_gap = (
+			flt(inventory_at_integer) - expected
+			if inventory_at_integer is not None
+			else None
+		)
+		# Amount-preserving VR (qty×VR≈auth) while integer VR would leave a gap:
+		# FX policy requires integer VR + Stock Adjustment (v5.6.26).
 		if (
 			sle_svd is not None
-			and abs(flt(sle_svd) - expected) > tol
+			and fx_gap is not None
+			and abs(fx_gap) > tol
+			and abs(flt(sle_svd) - expected) <= tol
 			and rate_times_qty is not None
-			and abs(rate_times_qty - flt(sle_svd)) <= tol
-			and abs(rate_times_qty - expected) > tol
+			and abs(rate_times_qty - expected) <= tol
+			and int_vr is not None
+			and abs(vr - flt(int_vr)) > 1e-9
 		):
 			return {
 				"root_cause_category": ROOT_CAUSE_CATEGORY_B,
 				"anomaly_type": ANOMALY_LCV_ROUNDING,
 				"classification": CONFIRMED_CORRUPTION,
-				"expected": expected,
+				"expected": inventory_at_integer,
 				"actual": flt(sle_svd),
-				"difference": flt(sle_svd) - expected,
+				"difference": flt(sle_svd) - flt(inventory_at_integer),
 				"rate_times_qty": rate_times_qty,
+				"commercial_auth": expected,
+				"fx_rounding_gap": fx_gap,
 				"fully_billed": False,
-				"notes": ["unbilled_rate_first_integer_vr_sle_ne_auth"],
-				"repair_eligibility": "AMOUNT_PRESERVING_RIV",
+				"notes": ["unbilled_fx_fractional_vr_needs_integer_sa"],
+				"repair_eligibility": "FX_INTEGER_VR_STOCK_ADJUSTMENT",
 				"repair_risk": "MEDIUM",
 				"recommended_repair_sequence": [
 					"dry_run_impact_preview",
 					"ensure_iran_monkey_patches",
-					"adjust_incoming_rate_for_pr_or_uvr",
+					"align_fx_integer_valuation_rate",
 					"repost_item_warehouse",
-					"verify_sle_equals_base_net",
-					"verify_gl_balanced_no_sa_residual",
+					"verify_sle_equals_qty_times_integer_vr",
+					"verify_grni_equals_commercial_auth",
+					"verify_stock_adjustment_equals_rounding_gap",
+				],
+			}
+		# Integer VR already on document but SLE still at commercial auth (RIV lag).
+		if (
+			sle_svd is not None
+			and fx_gap is not None
+			and abs(fx_gap) > tol
+			and int_vr is not None
+			and abs(vr - flt(int_vr)) <= tol
+			and abs(flt(sle_svd) - expected) <= tol
+		):
+			return {
+				"root_cause_category": ROOT_CAUSE_CATEGORY_B,
+				"anomaly_type": ANOMALY_LCV_ROUNDING,
+				"classification": CONFIRMED_CORRUPTION,
+				"expected": inventory_at_integer,
+				"actual": flt(sle_svd),
+				"difference": flt(sle_svd) - flt(inventory_at_integer),
+				"rate_times_qty": rate_times_qty,
+				"commercial_auth": expected,
+				"fx_rounding_gap": fx_gap,
+				"fully_billed": False,
+				"notes": ["unbilled_fx_integer_vr_sle_lags_inventory"],
+				"repair_eligibility": "FX_INTEGER_VR_STOCK_ADJUSTMENT",
+				"repair_risk": "MEDIUM",
+				"recommended_repair_sequence": [
+					"dry_run_impact_preview",
+					"ensure_iran_monkey_patches",
+					"repost_item_warehouse",
+					"verify_sle_equals_qty_times_integer_vr",
+					"verify_grni_equals_commercial_auth",
+					"verify_stock_adjustment_equals_rounding_gap",
 				],
 			}
 		return None

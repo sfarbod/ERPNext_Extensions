@@ -679,17 +679,26 @@ def align_sales_invoice_item_amounts(doc) -> None:
 	align_purchase_order_item_amounts(doc)
 
 
+def _is_fx_purchase_doc(doc) -> bool:
+	"""True when the purchase voucher is not in company currency (FX rate-first)."""
+	company_ccy = (rounding.get_company_currency(doc.company) or "").upper()
+	tx_ccy = (doc.get("currency") or company_ccy or "").upper()
+	if tx_ccy and company_ccy and tx_ccy != company_ccy:
+		return True
+	# Same currency label but non-1 conversion still implies FX translation.
+	return abs(flt(doc.get("conversion_rate") or 1) - 1) > 1e-9
+
+
 def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
-	"""Keep ``valuation_rate`` consistent with authoritative acquisition total.
+	"""Set Purchase Receipt / PI-stock ``valuation_rate`` for IRR companies.
 
-	Commercial ``rate`` / ``amount`` stay IRR integer (rate-first). Stock valuation
-	must preserve::
+	Domestic (IRR) acquisitions — including fractional LCV allocations — keep
+	amount-preserving VR ``auth / qty`` so SLE equals the acquisition total and
+	purchase GRNI is not contaminated by premature integerization.
 
-	    base_net + item_tax + landed_cost + PI amount_difference
-
-	Premature ROUND_HALF_UP of VR to an integer (e.g. 1_000_001.875 → 1_000_002)
-	inflates SLE by qty and contaminates purchase GRNI via Core divisional loss /
-	Iran residual partner reclass. SLE posts ``qty × incoming_rate`` from VR.
+	FX acquisitions (foreign currency / non-1 conversion) must use **integer IRR
+	unit rates** (ROUND_HALF_UP). Inventory = qty × integer VR; the gap vs
+	authoritative commercial base (EUR×FX) posts to Stock Adjustment, not GRNI.
 	"""
 	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 		purchase_receipt_stock_valuation_amount,
@@ -699,16 +708,19 @@ def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
 	qty_stock = purchase_receipt_valuation_stock_qty(row) or flt(row.qty)
 	if not qty_stock:
 		return
+	currency = rounding.get_company_currency(doc.company)
 	auth = purchase_receipt_stock_valuation_amount(row, doc)
 	if not flt(auth):
 		# UVR numerator not yet populated (mid-pipeline / incomplete row). Never
 		# zero an existing VR — keep legacy IRR integer rate policy.
-		currency = rounding.get_company_currency(doc.company)
 		row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, currency)
 		return
-	# Exact division — do not integerize. Float binary represents *.875 cleanly for
-	# common LCV fractions; stock ledger uses this as incoming_rate.
-	row.valuation_rate = flt(auth) / flt(qty_stock)
+	preserving = flt(auth) / flt(qty_stock)
+	if _is_fx_purchase_doc(doc):
+		row.valuation_rate = rounding.round_monetary_rate(preserving, currency)
+		return
+	# Domestic amount-preserving (LCV fractions etc.).
+	row.valuation_rate = preserving
 
 
 def align_purchase_receipt_item_amounts(doc) -> None:

@@ -64,6 +64,9 @@ class ResidualDecision:
 	partner_checked: bool = False
 	messages: list[str] = field(default_factory=list)
 	diagnostics: list[dict[str, Any]] = field(default_factory=list)
+	# FX PR integer-rate policy: inventory keeps qty×integer VR, GRNI keeps
+	# commercial auth; Stock Adjustment alone balances — no partner reclass.
+	standalone_sa: bool = False
 
 	@property
 	def is_bypass(self) -> bool:
@@ -459,6 +462,18 @@ def purchase_receipt_stock_valuation_amount(row, doc=None) -> float:
 	)
 
 
+def _purchase_receipt_is_fx(doc) -> bool:
+	"""FX Purchase Receipt gate without Company currency DB lookup (unit-test safe).
+
+	Foreign ``currency`` or non-1 ``conversion_rate`` marks FX rate-first receipts.
+	Domestic IRR vouchers omit currency or set it to IRR with conversion_rate≈1.
+	"""
+	ccy = (doc.get("currency") or "").upper()
+	if ccy and ccy != "IRR":
+		return True
+	return abs(flt(doc.get("conversion_rate") or 1) - 1) > 1e-9
+
+
 def classify_document_residuals(doc) -> tuple[list[dict], list[dict]]:
 	"""Collect and classify residual candidates for supported doctypes."""
 	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
@@ -502,36 +517,31 @@ def classify_document_residuals(doc) -> tuple[list[dict], list[dict]]:
 					"stock_qty": qty,
 				},
 			)
-			# Purchase Receipt amount-preserving policy (v5.6.25): when document VR is
-			# the rate-first integerization of auth/qty (FX ROUND(EUR×FX/qty)), SLE posts
-			# auth via authoritative_acquisition_incoming_rate(auth/qty). Inventing Class A
-			# residual here forces a non-stock partner — and purchase GRNI is forbidden —
-			# which aborts RIV on otherwise correct acquisitions (e.g. MAT-PRE-2026-01642).
+			enrich_candidate_dimensions(classified, row)
+			# FX PR integer-rate policy: inventory = qty×integer VR; GRNI = commercial
+			# auth (Core already posts base_net). Invert incoming SA sign so inventory
+			# excess → Stock Adjustment *credit* (shortfall → debit). No partner reclass.
 			if (
-				classified.get("class") == "A"
+				_purchase_receipt_is_fx(doc)
+				and classified.get("class") == "A"
 				and classified.get("reason")
 				in (
 					"amount_authoritative_integer_valuation_rate",
 					"amount_authoritative_legacy_uvr_float_rate",
 				)
-				and qty
-				and flt(auth)
 			):
-				preserving = flt(auth) / flt(qty)
-				if abs(flt(qty) * preserving - flt(auth)) <= 0.51:
-					classified = {
-						**classified,
-						"class": "skip",
-						"reason": "amount_preserving_pr_rate_first_integer_skip",
-						"residual": 0,
-						"round_off_debit": 0,
-						"rate_derived_amount": auth,
-						"expected_valuation_rate": preserving,
-						"expected_amount": auth,
-						"legacy_rate_first_integer_vr": flt(rate),
-					}
-			enrich_candidate_dimensions(classified, row)
-			_bucket(classified, class_a, class_b, incoming=True, currency=ccy)
+				residual = flt(classified.get("residual"))
+				_bucket(
+					classified,
+					class_a,
+					class_b,
+					incoming=True,
+					currency=ccy,
+					preset_debit=residual,  # invert vs default −residual
+				)
+				classified["fx_integer_rate_standalone_sa"] = True
+			else:
+				_bucket(classified, class_a, class_b, incoming=True, currency=ccy)
 
 	elif doc.doctype == "Stock Entry":
 		for row in doc.get("items") or []:
@@ -845,11 +855,28 @@ def evaluate_irr_rate_rounding_residual(
 		decision.messages.append(str(e))
 		return decision
 
+	# FX PR integer-rate Class A: Stock Adjustment alone balances inventory vs
+	# commercial GRNI. No partner reclass (GRNI must stay at authoritative purchase).
+	standalone = bool(class_a) and all(
+		r.get("fx_integer_rate_standalone_sa") for r in class_a
+	)
+	decision.standalone_sa = standalone
+
 	if gl_entries is None:
-		# Preflight without GL: config+dims OK; partner checked at apply.
+		# Preflight without GL: config+dims OK; partner checked at apply
+		# (unless standalone SA — no partner required).
 		decision.status = STATUS_READY
-		decision.partner_checked = False
-		decision.messages.append("ready_pending_partner_at_apply")
+		decision.partner_checked = bool(standalone)
+		decision.messages.append(
+			"ready_standalone_sa" if standalone else "ready_pending_partner_at_apply"
+		)
+		return decision
+
+	if standalone:
+		decision.partner = None
+		decision.partner_checked = True
+		decision.status = STATUS_READY
+		decision.messages.append("ready_standalone_sa")
 		return decision
 
 	protected = set(_protected_reclass_accounts(doc) or ())

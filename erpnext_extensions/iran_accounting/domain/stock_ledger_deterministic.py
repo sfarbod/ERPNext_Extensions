@@ -114,22 +114,7 @@ def authoritative_acquisition_incoming_rate(sle_doc_or_dict, currency: str | Non
 	row = frappe.db.get_value(
 		f"{voucher_type} Item",
 		detail_no,
-		[
-			"item_code",
-			"valuation_rate",
-			"qty",
-			"stock_qty",
-			"conversion_factor",
-			"base_net_amount",
-			"base_amount",
-			"item_tax_amount",
-			"landed_cost_voucher_amount",
-			"amount_difference_with_purchase_invoice",
-			"sales_incoming_rate",
-			"rejected_qty",
-			"net_rate",
-			"rm_supp_cost",
-		],
+		["item_code", "valuation_rate"],
 		as_dict=True,
 	)
 	item_code = _get_entry_value(sle_doc_or_dict, "item_code")
@@ -140,34 +125,10 @@ def authoritative_acquisition_incoming_rate(sle_doc_or_dict, currency: str | Non
 	# Zero is the pending-invoice / zero-source contract, not an acquisition rate.
 	if rate <= 0:
 		return None
-
-	# v5.6.25 amount-preserving acquisition: prefer auth/qty over a stale
-	# integer document VR (FX rate-first ROUND(auth/qty)). Otherwise Item+Warehouse
-	# RIV rebuilds SLE at qty×integer VR, invents a Class A residual, and fails
-	# because purchase GRNI is forbidden as residual partner.
-	try:
-		from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
-			purchase_receipt_stock_valuation_amount,
-			purchase_receipt_valuation_stock_qty,
-		)
-
-		parent = frappe.get_doc(voucher_type, voucher_no)
-		qty_stock = purchase_receipt_valuation_stock_qty(row) or flt(row.get("qty"))
-		auth = purchase_receipt_stock_valuation_amount(row, parent)
-		if qty_stock and flt(auth):
-			preserving = flt(auth) / flt(qty_stock)
-			# Use amount-preserving whenever it reconstructs auth (always by
-			# construction) and differs from the stored VR enough to matter.
-			if abs(flt(rate) * flt(qty_stock) - flt(auth)) > 0.51:
-				_ = currency
-				return preserving
-	except Exception:
-		pass
-
-	# Keep the document valuation_rate verbatim when it already reconstructs
-	# the acquisition total (fractional LCV VR, already-aligned rows, …).
-	# Movement totals are still integerized in align_authoritative_acquisition_movement
-	# via round_currency(rate * qty).
+	# Document VR is authoritative for SLE incoming_rate:
+	# - Domestic LCV: may be fractional amount-preserving (auth/qty).
+	# - FX: must be integer IRR (ROUND_HALF_UP); gap vs commercial base → SA.
+	# Do not rewrite FX integer VR to a fractional auth/qty here.
 	_ = currency
 	return rate
 
