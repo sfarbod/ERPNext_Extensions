@@ -57,7 +57,8 @@ def build_party_summary(spec: AccountExplorerQuerySpec) -> dict:
 				"display_title": party,
 				"party_identifier": None,
 				"is_virtual_group": 0,
-				"drill_down_enabled": 1,
+				# Parties axis is flat: no expand / Analyze / drill-down UX.
+				"drill_down_enabled": 0,
 				**measures_from_opening_period(
 					opening_debit, opening_credit, period_debit, period_credit
 				),

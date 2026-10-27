@@ -41,7 +41,7 @@ PARTY_COLUMNS = [
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 120},
 	{"id": "display_code", "label": "Party", "fieldtype": "Data", "width": 140},
 	{"id": "display_title", "label": "Party Name", "fieldtype": "Data", "width": 220},
-	{"id": "party_identifier", "label": "Identifier", "fieldtype": "Data", "width": 140},
+	{"id": "party_identifier", "label": "Identifier Field", "fieldtype": "Data", "width": 160},
 	{"id": "period_debit", "label": "Debit Turnover", "fieldtype": "Currency", "width": 180},
 	{"id": "period_credit", "label": "Credit Turnover", "fieldtype": "Currency", "width": 180},
 	{"id": "debit_balance", "label": "Debit Balance", "fieldtype": "Currency", "width": 180},

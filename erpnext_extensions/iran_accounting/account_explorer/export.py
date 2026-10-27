@@ -282,6 +282,7 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "party_type", "label": _("Party Type")},
 			{"fieldname": "display_code", "label": _("Party")},
 			{"fieldname": "display_title", "label": _("Party Name")},
+			{"fieldname": "party_identifier", "label": _("Identifier Field")},
 			{"fieldname": "period_debit", "label": _("Debit Turnover")},
 			{"fieldname": "period_credit", "label": _("Credit Turnover")},
 			{"fieldname": "debit_balance", "label": _("Debit Balance")},
@@ -379,6 +380,23 @@ def _normalize_export_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> 
 	return [{**row, "dimension_type": row.get("dimension_type") or dimension_type} for row in rows]
 
 
+_TEXT_IDENTIFIER_FIELDS = frozenset(
+	{
+		"party_identifier",
+		"identifier_summary",
+		"display_code",
+		"party",
+	}
+)
+
+
+def _format_export_identifier(value: Any) -> Any:
+	"""Keep identifier / party codes as text (preserve leading zeros)."""
+	if value is None or value == "":
+		return value
+	return cstr(value)
+
+
 def rows_to_matrix(
 	rows: list[dict],
 	columns: list[dict[str, str]],
@@ -391,9 +409,13 @@ def rows_to_matrix(
 		line = []
 		for column in columns:
 			value = row.get(column["fieldname"])
-			fieldtype = column.get("fieldtype") or _infer_export_fieldtype(column["fieldname"], value)
+			fieldname = column["fieldname"]
+			fieldtype = column.get("fieldtype") or _infer_export_fieldtype(fieldname, value)
 			if fieldtype in {"Date", "Datetime"}:
 				value = _format_export_date(value, fieldtype, date_format)
+			elif fieldname in _TEXT_IDENTIFIER_FIELDS or fieldtype == "Data":
+				if fieldname in _TEXT_IDENTIFIER_FIELDS:
+					value = _format_export_identifier(value)
 			line.append(value)
 		data.append(line)
 	return headers, data
@@ -405,6 +427,8 @@ def _infer_export_fieldtype(fieldname: str, value: Any) -> str | None:
 		if "time" in name or name in {"creation", "modified"}:
 			return "Datetime"
 		return "Date"
+	if name in _TEXT_IDENTIFIER_FIELDS:
+		return "Data"
 	return None
 
 

@@ -139,7 +139,11 @@ class TestAccountExplorerFYIsolation(FrappeTestCase):
 		self.assertNotEqual(query_hash(spec_1404), query_hash(spec_1405))
 		self.assertNotEqual(measures_query_hash(spec_1404), measures_query_hash(spec_1405))
 
-	def test_fy1405_baseline_account_11100409(self):
+	def test_fy1405_account_11100409_matches_independent_gl(self):
+		"""FY1405 balances for 11100409 must match Case B leaf measures from GL.
+
+		Do not hardcode a prior Development baseline — Production snapshots differ.
+		"""
 		from erpnext_extensions.iran_accounting.account_explorer.query_builder import (
 			get_enabled_levels,
 		)
@@ -147,6 +151,15 @@ class TestAccountExplorerFYIsolation(FrappeTestCase):
 		level = next((row for row in get_enabled_levels() if int(row.code_length) == 8), None)
 		if not level:
 			self.skipTest("No 8-digit Account Explorer level")
+
+		account = frappe.db.get_value(
+			"Account",
+			{"account_number": "11100409", "company": COMPANY},
+			"name",
+		)
+		if not account:
+			self.skipTest("Account 11100409 not present")
+
 		payload = _fy_payload(
 			"1405",
 			str(self.fy1405.year_start_date),
@@ -155,10 +168,36 @@ class TestAccountExplorerFYIsolation(FrappeTestCase):
 		)
 		payload["document_scope"]["hide_zero_rows"] = 1
 		spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+		measures = get_account_wise_measures(spec)
+		# 11100409 is a group on this snapshot — roll up descendant leaf GL measures.
+		from erpnext_extensions.iran_accounting.account_explorer.measures import (
+			measures_from_opening_period,
+		)
+
+		prefix = "11100409"
+		od = oc = pd = pc = 0.0
+		for account_name, row in measures.items():
+			number = str(account_name).split(" ", 1)[0]
+			if number == prefix or number.startswith(prefix):
+				od += flt(row.get("opening_debit"))
+				oc += flt(row.get("opening_credit"))
+				pd += flt(row.get("period_debit"))
+				pc += flt(row.get("period_credit"))
+		expected = measures_from_opening_period(od, oc, pd, pc)
+		self.assertTrue(any(flt(expected.get(f)) for f in ("period_debit", "period_credit", "debit_balance", "credit_balance")))
+
 		summary = build_account_level_summary(spec)
 		match = next(
 			(row for row in (summary.get("rows") or []) if str(row.get("display_code")) == "11100409"),
 			None,
 		)
 		self.assertIsNotNone(match)
-		self.assertEqual(flt(match.get("debit_balance")), 994353195185.0)
+		for field in (
+			"opening_debit",
+			"opening_credit",
+			"period_debit",
+			"period_credit",
+			"debit_balance",
+			"credit_balance",
+		):
+			self.assertEqual(flt(match.get(field)), flt(expected.get(field)), msg=field)

@@ -4033,9 +4033,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const show_analyze_action =
 			is_summary &&
 			!show_account_construction_actions &&
-			["account_level", "party", "dimension", "currency", "item_group", "item", "inventory_account"].includes(
-				axis
-			);
+			// Parties axis: no Analyze / Actions column (flat identity grid).
+			["account_level", "dimension", "currency", "item_group", "item", "inventory_account"].includes(axis);
 		return {
 			sort_field: this.analysis_context.sort_field,
 			sort_order: this.analysis_context.sort_order,
@@ -4092,7 +4091,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			return !!(row.selected_account || row.is_virtual_group);
 		}
 		if (axis === "party") {
-			return !!(row.party && !row.is_virtual_group);
+			// Parties axis intentionally has no Analyze action.
+			return false;
 		}
 		if (axis === "dimension") {
 			return !!(row.dimension_value != null && row.dimension_value !== "" && !row.is_virtual_group);
@@ -5402,7 +5402,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 		const axis = this.analysis_context.view_axis || "account_level";
 		if (axis === "party") {
-			return ["party_type", "display_code", "display_title", "period_debit", "period_credit", "debit_balance", "credit_balance"];
+			return [
+				"party_type",
+				"display_code",
+				"display_title",
+				"party_identifier",
+				"period_debit",
+				"period_credit",
+				"debit_balance",
+				"credit_balance",
+			];
 		}
 		if (axis === "unified_party") {
 			return [
@@ -5820,7 +5829,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				$tr.addClass("ae-virtual-row");
 			}
 			const is_account_code_row = String(row.row_key || "").startsWith("account:");
+			const axis = this.analysis_context.view_axis || "account_level";
 			const is_drillable =
+				axis !== "party" &&
 				!is_account_code_row &&
 				row.drill_down_enabled !== 0 &&
 				row.drill_down_enabled !== false;
@@ -6828,7 +6839,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (axis === "account_level" && explicit_intent !== "filter") {
 			return;
 		}
-		if (axis === "party" && (row.is_virtual_group || !row.party)) {
+		// Parties axis is flat — no expand / drill / Analyze.
+		if (axis === "party") {
 			return;
 		}
 		if (axis === "unified_party" && (row.is_virtual_group || !row.unified_party)) {
