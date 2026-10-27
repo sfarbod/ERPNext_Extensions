@@ -292,6 +292,19 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 				parts.push(`${__("Roles")}: ${role_text}`);
 				return parts.filter(Boolean).join(" · ");
 			}
+			if (entry?.key === "party") {
+				const meta = entry.meta || {};
+				const party_id = meta.party || entry.value || "";
+				const party_name = meta.party_name || meta.display_title || "";
+				const type_prefix = meta.party_type ? `${meta.party_type}: ` : "";
+				if (party_name && party_id && String(party_name) !== String(party_id)) {
+					return `${type_prefix}${party_name} (${party_id})`;
+				}
+				if (meta.display_label) {
+					return String(meta.display_label);
+				}
+				return `${type_prefix}${party_name || party_id || ""}`;
+			}
 			if (entry?.key === "account") {
 				const meta = entry.meta || {};
 				const value = entry.value;

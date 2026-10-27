@@ -348,6 +348,8 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "credit", "label": _("Credit")},
 			{"fieldname": "account_currency", "label": _("Account Currency")},
 			{"fieldname": "remarks", "label": _("Description")},
+			{"fieldname": "party_type", "label": _("Party Type")},
+			{"fieldname": "party_name", "label": _("Party Name")},
 			{"fieldname": "party", "label": _("Party")},
 			{"fieldname": "cost_center", "label": _("Cost Center")},
 		]
@@ -388,6 +390,7 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 				{"fieldname": "item_group", "label": _("Item Group")},
 				{"fieldname": "transaction_direction", "label": _("Direction")},
 				{"fieldname": "party_type", "label": _("Party Type")},
+				{"fieldname": "party_name", "label": _("Party Name")},
 				{"fieldname": "party", "label": _("Party")},
 				{"fieldname": "quantity", "label": _("Quantity")},
 				{"fieldname": "stock_quantity", "label": _("Stock Qty")},
@@ -544,7 +547,8 @@ def _tuple_to_export_values(row: tuple, fieldnames: list[str], *, date_format: s
 
 	Tuple layout:
 	gl_entry, posting_date, voucher_type, voucher_no, account_code, account_name,
-	debit, credit, account_currency, remarks, party, cost_center, account
+	debit, credit, account_currency, remarks, party_type, party_name, party,
+	cost_center, account
 	"""
 	(
 		gl_entry,
@@ -557,6 +561,8 @@ def _tuple_to_export_values(row: tuple, fieldnames: list[str], *, date_format: s
 		credit,
 		account_currency,
 		remarks,
+		party_type,
+		party_name,
 		party,
 		cost_center,
 		account,
@@ -575,6 +581,8 @@ def _tuple_to_export_values(row: tuple, fieldnames: list[str], *, date_format: s
 		"credit": credit,
 		"account_currency": account_currency,
 		"remarks": remarks,
+		"party_type": party_type,
+		"party_name": party_name,
 		"party": party,
 		"cost_center": cost_center,
 		# Legacy aliases

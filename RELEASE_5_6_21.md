@@ -19,7 +19,36 @@ transparency (Persian warning + details dialog + Included/Excluded reconciliatio
 **Follow-up 3 (same 5.6.21):** Party-to-Item / Item Group commercial analysis under
 active Unified Party identity, plus final cross-axis release validation.
 
+**Follow-up 4 (same 5.6.21):** Consistent Party Name + Party ID display across
+Account Explorer surfaces (commercial Items, Vouchers, Unified Party, filters,
+exports) using batched master resolution.
+
 **Version remains 5.6.21** (no bump).
+
+### Consistent Party Name display
+**Contract:** Prefer human-readable Party Name; preserve Party ID. Where separate
+columns exist, keep both (`Party Name` + `Party`). Combined labels use
+`Party Name (Party ID)`. Never rewrite Party ID in queries.
+
+**Masters (no Selling/Buying naming dependency):**
+| Party Type | Display field |
+|------------|---------------|
+| Customer | `customer_name` |
+| Supplier | `supplier_name` |
+| Employee | `employee_name` |
+| Shareholder | `title` |
+
+Fallback when master name is missing: Party ID only (never invent a name).
+
+**Affected surfaces:**
+- Commercial Items: new `party_name` column beside `party`
+- Vouchers / GL detail: `party_name` labeled Party Name; `party` is Party ID
+- Unified Party Analysis + Selected Roles: Name (ID)
+- Filter Summary / Analysis Path: Name (ID) for party filters; identity keeps Unified Name
+- CSV/XLSX: Party Name + Party (+ Party Type)
+
+**Performance:** Batched `enrich_rows_with_party_names` / `batch_party_display_titles`
+per party type — no N+1 master lookups. No Redis activation.
 
 ### Persistent Unified Party identity filter
 - First-class analysis filter key: `party_identity` (session lifetime).

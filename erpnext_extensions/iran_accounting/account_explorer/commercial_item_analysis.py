@@ -45,6 +45,7 @@ COMMERCIAL_ITEM_COLUMNS = [
 	{"id": "item_group", "label": "Item Group", "fieldtype": "Data", "width": 130},
 	{"id": "transaction_direction", "label": "Direction", "fieldtype": "Data", "width": 90},
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 100},
+	{"id": "party_name", "label": "Party Name", "fieldtype": "Data", "width": 220},
 	{"id": "party", "label": "Party", "fieldtype": "Data", "width": 110},
 	{"id": "quantity", "label": "Quantity", "fieldtype": "Float", "width": 100},
 	{"id": "stock_quantity", "label": "Stock Qty", "fieldtype": "Float", "width": 100},
@@ -519,6 +520,12 @@ def build_commercial_item_summary(spec: AccountExplorerQuerySpec) -> dict:
 				"analysis_source": ANALYSIS_SOURCE_COMMERCIAL,
 			}
 		)
+
+	from erpnext_extensions.iran_accounting.account_explorer.party_sources import (
+		enrich_rows_with_party_names,
+	)
+
+	enrich_rows_with_party_names(rows)
 
 	result = _paginate_commercial_rows(
 		rows,

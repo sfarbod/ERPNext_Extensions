@@ -20,7 +20,9 @@ from erpnext_extensions.iran_accounting.account_explorer.gle_filters import (
 	collect_scope_warnings,
 )
 from erpnext_extensions.iran_accounting.account_explorer.schemas import AccountExplorerQuerySpec
-from erpnext_extensions.iran_accounting.account_explorer.voucher_summary import _party_name
+from erpnext_extensions.iran_accounting.account_explorer.party_sources import (
+	enrich_rows_with_party_names,
+)
 
 _SQL_SORT_MAP = {
 	"posting_date": "gle.posting_date",
@@ -170,7 +172,9 @@ def _paged_gl_lines(
 			""",
 			as_dict=True,
 		)
-		return [_row_dict(row, dimensions) for row in rows], totals, total_rows
+		page_rows = [_row_dict(row, dimensions) for row in rows]
+		enrich_rows_with_party_names(page_rows)
+		return page_rows, totals, total_rows
 
 	rows = frappe.db.sql(
 		f"""
@@ -195,7 +199,9 @@ def _paged_gl_lines(
 
 	totals, total_rows = _totals_dict(rows[0]._total_debit, rows[0]._total_credit, rows[0]._total_rows)
 	_store_cached_voucher_totals(spec, totals, total_rows)
-	return [_row_dict(row, dimensions) for row in rows], totals, total_rows
+	page_rows = [_row_dict(row, dimensions) for row in rows]
+	enrich_rows_with_party_names(page_rows)
+	return page_rows, totals, total_rows
 
 
 def _get_cached_voucher_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int] | None:
@@ -359,7 +365,7 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 		"against_account": row.get("against_account") or "",
 		"party_type": party_type,
 		"party": party,
-		"party_name": _party_name(party_type, party),
+		"party_name": "",  # Batched after page materialization.
 		"debit": debit,
 		"credit": credit,
 		"account_currency": row.get("account_currency") or "",
@@ -413,6 +419,8 @@ def _export_batch(
 	if after_name:
 		query = query.where(gle.name > after_name)
 	raw = query.run(as_dict=True)
+	# Batch Party Name once per export page (no per-row N+1).
+	enrich_rows_with_party_names(raw)
 	out = []
 	for row in raw:
 		out.append(
@@ -427,6 +435,8 @@ def _export_batch(
 				row.get("credit"),
 				row.get("account_currency"),
 				row.get("remarks"),
+				row.get("party_type") or "",
+				row.get("party_name") or "",
 				row.get("party"),
 				row.get("cost_center"),
 				row.get("account"),

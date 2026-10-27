@@ -5695,6 +5695,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 					"item_group",
 					"transaction_direction",
 					"party_type",
+					"party_name",
 					"party",
 					"quantity",
 					"stock_quantity",
@@ -6391,7 +6392,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			selected_party: row.party,
 		};
 		this.push_breadcrumb({
-			label: row.party_name || row.party,
+			label: (() => {
+				const name = row.party_name || row.display_title || "";
+				const id = row.party || "";
+				if (name && id && name !== id) return `${name} (${id})`;
+				return name || id || __("Party");
+			})(),
 			axis: "party",
 			party_type: row.party_type,
 			selected_party: row.party,
@@ -6709,6 +6715,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			};
 		}
 		if (node_id === "PartyValue" || action.filter_key === "party") {
+			const party_name = row.party_name || row.display_title || display_label || row.party;
+			const party_id = row.party || row.display_code || "";
+			let party_label = party_name || party_id;
+			if (party_name && party_id && String(party_name) !== String(party_id)) {
+				party_label = `${party_name} (${party_id})`;
+			}
 			return {
 				key: "party",
 				value: row.party,
@@ -6716,7 +6728,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				lifetime,
 				meta: {
 					party_type: row.party_type,
-					display_label: display_label || row.party,
+					display_label: party_label,
+					party_name: party_name,
+					party: party_id,
 					source_axis_label,
 				},
 			};
@@ -7487,15 +7501,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 					);
 				})
 				.appendTo($label);
-			$label.append(
-				document.createTextNode(
-					` ${member.party_type} — ${member.party}${
-						member.display_title && member.display_title !== member.party
-							? ` (${member.display_title})`
-							: ""
-					}`
-				)
-			);
+			const member_name = member.display_title || member.party || "";
+			const member_id = member.party || "";
+			const member_label =
+				member_name && member_id && member_name !== member_id
+					? `${member_name} (${member_id})`
+					: member_name || member_id;
+			$label.append(document.createTextNode(` ${member.party_type} — ${member_label}`));
 		});
 		this.$member_panel.append($roles);
 	}

@@ -125,6 +125,18 @@ def get_party_display_title(party_type: str, party: str) -> str:
 	return resolve_party_display_name(party_type, party)
 
 
+def format_party_name_with_id(display_name: str | None, party: str | None) -> str:
+	"""Preferred combined label: ``Party Name (Party ID)``.
+
+	Falls back to whichever side is available. Never invents a name.
+	"""
+	name = (display_name or "").strip()
+	party_id = (party or "").strip()
+	if name and party_id and name != party_id:
+		return f"{name} ({party_id})"
+	return name or party_id
+
+
 def batch_party_display_titles(party_type: str, parties: list[str]) -> dict[str, str]:
 	"""Batch-resolve Party Name from the master display field."""
 	parties = [party for party in parties if party]
@@ -143,6 +155,53 @@ def batch_party_display_titles(party_type: str, parties: list[str]) -> dict[str,
 	)
 	title_map = {row.name: row.get(field) or row.name for row in rows}
 	return {party: title_map.get(party, party) for party in parties}
+
+
+def batch_party_display_titles_for_pairs(
+	pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], str]:
+	"""Batch-resolve Party Names for mixed (party_type, party) pairs."""
+	by_type: dict[str, list[str]] = {}
+	for party_type, party in pairs or []:
+		pt = (party_type or "").strip()
+		p = (party or "").strip()
+		if not pt or not p:
+			continue
+		by_type.setdefault(pt, []).append(p)
+
+	resolved: dict[tuple[str, str], str] = {}
+	for party_type, parties in by_type.items():
+		unique = list(dict.fromkeys(parties))
+		titles = batch_party_display_titles(party_type, unique)
+		for party in unique:
+			resolved[(party_type, party)] = titles.get(party, party)
+	return resolved
+
+
+def enrich_rows_with_party_names(
+	rows: list[dict],
+	*,
+	party_type_key: str = "party_type",
+	party_key: str = "party",
+	name_key: str = "party_name",
+) -> None:
+	"""In-place batched Party Name enrichment for any row list with party fields."""
+	if not rows:
+		return
+	pairs: list[tuple[str, str]] = []
+	for row in rows:
+		party_type = row.get(party_type_key)
+		party = row.get(party_key)
+		if party_type and party:
+			pairs.append((str(party_type), str(party)))
+	titles = batch_party_display_titles_for_pairs(pairs)
+	for row in rows:
+		party_type = row.get(party_type_key)
+		party = row.get(party_key)
+		if not party_type or not party:
+			row.setdefault(name_key, "")
+			continue
+		row[name_key] = titles.get((str(party_type), str(party)), str(party))
 
 
 def batch_party_identifiers(

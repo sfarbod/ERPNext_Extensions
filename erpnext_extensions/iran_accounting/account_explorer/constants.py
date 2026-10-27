@@ -144,6 +144,7 @@ COMMERCIAL_ITEM_SORTABLE_FIELDS = frozenset(
 		"item_group",
 		"transaction_direction",
 		"party_type",
+		"party_name",
 		"party",
 		"quantity",
 		"stock_quantity",

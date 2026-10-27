@@ -81,8 +81,8 @@ VOUCHER_COLUMNS = [
 	{"id": "account", "label": "Account", "fieldtype": "Link", "width": 160},
 	{"id": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 160},
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 100},
-	{"id": "party_name", "label": "Party", "fieldtype": "Data", "width": 160},
-	{"id": "party", "label": "Party ID", "fieldtype": "Data", "width": 120},
+	{"id": "party_name", "label": "Party Name", "fieldtype": "Data", "width": 220},
+	{"id": "party", "label": "Party", "fieldtype": "Data", "width": 120},
 	{"id": "debit", "label": "Debit", "fieldtype": "Currency", "width": 130},
 	{"id": "credit", "label": "Credit", "fieldtype": "Currency", "width": 130},
 	{"id": "account_currency", "label": "Account Currency", "fieldtype": "Data", "width": 100},
@@ -110,7 +110,7 @@ GL_GROUP_BASE_COLUMNS = [
 	{"id": "account", "label": "Account", "fieldtype": "Link", "width": 140},
 	{"id": "account_name", "label": "Account Name", "fieldtype": "Data", "width": 180},
 	{"id": "party_type", "label": "Party Type", "fieldtype": "Data", "width": 110},
-	{"id": "party_name", "label": "Party", "fieldtype": "Data", "width": 160},
+	{"id": "party_name", "label": "Party Name", "fieldtype": "Data", "width": 220},
 ]
 
 GL_GROUP_COMPACT_COLUMN = {
