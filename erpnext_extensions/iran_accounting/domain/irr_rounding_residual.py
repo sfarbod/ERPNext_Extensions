@@ -594,19 +594,28 @@ def _pick_adjustable_non_stock_leg(
 	round_off_account: str,
 	*,
 	protected_accounts: set[str] | None = None,
+	forbidden_accounts: set[str] | None = None,
 	reclass_magnitude: float = 0,
 ):
 	"""Largest non-Stock, non-Round-Off, non-Stock-Adjustment monetary leg.
 
-	Protected accounts (e.g. Additional Cost expense) may be used only when their
-	magnitude strictly exceeds the reclass amount so the Add Cost GL remains visible.
+	Protected accounts (e.g. Stock Entry Additional Cost expense) may be used only
+	when their magnitude strictly exceeds the reclass amount so the Add Cost GL
+	remains visible.
+
+	Forbidden accounts (e.g. Purchase Receipt GRNI / LCV clearing) are never used
+	as residual partners — even when large — so purchase GRNI cannot absorb
+	valuation rounding.
 	"""
 	protected = protected_accounts or set()
+	forbidden = forbidden_accounts or set()
 	need = abs(flt(reclass_magnitude))
 	candidates = []
 	for entry in gl_map:
 		account = entry.get("account")
 		if not account or account == round_off_account:
+			continue
+		if account in forbidden:
 			continue
 		if _is_stock_account(account):
 			continue
@@ -625,12 +634,41 @@ def _pick_adjustable_non_stock_leg(
 
 
 def _protected_reclass_accounts(doc) -> set[str]:
-	"""Accounts that must remain visible on the voucher GL (not Round Off fodder)."""
+	"""Accounts that must remain visible on the voucher GL (not Round Off fodder).
+
+	Purchase Receipt: never reclassify purchase GRNI / asset RBNB or LCV clearing
+	legs into Stock Adjustment. Those are purchase/landed-cost clearing accounts —
+	using them as residual partners creates unexplained GRNI residuals after PI.
+	"""
 	protected: set[str] = set()
 	if getattr(doc, "doctype", None) == "Stock Entry":
 		for row in doc.get("additional_costs") or []:
 			if row.get("expense_account"):
 				protected.add(row.get("expense_account"))
+	if getattr(doc, "doctype", None) == "Purchase Receipt" and getattr(doc, "company", None):
+		for field in (
+			"stock_received_but_not_billed",
+			"asset_received_but_not_billed",
+		):
+			try:
+				acc = frappe.get_cached_value("Company", doc.company, field)
+			except Exception:
+				acc = None
+			if acc:
+				protected.add(acc)
+		# LCV expense / clearing accounts on this PR rebuild
+		try:
+			if hasattr(doc, "get_item_account_wise_lcv_entries"):
+				lcv_map = doc.get_item_account_wise_lcv_entries() or {}
+				for entries in lcv_map.values():
+					for entry in entries or []:
+						exp = getattr(entry, "expense_account", None) or (
+							entry.get("expense_account") if hasattr(entry, "get") else None
+						)
+						if exp:
+							protected.add(exp)
+		except Exception:
+			pass
 	return protected
 
 
