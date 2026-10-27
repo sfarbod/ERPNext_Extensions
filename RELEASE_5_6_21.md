@@ -23,6 +23,10 @@ active Unified Party identity, plus final cross-axis release validation.
 Account Explorer surfaces (commercial Items, Vouchers, Unified Party, filters,
 exports) using batched master resolution.
 
+**Follow-up 5 (same 5.6.21):** Final export compatibility gate — voucher streaming
+export hardened to **named field dicts** (not positional tuples) after
+`party_type` / `party_name` were added; CSV/XLSX/Selected/large-volume validated.
+
 **Version remains 5.6.21** (no bump).
 
 ### Consistent Party Name display
@@ -267,6 +271,13 @@ Identifiers exported as text (leading zeros preserved).
 Commercial Item/Item Group export adds Analysis Source + Direction and matches
 the active identity roles (no company-wide leakage).
 
+**Voucher streaming contract (5.6.21 gate):** export batches are **named dicts**
+(`gl_entry`, `party_type`, `party_name`, `party`, …). Column mapping uses field
+names — not tuple offsets — so adding Party Name cannot shift Debit/Credit.
+Validated on restored snapshot: identity CSV/XLSX (172 rows) and full FY1405
+company-wide CSV (**96,717** rows, ~5.6 s, ~28.5 MB, peak RSS ~290 MB) with
+debit/credit matching `_gl_line_totals` probe.
+
 ### N. Tests / Playwright / Build
 - Unit/regression including `test_account_explorer_party_identity_analysis_v5621`
   (customer-only, multi-role, missing/disabled identifiers, filters, isolation,
@@ -274,11 +285,15 @@ the active identity roles (no company-wide leakage).
 - `test_account_explorer_commercial_item_v5621` — Customer/Supplier/Shareholder
   commercial Item + Item Group, DN dedup, cancelled exclusion, export columns,
   company isolation, performance median/P95.
+- `test_account_explorer_party_display_v5621` — Party Name/ID across axes.
+- `test_account_explorer_voucher_export_compat_v5621` — named export rows, CSV/XLSX
+  Party alignment, Selected-only keys, legacy 15-tuple reject/map.
 - Playwright `playwright_account_explorer_party_identity_v5621.mjs` — **OK**
   with **real DOM Analyze click** on CUS-00003.
 - Playwright `playwright_account_explorer_commercial_item_v5621.mjs` — Milan Pars
   → Item Groups/Items commercial scope, role toggles, Shareholder empty state,
   cross-axis identity (AL/Dimensions/Currencies/Vouchers).
+- Playwright `playwright_account_explorer_party_display_v5621.mjs` — Party Name visible.
 - `bench build --app erpnext_extensions` — **OK**.
 
 ### O. Migration requirements
@@ -287,12 +302,17 @@ the active identity roles (no company-wide leakage).
 - Index creation may take a few seconds on large Production GL tables.
 - No GL/SLE data mutations.
 - No new DocType required for Related Roles / Unified Analyze (runtime resolution).
+- Confirmed on Development: index `ae_gl_co_iscancel_posting_acct` **present**.
 
 ### P. Known limitations
-- Voucher first page remains ~2.5–3.0 s on this volume (target met; further gains deferred).
+- Voucher first page remains ~2.1–2.4 s identity-scoped / ~2.5–3.0 s company-wide
+  on this volume (target met; further gains deferred).
 - Currency filter list may include Account currencies unused in GL (acceptable for dropdowns).
 - Combined analytical totals are informational only — not settlement.
 - Rapid DataTable remount can surface a benign Frappe `cssRules` race (non-blocking).
+- Finance Book is not applied to commercial invoice item rows (documented warning).
+- Some FrappeTestCase modules that import ERPNext Company fixtures can hit UOM
+  bootstrap collisions on this restored DB; unittest-based AE suites are authoritative.
 
 ### Q. Deployment checklist
 1. Deploy erpnext_extensions **5.6.21**
@@ -304,7 +324,9 @@ the active identity roles (no company-wide leakage).
 7. Confirm Vouchers has no Analyze; document navigation still works
 8. Confirm no expand/collapse icons on any axis
 9. Spot-check Account Levels FY1405 first load timing
-10. Confirm no Redis prototype flags enabled
+10. Spot-check Voucher CSV/XLSX: Party Type / Party Name / Party columns aligned
+11. Spot-check Milan Pars commercial Items Party Name + base net
+12. Confirm no Redis prototype flags enabled
 
 ### Safety confirmations
 - Development restored from the specified Production backup

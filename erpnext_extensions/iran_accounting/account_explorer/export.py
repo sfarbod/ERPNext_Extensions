@@ -542,55 +542,84 @@ def _voucher_export_fieldnames(columns: list[dict[str, str]]) -> list[str]:
 	return [column["fieldname"] for column in columns]
 
 
-def _tuple_to_export_values(row: tuple, fieldnames: list[str], *, date_format: str = "jalali") -> list[Any]:
-	"""Map lean GL-line SQL tuple → export column order.
+def _voucher_row_to_export_values(row: dict | tuple, fieldnames: list[str], *, date_format: str = "jalali") -> list[Any]:
+	"""Map lean GL-line export row → export column order by field name.
 
-	Tuple layout:
-	gl_entry, posting_date, voucher_type, voucher_no, account_code, account_name,
-	debit, credit, account_currency, remarks, party_type, party_name, party,
-	cost_center, account
+	Preferred contract is a named ``dict``. Legacy positional tuples remain
+	accepted only for the documented 15-field layout so older call sites fail
+	loudly if they drift.
 	"""
-	(
-		gl_entry,
-		posting_date,
-		voucher_type,
-		voucher_no,
-		account_code,
-		account_name,
-		debit,
-		credit,
-		account_currency,
-		remarks,
-		party_type,
-		party_name,
-		party,
-		cost_center,
-		account,
-	) = row
-	debit = flt(debit)
-	credit = flt(credit)
+	if isinstance(row, dict):
+		source = row
+	else:
+		# Legacy compatibility for the fixed 15-field layout introduced in 5.6.21.
+		if len(row) != 15:
+			frappe.throw(
+				_("Voucher export row has unexpected shape ({0} fields).").format(len(row))
+			)
+		(
+			gl_entry,
+			posting_date,
+			voucher_type,
+			voucher_no,
+			account_code,
+			account_name,
+			debit,
+			credit,
+			account_currency,
+			remarks,
+			party_type,
+			party_name,
+			party,
+			cost_center,
+			account,
+		) = row
+		source = {
+			"gl_entry": gl_entry,
+			"posting_date": posting_date,
+			"voucher_type": voucher_type,
+			"voucher_no": voucher_no,
+			"account_code": account_code,
+			"account_name": account_name,
+			"debit": debit,
+			"credit": credit,
+			"account_currency": account_currency,
+			"remarks": remarks,
+			"party_type": party_type,
+			"party_name": party_name,
+			"party": party,
+			"cost_center": cost_center,
+			"account": account,
+		}
+
+	debit = flt(source.get("debit"))
+	credit = flt(source.get("credit"))
 	values = {
-		"gl_entry": gl_entry,
-		"posting_date": _format_export_date(posting_date, "Date", date_format),
-		"voucher_type": voucher_type,
-		"voucher_no": voucher_no,
-		"account_code": cstr(account_code or ""),
-		"account_name": account_name,
-		"account": account,
+		"gl_entry": source.get("gl_entry"),
+		"posting_date": _format_export_date(source.get("posting_date"), "Date", date_format),
+		"voucher_type": source.get("voucher_type"),
+		"voucher_no": source.get("voucher_no"),
+		"account_code": cstr(source.get("account_code") or ""),
+		"account_name": source.get("account_name"),
+		"account": source.get("account"),
 		"debit": debit,
 		"credit": credit,
-		"account_currency": account_currency,
-		"remarks": remarks,
-		"party_type": party_type,
-		"party_name": party_name,
-		"party": party,
-		"cost_center": cost_center,
+		"account_currency": source.get("account_currency"),
+		"remarks": source.get("remarks"),
+		"party_type": source.get("party_type") or "",
+		"party_name": source.get("party_name") or "",
+		"party": source.get("party"),
+		"cost_center": source.get("cost_center"),
 		# Legacy aliases
 		"scoped_debit": debit,
 		"scoped_credit": credit,
 		"scoped_net": debit - credit,
 	}
 	return [values.get(name) for name in fieldnames]
+
+
+# Backward-compatible alias used by older local scripts / tests.
+_tuple_to_export_values = _voucher_row_to_export_values
 
 
 def _format_export_date(value: Any, fieldtype: str, date_format: str) -> Any:
