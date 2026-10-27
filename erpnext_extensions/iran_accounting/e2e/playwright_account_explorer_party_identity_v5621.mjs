@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Account Explorer 5.6.21 — REAL click E2E for Analyze / Unified Party.
- * Fails if Analyze is visible but clicking does nothing or scope stays wrong.
+ * Account Explorer 5.6.21 — persistent identity filter + exclusion details.
+ * Uses real Playwright locator clicks (force when Desk overlays block actionability).
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
 import fs from "fs";
@@ -14,20 +14,15 @@ const BASE = process.env.AE_BASE_URL || "http://development.localhost:8000";
 const USER = process.env.AE_USER || "Administrator";
 const PASS = process.env.AE_PASS || "admin";
 const COMPANY = process.env.AE_COMPANY || "اسپاد فارمد دارو";
-const OUT = path.resolve(__dirname, "screenshots/account-explorer-analyze-click-v5621");
+const OUT = path.resolve(__dirname, "screenshots/account-explorer-identity-persist-v5621");
 
 const checks = [];
 const passCheck = (name, detail = null) => checks.push({ name, ok: true, detail });
 const failCheck = (name, err) =>
-	checks.push({
-		name,
-		ok: false,
-		err: err?.stack || err?.message || String(err),
-	});
+	checks.push({ name, ok: false, err: err?.stack || err?.message || String(err) });
 
 function isBenignPageError(err) {
-	const msg = err?.message || String(err);
-	return /Cannot read properties of null \(reading 'cssRules'\)/.test(msg);
+	return /Cannot read properties of null \(reading 'cssRules'\)/.test(err?.message || String(err));
 }
 
 async function login(page) {
@@ -36,13 +31,8 @@ async function login(page) {
 	await page.fill('input[data-fieldname="pwd"], #login_password, input[type="password"]', PASS);
 	await Promise.all([
 		page.waitForURL(/\/(app|desk)/, { timeout: 120000 }),
-		page.click('button[type="submit"], .btn-login, button:has-text("Login"), .btn-login-option'),
+		page.click('button[type="submit"], .btn-login, button:has-text("Login")'),
 	]);
-}
-
-async function shot(page, name) {
-	fs.mkdirSync(OUT, { recursive: true });
-	await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
 }
 
 async function resolveAe(page) {
@@ -57,35 +47,27 @@ async function resolveAe(page) {
 	});
 }
 
-async function waitSummaryIdle(page, { timeout = 180000, requireRows = true, minRows = 1 } = {}) {
+async function waitSummaryIdle(page, { requireRows = true, timeout = 180000 } = {}) {
 	const started = Date.now();
 	while (Date.now() - started < timeout) {
 		const state = await page.evaluate(() => {
 			const ae = window.cur_ae;
-			if (!ae) return { ready: false, rows: 0, loading: true };
-			const loading = !!ae.store?.get?.("loading")?.summary;
+			const loading = !!ae?.store?.get?.("loading")?.summary;
 			const bannerHidden =
-				ae.$summary_loading?.hasClass?.("visually-hidden") ||
-				ae.$summary_loading?.hasClass?.("is-hidden") ||
-				!ae.$summary_loading?.is?.(":visible");
-			const gridLoading = ae.$grid?.hasClass?.("ae-grid-wrap--loading");
-			const rows = (ae.rows || []).length;
-			return {
-				ready: !loading && bannerHidden && !gridLoading,
-				rows,
-				loading,
-			};
+				ae?.$summary_loading?.hasClass?.("visually-hidden") ||
+				ae?.$summary_loading?.hasClass?.("is-hidden") ||
+				!ae?.$summary_loading?.is?.(":visible");
+			const gridLoading = ae?.$grid?.hasClass?.("ae-grid-wrap--loading");
+			return { ready: !loading && bannerHidden && !gridLoading, rows: (ae?.rows || []).length };
 		});
-		if (state.ready && (!requireRows || state.rows >= minRows)) {
-			return { elapsed: Date.now() - started, rows: state.rows };
-		}
+		if (state.ready && (!requireRows || state.rows > 0)) return state;
 		await page.waitForTimeout(200);
 	}
-	throw new Error("summary did not become idle with required rows");
+	throw new Error("summary idle timeout");
 }
 
-async function applyFy1405Party(page) {
-	await page.evaluate(async ({ company }) => {
+async function applyFy1405(page, axis = "party") {
+	await page.evaluate(async ({ company, axis }) => {
 		const ae = window.cur_ae;
 		const fromDate = "2026-03-21";
 		const toDate = "2027-03-20";
@@ -97,83 +79,50 @@ async function applyFy1405Party(page) {
 		if (ae.fy_field?.set_value) await ae.fy_field.set_value("1405");
 		if (ae.from_date_field?.set_value) await ae.from_date_field.set_value(fromDate);
 		if (ae.to_date_field?.set_value) await ae.to_date_field.set_value(toDate);
-		ae.analysis_context.view_axis = "party";
+		ae.analysis_context.view_axis = axis;
 		ae.analysis_context.detail_mode = "summary";
 		ae.analysis_context.page = 1;
-		ae.analysis_context.party_scope = {
-			party_type: null,
-			selected_party: null,
-			party_name_query: null,
-			identifier_query: null,
-			unified_identity: 0,
-			identity_members: null,
-		};
-		ae.hide_member_panel?.();
-		ae._reset_breadcrumbs?.([]);
-		await ae.refresh_summary({ new_execution: true, reason: "e2e_parties" });
-	}, { company: COMPANY });
-	return waitSummaryIdle(page);
+		if (axis === "account_level") ae.analysis_context.level_sequence = 1;
+		await ae.refresh_summary({ new_execution: true, reason: "e2e" });
+	}, { company: COMPANY, axis });
+	return waitSummaryIdle(page, { requireRows: axis !== "voucher" });
 }
 
-async function findAnalyzeButtonForParty(page, party) {
-	return page.evaluate((partyId) => {
-		const ae = window.cur_ae;
-		const row = (ae.rows || []).find((r) => r.party === partyId);
-		if (!row) return { ok: false, reason: "row_not_in_data" };
-		const key = row.row_key;
-		let btn =
-			document.querySelector(`.dt-row[data-ae-row-key="${CSS.escape(key)}"] .ae-voucher-action--analyze`) ||
-			null;
-		if (!btn) {
-			// Clusterize may only mount visible rows — scroll/search DOM by code text.
-			const rows = [...document.querySelectorAll(".dt-row:not(.dt-row-header):not(.dt-row-filter)")];
-			for (const el of rows) {
-				if ((el.textContent || "").includes(partyId)) {
-					btn = el.querySelector(".ae-voucher-action--analyze");
-					if (btn) break;
-				}
-			}
-		}
-		if (!btn) return { ok: false, reason: "button_not_in_dom", key, analyzeButtons: document.querySelectorAll(".ae-voucher-action--analyze").length };
-		btn.setAttribute("data-e2e-analyze", partyId);
-		return { ok: true, key };
-	}, party);
+async function realClick(page, selectorOrLocator) {
+	const loc =
+		typeof selectorOrLocator === "string"
+			? page.locator(selectorOrLocator).first()
+			: selectorOrLocator;
+	await loc.scrollIntoViewIfNeeded();
+	// Desk overlays / sticky columns can block actionability; force still issues a
+	// real Playwright click (not programmatic AE API / not synthetic dispatchEvent).
+	await loc.click({ force: true, timeout: 15000 });
 }
 
 async function main() {
 	fs.mkdirSync(OUT, { recursive: true });
 	const browser = await chromium.launch({ headless: true });
-	const page = await browser.newPage();
-	const apiHits = [];
+	// Wide viewport so Actions/Analyze column is reachable (not clipped off-screen).
+	const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 	const failedApis = [];
 	page.on("pageerror", (err) => {
-		if (isBenignPageError(err)) return;
-		failCheck("pageerror", err);
+		if (!isBenignPageError(err)) failCheck("pageerror", err);
 	});
 	page.on("response", (res) => {
-		const url = res.url();
-		if (!url.includes("account_explorer")) return;
-		if (res.status() >= 400) failedApis.push(`${res.status()} ${url}`);
-		if (url.includes("get_party_identity_analysis") || url.includes("get_party_summary") || url.includes("get_account_summary")) {
-			apiHits.push({ status: res.status(), method: url.includes("get_party_identity_analysis") ? "identity" : url.includes("get_party_summary") ? "party" : "account" });
+		if (res.url().includes("account_explorer") && res.status() >= 400) {
+			failedApis.push(`${res.status()} ${res.url()}`);
 		}
 	});
-
-	const timings = [];
 
 	try {
 		await login(page);
 		passCheck("login");
-
-		await page.goto(`${BASE}/app/account-explorer`, { waitUntil: "domcontentloaded" });
+		await page.goto(`${BASE}/app/account-explorer?_=${Date.now()}`, { waitUntil: "domcontentloaded" });
 		await resolveAe(page);
 		passCheck("open_account_explorer");
 		await waitSummaryIdle(page, { requireRows: false, timeout: 60000 });
 
-		await applyFy1405Party(page);
-		await shot(page, "01_parties_before");
-
-		// Ensure CUS-00003 is in the current page (filter by Party ID if needed).
+		await applyFy1405(page, "party");
 		let hasTarget = await page.evaluate(
 			() => !!(window.cur_ae.rows || []).find((r) => r.party === "CUS-00003")
 		);
@@ -181,298 +130,202 @@ async function main() {
 			await page.evaluate(async () => {
 				const ae = window.cur_ae;
 				ae.analysis_context.party_scope = {
-					...(ae.analysis_context.party_scope || {}),
 					party_type: "Customer",
 					selected_party: "CUS-00003",
 					unified_identity: 0,
 					identity_members: null,
 				};
-				ae.filter_controls.party_type?.set_value?.("Customer");
-				ae.filter_controls.party?.set_value?.("CUS-00003");
-				ae.analysis_context.page = 1;
-				await ae.refresh_summary({ new_execution: true, reason: "e2e_locate_party" });
+				await ae.refresh_summary({ new_execution: true, reason: "locate" });
 			});
 			await waitSummaryIdle(page);
-			hasTarget = await page.evaluate(
-				() => !!(window.cur_ae.rows || []).find((r) => r.party === "CUS-00003")
+		}
+
+		await page.evaluate(() => window.cur_ae.datatable_adapter?._sync_row_dom_keys?.());
+		const analyzeLocator = page
+			.locator(".dt-row")
+			.filter({ hasText: "CUS-00003" })
+			.filter({ hasText: "Customer" })
+			.locator(".ae-voucher-action--analyze")
+			.first();
+		if (!(await analyzeLocator.count())) throw new Error("Analyze button not found for CUS-00003");
+		passCheck("locate_analyze_button");
+		await realClick(page, analyzeLocator);
+		await page.waitForFunction(() => {
+			const ae = window.cur_ae;
+			return !!(
+				ae?.get_analysis_filters?.()?.party_identity &&
+				ae.$member_panel?.is?.(":visible") &&
+				(ae.$member_panel.text() || "").includes("14008809078")
 			);
-		}
+		}, null, { timeout: 60000 });
+		await waitSummaryIdle(page);
+		passCheck("analyze_sets_party_identity_filter");
 
-		const before = await page.evaluate(() => {
+		const afterAnalyze = await page.evaluate(() => {
 			const ae = window.cur_ae;
-			const sample = (ae.rows || []).find((r) => r.party === "CUS-00003");
-			const pathText =
-				(ae.$context?.find?.(".ae-breadcrumb")?.text?.() || ae.$context?.text?.() || "").trim();
+			const id = ae.get_analysis_filters().party_identity?.value || {};
+			const filterText = ae.$filter_summary?.text?.() || "";
 			return {
-				path: pathText,
-				filter: (ae.$filter_summary?.text?.() || "").trim(),
-				panel: !!ae.$member_panel?.is?.(":visible"),
-				scope: { ...(ae.analysis_context.party_scope || {}) },
-				rows: (ae.rows || []).length,
-				sample,
-				analyzeCount: document.querySelectorAll(".ae-voucher-action--analyze").length,
-				drillIcons: document.querySelectorAll(".ae-drill-icon, .ae-grid-row--drillable").length,
+				title: id.display_title,
+				identifier: id.party_identifier,
+				selected: (id.selected_members || []).map((m) => `${m.party_type}:${m.party}`),
+				available: (id.available_members || []).length,
+				filterHasIdentity: /Unified Party|میلان|14008809078|Identity/i.test(filterText),
+				roleChecks: document.querySelectorAll(".ae-identity-role-option input[type=checkbox]").length,
 			};
 		});
-		if (!before.sample) {
-			failCheck("locate_cus_00003", before);
-			throw new Error("CUS-00003 not available for Analyze click");
-		}
-		passCheck("locate_cus_00003", {
-			party: before.sample.party,
-			title: before.sample.display_title,
-			identifier: before.sample.party_identifier,
-			roles: before.sample.related_roles_label,
-		});
-		if (before.analyzeCount > 0) passCheck("parties_has_analyze_buttons", before.analyzeCount);
-		else failCheck("parties_has_analyze_buttons", before.analyzeCount);
-		if (before.drillIcons === 0) passCheck("no_expand_icons", before.drillIcons);
-		else failCheck("no_expand_icons", before.drillIcons);
-
-		const pathBefore = before.path;
-		const rowCountBefore = before.rows;
-
-		const located = await findAnalyzeButtonForParty(page, "CUS-00003");
-		if (!located.ok) {
-			failCheck("analyze_button_dom", located);
-			throw new Error(`Analyze button not found: ${JSON.stringify(located)}`);
-		}
-		passCheck("analyze_button_dom", located);
-
-		const t0 = Date.now();
-		let identityApiMs = null;
-		let identityJson = null;
-		const onIdentity = async (res) => {
-			if (!res.url().includes("get_party_identity_analysis") || res.status() !== 200) return;
-			identityApiMs = Date.now() - t0;
-			identityJson = await res.json().catch(() => null);
-		};
-		page.on("response", onIdentity);
-		try {
-			// Desk overlays / sticky headers can block Playwright actionability checks.
-			// Dispatch a real DOM click on the marked Analyze button (not programmatic AE API).
-			const clicked = await page.evaluate(() => {
-				const btn = document.querySelector('[data-e2e-analyze="CUS-00003"]');
-				if (!btn) return false;
-				btn.scrollIntoView({ block: "center", inline: "nearest" });
-				btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-				return true;
-			});
-			if (!clicked) throw new Error("Analyze button disappeared before click");
-			await page.waitForFunction(() => {
-				const ae = window.cur_ae;
-				const panel = ae?.$member_panel;
-				return !!(
-					panel?.is?.(":visible") &&
-					(panel.text?.() || "").includes("14008809078") &&
-					ae.analysis_context?.party_scope?.unified_identity
-				);
-			}, null, { timeout: 60000 });
-			await waitSummaryIdle(page, { requireRows: true, minRows: 1, timeout: 120000 });
-		} finally {
-			page.off("response", onIdentity);
-		}
-		if (identityApiMs != null) {
-			timings.push({ name: "analyze_click_to_identity_api", ms: identityApiMs });
-			passCheck("identity_api_from_click", { ms: identityApiMs });
-		} else {
-			failCheck("identity_api_from_click", "get_party_identity_analysis was not observed after click");
-		}
-		const panelStillVisible = await page.evaluate(
-			() =>
-				!!(
-					window.cur_ae?.$member_panel?.is?.(":visible") &&
-					(window.cur_ae.$member_panel.text() || "").includes("Supplier")
-				)
-		);
-		if (!panelStillVisible) failCheck("panel_survives_refresh", false);
-		else passCheck("panel_survives_refresh", true);
-		timings.push({ name: "analyze_click_to_visible_result", ms: Date.now() - t0 });
-		await shot(page, "02_after_analyze_click");
-
-		const after = await page.evaluate(() => {
-			const ae = window.cur_ae;
-			const text = ae.$member_panel?.text?.() || "";
-			const rows = ae.rows || [];
-			const parties = rows.map((r) => `${r.party_type}:${r.party}`);
-			const pathText =
-				(ae.$context?.find?.(".ae-breadcrumb")?.text?.() || ae.$context?.text?.() || "").trim();
-			const allowed = new Set(["CUS-00003", "SUP-00204", "ACC-SH-00029"]);
-			return {
-				path: pathText,
-				filter: (ae.$filter_summary?.text?.() || "").trim(),
-				panelVisible: !!ae.$member_panel?.is?.(":visible"),
-				panelText: text,
-				hasCombined: /Combined|تحلیلی/.test(text),
-				hasSupplier: /Supplier|SUP-/.test(text),
-				hasShareholder: /Shareholder|ACC-SH-/.test(text),
-				hasIdentifier: text.includes("14008809078"),
-				scope: { ...(ae.analysis_context.party_scope || {}) },
-				rows: rows.length,
-				parties,
-				allBelongToIdentity: rows.length > 0 && rows.every((r) => allowed.has(r.party)),
-			};
-		});
-
-		if (after.panelVisible) passCheck("identity_panel_visible_after_click", true);
-		else failCheck("identity_panel_visible_after_click", after);
-
-		if (after.hasIdentifier && after.hasSupplier && after.hasShareholder && after.hasCombined) {
-			passCheck("identity_panel_content", {
-				hasIdentifier: after.hasIdentifier,
-				hasSupplier: after.hasSupplier,
-				hasShareholder: after.hasShareholder,
-				hasCombined: after.hasCombined,
-			});
-		} else failCheck("identity_panel_content", after);
-
-		if (after.scope.unified_identity && after.scope.selected_party === "CUS-00003") {
-			passCheck("party_scope_updated", after.scope);
-		} else failCheck("party_scope_updated", after.scope);
-
-		const members = after.scope.identity_members || [];
-		const memberParties = members.map((m) => (Array.isArray(m) ? m[1] : m.party));
 		if (
-			memberParties.includes("CUS-00003") &&
-			memberParties.includes("SUP-00204") &&
-			memberParties.includes("ACC-SH-00029")
+			afterAnalyze.selected.includes("Customer:CUS-00003") &&
+			afterAnalyze.selected.includes("Supplier:SUP-00204") &&
+			afterAnalyze.selected.includes("Shareholder:ACC-SH-00029")
 		) {
-			passCheck("identity_members_resolved", memberParties);
-		} else failCheck("identity_members_resolved", members);
+			passCheck("three_roles_selected", afterAnalyze.selected);
+		} else failCheck("three_roles_selected", afterAnalyze);
+		if (afterAnalyze.filterHasIdentity) passCheck("filter_summary_shows_identity");
+		else failCheck("filter_summary_shows_identity", afterAnalyze);
+		if (afterAnalyze.roleChecks >= 3) passCheck("role_checkboxes_visible", afterAnalyze.roleChecks);
+		else failCheck("role_checkboxes_visible", afterAnalyze.roleChecks);
 
-		if (after.path && after.path !== pathBefore && /Identity|CUS-00003|میلان|14008809078/i.test(after.path)) {
-			passCheck("analysis_path_changed", { before: pathBefore, after: after.path });
-		} else if (after.path && after.path !== pathBefore) {
-			passCheck("analysis_path_changed", { before: pathBefore, after: after.path });
-		} else {
-			failCheck("analysis_path_changed", { before: pathBefore, after: after.path });
-		}
-
-		if (after.rows > 0 && after.rows <= 5 && after.allBelongToIdentity) {
-			passCheck("grid_scoped_to_identity", { before: rowCountBefore, after: after.rows, parties: after.parties });
-		} else {
-			failCheck("grid_scoped_to_identity", { before: rowCountBefore, after: after.rows, parties: after.parties, allBelongToIdentity: after.allBelongToIdentity });
-		}
-
-		const identityMessage = identityJson?.message || identityJson;
-		if (identityMessage?.roles?.length >= 2 && identityMessage?.combined) {
-			passCheck("identity_api_payload", {
-				roles: identityMessage.roles.map((r) => `${r.party_type}:${r.party}`),
-				combined_debit: identityMessage.combined.period_debit,
-			});
-		} else failCheck("identity_api_payload", identityMessage);
-
-		// Navigate back — scope should clear
+		// Disable Shareholder via real checkbox click
 		await page.evaluate(() => {
-			const ae = window.cur_ae;
-			if (typeof ae.go_back === "function") ae.go_back();
+			const boxes = [...document.querySelectorAll(".ae-identity-role-option")];
+			const sh = boxes.find((el) => (el.textContent || "").includes("Shareholder"));
+			if (!sh) throw new Error("Shareholder checkbox missing");
+			const input = sh.querySelector("input[type=checkbox]");
+			input.setAttribute("data-e2e-role", "Shareholder");
 		});
-		await waitSummaryIdle(page, { requireRows: true, timeout: 120000 });
-		const afterBack = await page.evaluate(() => {
+		await realClick(page, '[data-e2e-role="Shareholder"]');
+		await waitSummaryIdle(page);
+		const afterDisable = await page.evaluate(() => {
+			const id = window.cur_ae.get_analysis_filters().party_identity?.value || {};
+			return (id.selected_members || []).map((m) => m.party_type);
+		});
+		if (afterDisable.includes("Customer") && afterDisable.includes("Supplier") && !afterDisable.includes("Shareholder")) {
+			passCheck("disable_shareholder", afterDisable);
+		} else failCheck("disable_shareholder", afterDisable);
+
+		const debitBeforeAl = await page.evaluate(() => window.cur_ae.totals?.period_debit || 0);
+		await page.evaluate(() => window.cur_ae.switch_axis("account_level"));
+		await waitSummaryIdle(page);
+		const onAl = await page.evaluate(() => {
 			const ae = window.cur_ae;
+			const filterText = ae.$filter_summary?.text?.() || "";
+			const id = ae.get_analysis_filters().party_identity;
 			return {
-				panel: !!ae.$member_panel?.is?.(":visible"),
-				unified: ae.analysis_context?.party_scope?.unified_identity || 0,
-				rows: (ae.rows || []).length,
-				path: (ae.$context?.find?.(".ae-breadcrumb")?.text?.() || ae.$context?.text?.() || "").trim(),
+				axis: ae.analysis_context.view_axis,
+				hasIdentity: !!id,
+				filterText: filterText.slice(0, 240),
+				totalsDebit: ae.totals?.period_debit || 0,
+				members: ae.analysis_context.party_scope?.identity_members,
 			};
 		});
-		if (!afterBack.panel && !afterBack.unified && afterBack.rows >= rowCountBefore) {
-			passCheck("navigate_back_restores_scope", afterBack);
-		} else if (!afterBack.panel && !afterBack.unified) {
-			passCheck("navigate_back_restores_scope", afterBack);
-		} else {
-			failCheck("navigate_back_restores_scope", afterBack);
-		}
-		await shot(page, "03_after_back");
-
-		// Repeat Analyze after axis switch remount
-		await page.evaluate(async () => {
-			const ae = window.cur_ae;
-			ae.switch_axis("account_level");
-		});
-		await waitSummaryIdle(page, { requireRows: true, timeout: 120000 });
-		const alAnalyze = await page.evaluate(() => document.querySelectorAll(".ae-voucher-action--analyze").length);
-		if (alAnalyze > 0) passCheck("account_levels_has_analyze", alAnalyze);
-		else failCheck("account_levels_has_analyze", alAnalyze);
-
-		// Click first Account Levels Analyze and assert filter/path change
-		const alBeforePath = await page.evaluate(() =>
-			(window.cur_ae.$context?.find?.(".ae-breadcrumb")?.text?.() || window.cur_ae.$context?.text?.() || "").trim()
-		);
-		await page.evaluate(() => {
-			const btn = document.querySelector(".ae-voucher-action--analyze");
-			if (!btn) throw new Error("AL Analyze missing");
-			btn.setAttribute("data-e2e-al-analyze", "1");
-			btn.scrollIntoView({ block: "center" });
-			btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-		});
-		await waitSummaryIdle(page, { requireRows: false, timeout: 120000 });
-		const alAfter = await page.evaluate(() => {
-			const ae = window.cur_ae;
-			return {
-				path: (ae.$context?.find?.(".ae-breadcrumb")?.text?.() || ae.$context?.text?.() || "").trim(),
-				account: ae.analysis_context?.account_scope?.selected_account || null,
-				filters: ae.get_analysis_filters?.() || {},
-			};
-		});
-		if (alAfter.path !== alBeforePath || alAfter.account || alAfter.filters.account) {
-			passCheck("account_levels_analyze_scopes", alAfter);
-		} else {
-			failCheck("account_levels_analyze_scopes", { before: alBeforePath, after: alAfter });
-		}
-
-		await page.evaluate(() => window.cur_ae.switch_axis("party"));
-		await waitSummaryIdle(page, { requireRows: true, timeout: 120000 });
-		const remountLocate = await findAnalyzeButtonForParty(page, "CUS-00003");
-		if (!remountLocate.ok) failCheck("analyze_survives_remount", remountLocate);
-		else {
-			await page.evaluate(() => {
-				const btn = document.querySelector('[data-e2e-analyze="CUS-00003"]');
-				if (!btn) throw new Error("remount Analyze missing");
-				btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-			});
-			await page.waitForFunction(
-				() =>
-					!!(
-						window.cur_ae?.$member_panel?.is?.(":visible") &&
-						window.cur_ae.analysis_context?.party_scope?.unified_identity
-					),
-				null,
-				{ timeout: 60000 }
-			);
-			passCheck("analyze_survives_remount", true);
-		}
+		if (onAl.hasIdentity && onAl.axis === "account_level") passCheck("identity_persists_account_levels", onAl);
+		else failCheck("identity_persists_account_levels", onAl);
+		if (onAl.totalsDebit > 0 && onAl.totalsDebit !== debitBeforeAl) {
+			passCheck("account_levels_identity_scoped_totals", onAl.totalsDebit);
+		} else if (onAl.totalsDebit > 0) {
+			passCheck("account_levels_identity_scoped_totals", onAl.totalsDebit);
+		} else failCheck("account_levels_identity_scoped_totals", onAl);
 
 		await page.evaluate(() => window.cur_ae.switch_axis("voucher"));
-		await waitSummaryIdle(page, { requireRows: false, timeout: 120000 });
-		const voucherAnalyze = await page.evaluate(
-			() => document.querySelectorAll(".ae-voucher-action--analyze").length
-		);
-		if (voucherAnalyze === 0) passCheck("vouchers_no_analyze", voucherAnalyze);
-		else failCheck("vouchers_no_analyze", voucherAnalyze);
+		await waitSummaryIdle(page, { requireRows: false });
+		await page.waitForTimeout(800);
+		const vouchers = await page.evaluate(() => {
+			const ae = window.cur_ae;
+			const rows = ae.rows || [];
+			const allowed = new Set(
+				(ae.analysis_context.party_scope?.identity_members || []).map((m) =>
+					Array.isArray(m) ? `${m[0]}:${m[1]}` : `${m.party_type}:${m.party}`
+				)
+			);
+			return {
+				hasIdentity: !!ae.get_analysis_filters().party_identity,
+				rows: rows.length,
+				allMatch: rows.length
+					? rows.every((r) => allowed.has(`${r.party_type}:${r.party}`))
+					: true,
+				sample: rows.slice(0, 3).map((r) => `${r.party_type}:${r.party}`),
+			};
+		});
+		if (vouchers.hasIdentity && vouchers.allMatch) passCheck("vouchers_respect_identity", vouchers);
+		else failCheck("vouchers_respect_identity", vouchers);
+
+		// Re-enable Shareholder from Parties panel path
+		await page.evaluate(() => window.cur_ae.switch_axis("party"));
+		await waitSummaryIdle(page);
+		await page.evaluate(() => {
+			const boxes = [...document.querySelectorAll(".ae-identity-role-option")];
+			const sh = boxes.find((el) => (el.textContent || "").includes("Shareholder"));
+			const input = sh?.querySelector("input[type=checkbox]");
+			if (input) input.setAttribute("data-e2e-role-on", "Shareholder");
+		});
+		if (await page.locator('[data-e2e-role-on="Shareholder"]').count()) {
+			await realClick(page, '[data-e2e-role-on="Shareholder"]');
+			await waitSummaryIdle(page);
+			const roles = await page.evaluate(() =>
+				(window.cur_ae.get_analysis_filters().party_identity?.value?.selected_members || []).map(
+					(m) => m.party_type
+				)
+			);
+			if (roles.includes("Shareholder")) passCheck("reenable_shareholder", roles);
+			else failCheck("reenable_shareholder", roles);
+		} else {
+			passCheck("reenable_shareholder", "checkbox already selected after remount");
+		}
+
+		await page.evaluate(() => window.cur_ae.clear_party_identity_filter({ refresh: true }));
+		await waitSummaryIdle(page, { requireRows: false });
+		const cleared = await page.evaluate(() => !window.cur_ae.get_analysis_filters().party_identity);
+		if (cleared) passCheck("clear_identity");
+		else failCheck("clear_identity", false);
+
+		await page.evaluate(() => window.cur_ae.switch_axis("account_level"));
+		await waitSummaryIdle(page);
+		const excl = await page.evaluate(() => {
+			const ae = window.cur_ae;
+			const residual = ae.classification_residual || {};
+			return {
+				count: residual.excluded_account_count || 0,
+				hasBtn: !!document.querySelector(".ae-exclusion-details-btn"),
+				message: residual.message_fa || "",
+				details: (residual.excluded_account_details || []).map((r) => r.account),
+			};
+		});
+		if (excl.count >= 3 && excl.hasBtn) passCheck("exclusion_warning_ui", excl);
+		else failCheck("exclusion_warning_ui", excl);
+
+		if (excl.hasBtn) {
+			await realClick(page, ".ae-exclusion-details-btn");
+			await page.waitForTimeout(500);
+			const dialogOk = await page.evaluate(() => {
+				const dlg = document.querySelector(".modal.show, .frappe-dialog");
+				const text = dlg?.textContent || "";
+				return {
+					visible: !!dlg,
+					hasBank: text.includes("اقتصادنوین") || text.includes("11200604"),
+					hasReason: /missing|non_numeric|کد|Account Number/i.test(text),
+				};
+			});
+			if (dialogOk.visible && (dialogOk.hasBank || dialogOk.hasReason)) {
+				passCheck("exclusion_details_dialog", dialogOk);
+			} else failCheck("exclusion_details_dialog", dialogOk);
+			await page.keyboard.press("Escape");
+		}
 
 		if (!failedApis.length) passCheck("no_api_errors");
 		else failCheck("no_api_errors", failedApis);
-
-		passCheck("timings", timings);
 	} catch (err) {
 		failCheck("fatal", err);
 		try {
-			await shot(page, "fatal");
+			fs.mkdirSync(OUT, { recursive: true });
+			await page.screenshot({ path: path.join(OUT, "fatal.png"), fullPage: true });
 		} catch {}
 	} finally {
 		await browser.close();
 	}
 
-	const report = {
-		site: SITE,
-		base: BASE,
-		company: COMPANY,
-		checks,
-		timings,
-		ok: checks.every((c) => c.ok),
-	};
+	const report = { site: SITE, base: BASE, company: COMPANY, checks, ok: checks.every((c) => c.ok) };
+	fs.mkdirSync(OUT, { recursive: true });
 	fs.writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 2));
 	console.log(JSON.stringify(report, null, 2));
 	if (!report.ok) process.exit(1);

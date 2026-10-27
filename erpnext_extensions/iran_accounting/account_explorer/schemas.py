@@ -79,10 +79,15 @@ class PartyScope:
 	party_name_query: str | None = None
 	# Text search against configured Identifier Field values.
 	identifier_query: str | None = None
-	# When 1, expand selected party / identifier to all related roles.
+	# When 1, apply persistent Unified Party identity OR-tuple filter.
 	unified_identity: bool = False
-	# Explicit member tuples from Party Analyze (party_type, party).
+	# Currently selected (party_type, party) tuples — OR predicate for GL.
 	identity_members: list[tuple[str, str]] | None = None
+	# Full related-role catalog for the identity (editable role checkboxes).
+	identity_available_members: list[dict] | None = None
+	# Display metadata for Filter Summary / role editor.
+	identity_display_title: str | None = None
+	identity_identifier: str | None = None
 
 
 @dataclass

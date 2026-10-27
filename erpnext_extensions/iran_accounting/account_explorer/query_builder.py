@@ -202,29 +202,51 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	result["level_title"] = level.title
 
 	finalize_measures(classification_residual)
+	from erpnext_extensions.iran_accounting.account_explorer.classification_exclusions import (
+		build_classification_reconciliation,
+		enrich_excluded_account_rows,
+		persian_exclusion_message,
+	)
+
+	enriched_excluded = enrich_excluded_account_rows(spec.company, excluded_unclassified_accounts)
+	included_totals = result.get("totals") or zero_measures()
+	reconciliation = build_classification_reconciliation(
+		included_totals=included_totals,
+		excluded_residual=classification_residual,
+	)
+	# Cap detail payload; typical residual is a handful of accounts.
+	detail_rows = enriched_excluded[:50]
 	result["classification_residual"] = {
-		"excluded_account_count": len(excluded_unclassified_accounts),
-		"excluded_accounts": excluded_unclassified_accounts[:50],
+		"excluded_account_count": len(enriched_excluded),
+		"excluded_accounts": [
+			{
+				"account": row["account"],
+				"account_number": row.get("account_number"),
+				"account_name": row.get("account_name"),
+				"reason": row.get("reason"),
+				"period_debit": row.get("period_debit"),
+				"period_credit": row.get("period_credit"),
+			}
+			for row in detail_rows
+		],
+		# Full enriched rows for the details dialog (same scope; no second GL scan).
+		"excluded_account_details": detail_rows,
 		"period_debit": flt(classification_residual.get("period_debit")),
 		"period_credit": flt(classification_residual.get("period_credit")),
 		"net_balance": flt(classification_residual.get("net_balance")),
+		"debit_balance": flt(classification_residual.get("debit_balance")),
+		"credit_balance": flt(classification_residual.get("credit_balance")),
+		"reconciliation": reconciliation,
+		"message_fa": persian_exclusion_message(len(enriched_excluded)) if enriched_excluded else None,
 		"note": (
 			"Accounts with missing/non-numeric account_number are excluded from "
-			"visible Account hierarchy rows and analytical totals (v5.1.1)."
+			"visible Account hierarchy rows. Included + Excluded = Full Scope "
+			"for additive measures (period debit/credit, net_balance)."
 		),
 	}
-	if excluded_unclassified_accounts and row_has_activity(classification_residual):
+	if enriched_excluded and row_has_activity(classification_residual):
 		warnings = list(result.get("warnings") or [])
-		warnings.append(
-			_(
-				"Excluded {0} account(s) with missing or non-numeric account codes "
-				"from Account hierarchy (residual Debit {1} / Credit {2})."
-			).format(
-				len(excluded_unclassified_accounts),
-				flt(classification_residual.get("period_debit")),
-				flt(classification_residual.get("period_credit")),
-			)
-		)
+		warnings.append(persian_exclusion_message(len(enriched_excluded)))
 		result["warnings"] = sorted(set(warnings))
 
 	from erpnext_extensions.iran_accounting.account_explorer.sle_scoped_account import (
@@ -272,15 +294,21 @@ def _accumulate_unclassified_residual(
 	if not row_has_activity(measures):
 		return
 	add_measures(residual, measures)
-	excluded.append(
-		{
-			"account": account_name,
-			"account_number": account_number,
-			"reason": reason,
-			"period_debit": flt(measures.get("period_debit")),
-			"period_credit": flt(measures.get("period_credit")),
-		}
-	)
+	row = {
+		"account": account_name,
+		"account_number": account_number,
+		"reason": reason,
+		"opening_debit": flt(measures.get("opening_debit")),
+		"opening_credit": flt(measures.get("opening_credit")),
+		"period_debit": flt(measures.get("period_debit")),
+		"period_credit": flt(measures.get("period_credit")),
+		"closing_debit": flt(measures.get("closing_debit")),
+		"closing_credit": flt(measures.get("closing_credit")),
+		"net_balance": flt(measures.get("net_balance")),
+		"debit_balance": flt(measures.get("debit_balance")),
+		"credit_balance": flt(measures.get("credit_balance")),
+	}
+	excluded.append(row)
 
 
 def _finalize_group_rows(groups: dict, level, accounts: list[dict], configured_lengths: set[int]) -> None:

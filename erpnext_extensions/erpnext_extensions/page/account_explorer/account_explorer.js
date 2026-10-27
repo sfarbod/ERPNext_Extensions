@@ -596,7 +596,28 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				tree_root_account: null,
 			};
 		}
-		if (!filters.party) {
+		if (filters.party_identity) {
+			const value =
+				typeof filters.party_identity.value === "object"
+					? filters.party_identity.value
+					: { display_title: filters.party_identity.value };
+			const selected = Array.isArray(value.selected_members) ? value.selected_members : [];
+			const available = Array.isArray(value.available_members) ? value.available_members : selected;
+			this.analysis_context.party_scope = {
+				...(this.analysis_context.party_scope || {}),
+				party_type: value.seed_party_type || selected[0]?.party_type || null,
+				selected_party: value.seed_party || selected[0]?.party || null,
+				party_name_query: null,
+				identifier_query: value.party_identifier || null,
+				unified_identity: 1,
+				identity_members: selected
+					.filter((m) => m && (Array.isArray(m) ? m[0] && m[1] : m.party_type && m.party))
+					.map((m) => (Array.isArray(m) ? { party_type: m[0], party: m[1] } : m)),
+				identity_available_members: available,
+				identity_display_title: value.display_title || null,
+				identity_identifier: value.party_identifier || null,
+			};
+		} else if (!filters.party) {
 			this.analysis_context.party_scope = {
 				party_type: null,
 				selected_party: null,
@@ -604,6 +625,20 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				identifier_query: null,
 				unified_identity: 0,
 				identity_members: null,
+				identity_available_members: null,
+				identity_display_title: null,
+				identity_identifier: null,
+			};
+			this.hide_member_panel?.();
+		} else {
+			// Simple party chip — do not keep a stale multi-role identity.
+			this.analysis_context.party_scope = {
+				...(this.analysis_context.party_scope || {}),
+				unified_identity: 0,
+				identity_members: null,
+				identity_available_members: null,
+				identity_display_title: null,
+				identity_identifier: null,
 			};
 		}
 		if (!filters.unified_party) {
@@ -2574,28 +2609,51 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			party_type: this.filter_controls.party_type?.get_value() || null,
 			party: ae_normalize_multi_value(this.filter_controls.party?.get_value()),
 		};
-		// Parties-axis identity filters (also usable while on Parties).
-		const party_values = ae_normalize_multi_value(this.filter_controls.party?.get_value());
-		const selected_party = Array.isArray(party_values)
-			? party_values[0] || null
-			: party_values || null;
-		this.analysis_context.party_scope = {
-			...(this.analysis_context.party_scope || {}),
-			party_type: this.filter_controls.party_type?.get_value() || null,
-			selected_party: selected_party,
-			party_name_query: this.filter_controls.party_name_query?.get_value() || null,
-			identifier_query: this.filter_controls.identifier_query?.get_value() || null,
-			unified_identity: this.filter_controls.unified_identity?.get_value() ? 1 : 0,
-			// Keep Analyze-selected members until the user clears Unified Identity / party filters.
-			identity_members: this.analysis_context.party_scope?.identity_members || null,
-		};
-		if (
-			!this.analysis_context.party_scope.unified_identity &&
-			!this.analysis_context.party_scope.selected_party &&
-			!this.analysis_context.party_scope.identifier_query
-		) {
-			this.analysis_context.party_scope.identity_members = null;
-			this.hide_member_panel();
+		// Persistent Unified Party identity lives in analysis_filters.party_identity.
+		if (this.get_analysis_filters().party_identity) {
+			const filters = this.get_analysis_filters();
+			const value =
+				typeof filters.party_identity.value === "object"
+					? filters.party_identity.value
+					: { display_title: filters.party_identity.value };
+			const selected = Array.isArray(value.selected_members) ? value.selected_members : [];
+			this.analysis_context.party_scope = {
+				...(this.analysis_context.party_scope || {}),
+				party_type: value.seed_party_type || selected[0]?.party_type || null,
+				selected_party: value.seed_party || selected[0]?.party || null,
+				party_name_query: this.filter_controls.party_name_query?.get_value() || null,
+				identifier_query: value.party_identifier || null,
+				unified_identity: 1,
+				identity_members: selected,
+				identity_available_members: value.available_members || [],
+				identity_display_title: value.display_title || null,
+				identity_identifier: value.party_identifier || null,
+			};
+		} else {
+			const party_values = ae_normalize_multi_value(this.filter_controls.party?.get_value());
+			const selected_party = Array.isArray(party_values)
+				? party_values[0] || null
+				: party_values || null;
+			this.analysis_context.party_scope = {
+				...(this.analysis_context.party_scope || {}),
+				party_type: this.filter_controls.party_type?.get_value() || null,
+				selected_party: selected_party,
+				party_name_query: this.filter_controls.party_name_query?.get_value() || null,
+				identifier_query: this.filter_controls.identifier_query?.get_value() || null,
+				unified_identity: this.filter_controls.unified_identity?.get_value() ? 1 : 0,
+				identity_members: this.analysis_context.party_scope?.identity_members || null,
+				identity_available_members: null,
+				identity_display_title: null,
+				identity_identifier: null,
+			};
+			if (
+				!this.analysis_context.party_scope.unified_identity &&
+				!this.analysis_context.party_scope.selected_party &&
+				!this.analysis_context.party_scope.identifier_query
+			) {
+				this.analysis_context.party_scope.identity_members = null;
+				this.hide_member_panel();
+			}
 		}
 		const accounting_dimensions = {};
 		Object.entries(this.filter_controls.dimensions || {}).forEach(([fieldname, control]) => {
@@ -5080,6 +5138,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.totals_currency = data.totals_currency || data.currency?.code || this.currency_code;
 			this.pagination = data.pagination || this.pagination;
 			this.warnings = data.warnings || [];
+			this.classification_residual = data.classification_residual || null;
 			this.account_fact_engine = data.account_fact_engine || null;
 			this.construction_meta = {
 				ready: data.construction_ready,
@@ -7030,55 +7089,184 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			freeze_message: __("Loading related Party roles…"),
 			callback: (r) => {
 				const data = r.message || {};
+				const roles = data.roles || [];
 				const members = (data.member_tuples || []).map((pair) =>
 					Array.isArray(pair)
 						? { party_type: pair[0], party: pair[1] }
 						: { party_type: pair.party_type, party: pair.party }
 				);
+				const available = roles.length
+					? roles.map((role) => ({
+							party_type: role.party_type,
+							party: role.party || role.display_code,
+							display_title: role.display_title || role.party || role.display_code,
+							party_identifier: role.party_identifier || data.identity?.party_identifier,
+					  }))
+					: members.map((m) => ({
+							...m,
+							display_title: m.party,
+							party_identifier: data.identity?.party_identifier,
+					  }));
 				const identity = data.identity || {};
 				const label =
 					identity.display_title ||
 					row.display_title ||
 					row.party ||
 					__("Party Identity");
-				this.analysis_context.party_scope = {
-					...(this.analysis_context.party_scope || {}),
-					party_type: row.party_type,
-					selected_party: row.party,
-					unified_identity: 1,
-					identity_members: members,
-					identifier_query: identity.party_identifier || row.party_identifier || null,
-				};
-				// Keep filter controls aligned so Apply / sync does not wipe Analyze scope.
-				this.filter_controls.unified_identity?.set_value?.(1);
-				this.filter_controls.party_type?.set_value?.(row.party_type || "");
-				this.filter_controls.party?.set_value?.(row.party || "");
-				if (identity.party_identifier || row.party_identifier) {
-					this.filter_controls.identifier_query?.set_value?.(
-						identity.party_identifier || row.party_identifier
-					);
-				}
-				this.push_breadcrumb({
-					label: __("Identity: {0}", [label]),
-					axis: "party",
-					party_type: row.party_type,
-					selected_party: row.party,
-					unified_identity: 1,
-					identity_members: members,
-					party_identifier: identity.party_identifier || row.party_identifier || null,
+				const identifier = identity.party_identifier || row.party_identifier || null;
+				this.apply_party_identity_filter({
+					display_title: label,
+					party_identifier: identifier,
+					available_members: available,
+					selected_members: available.map((m) => ({
+						party_type: m.party_type,
+						party: m.party,
+					})),
+					seed_party_type: row.party_type,
+					seed_party: row.party,
+					identity_panel_data: data,
+					seed_row: row,
 				});
-				this.render_party_identity_panel(row, data);
-				this.render_breadcrumbs();
-				this.render_filter_summary();
-				this.update_context_actions();
-				this._sync_store_context({ emit: true });
-				this.schedule_workspace_url_update({ push: true });
-				this.analysis_context.page = 1;
-				this.announce_grid_status(
-					__("Party identity analysis ready — related roles listed without merging GL balances")
-				);
-				this.refresh_summary({ new_execution: true, reason: "party_identity_analyze" });
 			},
+		});
+	}
+
+	apply_party_identity_filter({
+		display_title,
+		party_identifier,
+		available_members,
+		selected_members,
+		seed_party_type = null,
+		seed_party = null,
+		identity_panel_data = null,
+		seed_row = null,
+		refresh = true,
+	} = {}) {
+		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+		const available = available_members || [];
+		const selected = (selected_members || []).filter((m) => m?.party_type && m?.party);
+		if (!selected.length) {
+			this.clear_party_identity_filter({ refresh });
+			return;
+		}
+		const label = display_title || seed_party || __("Party Identity");
+		this.analysis_context.party_scope = {
+			...(this.analysis_context.party_scope || {}),
+			party_type: seed_party_type || selected[0].party_type,
+			selected_party: seed_party || selected[0].party,
+			unified_identity: 1,
+			identity_members: selected,
+			identity_available_members: available,
+			identity_display_title: label,
+			identity_identifier: party_identifier || null,
+			identifier_query: party_identifier || null,
+		};
+		let bag = this.get_analysis_filters();
+		bag = AF.remove_entry(bag, "party");
+		bag = AF.set_entry(
+			bag,
+			{
+				key: "party_identity",
+				value: {
+					display_title: label,
+					party_identifier: party_identifier || null,
+					available_members: available,
+					selected_members: selected,
+					seed_party_type: seed_party_type || selected[0].party_type,
+					seed_party: seed_party || selected[0].party,
+				},
+				origin: "drill_graph",
+				lifetime: "session",
+				removable: true,
+				meta: { display_label: label },
+			},
+			{ key: "party_identity", origin: "drill_graph", lifetime: "session" }
+		);
+		this.set_analysis_filters_bag(bag, { silent: true });
+		this.filter_controls.unified_identity?.set_value?.(1);
+		if (party_identifier) {
+			this.filter_controls.identifier_query?.set_value?.(party_identifier);
+		}
+		this.push_breadcrumb({
+			label: __("Identity: {0}", [label]),
+			axis: "party",
+			party_type: seed_party_type || selected[0].party_type,
+			selected_party: seed_party || selected[0].party,
+			unified_identity: 1,
+			identity_members: selected,
+			party_identifier: party_identifier || null,
+		});
+		if (identity_panel_data) {
+			this.render_party_identity_panel(seed_row || selected[0], identity_panel_data);
+		} else {
+			this.render_party_identity_role_editor();
+		}
+		this.render_breadcrumbs();
+		this.render_filter_summary();
+		this.update_context_actions();
+		this._sync_store_context({ emit: true });
+		this.schedule_workspace_url_update({ push: true });
+		this.analysis_context.page = 1;
+		this.announce_grid_status(
+			__("Party identity analysis ready — related roles listed without merging GL balances")
+		);
+		if (refresh) {
+			this.refresh_summary({ new_execution: true, reason: "party_identity_analyze" });
+		}
+	}
+
+	clear_party_identity_filter({ refresh = true } = {}) {
+		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+		this.set_analysis_filters_bag(AF.remove_entry(this.get_analysis_filters(), "party_identity"), {
+			silent: true,
+		});
+		this.analysis_context.party_scope = {
+			...(this.analysis_context.party_scope || {}),
+			unified_identity: 0,
+			identity_members: null,
+			identity_available_members: null,
+			identity_display_title: null,
+			identity_identifier: null,
+			identifier_query: null,
+			selected_party: null,
+			party_type: null,
+		};
+		this.filter_controls.unified_identity?.set_value?.(0);
+		this.hide_member_panel();
+		this.render_filter_summary();
+		this._sync_store_context({ emit: true });
+		if (refresh) {
+			this.analysis_context.page = 1;
+			this.refresh_summary({ new_execution: true, reason: "party_identity_cleared" });
+		}
+	}
+
+	set_party_identity_role_selection(party_type, party, enabled) {
+		const entry = this.get_analysis_filters().party_identity;
+		if (!entry?.value) {
+			return;
+		}
+		const value = { ...entry.value };
+		const available = Array.isArray(value.available_members) ? value.available_members : [];
+		let selected = Array.isArray(value.selected_members) ? [...value.selected_members] : [];
+		const key = `${party_type}::${party}`;
+		selected = selected.filter((m) => `${m.party_type}::${m.party}` !== key);
+		if (enabled) {
+			selected.push({ party_type, party });
+		}
+		if (!selected.length) {
+			frappe.msgprint(__("At least one role must remain selected, or clear the Unified Party filter."));
+			this.clear_party_identity_filter({ refresh: true });
+			return;
+		}
+		this.apply_party_identity_filter({
+			display_title: value.display_title,
+			party_identifier: value.party_identifier,
+			available_members: available,
+			selected_members: selected,
+			seed_party_type: value.seed_party_type,
+			seed_party: value.seed_party,
+			refresh: true,
 		});
 	}
 
@@ -7097,11 +7285,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				)
 			)
 		);
-		this.$member_panel.append(
-			$('<div class="ae-member-panel-meta text-muted small">').text(
-				__("Related Roles: {0}", [identity.related_roles_label || (identity.related_roles || []).join(", ") || "—"])
-			)
-		);
+		this.render_party_identity_role_editor({ append_only: true });
 
 		const $table = $('<table class="ae-grid ae-member-grid"><thead></thead><tbody></tbody></table>');
 		const $head = $("<tr></tr>").appendTo($table.find("thead"));
@@ -7151,13 +7335,84 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		);
 		$actions.append(
 			$('<button type="button" class="btn btn-xs btn-default ml-2">')
-				.text(__("Refresh Parties for Identity"))
+				.text(__("Select All Roles"))
 				.on("click", () => {
-					this.analysis_context.page = 1;
-					this.refresh_summary({ new_execution: true, reason: "party_identity" });
+					const entry = this.get_analysis_filters().party_identity;
+					const value = entry?.value || {};
+					const available = value.available_members || [];
+					this.apply_party_identity_filter({
+						display_title: value.display_title,
+						party_identifier: value.party_identifier,
+						available_members: available,
+						selected_members: available.map((m) => ({
+							party_type: m.party_type,
+							party: m.party,
+						})),
+						seed_party_type: value.seed_party_type,
+						seed_party: value.seed_party,
+					});
 				})
 		);
+		$actions.append(
+			$('<button type="button" class="btn btn-xs btn-default ml-2">')
+				.text(__("Clear Identity Filter"))
+				.on("click", () => this.clear_party_identity_filter({ refresh: true }))
+		);
 		this.$member_panel.append($actions);
+	}
+
+	render_party_identity_role_editor({ append_only = false } = {}) {
+		const entry = this.get_analysis_filters().party_identity;
+		if (!entry?.value) {
+			if (!append_only) {
+				this.hide_member_panel();
+			}
+			return;
+		}
+		const value = entry.value;
+		const available = Array.isArray(value.available_members) ? value.available_members : [];
+		const selected_keys = new Set(
+			(value.selected_members || []).map((m) => `${m.party_type}::${m.party}`)
+		);
+		if (!append_only) {
+			this.$member_panel.empty().show();
+			this.$member_panel.append(
+				$('<div class="ae-member-panel-header">').append(
+					$("<strong>").text(__("Unified Party — {0}", [value.display_title || ""])),
+					$('<span class="text-muted small ml-2">').text(
+						__("Identifier: {0}", [value.party_identifier || "—"])
+					)
+				)
+			);
+		}
+		const $roles = $('<div class="ae-identity-role-editor mt-2">').append(
+			$('<div class="ae-identity-role-editor-title">').text(__("Selected Roles"))
+		);
+		available.forEach((member) => {
+			const key = `${member.party_type}::${member.party}`;
+			const checked = selected_keys.has(key);
+			const $label = $('<label class="ae-identity-role-option">').appendTo($roles);
+			$('<input type="checkbox">')
+				.prop("checked", checked)
+				.on("change", (event) => {
+					this.set_party_identity_role_selection(
+						member.party_type,
+						member.party,
+						!!event.target.checked
+					);
+				})
+				.appendTo($label);
+			$label.append(
+				document.createTextNode(
+					` ${member.party_type} — ${member.party}${
+						member.display_title && member.display_title !== member.party
+							? ` (${member.display_title})`
+							: ""
+					}`
+				)
+			);
+		});
+		this.$member_panel.append($roles);
 	}
 
 	push_breadcrumb(chip) {
@@ -7500,7 +7755,20 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				)
 			);
 		}
+		const residual = this.classification_residual || {};
+		const exclusion_count = cint(residual.excluded_account_count);
+		const exclusion_msgs = new Set(
+			[
+				residual.message_fa,
+				...(this.warnings || []).filter(
+					(w) => typeof w === "string" && (w.includes("Excluded") || w.includes("نمایش داده نشده"))
+				),
+			].filter(Boolean)
+		);
 		(this.warnings || []).forEach((warning) => {
+			if (exclusion_msgs.has(warning)) {
+				return;
+			}
 			parts.push(
 				$('<div class="ae-warning-item">').append(
 					$("<span class='ae-warning-indicator'>").text("!"),
@@ -7508,6 +7776,48 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				)
 			);
 		});
+		if (exclusion_count > 0) {
+			const $excl = $('<div class="ae-warning-item ae-exclusion-warning">');
+			$excl.append($("<span class='ae-warning-indicator'>").text("!"));
+			const $body = $('<div class="ae-exclusion-warning-body">').appendTo($excl);
+			$body.append(
+				$("<div>").text(
+					residual.message_fa ||
+						__(
+							"{0} حساب به دلیل نامشخص بودن کد یا عدم انطباق با ساختار سطح‌بندی حساب‌ها، در جدول سلسله‌مراتب نمایش داده نشده‌اند.",
+							[exclusion_count]
+						)
+				)
+			);
+			const $meta = $('<div class="ae-exclusion-warning-meta text-muted small">').appendTo($body);
+			$meta.append(
+				document.createTextNode(
+					`${__("Excluded Debit")}: ${this.format_display_amount(residual.period_debit || 0).compact} · ${__(
+						"Excluded Credit"
+					)}: ${this.format_display_amount(residual.period_credit || 0).compact}`
+				)
+			);
+			const recon = residual.reconciliation || {};
+			if (recon.full_scope) {
+				$body.append(
+					$('<div class="ae-exclusion-recon text-muted small">').text(
+						__(
+							"Reconciliation (period): Included {0} + Excluded {1} = Full Scope {2}",
+							[
+								this.format_display_amount(recon.included?.period_debit || 0).compact,
+								this.format_display_amount(recon.excluded?.period_debit || 0).compact,
+								this.format_display_amount(recon.full_scope?.period_debit || 0).compact,
+							]
+						)
+					)
+				);
+			}
+			$('<button type="button" class="btn btn-xs btn-default ae-exclusion-details-btn">')
+				.text(__("مشاهده جزئیات حساب‌ها"))
+				.on("click", () => this.open_classification_exclusion_details())
+				.appendTo($body);
+			parts.push($excl);
+		}
 		if (!parts.length) {
 			return;
 		}
@@ -7515,6 +7825,74 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			.addClass("ae-warning-banner")
 			.toggleClass("ae-construction-banner", this.is_account_sle_scoped_mode())
 			.append(parts);
+	}
+
+	open_classification_exclusion_details() {
+		const residual = this.classification_residual || {};
+		const cached = residual.excluded_account_details || [];
+		const open_dialog = (rows, recon) => {
+			const $wrap = $('<div class="ae-exclusion-details">');
+			const $table = $(
+				'<table class="ae-grid ae-exclusion-grid"><thead></thead><tbody></tbody></table>'
+			).appendTo($wrap);
+			const $head = $("<tr>").appendTo($table.find("thead"));
+			[
+				__("Account Code"),
+				__("Account Name"),
+				__("Parent Account"),
+				__("Reason"),
+				__("Debit Turnover"),
+				__("Credit Turnover"),
+				__("Debit Balance"),
+				__("Credit Balance"),
+			].forEach((label) => $("<th>").text(label).appendTo($head));
+			const $body = $table.find("tbody");
+			(rows || []).forEach((row) => {
+				const $tr = $("<tr>").appendTo($body);
+				$("<td>").text(row.account_number || "—").appendTo($tr);
+				$("<td>")
+					.text(row.account_name || row.account || "")
+					.attr("title", row.account || "")
+					.appendTo($tr);
+				$("<td>").text(row.parent_account || "—").appendTo($tr);
+				$("<td>").text(row.reason_label || row.reason || "—").appendTo($tr);
+				["period_debit", "period_credit", "debit_balance", "credit_balance"].forEach((col) => {
+					const $amount = $("<td>").addClass("amount");
+					this.render_amount_cell($amount, row[col] ?? 0);
+					$amount.appendTo($tr);
+				});
+			});
+			if (recon?.full_scope) {
+				$wrap.append(
+					$('<div class="ae-exclusion-recon mt-2 small text-muted">').text(
+						__(
+							"Included + Excluded = Full Scope (period debit/credit and net_balance). Debit/Credit Balance columns are presentation of signed closing and are not independently additive."
+						)
+					)
+				);
+			}
+			const dialog = new frappe.ui.Dialog({
+				title: __("Excluded Account Details"),
+				size: "extra-large",
+				fields: [{ fieldtype: "HTML", fieldname: "body" }],
+			});
+			dialog.fields_dict.body.$wrapper.empty().append($wrap);
+			dialog.show();
+		};
+		if (cached.length) {
+			open_dialog(cached, residual.reconciliation);
+			return;
+		}
+		frappe.call({
+			method: `${this.api_base}.get_classification_exclusion_details`,
+			args: { payload: JSON.stringify(this.build_payload()) },
+			freeze: true,
+			freeze_message: __("Loading excluded accounts…"),
+			callback: (r) => {
+				const data = r.message || {};
+				open_dialog(data.rows || [], data.reconciliation || residual.reconciliation);
+			},
+		});
 	}
 
 	open_constructed_accounting_legs(row) {

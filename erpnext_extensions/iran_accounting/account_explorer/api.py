@@ -620,6 +620,39 @@ def get_voucher_summary(payload) -> dict:
 	return _voucher_response(spec, columns, result)
 
 
+def _unsupported_identity_stock_result(spec: AccountExplorerQuerySpec) -> dict | None:
+	"""SLE-backed axes cannot attribute stock to Party tuples without inventing GL links."""
+	if not spec.resolved_member_tuples:
+		return None
+	if spec.view_axis not in {"item", "item_group"}:
+		return None
+	from erpnext_extensions.iran_accounting.account_explorer.measures import zero_measures
+
+	msg = frappe._(
+		"Unified Party identity filters are not supported on {0}. "
+		"Stock Ledger Entries have no Party Type/Party fields — clear the identity "
+		"filter or use a GL-backed axis (Account Levels, Parties, Dimensions, "
+		"Currencies, Vouchers)."
+	).format(spec.view_axis)
+	return {
+		"rows": [],
+		"totals": zero_measures(),
+		"pagination": {
+			"page": 1,
+			"page_size": int(getattr(getattr(spec.analysis, "pagination", None), "page_size", None) or 50),
+			"total_rows": 0,
+			"has_next": 0,
+		},
+		"warnings": [msg],
+		"unsupported_filter_combination": {
+			"axis": spec.view_axis,
+			"filter": "party_identity",
+			"reason": "sle_has_no_party_attribution",
+			"message": msg,
+		},
+	}
+
+
 def get_item_group_summary(payload) -> dict:
 	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
 	if spec.view_axis != "item_group":
@@ -629,6 +662,9 @@ def get_item_group_summary(payload) -> dict:
 		build_item_group_summary,
 	)
 
+	blocked = _unsupported_identity_stock_result(spec)
+	if blocked:
+		return _summary_response(spec, ITEM_GROUP_COLUMNS, blocked)
 	result = build_item_group_summary(spec)
 	return _summary_response(spec, ITEM_GROUP_COLUMNS, result)
 
@@ -639,8 +675,34 @@ def get_item_summary(payload) -> dict:
 		frappe.throw(frappe._("Invalid axis for item summary."))
 	from erpnext_extensions.iran_accounting.account_explorer.item_summary import ITEM_COLUMNS, build_item_summary
 
+	blocked = _unsupported_identity_stock_result(spec)
+	if blocked:
+		return _summary_response(spec, ITEM_COLUMNS, blocked)
 	result = build_item_summary(spec)
 	return _summary_response(spec, ITEM_COLUMNS, result)
+
+
+def get_classification_exclusion_details(payload) -> dict:
+	"""Return enriched Account hierarchy exclusion details for the active scope."""
+	spec = AccountExplorerQuerySpec_from_client(payload, require_dates=True)
+	if spec.view_axis != "account_level":
+		frappe.throw(frappe._("Exclusion details are only available on Account Levels."))
+	from erpnext_extensions.iran_accounting.account_explorer.query_builder import (
+		build_account_level_summary,
+	)
+
+	spec.analysis.view_axis = "account_level"
+	result = build_account_level_summary(spec)
+	residual = result.get("classification_residual") or {}
+	details = residual.get("excluded_account_details") or residual.get("excluded_accounts") or []
+	return {
+		"excluded_account_count": residual.get("excluded_account_count") or len(details),
+		"rows": details,
+		"reconciliation": residual.get("reconciliation"),
+		"message_fa": residual.get("message_fa"),
+		"document_scope": _document_scope_response(spec),
+		"context": _analysis_context_response(spec),
+	}
 
 
 def get_inventory_account_summary(payload) -> dict:
@@ -917,6 +979,9 @@ def _analysis_context_response(spec: AccountExplorerQuerySpec) -> dict:
 			"identity_members": [
 				{"party_type": pt, "party": p} for pt, p in (spec.party_scope.identity_members or [])
 			],
+			"identity_available_members": spec.party_scope.identity_available_members or [],
+			"identity_display_title": spec.party_scope.identity_display_title,
+			"identity_identifier": spec.party_scope.identity_identifier,
 		},
 		"unified_party_scope": {
 			"selected_unified_party": spec.unified_party_scope.selected_unified_party,

@@ -21,7 +21,17 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 		if (text.startsWith("dimensions.")) {
 			return { kind: "dimension", fieldname: text.slice("dimensions.".length) };
 		}
-		const top = ["account", "party", "unified_party", "voucher", "currency", "item_group", "item", "warehouse"];
+		const top = [
+			"account",
+			"party",
+			"party_identity",
+			"unified_party",
+			"voucher",
+			"currency",
+			"item_group",
+			"item",
+			"warehouse",
+		];
 		if (top.includes(text)) {
 			return { kind: "top", fieldname: text };
 		}
@@ -203,6 +213,7 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 			}
 		const map = {
 			party: __("Party"),
+			party_identity: __("Unified Party"),
 			unified_party: __("Unified Party"),
 			voucher: __("Voucher"),
 			currency: __("Currency"),
@@ -265,6 +276,22 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 		},
 
 		_display_value(entry) {
+			if (entry?.key === "party_identity") {
+				const value = entry.value && typeof entry.value === "object" ? entry.value : {};
+				const title = value.display_title || entry.meta?.display_label || "";
+				const identifier = value.party_identifier || "";
+				const selected = Array.isArray(value.selected_members) ? value.selected_members : [];
+				const roles = selected
+					.map((m) => (Array.isArray(m) ? m[0] : m.party_type))
+					.filter(Boolean);
+				const role_text = roles.length ? roles.join(" OR ") : __("No roles selected");
+				const parts = [title];
+				if (identifier) {
+					parts.push(`${__("Identifier")}: ${identifier}`);
+				}
+				parts.push(`${__("Roles")}: ${role_text}`);
+				return parts.filter(Boolean).join(" · ");
+			}
 			if (entry?.key === "account") {
 				const meta = entry.meta || {};
 				const value = entry.value;

@@ -12,7 +12,38 @@ first-load performance on large GL volumes.
 **Follow-up (same 5.6.21):** Fixes release-blocking defect where Analyze buttons
 were visible but clicks did nothing in the real UI.
 
+**Follow-up 2 (same 5.6.21):** Persistent multi-role Unified Party identity filter
+(OR tuples, editable roles, cross-axis), plus Account hierarchy exclusion
+transparency (Persian warning + details dialog + Included/Excluded reconciliation).
+
 **Version remains 5.6.21** (no bump).
+
+### Persistent Unified Party identity filter
+- First-class analysis filter key: `party_identity` (session lifetime).
+- Predicate uses exact `(party_type, party)` OR tuples via `apply_member_tuple_filter`
+  — never `party_type IN (...) AND party IN (...)` cross products.
+- Editable Selected Roles checkboxes (Customer / Supplier / Shareholder for میلان پارس).
+- Filter Summary shows Unified Party, Identifier, and `Roles: A OR B OR C`.
+- Survives axis switches (Account Levels, Dimensions, Currencies, Vouchers, Parties),
+  level changes, sort/pagination, and Apply. Cleared only via chip remove / Clear Identity.
+- Item / Item Group: explicitly **unsupported** when identity is active
+  (`sle_has_no_party_attribution`) — no silent company-wide stock totals.
+
+### Account hierarchy exclusion transparency
+Root cause on restored snapshot (3 accounts with activity, `account_number` NULL):
+1. `موجودی مشترک مواد،بسته بندی و ... - E` (Stock)
+2. `11200604 - بانک اقتصادنوین - E` (Payable) — number appears in Account Name only
+3. `611310 - هزینه استهلاک تجهیزات کامپیوتری - E` (Depreciation)
+
+Hierarchy classification requires a pure numeric `account_number`. Codes embedded
+only in the Account Name are **not** auto-parsed (no Account master mutation).
+
+UI: Persian exclusion message, excluded debit/credit, reconciliation line, and
+**مشاهده جزئیات حساب‌ها** dialog (code/name/parent/reason/turnovers/balances).
+Reconciliation contract: Included + Excluded = Full Scope for additive measures
+(`period_debit` / `period_credit` / `net_balance`). Debit/Credit Balance are
+presentation of signed closing and are not independently additive across buckets.
+Exclusion amounts respect active filters including identity scope.
 
 ### Analyze click root cause (P0 functional fix)
 **Symptom:** Analyze rendered on Parties / Account Levels / etc., but clicking
