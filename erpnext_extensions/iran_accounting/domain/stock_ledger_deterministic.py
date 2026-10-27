@@ -125,8 +125,13 @@ def authoritative_acquisition_incoming_rate(sle_doc_or_dict, currency: str | Non
 	# Zero is the pending-invoice / zero-source contract, not an acquisition rate.
 	if rate <= 0:
 		return None
-	if currency:
-		rate = float(round_currency(rate, currency))
+	# Keep the document valuation_rate verbatim (may be fractional for
+	# amount-preserving LCV: e.g. 1_000_001.875 = 800_001_500 / 800).
+	# Rounding IRR rates here (ROUND_HALF_UP to integer) inflates SLE by qty and
+	# contaminates purchase GRNI via Core divisional + residual partner reclass.
+	# Movement totals are still integerized in align_authoritative_acquisition_movement
+	# via round_currency(rate * qty).
+	_ = currency  # reserved for FX acquisition paths
 	return rate
 
 

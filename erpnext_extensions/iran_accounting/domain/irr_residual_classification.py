@@ -212,10 +212,26 @@ def classify_amount_rate_residual(
 	rounded_rate = flt(round_monetary_rate(rate_f, currency))
 	legacy_uvr_float = False
 	if rounded_rate != rate_f:
-		# Historical Purchase Receipt UVR stores flt(amount/stock_qty) before Iran
-		# integerization. Coerce to amount-authoritative integer VR — do not mutate
-		# the document; classification only.
+		# v5.6.25 amount-preserving PR/LCV: when the document float VR reconstructs
+		# the acquisition total (qty × VR ≈ auth), SLE posts that total via the
+		# unrounded incoming_rate. Do **not** coerce to integer VR / invent Class A
+		# residual — rate-first residual math (round rate then × qty) would invent
+		# a false gap and contaminate purchase GRNI via partner reclass.
 		if auth and is_legacy_uvr_float_valuation_rate(auth, qty, rate_f, currency):
+			raw_gap = flt(auth) - flt(qty) * flt(rate_f)
+			if abs(raw_gap) <= 0.51:
+				return {
+					**diag,
+					"class": "skip",
+					"reason": "amount_preserving_fractional_vr_zero_residual",
+					"residual": 0,
+					"round_off_debit": 0,
+					"rate_derived_amount": auth,
+					"expected_valuation_rate": rate_f,
+					"expected_amount": auth,
+					"legacy_uvr_float_valuation_rate": rate_f,
+				}
+			# Non-reconstructing float: keep historical Class A integerization path.
 			legacy_uvr_float = True
 			diag["legacy_uvr_float_valuation_rate"] = rate_f
 			rate_f = flt(integer_valuation_rate_from_amount(auth, qty, currency))
@@ -809,6 +825,11 @@ def evaluate_irr_rate_rounding_residual(
 		return decision
 
 	protected = set(_protected_reclass_accounts(doc) or ())
+	forbidden: set[str] = set()
+	if doc.doctype == "Purchase Receipt":
+		# Purchase clearing / LCV expense must never absorb IRR residual (v5.6.25).
+		forbidden = set(protected)
+		protected = set()
 	if use_sa:
 		# Never reclassify Financial Round Off into Stock Adjustment residual.
 		ro_acc = frappe.get_cached_value("Company", doc.company, "round_off_account")
@@ -820,6 +841,7 @@ def evaluate_irr_rate_rounding_residual(
 		doc.company,
 		cfg["account"],
 		protected_accounts=protected,
+		forbidden_accounts=forbidden,
 		reclass_magnitude=decision.net_signed_debit,
 	)
 	decision.partner_checked = True

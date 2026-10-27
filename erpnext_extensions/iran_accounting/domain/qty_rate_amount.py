@@ -679,12 +679,41 @@ def align_sales_invoice_item_amounts(doc) -> None:
 	align_purchase_order_item_amounts(doc)
 
 
+def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
+	"""Keep ``valuation_rate`` consistent with authoritative acquisition total.
+
+	Commercial ``rate`` / ``amount`` stay IRR integer (rate-first). Stock valuation
+	must preserve::
+
+	    base_net + item_tax + landed_cost + PI amount_difference
+
+	Premature ROUND_HALF_UP of VR to an integer (e.g. 1_000_001.875 → 1_000_002)
+	inflates SLE by qty and contaminates purchase GRNI via Core divisional loss /
+	Iran residual partner reclass. SLE posts ``qty × incoming_rate`` from VR.
+	"""
+	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
+		purchase_receipt_stock_valuation_amount,
+		purchase_receipt_valuation_stock_qty,
+	)
+
+	qty_stock = purchase_receipt_valuation_stock_qty(row) or flt(row.qty)
+	if not qty_stock:
+		return
+	auth = purchase_receipt_stock_valuation_amount(row, doc)
+	# Exact division — do not integerize. Float binary represents *.875 cleanly for
+	# common LCV fractions; stock ledger uses this as incoming_rate.
+	row.valuation_rate = flt(auth) / flt(qty_stock)
+
+
 def align_purchase_receipt_item_amounts(doc) -> None:
-	"""Rate-first PR/DN alignment (IRR integer rates and amounts)."""
+	"""Rate-first PR/DN commercial amounts; amount-preserving stock valuation_rate on PR/PI-stock."""
 	if not rounding.is_irr_company(doc.company):
 		return
 	ccy = rounding.get_company_currency(doc.company)
 	tx = doc.currency or ccy
+	preserve_vr = doc.doctype == "Purchase Receipt" or (
+		doc.doctype == "Purchase Invoice" and cint(doc.get("update_stock"))
+	)
 	for row in doc.get("items") or []:
 		qty = flt(row.qty)
 		if row.get("rate") is not None:
@@ -694,7 +723,11 @@ def align_purchase_receipt_item_amounts(doc) -> None:
 			row.base_rate = rounding.round_monetary_rate(row.base_rate, ccy)
 			row.base_amount = rounding.round_row_amount(qty, row.base_rate, ccy)
 		if row.get("valuation_rate") is not None:
-			row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, ccy)
+			if preserve_vr:
+				_align_purchase_valuation_rate_amount_preserving(row, doc)
+			else:
+				# Delivery Note / non-stock paths: keep IRR integer rate policy.
+				row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, ccy)
 
 
 def align_delivery_note_item_amounts(doc) -> None:

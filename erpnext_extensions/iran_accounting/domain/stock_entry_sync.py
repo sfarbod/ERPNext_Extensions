@@ -122,6 +122,103 @@ def should_preserve_native_outgoing_valuation(sle, row, purpose: str | None) -> 
 	return True
 
 
+def _outward_leg_stock_value_difference(sle) -> float | None:
+	"""Source-warehouse SLE movement for the same Stock Entry Detail row."""
+	voucher_type = sle.get("voucher_type") if hasattr(sle, "get") else getattr(sle, "voucher_type", None)
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	detail_no = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	item_code = sle.get("item_code") if hasattr(sle, "get") else getattr(sle, "item_code", None)
+	if not (voucher_type and voucher_no and detail_no and item_code):
+		return None
+	return frappe.db.get_value(
+		"Stock Ledger Entry",
+		{
+			"voucher_type": voucher_type,
+			"voucher_no": voucher_no,
+			"voucher_detail_no": detail_no,
+			"item_code": item_code,
+			"actual_qty": ("<", 0),
+			"is_cancelled": 0,
+		},
+		"stock_value_difference",
+	)
+
+
+def conserve_transfer_inward_from_outward_sle(sle, row, purpose: str | None, ccy: str) -> bool:
+	"""Keep Material Transfer destination movement equal to the source SLE amount.
+
+	After a native-outgoing source leg realigns SED to an amount-preserving
+	movement (e.g. 200 × 26_900_333.5 = 5_380_066_700), Core's
+	``recalculate_amounts_in_stock_entry`` on the inward leg rewrites SED as
+	integer ``valuation_rate × qty`` (5_380_066_800) and invents inventory.
+
+	Destination SLE must use the outward ``stock_value_difference`` magnitude
+	(+ additional_cost). Representational rates stay integer; the amount is
+	authoritative. Returns True when conservation was applied.
+	"""
+	if str(purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		return False
+	if str(purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+	aq = flt(sle.get("actual_qty") if hasattr(sle, "get") else getattr(sle, "actual_qty", 0))
+	if aq <= 0:
+		return False
+
+	def _row_get(key, default=None):
+		if row is None:
+			return default
+		if hasattr(row, "get"):
+			return row.get(key, default)
+		return getattr(row, key, default)
+
+	if not (_row_get("s_warehouse") and _row_get("t_warehouse")):
+		return False
+	if cint(_row_get("set_basic_rate_manually")):
+		return False
+
+	outward = _outward_leg_stock_value_difference(sle)
+	if outward is None:
+		return False
+
+	magnitude = float(
+		round_currency(abs(flt(outward)) + flt(_row_get("additional_cost") or 0), ccy)
+	)
+	if magnitude <= 0:
+		return False
+
+	movement = float(magnitude)
+	qty = abs(aq)
+	rate = float(round_monetary_rate(magnitude / qty, ccy)) if qty > 1e-9 else 0.0
+
+	svd = flt(
+		sle.get("stock_value_difference")
+		if hasattr(sle, "get")
+		else getattr(sle, "stock_value_difference", 0)
+	)
+	value_after = flt(
+		sle.get("stock_value") if hasattr(sle, "get") else getattr(sle, "stock_value", 0)
+	)
+	value_before = value_after - svd
+	sle.stock_value_difference = movement
+	sle.stock_value = float(round_currency(value_before + movement, ccy))
+	sle.incoming_rate = rate
+	sle.valuation_rate = rate
+	orate = flt(
+		sle.get("outgoing_rate") if hasattr(sle, "get") else getattr(sle, "outgoing_rate", 0)
+	)
+	sle.outgoing_rate = float(round_monetary_rate(orate or 0, ccy))
+
+	detail_no = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	# Restore SED amount that Core recalculate_amounts inflated via rate×qty.
+	if detail_no and abs(flt(_row_get("amount") or 0) - magnitude) > 0.5:
+		align_sed_from_native_outgoing_sle(sle, row, rate, movement, ccy)
+	return True
+
+
 def _clear_sle_outgoing_rate(sle) -> None:
 	if hasattr(sle, "outgoing_rate"):
 		sle.outgoing_rate = 0
@@ -699,6 +796,12 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	# Native outgoing stock valuation: preserve vanilla SLE; do not SED-stamp.
 	if should_preserve_native_outgoing_valuation(sle, row, purpose):
 		_preserve_native_outgoing_and_align_sed(sle, row, ccy)
+		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
+		return
+
+	# Transfer inward: Core recalculate_amounts may have inflated SED via
+	# integer rate×qty; restore amount from the outward SLE movement.
+	if conserve_transfer_inward_from_outward_sle(sle, row, purpose, ccy):
 		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
 		return
 
