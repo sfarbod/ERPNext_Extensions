@@ -78,9 +78,6 @@ def classify_pr_item_discrepancy(row: dict, sle_svd: float | None, tol: float = 
 	fully_billed = billed_amt > 0 and abs(billed_amt - base_net - flt(row.get("amount_difference_with_purchase_invoice") or 0)) <= tol
 	if per_billed >= 99.99:
 		fully_billed = True
-	if billed_amt <= 0 and per_billed < 99.99:
-		# Unbilled / not yet invoiced — not a GRNI or PI-valuation defect.
-		return None
 
 	expected = expected_acquisition_amount(row)
 	vr = flt(row.get("valuation_rate") or 0)
@@ -92,6 +89,41 @@ def classify_pr_item_discrepancy(row: dict, sle_svd: float | None, tol: float = 
 	notes = []
 	lcv = flt(row.get("landed_cost_voucher_amount") or 0)
 	pi_diff = flt(row.get("amount_difference_with_purchase_invoice") or 0)
+
+	if billed_amt <= 0 and per_billed < 99.99:
+		# Unbilled: still flag FX / rate-first integer VR overvaluation when SLE
+		# equals qty×ROUND(auth/qty) but auth (EUR×FX / base_net) differs — this
+		# is what aborts RIV via residual partner_error (GRNI forbidden). Do not
+		# flag ordinary open GRNI with matching SLE.
+		if (
+			sle_svd is not None
+			and abs(flt(sle_svd) - expected) > tol
+			and rate_times_qty is not None
+			and abs(rate_times_qty - flt(sle_svd)) <= tol
+			and abs(rate_times_qty - expected) > tol
+		):
+			return {
+				"root_cause_category": ROOT_CAUSE_CATEGORY_B,
+				"anomaly_type": ANOMALY_LCV_ROUNDING,
+				"classification": CONFIRMED_CORRUPTION,
+				"expected": expected,
+				"actual": flt(sle_svd),
+				"difference": flt(sle_svd) - expected,
+				"rate_times_qty": rate_times_qty,
+				"fully_billed": False,
+				"notes": ["unbilled_rate_first_integer_vr_sle_ne_auth"],
+				"repair_eligibility": "AMOUNT_PRESERVING_RIV",
+				"repair_risk": "MEDIUM",
+				"recommended_repair_sequence": [
+					"dry_run_impact_preview",
+					"ensure_iran_monkey_patches",
+					"adjust_incoming_rate_for_pr_or_uvr",
+					"repost_item_warehouse",
+					"verify_sle_equals_base_net",
+					"verify_gl_balanced_no_sa_residual",
+				],
+			}
+		return None
 
 	if sle_svd is not None and abs(flt(sle_svd) - expected) > tol:
 		# Default: invoice-based valuation not reflected on SLE.

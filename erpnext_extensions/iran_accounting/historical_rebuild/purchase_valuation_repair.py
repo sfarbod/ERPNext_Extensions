@@ -148,7 +148,17 @@ def assess_repair(pr_name: str, company: str | None = None) -> dict[str, Any]:
 	related = _related_vouchers(pr_name)
 	grni = _grni_net(company, related)
 
-	if not findings and abs(grni) <= TOL:
+	sle_clean = all(
+		i.get("difference") is None or abs(flt(i.get("difference"))) <= TOL
+		for i in fp.get("items") or []
+	)
+	per_billed = flt(frappe.db.get_value("Purchase Receipt", pr_name, "per_billed") or 0)
+	if per_billed >= 99.99:
+		grni_ok = abs(grni) <= TOL
+	else:
+		expected_grni = -sum(flt(i.get("expected") or 0) for i in fp.get("items") or [])
+		grni_ok = abs(grni - expected_grni) <= TOL
+	if not findings and sle_clean and grni_ok:
 		return {
 			"purchase_receipt": pr_name,
 			"company": company,
@@ -398,7 +408,21 @@ def repair_one(
 		result["failed_rivs"] = failed
 		return result
 
-	if mismatches or abs(grni_after) > TOL:
+	# Fully billed: purchase GRNI on the closed voucher set must be ~0.
+	# Unbilled / partial: outstanding GRNI ≈ −Σ expected acquisition (credit).
+	# Do not treat legitimate unbilled GRNI as verification failure (FX rate-first
+	# repairs such as MAT-PRE-2026-01642 leave open GRNI equal to base_net).
+	per_billed = flt(frappe.db.get_value("Purchase Receipt", pr_name, "per_billed") or 0)
+	if per_billed >= 99.99:
+		grni_ok = abs(grni_after) <= TOL
+		expected_grni = 0.0
+	else:
+		expected_grni = -sum(flt(i.get("expected") or 0) for i in after.get("items") or [])
+		grni_ok = abs(grni_after - expected_grni) <= TOL
+	result["expected_grni_after"] = expected_grni
+	result["grni_ok"] = grni_ok
+
+	if mismatches or not grni_ok:
 		result["status"] = "blocked"
 		result["blocked_reason"] = "verification_failed"
 		result["remaining_mismatches"] = mismatches

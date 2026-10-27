@@ -502,6 +502,34 @@ def classify_document_residuals(doc) -> tuple[list[dict], list[dict]]:
 					"stock_qty": qty,
 				},
 			)
+			# Purchase Receipt amount-preserving policy (v5.6.25): when document VR is
+			# the rate-first integerization of auth/qty (FX ROUND(EUR×FX/qty)), SLE posts
+			# auth via authoritative_acquisition_incoming_rate(auth/qty). Inventing Class A
+			# residual here forces a non-stock partner — and purchase GRNI is forbidden —
+			# which aborts RIV on otherwise correct acquisitions (e.g. MAT-PRE-2026-01642).
+			if (
+				classified.get("class") == "A"
+				and classified.get("reason")
+				in (
+					"amount_authoritative_integer_valuation_rate",
+					"amount_authoritative_legacy_uvr_float_rate",
+				)
+				and qty
+				and flt(auth)
+			):
+				preserving = flt(auth) / flt(qty)
+				if abs(flt(qty) * preserving - flt(auth)) <= 0.51:
+					classified = {
+						**classified,
+						"class": "skip",
+						"reason": "amount_preserving_pr_rate_first_integer_skip",
+						"residual": 0,
+						"round_off_debit": 0,
+						"rate_derived_amount": auth,
+						"expected_valuation_rate": preserving,
+						"expected_amount": auth,
+						"legacy_rate_first_integer_vr": flt(rate),
+					}
 			enrich_candidate_dimensions(classified, row)
 			_bucket(classified, class_a, class_b, incoming=True, currency=ccy)
 
