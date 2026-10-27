@@ -17,7 +17,7 @@ Fixes three interlocking purchase-valuation defects on IRR companies:
 Historical Rebuild Campaign detection is extended (dry-run only) for Categories
 A/B/C so affected PRs/LCVs/RIVs can be classified before repair via standard RIV.
 
-**No production deploy, merge, or push in this release package.**
+**Local merge into `develop` after quality gate. No push / publish / production deploy.**
 
 ---
 
@@ -80,13 +80,18 @@ Validated LCV E2E: qty 800, LCV 1,500 → SLE 800,001,500; GRNI 0.
 
 ### Reposting behavior
 - Corrected PR/PI/LCV queue standard Item+Warehouse RIV.
-- **Automatic patch initialization:** `hooks.before_request` and
-  `hooks.before_job` call `integration.bootstrap.apply`. Additionally,
-  `execute_reposting_entry` is wrapped to re-enter bootstrap (idempotent) so
-  campaign/`execute_job` RIV paths load Iran patches without a manual
-  `apply_monkey_patches()` call.
-- A brand-new process that invokes Core RIV before any bootstrap still needs
-  one job/`execute_job` path (or one explicit bootstrap).
+- **Automatic patch initialization (pickle-safe):**
+  - `hooks.before_request` / `hooks.before_job` call `integration.bootstrap.apply`.
+  - Public + private RIV executors are owned by module-level
+    `integration.riv_execute_guard.execute_reposting_entry` (and private wrap),
+    which calls `_ensure_iran_runtime_for_riv` → `bootstrap.apply` on every run.
+  - Nested locals wraps of `execute_reposting_entry` are **not** used — they
+    break RQ pickling and the execute-guard contract (regression caught by
+    `test_riv_execute_guard_v5523`).
+- Real RQ worker validation (temporary `bench worker` on short/default/long):
+  enqueue via `enqueue_reposting_entry` completed without a manual
+  `apply_monkey_patches()`; worker probe reported `sle_patched`,
+  `riv_is_guard`, `recalculate_wrapper_active`, `not_nested_wrap`.
 - Idempotent re-RIV with patches preserves corrected totals.
 
 ### Historical campaign functionality
@@ -149,26 +154,30 @@ Documents: `MAT-PRE-2026-02150`, `MAT-STE-2026-42854` (Issue 300),
 Invariant check: issue + remaining = acquisition ✓
 
 ### Regression / test results (this package)
-| Suite | Result |
-|-------|--------|
-| `test_pr_pi_compat_control_flow_v5625` (8) | PASS |
-| `test_pr_lcv_amount_preserving_vr_v5625` (7) | PASS |
-| `test_pr_legacy_uvr_float_v5528` (11) | PASS |
-| `test_transfer_inward_conservation_v5625` (3) | PASS |
-| `test_purchase_valuation_detection_v5625` (5) | PASS |
-| `test_purchase_valuation_repair_v5625` (2) | PASS |
-| Historical gate E2E (bootstrap / control / A / B) | PASS |
-| LCV E2E FIX4 (800 / 1,500) | PASS |
-| Combined PR→Issue→Transfer→PI→LCV | PASS (after patched RIV) |
-| Playwright UI | **SKIPPED** — Python `playwright` package unavailable |
-| Full Iran regression suite | Not fully re-run; focused purchase/LCV/transfer/campaign suites green |
+Focused critical Iran Accounting suites (purchase / LCV / inventory / RIV /
+manufacture / HRC): **572 passed**, **3 failed**, **1 error** across 576 tests.
+
+| Area | Result |
+|------|--------|
+| Purchase / #59476 / LCV amount-preserving / residual / detection / repair | PASS |
+| Inventory transfer conservation / SLE-GL / posting order / I4 lifecycle | PASS |
+| RIV integrity / propagate / guard / scope / rate-first / campaign / sequential | PASS |
+| Manufacture residual / output / scrap / fractional / reject | PASS |
+| Historical rebuild campaign / HRC progress | PASS |
+| Real RQ worker RIV enqueue + idempotency | **PASS** |
+| Historical gate E2E (bootstrap / control / A / B) | **PASS** |
+| Playwright desk smoke (PR/PI/LCV/SLE/GL/HRC list) | **7/7 PASS** |
+
+Pre-existing baseline failures (unchanged on this branch; not 5.6.25 regressions):
+- `test_transfer_convergence_v530` — `NO_ACTION` vs `WAITING_UPSTREAM` (0 file diff vs develop)
+- `test_manufacture_rounding` — mock `_SteDoc` missing `docstatus`
+- `test_manufacture_valuation_v533_integrity` — site docs already carry contract version fields
 
 ### Known limitations
-- Development site often has **no RQ workers**; RIV stays Queued until executed
-  synchronously with patches.
+- Keep at least one RQ worker running in environments that enqueue RIV; without
+  workers, jobs remain Queued until drained.
 - Issue GL may show Stock Adjustment vs expense for integer rate×qty vs SLE
   amount (explained residual, not GRNI).
-- Playwright UI workflows not validated in this environment.
 - Broad historical repair of production-like data is **detection-ready**; mass
   apply remains an operator-controlled HRC sequential session.
 
@@ -192,12 +201,19 @@ Invariant check: issue + remaining = acquisition ✓
 Revert to 5.6.21 app revision. Accounting already posted under 5.6.25 remains;
 re-RIV may be needed if rolling back mid-repair. Do not reverse via balancing JE.
 
-### Final gate regression (this package)
-| Suite | Result |
-|-------|--------|
-| Prior 34 unit tests + 2 repair assess | **36 PASS** |
-| Historical gate E2E (bootstrap, control, A, B) | **PASS** |
-| Playwright smoke | **SKIPPED** — Python `playwright` package not installed |
+### Final quality gate (merge readiness)
+| Gate | Result |
+|------|--------|
+| Critical regression (purchase/LCV/inventory/RIV/HRC) | **PASS** (baseline-only failures noted above) |
+| Real RQ worker RIV + patch bootstrap | **PASS** |
+| Campaign detection A/B + repair + idempotency | **PASS** |
+| Financial invariants (PI 26.9B / LCV 800,001,500 / GRNI 0) | **PASS** |
+| Playwright desk smoke | **PASS** (7/7) |
+| Version remains 5.6.25 | **PASS** |
 
 ### Version
 `erpnext_extensions.__version__` → **5.6.25** (unchanged)
+
+### Merge note
+Feature branch merged into local `develop` after the gates above. **Do not push
+or publish until manually approved.**

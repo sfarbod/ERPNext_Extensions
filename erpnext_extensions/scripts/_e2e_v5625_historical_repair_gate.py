@@ -382,20 +382,21 @@ def scenario_control(ctx) -> dict[str, Any]:
 
 
 def scenario_riv_bootstrap() -> dict[str, Any]:
-	"""Prove execute_job path loads Iran patches without manual apply by caller."""
+	"""Prove execute_job path loads Iran patches via pickle-safe riv_execute_guard.
+
+	Nested locals wraps of ``execute_reposting_entry`` are intentionally not used —
+	they break RQ pickling. The module-level guard bootstraps on every RIV call.
+	"""
 	from erpnext.stock import stock_ledger as sl
 	from frappe.utils.background_jobs import execute_job
+	import erpnext.stock.doctype.repost_item_valuation.repost_item_valuation as riv_mod
+	from erpnext_extensions.iran_accounting.integration import riv_execute_guard as guard
+	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		is_iran_riv_recalculate_wrapper_active,
+	)
 
-	# Reset patch flag observation by checking wrap after job
-	# Clear process-local observation
 	was_patched = getattr(sl, "_iran_patched_update_entries_after", None)
 
-	def _probe():
-		from erpnext.stock import stock_ledger as sl2
-
-		return bool(getattr(sl2, "_iran_patched_update_entries_after", None))
-
-	# Run a no-op-ish job that only hits before_job bootstrap: call bootstrap apply via job
 	execute_job(
 		site=frappe.local.site,
 		method="erpnext_extensions.iran_accounting.integration.bootstrap.apply",
@@ -405,17 +406,18 @@ def scenario_riv_bootstrap() -> dict[str, Any]:
 		user="Administrator",
 		is_async=False,
 	)
-	patched_after = _probe()
-	# Also verify execute_reposting_entry is wrapped
-	import erpnext.stock.doctype.repost_item_valuation.repost_item_valuation as riv_mod
-
-	wrapped = bool(getattr(riv_mod.execute_reposting_entry, "_iran_bootstrap_wrapped", None))
+	patched_after = bool(getattr(sl, "_iran_patched_update_entries_after", None))
+	is_guard = riv_mod.execute_reposting_entry is guard.execute_reposting_entry
+	not_nested = "<locals>" not in getattr(riv_mod.execute_reposting_entry, "__qualname__", "")
+	wrapper_active = is_iran_riv_recalculate_wrapper_active()
 	return {
 		"scenario": "RIV_BOOTSTRAP",
 		"patched_before_job_observation": was_patched,
 		"patched_after_execute_job": patched_after,
-		"execute_reposting_entry_wrapped": wrapped,
-		"pass": bool(patched_after and wrapped),
+		"execute_reposting_entry_is_guard": is_guard,
+		"execute_reposting_entry_not_nested": not_nested,
+		"recalculate_wrapper_active": wrapper_active,
+		"pass": bool(patched_after and is_guard and not_nested and wrapper_active),
 	}
 
 

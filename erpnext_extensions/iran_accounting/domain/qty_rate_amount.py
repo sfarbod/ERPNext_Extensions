@@ -700,6 +700,12 @@ def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
 	if not qty_stock:
 		return
 	auth = purchase_receipt_stock_valuation_amount(row, doc)
+	if not flt(auth):
+		# UVR numerator not yet populated (mid-pipeline / incomplete row). Never
+		# zero an existing VR — keep legacy IRR integer rate policy.
+		currency = rounding.get_company_currency(doc.company)
+		row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, currency)
+		return
 	# Exact division — do not integerize. Float binary represents *.875 cleanly for
 	# common LCV fractions; stock ledger uses this as incoming_rate.
 	row.valuation_rate = flt(auth) / flt(qty_stock)
