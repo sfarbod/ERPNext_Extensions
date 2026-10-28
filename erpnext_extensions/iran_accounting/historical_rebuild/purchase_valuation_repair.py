@@ -70,15 +70,31 @@ def _fingerprint_pr(pr_name: str) -> dict[str, Any]:
 		(pr_name, pr_name),
 		as_dict=True,
 	) or []
+	from erpnext_extensions.iran_accounting.domain.currency import round_monetary_rate
+
 	is_fx = _pr_is_fx(pr_name)
 	out = []
 	for r in rows:
 		exp = expected_acquisition_amount(r)
 		qty = flt(r.qty)
+		vr = flt(r.valuation_rate)
 		int_vr = integer_valuation_rate_from_amount(exp, qty, "IRR") if qty else None
-		inventory_expected = (
-			flt(int_vr) * qty if is_fx and int_vr is not None else exp
+		# Integer-rate inventory (FX or domestic discount/rate Class A): SLE = qty×VR.
+		# Amount-preserving domestic LCV keeps SLE = commercial auth.
+		uses_integer_inventory = bool(
+			qty
+			and vr
+			and abs(vr - flt(round_monetary_rate(vr, "IRR"))) < 1e-9
+			# Sub-rial gaps are noise; ≥1 IRR is a real integer-rate Class A residual.
+			and abs(vr * qty - exp) >= 1.0 - 1e-9
 		)
+		if uses_integer_inventory:
+			inventory_expected = vr * qty
+		elif is_fx and int_vr is not None:
+			inventory_expected = flt(int_vr) * qty
+		else:
+			inventory_expected = exp
+		rounding_gap = flt(inventory_expected) - exp
 		out.append(
 			{
 				"item_row": r.name,
@@ -87,15 +103,14 @@ def _fingerprint_pr(pr_name: str) -> dict[str, Any]:
 				"expected": exp,
 				"inventory_expected": inventory_expected,
 				"sle_svd": flt(r.sle_svd),
-				# Inventory check: FX compares SLE to qty×integer VR; domestic to auth.
 				"difference": (
 					flt(r.sle_svd) - inventory_expected if r.sle_svd is not None else None
 				),
-				"valuation_rate": flt(r.valuation_rate),
+				"valuation_rate": vr,
 				"integer_valuation_rate": flt(int_vr) if int_vr is not None else None,
-				"fx_rounding_gap": (
-					flt(inventory_expected) - exp if is_fx else 0.0
-				),
+				"fx_rounding_gap": rounding_gap,
+				"integer_rounding_gap": rounding_gap,
+				"uses_integer_inventory": uses_integer_inventory,
 				"pi_diff": flt(r.amount_difference_with_purchase_invoice),
 				"lcv": flt(r.landed_cost_voucher_amount),
 				"is_fx": is_fx,
@@ -105,6 +120,9 @@ def _fingerprint_pr(pr_name: str) -> dict[str, Any]:
 		"purchase_receipt": pr_name,
 		"items": out,
 		"is_fx": is_fx,
+		"has_integer_rounding_gap": any(
+			abs(flt(i.get("integer_rounding_gap") or 0)) > TOL for i in out
+		),
 		"at": str(now_datetime()),
 	}
 
@@ -333,62 +351,11 @@ def repair_one(
 		result["fingerprint_after"] = _fingerprint_pr(pr_name)
 		return result
 
-	# Step 1b: RIV/adjust may refresh SLE while leaving stale PR GL (inventory ≠ SLE).
-	# Regenerate via Core reverse + make_gl_entries(from_repost=True) — no direct GL writes.
-	mid = _fingerprint_pr(pr_name)
-	gl_stock = flt(
-		frappe.db.sql(
-			"""
-			select coalesce(sum(gl.debit - gl.credit), 0)
-			from `tabGL Entry` gl
-			inner join `tabAccount` a on a.name=gl.account
-			where gl.voucher_type='Purchase Receipt' and gl.voucher_no=%s
-			  and gl.is_cancelled=0 and a.account_type='Stock'
-			""",
-			pr_name,
-		)[0][0]
-	)
-	sle_total = sum(flt(i.get("sle_svd")) for i in mid.get("items") or [])
-	if abs(gl_stock - sle_total) > TOL:
-		try:
-			from erpnext.accounts.general_ledger import make_reverse_gl_entries
-
-			make_reverse_gl_entries(voucher_type="Purchase Receipt", voucher_no=pr_name)
-			pr = frappe.get_doc("Purchase Receipt", pr_name)
-			pr.flags.ignore_permissions = True
-			pr.make_gl_entries(from_repost=True)
-			frappe.db.commit()
-			result["steps"].append(
-				{
-					"step": "regenerate_pr_gl",
-					"result": {
-						"status": "applied",
-						"gl_stock_before": gl_stock,
-						"sle_total": sle_total,
-					},
-				}
-			)
-		except Exception as exc:
-			frappe.db.rollback()
-			result["steps"].append(
-				{
-					"step": "regenerate_pr_gl",
-					"result": {"status": "failed", "error": str(exc)[:800]},
-				}
-			)
-			result["status"] = "blocked"
-			result["blocked_reason"] = "gl_regenerate_failed"
-			result["fingerprint_after"] = _fingerprint_pr(pr_name)
-			return result
-	else:
-		result["steps"].append(
-			{"step": "regenerate_pr_gl", "result": {"status": "skipped_gl_matches_sle"}}
-		)
-
-	# Step 2: run PR-anchored RIV only for this receipt's item/warehouse pairs.
-	# Do not drain unrelated Queued RIVs for the same item_code (other PRs / backlog).
+	# Step 2: RIV first so SLE matches document integer/fractional VR before GL rebuild.
+	# (GL inventory legs read SLE; Class A residual is computed from document VR.)
 	started = str(now_datetime())
 	riv_results = []
+	pr = frappe.get_doc("Purchase Receipt", pr_name)
 	for item in pr.items:
 		riv_results.append(
 			_create_and_run_riv(
@@ -399,7 +366,6 @@ def repair_one(
 				pr.posting_time,
 			)
 		)
-	# Also complete Queued RIVs created by adjust_incoming_rate_for_pr for these WH
 	warehouses = list({i.warehouse for i in pr.items if i.warehouse})
 	item_codes = list({i.item_code for i in pr.items if i.item_code})
 	spawned = frappe.get_all(
@@ -419,6 +385,98 @@ def repair_one(
 	result["steps"].append({"step": "riv", "results": riv_results})
 
 	failed = [r for r in riv_results if r.get("status") not in {"Completed", "Skipped"}]
+	if failed:
+		result["status"] = "blocked"
+		result["blocked_reason"] = "riv_failed"
+		result["failed_rivs"] = failed
+		result["fingerprint_before"] = before
+		result["fingerprint_after"] = _fingerprint_pr(pr_name)
+		return result
+
+	# Step 3: Rebuild PR GL after SLE is aligned (fixes partner-path GRNI/SA pollution).
+	mid = _fingerprint_pr(pr_name)
+	gl_stock = flt(
+		frappe.db.sql(
+			"""
+			select coalesce(sum(gl.debit - gl.credit), 0)
+			from `tabGL Entry` gl
+			inner join `tabAccount` a on a.name=gl.account
+			where gl.voucher_type='Purchase Receipt' and gl.voucher_no=%s
+			  and gl.is_cancelled=0 and a.account_type='Stock'
+			""",
+			pr_name,
+		)[0][0]
+	)
+	sle_total = sum(flt(i.get("sle_svd")) for i in mid.get("items") or [])
+	pr_grni = _grni_net(company, [pr_name])
+	expected_pr_grni = -sum(flt(i.get("expected") or 0) for i in mid.get("items") or [])
+	sa_account = frappe.db.get_value("Company", company, "stock_adjustment_account")
+	expected_sa_credit = sum(flt(i.get("integer_rounding_gap") or 0) for i in mid.get("items") or [])
+	sa_net_credit = 0.0
+	if sa_account:
+		sa_net_credit = flt(
+			frappe.db.sql(
+				"""
+				select coalesce(sum(credit)-sum(debit), 0)
+				from `tabGL Entry`
+				where voucher_type='Purchase Receipt' and voucher_no=%s
+				  and account=%s and is_cancelled=0
+				""",
+				(pr_name, sa_account),
+			)[0][0]
+		)
+	doc_inv = sum(
+		flt(i.get("valuation_rate")) * flt(
+			frappe.db.get_value("Purchase Receipt Item", i["item_row"], "qty") or 0
+		)
+		for i in mid.get("items") or []
+	)
+	# Also regen when SLE still drifts from document qty×VR (should be rare post-RIV).
+	need_gl_regen = (
+		abs(gl_stock - sle_total) > TOL
+		or abs(pr_grni - expected_pr_grni) > TOL
+		or abs(sa_net_credit - expected_sa_credit) > TOL
+		or abs(sle_total - doc_inv) > TOL
+	)
+	if need_gl_regen:
+		try:
+			from erpnext.accounts.general_ledger import make_reverse_gl_entries
+
+			make_reverse_gl_entries(voucher_type="Purchase Receipt", voucher_no=pr_name)
+			pr = frappe.get_doc("Purchase Receipt", pr_name)
+			pr.flags.ignore_permissions = True
+			pr.make_gl_entries(from_repost=True)
+			frappe.db.commit()
+			result["steps"].append(
+				{
+					"step": "regenerate_pr_gl",
+					"result": {
+						"status": "applied",
+						"gl_stock_before": gl_stock,
+						"sle_total": sle_total,
+						"grni_before": pr_grni,
+						"sa_net_credit_before": sa_net_credit,
+					},
+				}
+			)
+		except Exception as exc:
+			frappe.db.rollback()
+			result["steps"].append(
+				{
+					"step": "regenerate_pr_gl",
+					"result": {"status": "failed", "error": str(exc)[:800]},
+				}
+			)
+			result["status"] = "blocked"
+			result["blocked_reason"] = "gl_regenerate_failed"
+			result["fingerprint_before"] = before
+			result["fingerprint_after"] = _fingerprint_pr(pr_name)
+			return result
+	else:
+		result["steps"].append(
+			{"step": "regenerate_pr_gl", "result": {"status": "skipped_gl_already_correct"}}
+		)
+
 	after = _fingerprint_pr(pr_name)
 	grni_after = _grni_net(company, related)
 	mismatches = [
@@ -430,12 +488,6 @@ def repair_one(
 	result["fingerprint_before"] = before
 	result["fingerprint_after"] = after
 	result["grni_net_after"] = grni_after
-
-	if failed:
-		result["status"] = "blocked"
-		result["blocked_reason"] = "riv_failed"
-		result["failed_rivs"] = failed
-		return result
 
 	# Fully billed: purchase GRNI on the closed voucher set must be ~0.
 	# Unbilled / partial: outstanding GRNI ≈ −Σ expected acquisition (credit).
@@ -452,9 +504,12 @@ def repair_one(
 	result["grni_ok"] = grni_ok
 
 	sa_ok = True
-	if after.get("is_fx"):
+	expected_sa_credit = sum(
+		flt(i.get("integer_rounding_gap") or i.get("fx_rounding_gap") or 0)
+		for i in after.get("items") or []
+	)
+	if after.get("is_fx") or after.get("has_integer_rounding_gap") or abs(expected_sa_credit) > TOL:
 		sa_account = frappe.db.get_value("Company", company, "stock_adjustment_account")
-		expected_sa_credit = sum(flt(i.get("fx_rounding_gap") or 0) for i in after.get("items") or [])
 		sa_net = 0.0
 		if sa_account:
 			sa_net = flt(
