@@ -518,17 +518,13 @@ def classify_document_residuals(doc) -> tuple[list[dict], list[dict]]:
 				},
 			)
 			enrich_candidate_dimensions(classified, row)
-			# FX PR integer-rate policy: inventory = qty×integer VR; GRNI = commercial
-			# auth (Core already posts base_net). Invert incoming SA sign so inventory
-			# excess → Stock Adjustment *credit* (shortfall → debit). No partner reclass.
-			if (
-				_purchase_receipt_is_fx(doc)
-				and classified.get("class") == "A"
-				and classified.get("reason")
-				in (
-					"amount_authoritative_integer_valuation_rate",
-					"amount_authoritative_legacy_uvr_float_rate",
-				)
+			# PR integer-rate Class A (FX and domestic): inventory = qty×integer VR;
+			# GRNI = commercial auth (Core posts base_net / discount-allocated net).
+			# Invert incoming SA sign so inventory excess → Stock Adjustment *credit*
+			# (shortfall → debit). No partner reclass — GRNI must stay commercial.
+			if classified.get("class") == "A" and classified.get("reason") in (
+				"amount_authoritative_integer_valuation_rate",
+				"amount_authoritative_legacy_uvr_float_rate",
 			):
 				residual = flt(classified.get("residual"))
 				_bucket(
@@ -539,7 +535,9 @@ def classify_document_residuals(doc) -> tuple[list[dict], list[dict]]:
 					currency=ccy,
 					preset_debit=residual,  # invert vs default −residual
 				)
-				classified["fx_integer_rate_standalone_sa"] = True
+				classified["pr_integer_rate_standalone_sa"] = True
+				# Legacy alias kept for older diagnostics / tests.
+				classified["fx_integer_rate_standalone_sa"] = _purchase_receipt_is_fx(doc)
 			else:
 				_bucket(classified, class_a, class_b, incoming=True, currency=ccy)
 
@@ -855,10 +853,11 @@ def evaluate_irr_rate_rounding_residual(
 		decision.messages.append(str(e))
 		return decision
 
-	# FX PR integer-rate Class A: Stock Adjustment alone balances inventory vs
-	# commercial GRNI. No partner reclass (GRNI must stay at authoritative purchase).
+	# PR integer-rate Class A (FX + domestic): Stock Adjustment alone balances
+	# inventory vs commercial GRNI. No partner reclass.
 	standalone = bool(class_a) and all(
-		r.get("fx_integer_rate_standalone_sa") for r in class_a
+		r.get("pr_integer_rate_standalone_sa") or r.get("fx_integer_rate_standalone_sa")
+		for r in class_a
 	)
 	decision.standalone_sa = standalone
 
