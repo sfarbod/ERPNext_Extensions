@@ -159,7 +159,8 @@ class TestFxPrStandaloneStockAdjustment(unittest.TestCase):
 			decision = evaluate_irr_rate_rounding_residual(doc, gl_entries=None)
 		self.assertEqual(b, [])
 		self.assertEqual(len(a), 1)
-		self.assertTrue(a[0].get("fx_integer_rate_standalone_sa"))
+		self.assertTrue(a[0].get("pr_integer_rate_standalone_sa"))
+		self.assertTrue(a[0].get("fx_integer_rate_standalone_sa"))  # FX alias
 		# Inverted vs default incoming (−residual): residual −10200 → SA credit.
 		self.assertEqual(flt(a[0]["round_off_debit"]), -GAP)
 		self.assertEqual(decision.status, STATUS_READY)

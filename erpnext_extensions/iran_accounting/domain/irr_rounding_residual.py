@@ -741,14 +741,13 @@ def _populate_round_off_dimensions(gle: dict, voucher_type: str, voucher_no: str
 		gle["cost_center"] = locked_cost_center
 
 
-def _restore_fx_pr_commercial_grni(doc, gl_map: list, decision, precision: int, currency: str) -> None:
-	"""Undo Core divisional-loss merge into purchase GRNI for FX integer-rate PR.
+def _restore_pr_commercial_grni(doc, gl_map: list, decision, precision: int, currency: str) -> None:
+	"""Restore purchase GRNI to commercial acquisition total for standalone SA PRs.
 
-	ERPNext ``make_divisional_loss_gl_entry`` posts ``auth − SLE`` to
-	``default_expense_account`` or falls back to stock received-but-not-billed.
-	When that fallback merges into GRNI, credit becomes SLE instead of commercial
-	auth. Restore GRNI to Σ authoritative Class A amounts so Stock Adjustment can
-	carry the integer-rate gap alone.
+	ERPNext ``make_divisional_loss_gl_entry`` may merge ``auth − SLE`` into GRNI when
+	``default_expense_account`` is empty. Prior partner-reclass paths may also inflate
+	GRNI. Standalone Stock Adjustment requires GRNI = Σ row commercial auth (all
+	stock-valuation rows), not merely Class A rows.
 	"""
 	if getattr(doc, "doctype", None) != "Purchase Receipt":
 		return
@@ -756,18 +755,23 @@ def _restore_fx_pr_commercial_grni(doc, gl_map: list, decision, precision: int, 
 	if not grni_accounts:
 		return
 
-	auth_total = round_currency(
-		sum(flt(r.get("authoritative_amount")) for r in (decision.class_a_rows or [])),
-		currency,
+	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
+		get_purchase_receipt_stock_valuation_eligible_item_codes,
+		is_purchase_receipt_row_stock_valuation_eligible,
+		purchase_receipt_stock_valuation_amount,
 	)
-	stock_debit = round_currency(
+
+	eligible = get_purchase_receipt_stock_valuation_eligible_item_codes(doc)
+	auth_total = round_currency(
 		sum(
-			flt(e.get("debit")) - flt(e.get("credit"))
-			for e in gl_map
-			if _is_stock_account(e.get("account"))
+			flt(purchase_receipt_stock_valuation_amount(row, doc))
+			for row in (doc.get("items") or [])
+			if is_purchase_receipt_row_stock_valuation_eligible(row, eligible)
 		),
 		currency,
 	)
+	_ = decision  # Class A rows drive SA magnitude; GRNI uses full commercial auth.
+
 	grni_entries = [e for e in gl_map if e.get("account") in grni_accounts]
 	if not grni_entries:
 		return
@@ -776,20 +780,19 @@ def _restore_fx_pr_commercial_grni(doc, gl_map: list, decision, precision: int, 
 		currency,
 	)
 
-	# Contaminated: GRNI ≈ inventory SLE (divisional absorbed into clearing).
-	# Commercial: GRNI ≈ auth. Only restore when contaminated.
-	if abs(grni_credit - stock_debit) > 0.51:
-		return
 	if abs(grni_credit - auth_total) <= 0.51:
 		return
 
-	# Reduce GRNI credit (or increase debit) so net credit → auth_total.
+	# Move GRNI net credit to commercial auth (positive delta reduces credit).
 	delta = round_currency(grni_credit - auth_total, currency)
 	if not delta:
 		return
-	# Prefer the largest credit GRNI leg.
 	target = max(grni_entries, key=lambda e: flt(e.get("credit")) - flt(e.get("debit")))
 	_apply_signed_debit_to_entry(target, delta, precision, currency)
+
+
+# Backward-compatible alias
+_restore_fx_pr_commercial_grni = _restore_pr_commercial_grni
 
 
 def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None:
@@ -798,7 +801,8 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 	Manufacture / Repack: no Class A residual layer — value_difference uses Stock Adjustment.
 	Other inventory vouchers (Stock Entry / PR / SR): Class A residual → Stock Adjustment.
 	Financial Round Off is never used for inventory valuation residuals.
-	FX Purchase Receipt integer-rate Class A uses standalone Stock Adjustment (no partner).
+	Purchase Receipt integer-rate Class A (FX + domestic) uses standalone Stock
+	Adjustment (no partner); GRNI is restored to commercial auth when needed.
 	"""
 	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 		STATUS_BYPASS,
@@ -825,7 +829,7 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 	existing_ro = [
 		e for e in gl_map if is_irr_rate_rounding_residual_gl(e, company=doc.company)
 	]
-	if existing_ro:
+	if existing_ro and not decision.standalone_sa:
 		for e in existing_ro:
 			if use_sa:
 				stamp_irr_inventory_valuation_residual_masters(e, doc.company)
@@ -835,6 +839,9 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 				if fieldname != "cost_center" and value:
 					e[fieldname] = value
 		return gl_map
+	if existing_ro and decision.standalone_sa:
+		# Drop prior residual / wrong-direction SA legs; rebuild from decision.
+		strip_irr_rate_rounding_residual_gl(gl_map)
 
 	cfg_account = decision.round_off_account
 	cfg_cc = decision.round_off_cost_center
@@ -842,10 +849,34 @@ def apply_irr_rate_rounding_residual_gl(doc, gl_map: list | None) -> list | None
 	precision = 0 if (ccy or "").upper() == "IRR" else 2
 
 	if decision.standalone_sa:
-		# FX PR integer-rate: Core posts Inv=SLE and GRNI=base_net, then may merge
-		# divisional loss into GRNI when Company.default_expense_account is empty.
-		# Restore commercial GRNI when contaminated; never invent a generic partner.
-		_restore_fx_pr_commercial_grni(doc, gl_map, decision, precision, ccy)
+		# Core may merge divisional loss into GRNI; prior partner paths may inflate
+		# GRNI. Restore commercial GRNI; never invent a generic partner.
+		_restore_pr_commercial_grni(doc, gl_map, decision, precision, ccy)
+		# SA magnitude must clear the *actual* post-restore GL gap (SLE inventory vs
+		# commercial GRNI). Class A net matches when SLE == qty×document VR; during
+		# mid-repair SLE drift, GL gap is authoritative for balancing.
+		stock_net = round_currency(
+			sum(
+				flt(e.get("debit")) - flt(e.get("credit"))
+				for e in gl_map
+				if _is_stock_account(e.get("account"))
+			),
+			ccy,
+		)
+		grni_accounts = set(_protected_reclass_accounts(doc) or ())
+		grni_credit = round_currency(
+			sum(
+				flt(e.get("credit")) - flt(e.get("debit"))
+				for e in gl_map
+				if e.get("account") in grni_accounts
+			),
+			ccy,
+		)
+		gl_gap = round_currency(stock_net - grni_credit, ccy)
+		# Inventory excess → SA credit (negative signed debit).
+		net_ro_debit = -gl_gap
+		if not net_ro_debit:
+			return gl_map
 	else:
 		adjustable = decision.partner
 		if not adjustable:

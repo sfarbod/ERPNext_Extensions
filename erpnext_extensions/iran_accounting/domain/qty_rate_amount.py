@@ -692,13 +692,11 @@ def _is_fx_purchase_doc(doc) -> bool:
 def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
 	"""Set Purchase Receipt / PI-stock ``valuation_rate`` for IRR companies.
 
-	Domestic (IRR) acquisitions — including fractional LCV allocations — keep
-	amount-preserving VR ``auth / qty`` so SLE equals the acquisition total and
-	purchase GRNI is not contaminated by premature integerization.
-
-	FX acquisitions (foreign currency / non-1 conversion) must use **integer IRR
-	unit rates** (ROUND_HALF_UP). Inventory = qty × integer VR; the gap vs
-	authoritative commercial base (EUR×FX) posts to Stock Adjustment, not GRNI.
+	- FX: always integer IRR unit rates; gap vs commercial auth → Stock Adjustment.
+	- Domestic with LCV and/or PI amount_difference: amount-preserving fractional
+	  VR ``auth / qty`` (v5.6.25 LCV/GRNI integrity).
+	- Domestic without LCV/PI-diff (e.g. header-discount allocation): integer IRR
+	  unit rates; gap vs commercial auth → standalone Stock Adjustment (v5.6.27).
 	"""
 	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 		purchase_receipt_stock_valuation_amount,
@@ -719,8 +717,14 @@ def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
 	if _is_fx_purchase_doc(doc):
 		row.valuation_rate = rounding.round_monetary_rate(preserving, currency)
 		return
-	# Domestic amount-preserving (LCV fractions etc.).
-	row.valuation_rate = preserving
+	lcv = flt(row.get("landed_cost_voucher_amount"))
+	pi_diff = flt(row.get("amount_difference_with_purchase_invoice"))
+	if lcv or pi_diff:
+		# Domestic LCV / invoice valuation difference — amount-preserving.
+		row.valuation_rate = preserving
+		return
+	# Domestic commercial net (discount allocation etc.): integer unit rate.
+	row.valuation_rate = rounding.round_monetary_rate(preserving, currency)
 
 
 def align_purchase_receipt_item_amounts(doc) -> None:

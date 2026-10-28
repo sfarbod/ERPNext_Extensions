@@ -638,12 +638,12 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
-		# Domestic IRR PR: integer amount-authoritative Class A remains Class A
-		# (FX standalone SA is currency-gated; domestic keeps partner contract).
+		# Domestic IRR PR: integer Class A uses standalone SA (inverted debit).
 		self.assertEqual(b, [])
 		self.assertEqual(len(a), 1)
 		self.assertEqual(a[0]["class"], "A")
-		self.assertFalse(a[0].get("fx_integer_rate_standalone_sa"))
+		self.assertTrue(a[0].get("pr_integer_rate_standalone_sa"))
+		self.assertEqual(a[0]["round_off_debit"], 1)  # residual +1 → preset SA debit sign invert
 
 	def test_stock_pr_class_a_unchanged(self):
 		row = self._row(
@@ -673,6 +673,9 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 		self.assertEqual(len(a), 1)
 		self.assertEqual(a[0]["class"], "A")
 		self.assertEqual(a[0]["residual"], 1)
+		self.assertTrue(a[0].get("pr_integer_rate_standalone_sa"))
+		# residual +1 → inverted preset_debit = +1 (SA debit when inventory short)
+		self.assertEqual(a[0]["round_off_debit"], 1)
 
 	def test_stock_row_vr_zero_still_class_b(self):
 		"""Genuinely stock-valued row with VR=0 must remain fail-closed Class B."""
