@@ -187,6 +187,55 @@ def compose_stock_entry_row_amount(row, currency: str) -> float:
 	)
 
 
+def is_source_linked_consumption_return(doc) -> bool:
+	"""Material return of a prior issue linked via informational custom fields.
+
+	``custom_is_returned`` + ``custom_reference_no`` mark a receipt that must
+	re-capitalize at the source outgoing rate (see
+	``assert_source_linked_return_valuation``). Ordinary receipts are untouched.
+
+	These flags are informational for capitalization *policy* only: they select
+	the source outgoing rate as authoritative. They do not authorize inventing a
+	different inventory amount or residual.
+	"""
+	return bool(cint(doc.get("custom_is_returned"))) and bool(
+		(doc.get("custom_reference_no") or "").strip()
+	)
+
+
+# Backward-compatible private alias.
+_is_source_linked_consumption_return = is_source_linked_consumption_return
+
+
+def source_linked_return_keeps_rate_authoritative(doc, row, currency: str) -> bool:
+	"""True when a source-linked return row must keep ``valuation_rate = basic_rate``.
+
+	Rate-first identity still holds: ``amount == ROUND_HALF_UP(qty × rate)``, so
+	Class A residual is zero. ``ROUND_HALF_UP(amount / qty)`` may differ from the
+	source rate for fractional qty (no integer amount lands on that rate lattice).
+	"""
+	if not is_source_linked_consumption_return(doc):
+		return False
+	if not (row.get("t_warehouse") and not row.get("s_warehouse")):
+		return False
+	if row.get("basic_rate") in (None, "") or row.get("valuation_rate") in (None, ""):
+		return False
+	if flt(row.basic_rate) != flt(rounding.round_monetary_rate(row.basic_rate, currency)):
+		return False
+	if flt(row.valuation_rate) != flt(row.basic_rate):
+		return False
+	transfer_qty = flt(
+		row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")
+	)
+	if not transfer_qty or not flt(row.get("amount")):
+		return False
+	# Class A residual must be exactly zero — amount stays rate-first product.
+	residual = rounding.amount_rate_qty_residual(
+		row.amount, transfer_qty, row.valuation_rate, currency
+	)
+	return flt(residual) == 0.0
+
+
 def align_stock_entry_item_amounts(doc) -> None:
 	"""IRR rate-first Stock Entry row alignment.
 
@@ -197,6 +246,13 @@ def align_stock_entry_item_amounts(doc) -> None:
 	4. valuation_rate = ROUND_HALF_UP(amount / transfer_qty, 0)
 	5. amount remains authoritative: residual = amount − valuation_rate × qty
 	   (never force amount := valuation_rate × qty)
+
+	Source-linked consumption returns (``custom_is_returned`` + reference):
+	keep ``valuation_rate = basic_rate`` (source outgoing rate). Do **not**
+	re-derive valuation_rate from amount/qty — fractional return qty makes
+	ROUND(amount/qty) drift from the authoritative source rate (e.g. 0.19 kg
+	at 121055292 → amount 23000505 → derived rate 121055289). Informational
+	custom return fields must not change capitalization relative to source.
 
 	additional_cost and landed_cost_voucher_amount are preserved (rounded to IRR).
 
@@ -211,6 +267,7 @@ def align_stock_entry_item_amounts(doc) -> None:
 	if not rounding.is_irr_company(doc.company):
 		return
 	currency = rounding.get_company_currency(doc.company)
+	source_linked_return = _is_source_linked_consumption_return(doc)
 
 	from erpnext_extensions.iran_accounting.manufacture_output_contract import (
 		polish_closed_plan_after_align,
@@ -252,13 +309,26 @@ def align_stock_entry_item_amounts(doc) -> None:
 		# Never discard capitalized costs; compose amount from integer components.
 		row.amount = compose_stock_entry_row_amount(row, currency)
 		if transfer_qty and flt(row.amount):
-			row.valuation_rate = rounding.integer_valuation_rate_from_amount(
-				row.amount, transfer_qty, currency
+			incoming_return_row = (
+				source_linked_return and row.get("t_warehouse") and not row.get("s_warehouse")
 			)
-			# Residual is intentional when valuation_rate × qty ≠ amount; amount wins.
-			_ = rounding.amount_rate_qty_residual(
-				row.amount, transfer_qty, row.valuation_rate, currency
-			)
+			if incoming_return_row and row.get("basic_rate") not in (None, ""):
+				# Source outgoing rate remains the capitalization rate.
+				row.valuation_rate = rounding.round_monetary_rate(row.basic_rate, currency)
+				# Rate-first amount already equals ROUND(qty×rate); Class A residual is 0.
+				# Do not bump amount to force ROUND(amount/qty)==rate — that lattice is
+				# empty for many fractional quantities (see return residual investigation).
+				_ = rounding.amount_rate_qty_residual(
+					row.amount, transfer_qty, row.valuation_rate, currency
+				)
+			else:
+				row.valuation_rate = rounding.integer_valuation_rate_from_amount(
+					row.amount, transfer_qty, currency
+				)
+				# Residual is intentional when valuation_rate × qty ≠ amount; amount wins.
+				_ = rounding.amount_rate_qty_residual(
+					row.amount, transfer_qty, row.valuation_rate, currency
+				)
 		elif row.get("valuation_rate") is not None:
 			row.valuation_rate = rounding.round_monetary_rate(row.valuation_rate, currency)
 
