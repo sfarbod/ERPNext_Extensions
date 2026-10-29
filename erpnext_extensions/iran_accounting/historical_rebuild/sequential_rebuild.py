@@ -580,10 +580,40 @@ def execute_one_identity(
 	if not name:
 		return {"ok": False, "reason": "create_failed", "item_code": item_code, "warehouse": warehouse}
 
+	# v5.6.28: claim Redis ownership BEFORE commit so Core parallel/RQ cannot
+	# select this Queued RIV (get_entries_with_active_jobs is RQ-only without our claim).
+	from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
+		assert_riv_execution_owner,
+		claim_riv_execution,
+		refresh_riv_execution_claim,
+		release_riv_execution_claim,
+	)
+
+	# Always record the created RIV before claim outcome so an orphan Queued row
+	# remains discoverable on Pause/resume (Redis/DB are not one atomic unit).
 	sess.setdefault("riv_created", []).append(name)
 	sess["current_item_code"] = item_code
 	sess["current_warehouse"] = warehouse
 	sess["current_riv"] = name
+
+	claim_token = claim_riv_execution(name)
+	if not claim_token:
+		# Another owner already claimed (or Redis refused). Commit the Queued RIV,
+		# Pause — do not Fail — so Core/owner can finish and resume can reconcile.
+		_save_seq(sess)
+		frappe.db.commit()
+		return {
+			"ok": False,
+			"reason": "riv_exec_claim_held",
+			"riv": name,
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"error": "another executor already owns this RIV claim",
+			"stop_chain": False,
+			"in_progress_unresolved": True,
+		}
+	frappe.local.iran_hr_riv_exec_owner = name
+
 	_save_seq(sess)
 	frappe.db.commit()
 
@@ -599,24 +629,48 @@ def execute_one_identity(
 	)
 
 	def _execute_fn(riv: str) -> None:
+		# Fail closed if claim expired / stolen — do not start a second competing run.
+		assert_riv_execution_owner(name, claim_token)
 		_empty_rq()
 		_exec_riv(riv, continue_reposting=False)
 
-	# Refresh session from cache/JSON in case another path updated revision.
-	sess = get_seq_session() or sess
-	exec_out = run_resilient_riv_execution(
-		riv_name=name,
-		item_code=item_code,
-		warehouse=warehouse,
-		posting_date=posting_date,
-		posting_time=posting_time,
-		company=company,
-		sess=sess,
-		execute_fn=_execute_fn,
-		verify_chain=inspect_sle_chain,
-		stop_check=_stop_requested,
-		save_session=_save_seq,
-	)
+	def _save_seq_refresh(payload: dict) -> None:
+		# Best-effort heartbeat during waits; lost ownership is enforced on next execute.
+		refresh_riv_execution_claim(name, claim_token)
+		_save_seq(payload)
+
+	exec_out: dict[str, Any] | None = None
+	try:
+		# Refresh session from cache/JSON in case another path updated revision.
+		sess = get_seq_session() or sess
+		exec_out = run_resilient_riv_execution(
+			riv_name=name,
+			item_code=item_code,
+			warehouse=warehouse,
+			posting_date=posting_date,
+			posting_time=posting_time,
+			company=company,
+			sess=sess,
+			execute_fn=_execute_fn,
+			verify_chain=inspect_sle_chain,
+			stop_check=_stop_requested,
+			save_session=_save_seq_refresh,
+		)
+	finally:
+		release_riv_execution_claim(name, claim_token)
+		if getattr(frappe.local, "iran_hr_riv_exec_owner", None) == name:
+			frappe.local.iran_hr_riv_exec_owner = None
+
+	if exec_out is None:
+		return {
+			"ok": False,
+			"riv": name,
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"error": "resilient_execution_aborted",
+			"stop_chain": True,
+		}
+
 	duration = exec_out.get("duration")
 	if exec_out.get("ok"):
 		_save_seq(sess)
@@ -633,7 +687,26 @@ def execute_one_identity(
 			"attempt": exec_out.get("attempt"),
 		}
 
-	# Terminal failure / stop — preserve Failed RIV for audit; do not delete.
+	# Still In Progress after barrier — Pause (do not Fail). Another executor or a
+	# long Core run may still complete; Session must not contradict a later Completed.
+	if exec_out.get("in_progress_unresolved") or exec_out.get("stopped"):
+		_save_seq(sess)
+		return {
+			"ok": False,
+			"riv": name,
+			"status": frappe.db.get_value("Repost Item Valuation", name, "status"),
+			"error": exec_out.get("error"),
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"duration": duration,
+			"stop_chain": False,
+			"stopped": bool(exec_out.get("stopped")),
+			"in_progress_unresolved": bool(exec_out.get("in_progress_unresolved")),
+			"retry_audit": exec_out.get("retry_audit"),
+			"db_retry": exec_out.get("retry_reason"),
+		}
+
+	# Terminal failure — preserve Failed RIV for audit; do not delete.
 	status = frappe.db.get_value("Repost Item Valuation", name, "status")
 	if exec_out.get("verify_failed") and status == "Completed":
 		# Case 4: Completed but invalid — mark RIV Failed for audit alignment.
@@ -1037,8 +1110,9 @@ def run_sequential(
 			results.append(out)
 			if out.get("ok"):
 				completed += 1
-			elif out.get("stopped") or out.get("lock_lost"):
-				# STOP during queue/retry wait, or lock loss — pause, not Failed.
+			elif out.get("stopped") or out.get("lock_lost") or out.get("in_progress_unresolved"):
+				# STOP / lock loss / still-In-Progress after barrier — pause, not Failed.
+				# HRC-00008: never mark Session Failed while RIV may still complete.
 				sess = get_seq_session() or sess
 				sess["status"] = "Paused"
 				_save_seq(sess)
@@ -1047,14 +1121,22 @@ def run_sequential(
 				)
 				frappe.db.commit()
 				stopped_by_flag = True
+				if out.get("lock_lost"):
+					pause_reason = "LOCK_LOST"
+					pause_detail = "executor lock lost during wait"
+				elif out.get("in_progress_unresolved"):
+					pause_reason = "RIV_IN_PROGRESS"
+					pause_detail = (
+						"RIV still In Progress after retry barrier; "
+						"paused to avoid Session Failed vs later Completed divergence"
+					)
+				else:
+					pause_reason = "STOP_FLAG"
+					pause_detail = "halted during RIV queue or resilient retry wait"
 				blocked_at = {
 					"index": i,
-					"reason": "LOCK_LOST" if out.get("lock_lost") else "STOP_FLAG",
-					"detail": (
-						"executor lock lost during wait"
-						if out.get("lock_lost")
-						else "halted during RIV queue or resilient retry wait"
-					),
+					"reason": pause_reason,
+					"detail": pause_detail,
 					"riv": out.get("riv"),
 					"item_code": row.item_code,
 					"warehouse": row.warehouse,
