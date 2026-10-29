@@ -493,6 +493,104 @@ class TestReturnPreventionV5544(unittest.TestCase):
 				assert_source_linked_return_valuation(doc)
 		self.assertIn("does not match source", str(ctx.exception))
 
+	def test_d_partial_fractional_qty_three_irr_drift_fixed_by_align(self):
+		"""MAT-STE-2026-43017: 0.19 × 121055292 → amount 23000505 → derived VR 121055289.
+
+		Align must keep valuation_rate = source basic_rate so Return Valuation passes.
+		"""
+		from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+			align_stock_entry_item_amounts,
+		)
+
+		source_rate = 121_055_292
+		src_row = _Row(
+			idx=1,
+			item_code="17400002",
+			batch_no="5577-17400002-0000647585",
+			qty=1,
+			s_warehouse="WH",
+			basic_rate=source_rate,
+			valuation_rate=source_rate,
+			amount=source_rate,
+		)
+		source = _Doc(name="MAT-STE-2026-42580", docstatus=1, purpose="Material Issue", items=[src_row])
+		# Simulate contaminated VR after amount/qty derivation (pre-fix state).
+		ret_row = _Row(
+			idx=1,
+			item_code="17400002",
+			batch_no="5577-17400002-0000647585",
+			qty=0.19,
+			transfer_qty=0.19,
+			t_warehouse="WH",
+			basic_rate=source_rate,
+			valuation_rate=121_055_289,
+			basic_amount=23_000_505,
+			amount=23_000_505,
+		)
+		doc = _Doc(
+			purpose="Material Receipt",
+			custom_is_returned=1,
+			custom_reference_no="MAT-STE-2026-42580",
+			items=[ret_row],
+		)
+		with mock.patch(f"{QRA}.rounding.is_irr_company", return_value=True), mock.patch(
+			f"{QRA}.rounding.get_company_currency", return_value="IRR"
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.manufacture_output_contract.protect_closed_row_amounts",
+			return_value=False,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.manufacture_output_contract.polish_closed_plan_after_align",
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.scrap_costing.row_is_component_scrap_fg_pool_residual",
+			return_value=False,
+		):
+			align_stock_entry_item_amounts(doc)
+
+		self.assertEqual(flt(ret_row.basic_rate), float(source_rate))
+		self.assertEqual(flt(ret_row.valuation_rate), float(source_rate))
+		self.assertEqual(flt(ret_row.amount), 23_000_505.0)
+
+		with mock.patch(f"{PREV}.is_irr_company", return_value=True), mock.patch(
+			f"{PREV}.frappe.db.exists", return_value=True
+		), mock.patch(f"{PREV}.frappe.get_doc", return_value=source), mock.patch(
+			"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+			return_value="IRR",
+		):
+			assert_source_linked_return_valuation(doc)
+
+	def test_d_ordinary_receipt_still_derives_vr_from_amount(self):
+		"""Non-return Material Receipt keeps amount→valuation_rate derivation."""
+		from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+			align_stock_entry_item_amounts,
+		)
+
+		row = _Row(
+			idx=1,
+			item_code="17400002",
+			qty=0.19,
+			transfer_qty=0.19,
+			t_warehouse="WH",
+			basic_rate=121_055_292,
+			valuation_rate=121_055_292,
+			basic_amount=0,
+			amount=0,
+		)
+		doc = _Doc(purpose="Material Receipt", custom_is_returned=0, items=[row])
+		with mock.patch(f"{QRA}.rounding.is_irr_company", return_value=True), mock.patch(
+			f"{QRA}.rounding.get_company_currency", return_value="IRR"
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.manufacture_output_contract.protect_closed_row_amounts",
+			return_value=False,
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.manufacture_output_contract.polish_closed_plan_after_align",
+		), mock.patch(
+			"erpnext_extensions.iran_accounting.scrap_costing.row_is_component_scrap_fg_pool_residual",
+			return_value=False,
+		):
+			align_stock_entry_item_amounts(doc)
+		self.assertEqual(flt(row.amount), 23_000_505.0)
+		self.assertEqual(flt(row.valuation_rate), 121_055_289.0)
+
 	def test_d_ordinary_receipt_untouched(self):
 		doc = _Doc(
 			purpose="Material Receipt",

@@ -271,7 +271,17 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 	  single-FG residual or SAME_ITEM_MULTI_FG R2 (STAGE_CO secondaries excluded)
 	- amount == basic_amount + additional_cost + LCV
 	- valuation_rate == ROUND_HALF_UP(amount / transfer_qty); amount remains authoritative
+	  **except** source-linked consumption returns that keep rate-authoritative
+	  identity (``valuation_rate = basic_rate`` and Class A residual == 0). For
+	  fractional return qty, no integer amount satisfies
+	  ``ROUND_HALF_UP(amount / qty) == source_rate`` while also equaling
+	  ``ROUND_HALF_UP(qty × source_rate)``. Inventory movement stays the
+	  rate-first amount; SLE mirrors ``row.amount``.
 	"""
+	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+		source_linked_return_keeps_rate_authoritative,
+	)
+
 	failures = []
 	ccy = get_company_currency(company)
 	tol = _tol(company)
@@ -325,6 +335,10 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 			)
 
 		if transfer_qty and flt(row.amount):
+			# Narrow exception: source-linked return keeps source outgoing rate.
+			# Amount stays ROUND(qty×rate); ROUND(amount/qty) may diverge.
+			if source_linked_return_keeps_rate_authoritative(doc, row, ccy):
+				continue
 			exp_rate = integer_valuation_rate_from_amount(row.amount, transfer_qty, ccy)
 			if abs(flt(row.valuation_rate) - exp_rate) > tol:
 				failures.append(

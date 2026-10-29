@@ -39,6 +39,9 @@ SEQ_RETRY_DELAY_SECONDS = 120
 # After the last transient attempt, wait once more and re-read before Session Failed.
 # Addresses Production HRC-00004: retry_attempts_exhausted while RIV later Completed.
 SEQ_POST_EXHAUST_GRACE_WAITS = 1
+# Additional In Progress polls after grace (each delay_s). Prefer Pause over Failed
+# when still In Progress (HRC-00008 Session/RIV divergence).
+SEQ_IN_PROGRESS_MAX_WAITS = 15  # 15 * 120s = 30 minutes wall after grace
 RETRYABLE_MARIADB_ERRNOS = frozenset({1020, 1205, 1213})
 
 # Injectable clock/sleep for tests — never sleep inside an open transaction.
@@ -86,6 +89,17 @@ def seq_post_exhaust_grace_waits() -> int:
 		)
 	except Exception:
 		return SEQ_POST_EXHAUST_GRACE_WAITS
+
+
+def seq_in_progress_max_waits() -> int:
+	try:
+		return int(
+			frappe.conf.get("hrc_seq_riv_in_progress_max_waits")
+			if frappe.conf.get("hrc_seq_riv_in_progress_max_waits") is not None
+			else SEQ_IN_PROGRESS_MAX_WAITS
+		)
+	except Exception:
+		return SEQ_IN_PROGRESS_MAX_WAITS
 
 
 def is_non_retryable_business_error(exc_or_msg: BaseException | str | None) -> bool:
@@ -264,6 +278,29 @@ def final_completion_barrier(
 			out["stop_chain"] = True
 		return out
 
+	def _reconcile_if_completed(*, after_exhaustion: bool = False) -> dict[str, Any] | None:
+		meta_now = read_riv_status(riv_name)
+		if not meta_now or meta_now.status != "Completed":
+			return None
+		out = reconcile_completed_riv(
+			riv_name=riv_name,
+			item_code=item_code,
+			warehouse=warehouse,
+			posting_date=posting_date,
+			posting_time=posting_time,
+			company=company,
+			sess=sess,
+			verify_chain=verify_chain,
+		)
+		out["final_barrier"] = True
+		out["retry_audit"] = audit
+		if after_exhaustion:
+			out["reconciled_after_exhaustion"] = True
+		_persist()
+		if out.get("fail_closed"):
+			out["stop_chain"] = True
+		return out
+
 	for grace in range(1, max(waits, 0) + 1):
 		append_retry_audit(
 			sess,
@@ -289,34 +326,84 @@ def final_completion_barrier(
 				"warehouse": warehouse,
 				"retry_audit": audit,
 			}
+		done = _reconcile_if_completed(after_exhaustion=True)
+		if done is not None:
+			return done
 		meta = read_riv_status(riv_name)
 		st = (meta.status if meta else None) or ""
-		if st == "Completed":
-			out = reconcile_completed_riv(
-				riv_name=riv_name,
-				item_code=item_code,
-				warehouse=warehouse,
-				posting_date=posting_date,
-				posting_time=posting_time,
-				company=company,
-				sess=sess,
-				verify_chain=verify_chain,
-			)
-			out["final_barrier"] = True
-			out["reconciled_after_exhaustion"] = True
-			out["retry_audit"] = audit
-			_persist()
-			if out.get("fail_closed"):
-				out["stop_chain"] = True
-			return out
 		if st == "In Progress":
 			# Stay in grace loop rather than creating a duplicate RIV.
 			continue
 		# Failed / Queued after grace — do not invent another execute here.
 		break
 
+	# Extended In Progress polling (HRC-00008): do not Fail while Core may still finish.
+	in_prog_max = seq_in_progress_max_waits()
+	for ip_wait in range(1, max(in_prog_max, 0) + 1):
+		meta = read_riv_status(riv_name)
+		st = (meta.status if meta else None) or ""
+		if st != "In Progress":
+			break
+		append_retry_audit(
+			sess,
+			{
+				"phase": "in_progress_barrier_wait",
+				"wait": ip_wait,
+				"riv": riv_name,
+				"delay_s": delay,
+			},
+		)
+		sess["status"] = "RetryWait"
+		_persist()
+		wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check)
+		audit.append({"event": "in_progress_barrier_wait", "wait": ip_wait, **wait_out})
+		if wait_out.get("interrupted_by_stop"):
+			return {
+				"ok": False,
+				"stopped": True,
+				"riv": riv_name,
+				"final_barrier": True,
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"retry_audit": audit,
+			}
+		done = _reconcile_if_completed(after_exhaustion=True)
+		if done is not None:
+			return done
+
 	meta = read_riv_status(riv_name)
 	st = (meta.status if meta else None) or ""
+	if st == "Completed":
+		done = _reconcile_if_completed(after_exhaustion=True)
+		if done is not None:
+			return done
+	if st == "In Progress":
+		# Prefer unresolved/Pause over Session Failed (avoids Completed-after-Failed).
+		append_retry_audit(
+			sess,
+			{
+				"phase": "in_progress_unresolved",
+				"riv": riv_name,
+				"status": st,
+			},
+		)
+		sess["status"] = "Paused"
+		_persist()
+		return {
+			"ok": False,
+			"riv": riv_name,
+			"status": st,
+			"error": "riv_still_in_progress_after_barrier",
+			"attempts_exhausted": False,
+			"in_progress_unresolved": True,
+			"final_barrier": True,
+			"stop_chain": False,
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"retry_audit": audit,
+			"identity": identity_key,
+		}
+
 	err = exhausted_error or (meta.error_log if meta else "") or "retry_attempts_exhausted"
 	append_retry_audit(
 		sess,
@@ -508,6 +595,48 @@ def run_resilient_riv_execution(
 				frappe.db.rollback()
 			except Exception:
 				pass
+			# Lost Redis claim mid-campaign: Pause, do not Fail — Core/other owner may finish.
+			try:
+				from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
+					RivExecutionOwnershipError,
+				)
+			except Exception:
+				RivExecutionOwnershipError = ()  # type: ignore[misc, assignment]
+			if RivExecutionOwnershipError and isinstance(exc, RivExecutionOwnershipError):
+				audit.append(
+					{
+						"attempt": attempt,
+						"ok": False,
+						"ownership_lost": True,
+						"error": f"{type(exc).__name__}: {exc}"[:500],
+					}
+				)
+				append_retry_audit(
+					sess,
+					{
+						"phase": "ownership_lost",
+						"attempt": attempt,
+						"riv": riv_name,
+						"error": str(exc)[:400],
+					},
+				)
+				sess["status"] = "Paused"
+				_persist()
+				return {
+					"ok": False,
+					"riv": riv_name,
+					"error": str(exc)[:500],
+					"in_progress_unresolved": True,
+					"ownership_lost": True,
+					"stop_chain": False,
+					"attempt": attempt,
+					"item_code": item_code,
+					"warehouse": warehouse,
+					"duration": round(_now_fn() - t0, 3),
+					"retry_audit": audit,
+					"raised": True,
+					"exc": exc,
+				}
 			if is_non_retryable_business_error(exc):
 				audit.append(
 					{

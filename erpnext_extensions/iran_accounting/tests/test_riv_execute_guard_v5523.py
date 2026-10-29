@@ -381,12 +381,14 @@ class TestRivExecuteGuardSequentialParallelSmokeV5523(unittest.TestCase):
 			_reset_riv_guard_install_state(restore_real=True)
 
 	def test_source_documents_n1_deferred(self):
-		"""N=1 off-by-one remains upstream; not patched in 5.5.23."""
+		"""N=1 off-by-one remains upstream; ownership patched via enqueue (5.6.28)."""
 		import inspect
 
 		src = inspect.getsource(riv_mod.run_parallel_reposting)
 		self.assertIn("len(items) > no_of_parallel_reposting", src)
-		# Guard module must not patch run_parallel / enqueue_reposting_entry.
+		# Guard does not rewrite run_parallel_reposting itself (Core N=1 left upstream).
+		# v5.6.28: does wrap enqueue_reposting_entry + get_entries_with_active_jobs.
 		guard_src = open(guard.__file__, encoding="utf-8").read()
-		self.assertNotIn("run_parallel_reposting", guard_src)
-		self.assertNotIn("enqueue_reposting_entry", guard_src)
+		self.assertNotIn("def run_parallel_reposting", guard_src)
+		self.assertIn("def enqueue_reposting_entry", guard_src)
+		self.assertIn("def get_entries_with_active_jobs", guard_src)
