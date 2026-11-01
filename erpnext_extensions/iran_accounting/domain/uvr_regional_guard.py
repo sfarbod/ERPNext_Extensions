@@ -50,6 +50,8 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 # stub unchanged. Revalidated on ERPNext 16.37.0 / Frappe 16.36.1.
 # ERPNext 16.51.1 / Frappe 16.52.0: UVR uses get_stock_qty for stock-UOM qty;
 # regional stub + hook call site unchanged. Intermediate 16.38–16.50 not listed.
+# ERPNext 16.52.x–16.53.0 / Frappe 16.53.x–16.54.0: UVR + regional stub
+# fingerprints unchanged vs 16.51.1 (revalidated on live 16.53.0 / 16.54.0).
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_ERPNEXT_MINOR = frozenset(
@@ -64,6 +66,8 @@ _SUPPORTED_ERPNEXT_MINOR = frozenset(
 		"16.36",
 		"16.37",
 		"16.51",
+		"16.52",
+		"16.53",
 	}
 )
 _SUPPORTED_FRAPPE_MINOR = frozenset(
@@ -77,6 +81,8 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 		"16.35",
 		"16.36",
 		"16.52",
+		"16.53",
+		"16.54",
 	}
 )
 
