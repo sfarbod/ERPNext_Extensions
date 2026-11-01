@@ -379,6 +379,8 @@ _SUPPORTED_ERPNEXT_MINOR = frozenset(
 		"16.36",
 		"16.37",
 		"16.51",
+		"16.52",
+		"16.53",
 	}
 )
 _SUPPORTED_FRAPPE_MINOR = frozenset(
@@ -392,6 +394,8 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 		"16.35",
 		"16.36",
 		"16.52",
+		"16.53",
+		"16.54",
 	}
 )
 
@@ -406,12 +410,19 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 # ERPNext 16.51.1 / Frappe 16.52.0: ``is_manufacture_entry_with_sabb`` removed;
 # update_rate recalculates only when ``not sle_id and not dependant``; recalculate
 # sets ``flags.via_repost = True``. Intermediate 16.38–16.50 not allow-listed.
+# ERPNext 16.52.x: guarded RIV bodies identical to 16.51.1 (same fingerprints).
+# ERPNext 16.53.0 / Frappe 16.54.0: ``recalculated_stock_entries`` once-per-repost
+# cache for transfer+additional_costs (``167d6d18``); update_rate discards the
+# voucher before writing basic_rate. Iran IRR recalculate wrapper still replaces
+# the vanilla body for IRR companies (early-return does not apply on that path).
 _FN_FINGERPRINTS = {
 	"update_rate_on_stock_entry": {
 		"signature": "(self, sle, outgoing_rate)",
-		# ERPNext 16.51.1 — sle_id gate; no sabb / has_bundle helper
-		"source_sha256": "8f413ed88adb038edf752774fd9804303d08ceed9eefd0685708332e04b8afcc",
+		# ERPNext 16.53.0 — discard from recalculated_stock_entries before rate write
+		"source_sha256": "26fc34437cf03df8d4d224966e0ac2b26987022b8a3038461d00c9ce392baabd",
 		"source_sha256_alternates": (
+			# ERPNext 16.51.1–16.52.x — sle_id gate; no sabb / has_bundle helper
+			"8f413ed88adb038edf752774fd9804303d08ceed9eefd0685708332e04b8afcc",
 			# ERPNext 16.29–16.37 (dependant or is_manufacture_entry_with_sabb)
 			"4665fb8ed4681e52fca822e129105dbc4d9dcac22cc44ba592f0fe0bb3644810",
 		),
@@ -419,9 +430,11 @@ _FN_FINGERPRINTS = {
 	},
 	"recalculate_amounts_in_stock_entry": {
 		"signature": "(self, voucher_no, voucher_detail_no)",
-		# ERPNext 16.51.1 — flags.via_repost = True before calculate
-		"source_sha256": "55cae6ec45d66989959be4567640a1e3370cb66c5d342c0a3dacafcb1402070b",
+		# ERPNext 16.53.0 — once-per-repost cache for transfer+additional_costs
+		"source_sha256": "94a9334aa95c733351a31d3366b3f5fbe17e0509369655165eb88f28e6b38bb2",
 		"source_sha256_alternates": (
+			# ERPNext 16.51.1–16.52.x — flags.via_repost = True before calculate
+			"55cae6ec45d66989959be4567640a1e3370cb66c5d342c0a3dacafcb1402070b",
 			# ERPNext 16.34.x–16.37 — also db_update incoming rows when additional_costs
 			"d54d175ca9c3a170df15362415fe230b63fe6a55f4ca52b0796fddb7a6e00247",
 			# ERPNext 16.29–16.33 (only voucher_detail_no / FG-scrap / Manufacture|Repack)
@@ -805,6 +818,11 @@ def make_update_rate_on_stock_entry_wrapper(original):
 		# Non-RIV submit paths and idempotent RIV (rates already match) stay here.
 
 		if vanilla_recalculates_after_update_rate(self, sle):
+			# Mirror Core 16.53+ discard so a prior transfer+additional_costs
+			# once-per-repost cache cannot suppress this document-rate recalculate.
+			recalculated = getattr(self, "recalculated_stock_entries", None)
+			if isinstance(recalculated, set):
+				recalculated.discard(sle.voucher_no)
 			self.recalculate_amounts_in_stock_entry(sle.voucher_no, sle.voucher_detail_no)
 			persist_irr_contract_after_recalculate(sle.voucher_no)
 

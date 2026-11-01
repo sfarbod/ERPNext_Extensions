@@ -105,6 +105,8 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 				"16.36",
 				"16.37",
 				"16.51",
+				"16.52",
+				"16.53",
 			},
 		)
 		self.assertIn(
@@ -119,6 +121,8 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 				"16.35",
 				"16.36",
 				"16.52",
+				"16.53",
+				"16.54",
 			},
 		)
 		for name, expected in _FN_FINGERPRINTS.items():
@@ -148,14 +152,18 @@ class TestUvrRegionalGuardUnit(unittest.TestCase):
 				"16.36",
 				"16.37",
 				"16.51",
+				"16.52",
+				"16.53",
 			}.issubset(_SUPPORTED_ERPNEXT_MINOR)
 		)
 		self.assertIn("16.51", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.53", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertNotIn("16.38", _SUPPORTED_ERPNEXT_MINOR)
-		self.assertNotIn("16.52", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertNotIn("16.50", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertIn("16.52", _SUPPORTED_FRAPPE_MINOR)
+		self.assertIn("16.54", _SUPPORTED_FRAPPE_MINOR)
 		self.assertNotIn("16.37", _SUPPORTED_FRAPPE_MINOR)
-		self.assertNotIn("16.53", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.51", _SUPPORTED_FRAPPE_MINOR)
 
 		with mock.patch.object(erpnext, "__version__", "16.51.1"), mock.patch.object(
 			frappe, "__version__", "16.52.0"

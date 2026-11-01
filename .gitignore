@@ -30,3 +30,6 @@ erpnext_extensions/iran_accounting/tests/_tmp/
 # local secrets
 .env
 .env.*
+
+# Generated salary-component sync artifacts (staging→production dry-run/execute output)
+/scripts/salary_component_sync_output/
