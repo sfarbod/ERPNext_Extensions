@@ -113,6 +113,8 @@ doctype_js = {
 	"PM Clearance": "public/js/pm_desk_workflow_actions.js",
 	# v4.6.7: append PM Request to ignore_doctypes_on_cancel_all (Desk Cancel All).
 	"Payment Entry": "public/js/payment_entry_pm_request_cancel.js",
+	# Recalculate net/purchase amount when Asset Quantity changes after PR/PI select.
+	"Asset": "asset_usage_depreciation/public/js/asset_purchase_amount_qty.js",
 }
 doctype_list_js = {
 	"PM Clearance": "erpnext_extensions/petty_management/doctype/pm_clearance/pm_clearance_list.js",
