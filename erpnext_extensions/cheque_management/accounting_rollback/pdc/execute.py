@@ -40,6 +40,8 @@ def clear_outcome_fields_for_target(pdc, target_state: str) -> dict[str, Any]:
 	if target in (WORKFLOW_DRAFT, WORKFLOW_REGISTERED):
 		updates["returned_date"] = None
 		updates["return_reason"] = None
+		# Debt Purchase assignment stamps handover_date; clear when undoing to Registered/Draft.
+		updates["handover_date"] = None
 	if target in (WORKFLOW_DRAFT, WORKFLOW_REGISTERED, WORKFLOW_ISSUED):
 		updates["instrument_dead"] = 0
 		updates["instrument_dead_reason"] = None

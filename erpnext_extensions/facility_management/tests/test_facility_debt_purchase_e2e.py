@@ -26,9 +26,7 @@ from erpnext_extensions.cheque_management.doctype.post_dated_cheque.post_dated_c
 	get_default_party_accounts,
 	resolve_pdc_accounts_for_journal,
 )
-from erpnext_extensions.cheque_management.pdc_journal_entry_service import (
-	post_pdc_transition_journal_entry,
-)
+from erpnext_extensions.cheque_management.pdc_workflow_rollback import get_rollback_target_states
 from erpnext_extensions.cheque_management.pdc_workflow_state_machine import (
 	WORKFLOW_ASSIGNED_DEBT_PURCHASE,
 	WORKFLOW_DEBT_PURCHASE_SETTLED,
@@ -189,9 +187,21 @@ class DebtPurchaseDbFixtureMixin:
 		if not settings or not settings.default_cheques_in_hand_account:
 			raise unittest.SkipTest("PDC Settings / Cheques in Hand missing")
 		cls.settings = settings
+		# Keep Desk workflow transitions aligned with Debt Purchase Bounce/Assign policy.
+		from erpnext_extensions.patches.post_model_sync.ensure_debt_purchase_pdc_workflow import (
+			execute as sync_dp_workflow,
+		)
+
+		sync_dp_workflow()
 		frappe.db.commit()
 
+	def _apply_workflow(self, doc, action: str):
+		from frappe.model.workflow import apply_workflow
+
+		return apply_workflow(doc, action)
+
 	def _new_assigned_pdc(self, *, amount: float = 1000.0) -> str:
+		"""Create a submitted Assigned DP cheque via Desk workflow (docstatus=1)."""
 		acc = get_default_party_accounts("Customer", self.customer, self.company, "Receivable") or {}
 		doc = frappe.new_doc("Post Dated Cheque")
 		doc.cheque_direction = "Receivable"
@@ -216,33 +226,20 @@ class DebtPurchaseDbFixtureMixin:
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 
-		# Register
-		doc.workflow_state = WORKFLOW_REGISTERED
-		doc.flags.ignore_validate_update_after_submit = True
-		doc.save(ignore_permissions=True)
-		frappe.db.commit()
+		doc = self._apply_workflow(doc, "Register Cheque")
 		doc.reload()
-		je = post_pdc_transition_journal_entry(doc, WORKFLOW_DRAFT, WORKFLOW_REGISTERED, posting_date=today())
-		self.assertTrue(je)
+		self.assertEqual(int(doc.docstatus or 0), 1)
+		self.assertEqual(normalize_workflow_state_value(doc.workflow_state), WORKFLOW_REGISTERED)
 		frappe.db.commit()
 
-		# Assign Debt Purchase
-		doc.reload()
-		doc.workflow_state = WORKFLOW_ASSIGNED_DEBT_PURCHASE
-		doc.flags.ignore_validate_update_after_submit = True
-		doc.save(ignore_permissions=True)
-		frappe.db.commit()
-		doc.reload()
-		je_assign = post_pdc_transition_journal_entry(
-			doc, WORKFLOW_REGISTERED, WORKFLOW_ASSIGNED_DEBT_PURCHASE, posting_date=today()
-		)
-		self.assertTrue(je_assign)
-		frappe.db.commit()
+		doc = self._apply_workflow(doc, "Assign for Debt Purchase")
 		doc.reload()
 		self.assertEqual(
 			normalize_workflow_state_value(doc.workflow_state), WORKFLOW_ASSIGNED_DEBT_PURCHASE
 		)
 		self.assertEqual(doc.cheque_status, CHEQUE_STATUS_DEBT_PURCHASE_IN_COLLECTION)
+		self.assertEqual(int(doc.docstatus or 0), 1)
+		frappe.db.commit()
 		return doc.name
 
 	def _new_active_facility(
@@ -336,6 +333,8 @@ class TestDebtPurchaseSettlementE2E(DebtPurchaseDbFixtureMixin, unittest.TestCas
 		self.assertEqual(pdc.cheque_status, CHEQUE_STATUS_DEBT_PURCHASE_SETTLED)
 		self.assertEqual(pdc.debt_purchase_facility, fac_name)
 		self.assertEqual(pdc.debt_purchase_repayment, rep_name)
+		# Settled remains Facility-owned while the repayment is active — no PDC rollback targets.
+		self.assertEqual(get_rollback_target_states(pdc_name), [])
 
 		settle_refs = _refs(pdc_name, purpose=PURPOSE_DEBT_PURCHASE_SETTLEMENT)
 		self.assertEqual(len(settle_refs), 1, settle_refs)
@@ -387,10 +386,101 @@ class TestDebtPurchaseSettlementE2E(DebtPurchaseDbFixtureMixin, unittest.TestCas
 		self.assertFalse(pdc.debt_purchase_repayment)
 		self.assertEqual(len(_refs(pdc_name, purpose=PURPOSE_DEBT_PURCHASE_SETTLEMENT)), 0)
 		self.assertEqual(len(_refs(pdc_name, purpose=PURPOSE_ASSIGNMENT)), 1)
+		# After cancel restore, controlled PDC rollback to Registered is available again.
+		self.assertIn(WORKFLOW_REGISTERED, get_rollback_target_states(pdc_name))
 
 		bal_restored = get_facility_balance_row(fac_name)
 		self.assertAlmostEqual(flt(bal_restored["paid_principal"]), flt(bal_before["paid_principal"]))
 		self.assertAlmostEqual(flt(bal_restored["paid_profit"]), flt(bal_before["paid_profit"]))
+
+		# Second cancel is a no-op path for an already-cancelled repayment (idempotent cancel).
+		with self.assertRaises(frappe.ValidationError):
+			rep.cancel()
+		frappe.db.rollback()
+		pdc.reload()
+		self.assertEqual(
+			normalize_workflow_state_value(pdc.workflow_state), WORKFLOW_ASSIGNED_DEBT_PURCHASE
+		)
+		self.assertEqual(len(_refs(pdc_name, purpose=PURPOSE_ASSIGNMENT)), 1)
+
+	def test_cancel_one_repayment_isolates_unrelated_settled_pdc(self):
+		"""Cancelling repayment A must not mutate an unrelated Settled PDC / repayment B."""
+		pa, pra = 700.0, 300.0
+		pb, prb = 550.0, 450.0
+		pdc_a = self._new_assigned_pdc(amount=pa + pra)
+		pdc_b = self._new_assigned_pdc(amount=pb + prb)
+		fac_a = self._new_active_facility(principal=pa, profit=pra, allocated_pdcs=[pdc_a])
+		fac_b = self._new_active_facility(principal=pb, profit=prb, allocated_pdcs=[pdc_b])
+
+		rep_a = self._new_dp_repayment(fac_a, pdc_a, principal=pa, profit=pra)
+		rep_b = self._new_dp_repayment(fac_b, pdc_b, principal=pb, profit=prb)
+		frappe.get_doc("Facility Repayment", rep_a).submit()
+		frappe.get_doc("Facility Repayment", rep_b).submit()
+		frappe.db.commit()
+
+		doc_b_before = frappe.db.get_value(
+			"Post Dated Cheque",
+			pdc_b,
+			["workflow_state", "cheque_status", "debt_purchase_facility", "debt_purchase_repayment", "modified"],
+			as_dict=True,
+		)
+		settle_b = _refs(pdc_b, purpose=PURPOSE_DEBT_PURCHASE_SETTLEMENT)
+		self.assertEqual(len(settle_b), 1)
+		je_b = settle_b[0]["journal_entry"]
+		assign_b = _refs(pdc_b, purpose=PURPOSE_ASSIGNMENT)
+		self.assertEqual(len(assign_b), 1)
+		assign_je_b = assign_b[0]["journal_entry"]
+		bal_b_before = get_facility_balance_row(fac_b)
+		je_b_docstatus = frappe.db.get_value("Journal Entry", je_b, "docstatus")
+		assign_je_b_docstatus = frappe.db.get_value("Journal Entry", assign_je_b, "docstatus")
+
+		# Cancel only repayment A.
+		frappe.get_doc("Facility Repayment", rep_a).cancel()
+		frappe.db.commit()
+
+		pdc_a_doc = frappe.get_doc("Post Dated Cheque", pdc_a)
+		self.assertEqual(
+			normalize_workflow_state_value(pdc_a_doc.workflow_state), WORKFLOW_ASSIGNED_DEBT_PURCHASE
+		)
+		self.assertFalse(pdc_a_doc.debt_purchase_repayment)
+		self.assertEqual(len(_refs(pdc_a, purpose=PURPOSE_DEBT_PURCHASE_SETTLEMENT)), 0)
+
+		# Unrelated B must be byte-for-byte unchanged on settlement identity fields + accounting.
+		doc_b_after = frappe.db.get_value(
+			"Post Dated Cheque",
+			pdc_b,
+			["workflow_state", "cheque_status", "debt_purchase_facility", "debt_purchase_repayment", "modified"],
+			as_dict=True,
+		)
+		self.assertEqual(doc_b_after.workflow_state, doc_b_before.workflow_state)
+		self.assertEqual(doc_b_after.cheque_status, doc_b_before.cheque_status)
+		self.assertEqual(doc_b_after.debt_purchase_facility, fac_b)
+		self.assertEqual(doc_b_after.debt_purchase_repayment, rep_b)
+		self.assertEqual(doc_b_after.modified, doc_b_before.modified)
+		self.assertEqual(normalize_workflow_state_value(doc_b_after.workflow_state), WORKFLOW_DEBT_PURCHASE_SETTLED)
+
+		settle_b_after = _refs(pdc_b, purpose=PURPOSE_DEBT_PURCHASE_SETTLEMENT)
+		self.assertEqual(len(settle_b_after), 1)
+		self.assertEqual(settle_b_after[0]["journal_entry"], je_b)
+		self.assertEqual(frappe.db.get_value("Journal Entry", je_b, "docstatus"), je_b_docstatus)
+		self.assertEqual(frappe.db.get_value("Journal Entry", assign_je_b, "docstatus"), assign_je_b_docstatus)
+		self.assertEqual(frappe.db.get_value("Facility Repayment", rep_b, "docstatus"), 1)
+
+		bal_b_after = get_facility_balance_row(fac_b)
+		self.assertAlmostEqual(flt(bal_b_after["paid_principal"]), flt(bal_b_before["paid_principal"]))
+		self.assertAlmostEqual(flt(bal_b_after["paid_profit"]), flt(bal_b_before["paid_profit"]))
+
+		# Idempotent reject on already-cancelled A; B still untouched.
+		with self.assertRaises(frappe.ValidationError):
+			frappe.get_doc("Facility Repayment", rep_a).cancel()
+		frappe.db.rollback()
+		self.assertEqual(
+			frappe.db.get_value("Post Dated Cheque", pdc_b, "debt_purchase_repayment"), rep_b
+		)
+
+		# Cleanup B.
+		frappe.get_doc("Facility Repayment", rep_b).cancel()
+		frappe.db.commit()
 
 	def test_cancel_failure_keeps_settled_state(self):
 		principal, profit = 800.0, 200.0

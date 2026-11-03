@@ -31,6 +31,7 @@ from erpnext_extensions.cheque_management.pdc_workflow_state_machine import (
 	CHEQUE_DIRECTION_RECEIVABLE,
 	WORKFLOW_ASSIGNED_DEBT_PURCHASE,
 	WORKFLOW_CLEARED,
+	WORKFLOW_DEBT_PURCHASE_SETTLED,
 	WORKFLOW_DRAFT,
 	WORKFLOW_ISSUED,
 	WORKFLOW_REGISTERED,
@@ -66,9 +67,9 @@ def get_rollback_target_states(pdc_name: str) -> list[str]:
 	current = normalize_workflow_state_value(doc.workflow_state)
 	if current == WORKFLOW_DRAFT:
 		return []
-	# Assigned DP is irreversible via rollback: only Bounce (PDC Management) or
-	# Facility Repayment settlement may leave this state.
-	if current == WORKFLOW_ASSIGNED_DEBT_PURCHASE:
+	# Debt Purchase Settled is owned by Facility Repayment. Cancel the repayment
+	# first (restores Assigned); do not undo settlement via PDC rollback.
+	if current == WORKFLOW_DEBT_PURCHASE_SETTLED:
 		return []
 
 	if cint(doc.is_opening_import):
@@ -141,10 +142,12 @@ def _opening_import_rollback_targets(doc) -> list[str]:
 
 def _workflow_rank(direction: str, state: str) -> int:
 	order_payable = [WORKFLOW_DRAFT, WORKFLOW_REGISTERED, WORKFLOW_ISSUED, WORKFLOW_CLEARED]
+	# Assigned DP sits after Registered (parallel to Sent to Bank on the collection path).
 	order_receivable = [
 		WORKFLOW_DRAFT,
 		WORKFLOW_REGISTERED,
 		WORKFLOW_SENT_TO_BANK,
+		WORKFLOW_ASSIGNED_DEBT_PURCHASE,
 		WORKFLOW_CLEARED,
 	]
 	order = order_payable if direction == CHEQUE_DIRECTION_PAYABLE else order_receivable
@@ -166,6 +169,13 @@ def _validate_pdc_rollback_request(pdc_name: str, target_state: str):
 		raise ValidationError(_("Only submitted Post Dated Cheques can be rolled back."))
 
 	current = normalize_workflow_state_value(pdc.workflow_state)
+	if current == WORKFLOW_DEBT_PURCHASE_SETTLED:
+		raise ValidationError(
+			_(
+				"Debt Purchase Settled cheques cannot be rolled back from Post Dated Cheque. "
+				"Cancel the linked Facility Repayment first to restore Assigned to Bank for Debt Purchase."
+			)
+		)
 	allowed = get_rollback_target_states(pdc_name)
 	if target_state not in allowed:
 		raise ValidationError(_("Target state {0} is not allowed for rollback.").format(target_state))
@@ -203,10 +213,16 @@ def rollback_workflow_state(pdc_name: str, target_state: str, reason: str) -> di
 	if not reason:
 		raise ValidationError(_("Rollback reason is required."))
 
-	pdc, _current, target_state = _validate_pdc_rollback_request(pdc_name, target_state)
-	result = _run_pdc_rollback_plan(pdc, target_state, reason=reason, dry_run=False)
-	frappe.db.commit()
-	return result
+	pdc_name = (pdc_name or "").strip()
+	# Serialize competing rollbacks on the same cheque (symmetric with Facility DP settle lock).
+	from frappe.utils.synchronization import filelock
+
+	lock_name = f"pdc_workflow_rollback_{pdc_name}"
+	with filelock(lock_name, timeout=120):
+		pdc, _current, target_state = _validate_pdc_rollback_request(pdc_name, target_state)
+		result = _run_pdc_rollback_plan(pdc, target_state, reason=reason, dry_run=False)
+		frappe.db.commit()
+		return result
 
 
 def sql_verify_no_orphan_gl_for_pdc(pdc_name: str, journal_entries: list[str]) -> dict[str, int]:
