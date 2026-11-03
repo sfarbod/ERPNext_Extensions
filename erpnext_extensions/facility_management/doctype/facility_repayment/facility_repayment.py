@@ -154,8 +154,9 @@ class FacilityRepayment(Document):
 		# Bank Account: preserve existing cancel order exactly.
 		# Debt Purchase Cheque fail-safe order:
 		#   1) lock + revalidate PDC is Settled by this repayment
-		#   2) cancel settlement JE
-		#   3) only then remove Settlement journal ref, restore Assigned, clear links
+		#   2) detach Settlement journal ref (submitted PDC Link validation blocks JE cancel)
+		#   3) cancel settlement JE — on failure, re-attach ref and keep Settled
+		#   4) restore Assigned + clear facility/repayment links
 		# If JE cancel fails: PDC/links/refs must remain Settled (no partial rollback).
 		# FLAG_IN_REPAYMENT_CANCEL lets Journal Entry hooks know this cancel is owned
 		# by Facility Repayment (avoid blocking JE cancel / double reconciliation).
@@ -174,6 +175,8 @@ class FacilityRepayment(Document):
 					normalize_workflow_state_value,
 				)
 				from erpnext_extensions.facility_management.facility_debt_purchase import (
+					append_pdc_settlement_journal_reference,
+					remove_pdc_settlement_journal_reference,
 					restore_pdc_after_debt_purchase_cancel,
 				)
 
@@ -191,9 +194,12 @@ class FacilityRepayment(Document):
 							_("Cheque is not settled by this Facility Repayment."),
 							title=_("Debt Purchase Cancel"),
 						)
+					# Unlink before JE cancel — same pattern as PDC workflow rollback JE undo.
+					remove_pdc_settlement_journal_reference(pdc, self, settlement_je=je_name)
 					try:
 						cancel_journal_entry(je_name)
 					except Exception:
+						append_pdc_settlement_journal_reference(pdc, self, je_name)
 						raise
 					self.db_set("journal_entry", None, update_modified=False)
 					restore_pdc_after_debt_purchase_cancel(pdc, self, settlement_je=je_name)

@@ -245,8 +245,9 @@ PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_RETURN: Final = (
 )
 
 PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_REGISTERED: Final = (
-	"Cheques Assigned to Bank for Debt Purchase cannot return to Registered. "
-	"Rollback is not available after debt-purchase assignment."
+	"Cheques Assigned to Bank for Debt Purchase cannot return to Registered via Desk workflow. "
+	"Use Rollback Workflow State to undo the assignment Journal Entry, or Bounce Cheque / "
+	"Facility Repayment for the normal Debt Purchase exits."
 )
 
 PDC_VALIDATION_DEBT_PURCHASE_SETTLED_FACILITY_ONLY: Final = (

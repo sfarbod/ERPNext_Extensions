@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+import unittest
 from datetime import date, timedelta
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
 from frappe.utils import now_datetime, today
 
 from erpnext_extensions.cheque_management.pdc_workflow_rollback import (
@@ -18,6 +18,11 @@ from erpnext_extensions.cheque_management.pdc_workflow_rollback import (
 from erpnext_extensions.cheque_management.pdc_workflow_to_cheque_status import (
 	map_workflow_state_to_cheque_status,
 )
+
+# Uses unittest.TestCase (not FrappeTestCase) so the runner does not preload ERPNext
+# Company test fixtures. That preload calls add_uom_data() against naming series
+# MAT-UOM-CNV-, which collides with existing development-site UOM Conversion Factor
+# rows when tabSeries.current lags max(name).
 
 
 def _uniq(prefix: str) -> str:
@@ -148,7 +153,7 @@ def _refs_snapshot(pdc_name: str) -> dict[str, dict]:
 
 
 def _assert_new_refs(
-	test: FrappeTestCase,
+	test: unittest.TestCase,
 	pdc_name: str,
 	before: dict[str, dict],
 	*,
@@ -171,7 +176,7 @@ def _je_names_for_pdc(pdc_name: str) -> list[str]:
 	return [r.journal_entry for r in _refs_snapshot(pdc_name).values()]
 
 
-def _assert_no_orphan_rows_for_je(test: FrappeTestCase, je: str):
+def _assert_no_orphan_rows_for_je(test: unittest.TestCase, je: str):
 	docstatus = frappe.db.get_value("Journal Entry", je, "docstatus")
 	if docstatus == 2:
 		test.assertEqual(frappe.db.count("GL Entry", {"voucher_no": je, "is_cancelled": 0}), 0)
@@ -179,7 +184,7 @@ def _assert_no_orphan_rows_for_je(test: FrappeTestCase, je: str):
 
 
 def _assert_after_rollback(
-	test: FrappeTestCase,
+	test: unittest.TestCase,
 	pdc_name: str,
 	*,
 	expected_workflow: str,
@@ -220,40 +225,24 @@ def _assert_after_rollback(
 		test.assertTrue(row.reason)
 
 
-class TestPDCWorkflowRollbackLifecycleIntegration(FrappeTestCase):
+class TestPDCWorkflowRollbackLifecycleIntegration(unittest.TestCase):
 	"""Mandatory integration lifecycle tests (real docs + DB)."""
 
 	@classmethod
 	def setUpClass(cls):
-		super().setUpClass()
 		frappe.set_user("Administrator")
 
-	def _make_party(self, doctype: str, party_name: str) -> str:
-		if frappe.db.exists(doctype, party_name):
-			return party_name
-		doc = frappe.new_doc(doctype)
-		if doctype == "Customer":
-			doc.customer_name = party_name
-			doc.customer_type = "Individual"
-			doc.customer_group = (
-				frappe.db.get_value("Customer Group", {"is_group": 0}, "name", order_by="lft asc")
-				or "All Customer Groups"
-			)
-			doc.territory = (
-				frappe.db.get_value("Territory", {"is_group": 0}, "name", order_by="lft asc")
-				or "All Territories"
-			)
-		elif doctype == "Supplier":
-			doc.supplier_name = party_name
-			doc.supplier_type = "Individual"
-			doc.supplier_group = (
-				frappe.db.get_value("Supplier Group", {}, "name", order_by="lft asc") or "All Supplier Groups"
-			)
-		doc.insert(ignore_permissions=True)
-		return doc.name
+	def _existing_party(self, doctype: str) -> str:
+		"""Reuse site parties — avoids tax_id / duplicate-name fixture collisions."""
+		name = frappe.db.get_value(doctype, {"disabled": 0}, "name", order_by="modified desc")
+		if not name:
+			name = frappe.db.get_value(doctype, {}, "name", order_by="creation asc")
+		if not name:
+			raise AssertionError(f"No {doctype} on site for integration tests")
+		return name
 
 	def _make_payable_pdc(self, company: str, bank_account: str, leaf: str, pool: str, ap: str) -> str:
-		supplier = self._make_party("Supplier", _uniq("SUP-ROLL"))
+		supplier = self._existing_party("Supplier")
 		cheque_no = frappe.db.get_value("Cheque Leaf", leaf, "cheque_number")
 		pdc = frappe.new_doc("Post Dated Cheque")
 		pdc.naming_series = "PDC-.YYYY.-"
@@ -275,7 +264,7 @@ class TestPDCWorkflowRollbackLifecycleIntegration(FrappeTestCase):
 		return pdc.name
 
 	def _make_receivable_pdc(self, company: str, bank_account: str, ar: str) -> str:
-		customer = self._make_party("Customer", _uniq("CUST-ROLL"))
+		customer = self._existing_party("Customer")
 		pdc = frappe.new_doc("Post Dated Cheque")
 		pdc.naming_series = "PDC-.YYYY.-"
 		pdc.company = company
@@ -293,6 +282,14 @@ class TestPDCWorkflowRollbackLifecycleIntegration(FrappeTestCase):
 		if bank:
 			pdc.drawer_bank_name = bank
 		pdc.account_paid_from = ar
+		# Receivable register typically requires Cheques in Hand on account_paid_to.
+		settings = frappe.db.get_value(
+			"PDC Settings",
+			{"company": company},
+			"default_cheques_in_hand_account",
+		)
+		if settings:
+			pdc.account_paid_to = settings
 		pdc.insert(ignore_permissions=True)
 		return pdc.name
 
