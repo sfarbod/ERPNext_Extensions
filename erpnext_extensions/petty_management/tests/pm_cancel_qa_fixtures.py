@@ -34,7 +34,7 @@ def temporary_buying_settings(**overrides: Any) -> Iterator[frappe.model.documen
 @contextmanager
 def pm_clearance_pi_site() -> Iterator[None]:
 	"""Site settings required to insert/submit Purchase Invoice clearance fixtures."""
-	with temporary_buying_settings(po_required="No"):
+	with temporary_buying_settings(po_required="No", pr_required="No"):
 		yield
 
 

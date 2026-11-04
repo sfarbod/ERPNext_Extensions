@@ -301,15 +301,38 @@ class TestPeCancelGuard(unittest.TestCase):
 			sum_prior_pm_request_allocations,
 		)
 
-		emp = tpm._make_employee()
-		tpm._make_holder(emp)
+		# Prefer existing holder with a live Employee — insert can trip broken Raven hooks.
+		holder_row = frappe.db.sql(
+			"""
+			select h.employee, h.name from `tabPM Holder` h
+			inner join `tabEmployee` e on e.name = h.employee and ifnull(e.status,'')='Active'
+			where h.company=%s and ifnull(h.is_blocked,0)=0 limit 1
+			""",
+			(tpm.COMPANY,),
+			as_dict=True,
+		)
+		if holder_row:
+			emp = holder_row[0].employee
+			if frappe.db.exists("User", "Administrator"):
+				frappe.db.set_value(
+					"Employee", emp, "expense_approver", "Administrator", update_modified=False
+				)
+		else:
+			emp = tpm._make_employee()
+			tpm._make_holder(emp)
 		req = _new_submitted_request(emp, 100_000)
 		pe1 = _create_funding_pe(req, 30_000)
 		_sync_funding_fields(req)
+		# v5.6.32: Partially Paid Requests must be Closed (or Paid) before Clearance.
+		_close_pm_request(req, close_reason="Partial Approval")
+		_sync_funding_fields(req)
+
+		from erpnext_extensions.petty_management.tests.pm_cancel_qa_fixtures import (
+			prepare_pi_for_clearance_fixture,
+		)
 
 		pi = tpm._make_pi_outstanding(25_000)
-		pi.insert()
-		pi.submit()
+		prepare_pi_for_clearance_fixture(pi)
 		cl = frappe.new_doc("PM Clearance")
 		cl.company = tpm.COMPANY
 		cl.employee = emp

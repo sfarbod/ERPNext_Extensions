@@ -36,6 +36,10 @@ from erpnext_extensions.petty_management.utils import get_pm_holder_name
 
 _EPS = 1e-6
 
+# v5.6.32 — PM Clearance Link search + Save eligibility (AND between groups).
+CLEARANCE_ELIGIBLE_PAYMENT_STATUSES = frozenset({"Paid", "Partially Paid"})
+CLEARANCE_ELIGIBLE_REQUEST_STATUSES = frozenset({"Closed", "Paid"})
+
 
 def _skip_funding_availability_over_allocation_gate(doc: Document) -> bool:
 	"""v5.2.11 — skip ONLY allocated > live available funding headroom.
@@ -135,6 +139,17 @@ def pm_request_passes_clearance_filters(
 		return False, _("PM Request belongs to another PM Holder")
 	if request_petty_cash_account(req) != (clearance_petty or "").strip():
 		return False, _("PM Request petty cash account does not match this clearance holder")
+	# v5.6.32 — Link search and Save share the same payment_status × status gate.
+	payment_status = (getattr(req, "payment_status", None) or "").strip()
+	status = (getattr(req, "status", None) or "").strip()
+	if payment_status not in CLEARANCE_ELIGIBLE_PAYMENT_STATUSES:
+		return False, _(
+			"PM Request payment status must be Paid or Partially Paid (got {0})."
+		).format(payment_status or _("empty"))
+	if status not in CLEARANCE_ELIGIBLE_REQUEST_STATUSES:
+		return False, _(
+			"PM Request status must be Closed or Paid for clearance (got {0})."
+		).format(status or _("empty"))
 	paid = get_pm_request_paid_amount(pm_request_name)
 	if paid <= 0:
 		return False, _(
@@ -557,7 +572,8 @@ def pm_request_query_for_pm_clearance(doctype, txt, searchfield, start, page_len
 			AND pr.holder = %(holder)s
 			AND IFNULL(h.petty_cash_account, '') = %(petty)s
 			AND IFNULL(pr.payment_entry, '') != ''
-			AND IFNULL(pr.payment_status, '') = 'Paid'
+			AND IFNULL(pr.payment_status, '') IN ('Paid', 'Partially Paid')
+			AND IFNULL(pr.status, '') IN ('Closed', 'Paid')
 			AND EXISTS (
 				SELECT 1 FROM `tabPayment Entry` pe
 				WHERE pe.name = pr.payment_entry AND pe.docstatus = 1
