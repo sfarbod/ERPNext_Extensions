@@ -1,34 +1,87 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Read-only stock availability checks for Delivery Note Check Submission."""
+"""Read-only stock availability checks for Delivery Note Check Submission.
+
+Stock and batch balances are evaluated as of the Delivery Note posting date/time,
+not today's Bin quantity. Batch expiry follows ERPNext's convention:
+
+	expired iff expiry_date is set and getdate(expiry_date) < getdate(posting_date)
+"""
 
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt, get_datetime, getdate
 
 from erpnext.stock.stock_ledger import NegativeStockError, is_negative_stock_allowed
+from erpnext.stock.utils import _get_stock_balance, get_combine_datetime
+
+from erpnext_extensions.stock_extensions.delivery_note_check_submission.errors import make_error
 
 
-def _bin_qty(item_code: str, warehouse: str) -> tuple[float, float]:
-	"""Return (actual_qty, reserved_qty) from Bin without locking."""
-	row = frappe.db.get_value(
-		"Bin",
-		{"item_code": item_code, "warehouse": warehouse},
-		["actual_qty", "reserved_qty", "reserved_stock"],
-		as_dict=True,
+def cint_is_stock(item_code: str) -> bool:
+	return bool(frappe.get_cached_value("Item", item_code, "is_stock_item"))
+
+
+def _posting_cutoff(doc) -> tuple[Any, Any, Any]:
+	"""Return (posting_date, posting_time, posting_datetime) for historical queries."""
+	posting_date = doc.get("posting_date")
+	posting_time = doc.get("posting_time") or "00:00:00"
+	if not posting_date:
+		frappe.throw(_("Delivery Note Posting Date is required for stock validation."))
+	return posting_date, posting_time, get_combine_datetime(posting_date, posting_time)
+
+
+def _historical_actual_qty(item_code: str, warehouse: str, posting_date, posting_time) -> float:
+	"""Qty after last SLE at or before DN posting (read-only)."""
+	return flt(
+		_get_stock_balance(
+			item_code,
+			warehouse,
+			posting_date=posting_date,
+			posting_time=posting_time,
+		)
+		or 0
 	)
-	if not row:
-		return 0.0, 0.0
-	# reserved_stock is the modern field used by SLE paths; fall back to reserved_qty.
-	reserved = flt(row.reserved_stock) if row.reserved_stock is not None else flt(row.reserved_qty)
-	return flt(row.actual_qty), reserved
 
 
-def _sre_remaining_for_so_detail(so: str, so_detail: str, warehouse: str, item_code: str) -> float:
-	"""Qty still reserved for this Sales Order Item at warehouse (read-only, no FOR UPDATE)."""
+def _reserved_qty_as_of(
+	item_code: str,
+	warehouse: str,
+	posting_datetime,
+	*,
+	exclude_so_detail: str | None = None,
+) -> float:
+	"""Reserved remaining qty as of posting_datetime (SRE.creation cutoff; no FOR UPDATE)."""
+	params: list = [item_code, warehouse, posting_datetime]
+	exclude_sql = ""
+	if exclude_so_detail:
+		exclude_sql = " and voucher_detail_no != %s"
+		params.append(exclude_so_detail)
+
+	row = frappe.db.sql(
+		f"""
+		select
+			coalesce(sum(reserved_qty - delivered_qty - transferred_qty - consumed_qty), 0) as reserved
+		from `tabStock Reservation Entry`
+		where docstatus = 1
+			and item_code = %s
+			and warehouse = %s
+			and creation <= %s
+			and delivered_qty < reserved_qty
+			{exclude_sql}
+		""",
+		tuple(params),
+	)
+	return max(flt(row[0][0] if row else 0), 0.0)
+
+
+def _sre_remaining_for_so_detail_as_of(
+	so: str, so_detail: str, warehouse: str, item_code: str, posting_datetime
+) -> float:
 	if not so or not so_detail:
 		return 0.0
 	rows = frappe.db.sql(
@@ -41,9 +94,10 @@ def _sre_remaining_for_so_detail(so: str, so_detail: str, warehouse: str, item_c
 			and voucher_detail_no = %s
 			and warehouse = %s
 			and item_code = %s
+			and creation <= %s
 			and delivered_qty < reserved_qty
 		""",
-		(so, so_detail, warehouse, item_code),
+		(so, so_detail, warehouse, item_code, posting_datetime),
 		as_dict=True,
 	)
 	total = 0.0
@@ -52,14 +106,41 @@ def _sre_remaining_for_so_detail(so: str, so_detail: str, warehouse: str, item_c
 	return max(total, 0.0)
 
 
-def _batch_available(item_code: str, warehouse: str, batch_no: str) -> float:
+def _historical_batch_qty(
+	item_code: str,
+	warehouse: str,
+	batch_no: str,
+	posting_date,
+	posting_time,
+) -> float:
+	"""Batch balance as of DN posting, including batches that are expired *today*
+	but were still valid on the posting date.
+
+	Uses ``for_stock_levels=True`` so ERPNext does not filter ``expiry_date >= today()``.
+	Expiry vs posting_date is enforced separately.
+	"""
 	from erpnext.stock.doctype.batch.batch import get_batch_qty
 
-	return flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse, item_code=item_code) or 0)
+	qty = get_batch_qty(
+		batch_no=batch_no,
+		warehouse=warehouse,
+		item_code=item_code,
+		posting_date=posting_date,
+		posting_time=posting_time,
+		for_stock_levels=True,
+		ignore_reserved_stock=True,
+	)
+	return flt(qty or 0)
+
+
+def is_batch_expired_on(expiry_date, posting_date) -> bool:
+	"""ERPNext convention: expired when expiry_date < posting_date (equality is valid)."""
+	if not expiry_date or not posting_date:
+		return False
+	return getdate(expiry_date) < getdate(posting_date)
 
 
 def _iter_stock_rows(doc):
-	"""Yield stock rows from items + packed_items with stock_qty demand."""
 	for table in ("items", "packed_items"):
 		for row in doc.get(table) or []:
 			if not row.get("item_code") or not row.get("warehouse"):
@@ -72,110 +153,183 @@ def _iter_stock_rows(doc):
 			yield table, row, qty
 
 
-def cint_is_stock(item_code: str) -> bool:
-	return bool(frappe.get_cached_value("Item", item_code, "is_stock_item"))
-
-
-def validate_stock_availability(doc) -> None:
-	"""Throw NegativeStockError when delivery would drive available qty negative.
-
-	Available qty for a DN row = Bin.actual_qty
-	  - reserved stock belonging to *other* vouchers
-	  + reserved stock belonging to this row's Sales Order Item (usable by this DN)
-
-	Batch-controlled rows also require sufficient batch balance.
-	Returns are skipped (inward).
-	"""
+def collect_stock_availability_errors(doc) -> list[dict]:
+	"""Collect insufficient-stock errors using historical balances as of DN posting."""
+	errors: list[dict] = []
 	if cint(doc.get("is_return")):
-		return
+		return errors
 
-	# Aggregate demand per (item, warehouse) and track SO-detail reservations usable.
+	try:
+		posting_date, posting_time, posting_datetime = _posting_cutoff(doc)
+	except Exception as exc:
+		return [
+			make_error(
+				category="stock_availability",
+				message=exc,
+				exc_type=type(exc).__name__,
+			)
+		]
+
+	# Aggregate demand per (item, warehouse) and per batch.
 	demand: dict[tuple[str, str], float] = defaultdict(float)
 	usable_reservation: dict[tuple[str, str], float] = defaultdict(float)
 	batch_demand: dict[tuple[str, str, str], float] = defaultdict(float)
 	row_refs: dict[tuple[str, str], list] = defaultdict(list)
+	batch_row_refs: dict[tuple[str, str, str], list] = defaultdict(list)
 
-	for _table, row, qty in _iter_stock_rows(doc):
+	for table, row, qty in _iter_stock_rows(doc):
 		if is_negative_stock_allowed(item_code=row.item_code):
 			continue
 		key = (row.item_code, row.warehouse)
 		demand[key] += abs(qty)
-		row_refs[key].append(row)
+		row_refs[key].append((table, row))
 
 		so = row.get("against_sales_order")
 		so_detail = row.get("so_detail")
 		if so and so_detail:
 			usable_reservation[key] = max(
 				usable_reservation[key],
-				_sre_remaining_for_so_detail(so, so_detail, row.warehouse, row.item_code),
+				_sre_remaining_for_so_detail_as_of(
+					so, so_detail, row.warehouse, row.item_code, posting_datetime
+				),
 			)
 
 		batch_no = row.get("batch_no")
 		if batch_no:
-			batch_demand[(row.item_code, row.warehouse, batch_no)] += abs(qty)
+			bkey = (row.item_code, row.warehouse, batch_no)
+			batch_demand[bkey] += abs(qty)
+			batch_row_refs[bkey].append((table, row))
 
 	for (item_code, warehouse), needed in demand.items():
-		actual, reserved = _bin_qty(item_code, warehouse)
-		# Stock reserved for this DN's SO detail remains available; other reserved stock does not.
-		other_reserved = max(reserved - usable_reservation[(item_code, warehouse)], 0.0)
-		available = actual - other_reserved
+		try:
+			actual = _historical_actual_qty(item_code, warehouse, posting_date, posting_time)
+			# Reservations for other vouchers as of posting; SO-detail usable qty added back.
+			total_reserved = _reserved_qty_as_of(item_code, warehouse, posting_datetime)
+			other_reserved = max(total_reserved - usable_reservation[(item_code, warehouse)], 0.0)
+			available = actual - other_reserved
+		except Exception as exc:
+			errors.append(
+				make_error(
+					category="stock_availability",
+					message=exc,
+					exc_type=type(exc).__name__,
+					item_code=item_code,
+					warehouse=warehouse,
+					row=row_refs[(item_code, warehouse)][0][1].idx
+					if row_refs[(item_code, warehouse)]
+					else None,
+				)
+			)
+			continue
+
 		if needed > available + 1e-6:
-			rows = row_refs[(item_code, warehouse)]
-			idx = rows[0].idx if rows else "?"
-			frappe.throw(
-				_(
-					"Row #{0}: Insufficient stock for Item {1} in Warehouse {2}. "
-					"Needed {3}, available {4} (actual {5}, reserved by others {6})."
-				).format(
-					idx,
-					frappe.bold(item_code),
-					frappe.bold(warehouse),
-					flt(needed),
-					flt(available),
-					flt(actual),
-					flt(other_reserved),
-				),
-				NegativeStockError,
-				title=_("Insufficient Stock"),
+			table, row = row_refs[(item_code, warehouse)][0]
+			errors.append(
+				make_error(
+					category="stock_availability",
+					message=_(
+						"Row #{0}: Insufficient stock for Item {1} in Warehouse {2} "
+						"as of Delivery Note date {3}. Needed {4}, available {5} "
+						"(historical actual {6}, reserved by others {7})."
+					).format(
+						row.idx,
+						frappe.bold(item_code),
+						frappe.bold(warehouse),
+						posting_date,
+						flt(needed),
+						flt(available),
+						flt(actual),
+						flt(other_reserved),
+					),
+					exc_type="NegativeStockError",
+					item_code=item_code,
+					row=row.idx,
+					warehouse=warehouse,
+					table=table,
+					extra={
+						"needed": flt(needed),
+						"available": flt(available),
+						"historical_actual": flt(actual),
+						"posting_date": str(getdate(posting_date)),
+					},
+				)
 			)
 
 	for (item_code, warehouse, batch_no), needed in batch_demand.items():
 		if is_negative_stock_allowed(item_code=item_code):
 			continue
-		available = _batch_available(item_code, warehouse, batch_no)
+		# Skip batch stock check when batch is expired on posting date — expiry collector handles it.
+		expiry = frappe.db.get_value("Batch", batch_no, "expiry_date")
+		if is_batch_expired_on(expiry, posting_date):
+			continue
+		try:
+			available = _historical_batch_qty(
+				item_code, warehouse, batch_no, posting_date, posting_time
+			)
+		except Exception as exc:
+			table, row = batch_row_refs[(item_code, warehouse, batch_no)][0]
+			errors.append(
+				make_error(
+					category="stock_availability",
+					message=exc,
+					exc_type=type(exc).__name__,
+					item_code=item_code,
+					row=row.idx,
+					warehouse=warehouse,
+					batch_no=batch_no,
+					table=table,
+				)
+			)
+			continue
+
 		if needed > available + 1e-6:
-			frappe.throw(
-				_(
-					"Insufficient stock for Item {0} / Batch {1} in Warehouse {2}. "
-					"Needed {3}, available {4}."
-				).format(
-					frappe.bold(item_code),
-					frappe.bold(batch_no),
-					frappe.bold(warehouse),
-					flt(needed),
-					flt(available),
-				),
-				NegativeStockError,
-				title=_("Insufficient Batch Stock"),
+			table, row = batch_row_refs[(item_code, warehouse, batch_no)][0]
+			errors.append(
+				make_error(
+					category="stock_availability",
+					message=_(
+						"Row #{0}: Insufficient stock for Item {1} / Batch {2} in Warehouse {3} "
+						"as of Delivery Note date {4}. Needed {5}, available {6}."
+					).format(
+						row.idx,
+						frappe.bold(item_code),
+						frappe.bold(batch_no),
+						frappe.bold(warehouse),
+						posting_date,
+						flt(needed),
+						flt(available),
+					),
+					exc_type="NegativeStockError",
+					item_code=item_code,
+					row=row.idx,
+					warehouse=warehouse,
+					batch_no=batch_no,
+					table=table,
+					extra={
+						"needed": flt(needed),
+						"available": flt(available),
+						"posting_date": str(getdate(posting_date)),
+					},
+				)
 			)
 
-
-def cint(value) -> int:
-	from frappe.utils import cint as _cint
-
-	return _cint(value)
+	return errors
 
 
-def validate_over_delivery(doc) -> None:
-	"""Read-only over-delivery check against Sales Order / Sales Invoice quantities.
+def validate_stock_availability(doc) -> None:
+	"""Legacy throw-on-first API (kept for callers); prefer collect_stock_availability_errors."""
+	errors = collect_stock_availability_errors(doc)
+	if errors:
+		frappe.throw(errors[0]["message"], NegativeStockError, title=_("Insufficient Stock"))
 
-	``StatusUpdater.validate_qty`` only sees DB state *after* ``update_qty`` writes,
-	so it cannot be reused for a draft. This mirrors the allowance math without writes.
-	"""
+
+def collect_over_delivery_errors(doc) -> list[dict]:
+	"""Per-row over-delivery checks (read-only)."""
 	from erpnext.controllers.status_updater import get_allowance_for
 
+	errors: list[dict] = []
 	if cint(doc.get("is_return")):
-		return
+		return errors
 
 	item_allowance: dict = {}
 	global_qty_allowance = None
@@ -196,8 +350,6 @@ def validate_over_delivery(doc) -> None:
 		if not frappe.get_cached_value("Item", soi.item_code, "is_stock_item"):
 			continue
 
-		# delivered_qty / qty on Sales Order Item are in the SO row UOM;
-		# convert both sides to stock UOM for comparison with DN stock_qty.
 		cf = flt(soi.conversion_factor or 1) or 1.0
 		stock_qty = flt(row.get("stock_qty") or (flt(row.qty) * flt(row.conversion_factor or 1)))
 		so_stock_qty = flt(soi.qty) * cf
@@ -213,19 +365,31 @@ def validate_over_delivery(doc) -> None:
 		max_allowed = so_stock_qty * (1 + flt(allowance) / 100.0)
 		projected = already + stock_qty
 		if projected > max_allowed + 0.01:
-			frappe.throw(
-				_(
-					"Row #{0}: Over-delivery of Item {1} against Sales Order {2}. "
-					"Ordered {3}, already delivered {4}, this Delivery Note {5}, max allowed {6}."
-				).format(
-					row.idx,
-					frappe.bold(row.item_code),
-					frappe.bold(soi.parent),
-					flt(so_stock_qty),
-					flt(already),
-					flt(stock_qty),
-					flt(max_allowed),
-				),
-				frappe.ValidationError,
-				title=_("Over Delivery"),
+			errors.append(
+				make_error(
+					category="over_delivery",
+					message=_(
+						"Row #{0}: Over-delivery of Item {1} against Sales Order {2}. "
+						"Ordered {3}, already delivered {4}, this Delivery Note {5}, max allowed {6}."
+					).format(
+						row.idx,
+						frappe.bold(row.item_code),
+						frappe.bold(soi.parent),
+						flt(so_stock_qty),
+						flt(already),
+						flt(stock_qty),
+						flt(max_allowed),
+					),
+					exc_type="ValidationError",
+					item_code=row.item_code,
+					row=row.idx,
+					table="items",
+				)
 			)
+	return errors
+
+
+def validate_over_delivery(doc) -> None:
+	errors = collect_over_delivery_errors(doc)
+	if errors:
+		frappe.throw(errors[0]["message"], frappe.ValidationError, title=_("Over Delivery"))
