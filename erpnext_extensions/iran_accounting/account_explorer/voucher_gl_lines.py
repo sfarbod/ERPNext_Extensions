@@ -84,6 +84,8 @@ VOUCHER_EXPORT_ROW_FIELDS = (
 	"account_name",
 	"debit",
 	"credit",
+	"running_debit_balance",
+	"running_credit_balance",
 	"account_currency",
 	"remarks",
 	"party_type",
@@ -94,8 +96,91 @@ VOUCHER_EXPORT_ROW_FIELDS = (
 )
 
 
+def _party_partition_active(spec: AccountExplorerQuerySpec) -> bool:
+	"""True when running balance should partition by Account + Party Type + Party."""
+	if getattr(spec, "resolved_member_tuples", None):
+		return True
+	party_scope = spec.party_scope
+	if party_scope.selected_party or party_scope.party_type or party_scope.identifier_query:
+		return True
+	accounting = spec.document_scope.accounting
+	if accounting.party_type or accounting.party:
+		return True
+	return False
+
+
+def _running_partition_sql(spec: AccountExplorerQuerySpec, *, alias: str = "gle_lines") -> str:
+	if _party_partition_active(spec):
+		return (
+			f"{alias}.account, ifnull({alias}.party_type, ''), ifnull({alias}.party, '')"
+		)
+	return f"{alias}.account"
+
+
+def _split_running_net(running_net) -> tuple[float, float]:
+	net = flt(running_net)
+	if net > 0:
+		return net, 0.0
+	if net < 0:
+		return 0.0, abs(net)
+	return 0.0, 0.0
+
+
+def _opening_seed_sql(spec: AccountExplorerQuerySpec, gle, dimensions: list[dict]) -> str | None:
+	"""Pre-period opening net per running-balance partition when opening rows are excluded."""
+	if spec.include_opening_entries:
+		return None
+	acc = frappe.qb.DocType("Account")
+	query = (
+		frappe.qb.from_(gle)
+		.left_join(acc)
+		.on(gle.account == acc.name)
+		.select(
+			gle.account,
+			gle.party_type,
+			gle.party,
+			gle.debit,
+			gle.credit,
+		)
+	)
+	query = apply_scoped_gle_filters(query, gle, spec)
+	query = (
+		query.where(gle.voucher_type.isnotnull())
+		.where(gle.voucher_no.isnotnull())
+		.where(gle.voucher_no != "")
+		.where(gle.posting_date < getdate(spec.from_date))
+	)
+	# Opening seed includes all pre-period rows (including is_opening flagged).
+	inner_sql = query.get_sql()
+	if _party_partition_active(spec):
+		return f"""
+			select
+				opening_src.account as account,
+				ifnull(opening_src.party_type, '') as party_type,
+				ifnull(opening_src.party, '') as party,
+				coalesce(sum(opening_src.debit - opening_src.credit), 0) as opening_net
+			from (
+				{inner_sql}
+			) opening_src
+			group by opening_src.account, ifnull(opening_src.party_type, ''), ifnull(opening_src.party, '')
+		"""
+	return f"""
+		select
+			opening_src.account as account,
+			coalesce(sum(opening_src.debit - opening_src.credit), 0) as opening_net
+		from (
+			{inner_sql}
+		) opening_src
+		group by opening_src.account
+	"""
+
+
 def iter_voucher_gl_line_export_batches(spec: AccountExplorerQuerySpec, *, batch_size: int = 5000):
-	"""Yield lean GL-line dict batches for streaming export (keyset on gle.name)."""
+	"""Yield lean GL-line dict batches for streaming export.
+
+	Keyset walks chronological order (posting_date, creation, name) so running
+	balances accumulate correctly without materializing the full result set.
+	"""
 	batch_size = max(cint(batch_size) or 5000, 1)
 	dimensions = filter_usable_gl_dimensions(get_discovered_dimensions())
 	totals, total_rows = _gl_line_totals(spec)
@@ -103,13 +188,21 @@ def iter_voucher_gl_line_export_batches(spec: AccountExplorerQuerySpec, *, batch
 		yield (), totals, 0
 		return
 
-	last_name = None
+	running_state = _load_opening_running_state(spec)
+	after_key = None
 	while True:
-		batch = _export_batch(spec, dimensions, batch_size=batch_size, after_name=last_name)
+		batch = _export_batch(
+			spec,
+			dimensions,
+			batch_size=batch_size,
+			after_key=after_key,
+			running_state=running_state,
+		)
 		if not batch:
 			break
 		yield batch, totals, total_rows
-		last_name = batch[-1].get("gl_entry")
+		last = batch[-1]
+		after_key = (last.get("posting_date"), last.get("_creation"), last.get("gl_entry"))
 		if len(batch) < batch_size:
 			break
 
@@ -177,16 +270,48 @@ def _paged_gl_lines(
 	inner_sql = inner.get_sql()
 	order_sql = _order_by_sql(spec)
 
+	partition_sql = _running_partition_sql(spec)
+	opening_sql = _opening_seed_sql(spec, gle, dimensions)
+	running_select = f"""
+		coalesce(opening.opening_net, 0) + sum(gle_lines.debit - gle_lines.credit) over (
+			partition by {partition_sql}
+			order by gle_lines.posting_date asc, gle_lines.creation asc, gle_lines.gl_entry asc
+			rows unbounded preceding
+		) as running_net
+	"""
+	opening_join = ""
+	opening_cte = ""
+	if opening_sql:
+		opening_cte = f", openings as ({opening_sql})"
+		if _party_partition_active(spec):
+			opening_join = """
+				left join openings opening
+					on opening.account = gle_lines.account
+					and opening.party_type = ifnull(gle_lines.party_type, '')
+					and opening.party = ifnull(gle_lines.party, '')
+			"""
+		else:
+			opening_join = """
+				left join openings opening
+					on opening.account = gle_lines.account
+			"""
+	else:
+		opening_join = "left join (select null as account, 0 as opening_net) opening on 1=0"
+
 	if cached is not None:
 		totals, total_rows = cached
 		if total_rows == 0:
 			return [], totals, 0
 		rows = frappe.db.sql(
 			f"""
-			select *
-			from (
+			with gle_lines as (
 				{inner_sql}
-			) gle_lines
+			){opening_cte}
+			select
+				gle_lines.*,
+				{running_select}
+			from gle_lines
+			{opening_join}
 			order by {order_sql}
 			limit {cint(limit)} offset {cint(offset)}
 			""",
@@ -200,13 +325,15 @@ def _paged_gl_lines(
 		f"""
 		with gle_lines as (
 			{inner_sql}
-		)
+		){opening_cte}
 		select
 			gle_lines.*,
 			count(*) over() as _total_rows,
-			coalesce(sum(debit) over(), 0) as _total_debit,
-			coalesce(sum(credit) over(), 0) as _total_credit
+			coalesce(sum(gle_lines.debit) over(), 0) as _total_debit,
+			coalesce(sum(gle_lines.credit) over(), 0) as _total_credit,
+			{running_select}
 		from gle_lines
+		{opening_join}
 		order by {order_sql}
 		limit {cint(limit)} offset {cint(offset)}
 		""",
@@ -306,6 +433,7 @@ def _base_line_query(spec: AccountExplorerQuerySpec, gle, acc, dimensions: list[
 	select_fields = [
 		gle.name.as_("gl_entry"),
 		gle.posting_date,
+		gle.creation,
 		gle.voucher_type,
 		gle.voucher_no,
 		gle.voucher_detail_no,
@@ -371,6 +499,7 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 	party = row.get("party") or ""
 	debit = flt(row.get("debit"))
 	credit = flt(row.get("credit"))
+	running_debit, running_credit = _split_running_net(row.get("running_net"))
 	account_code = cstr(row.get("account_code") or "")
 	entry = {
 		"row_key": f"glentry:{row.get('gl_entry')}",
@@ -388,6 +517,8 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 		"party_name": "",  # Batched after page materialization.
 		"debit": debit,
 		"credit": credit,
+		"running_debit_balance": running_debit,
+		"running_credit_balance": running_credit,
 		"account_currency": row.get("account_currency") or "",
 		"currency": row.get("account_currency") or "",
 		"debit_in_account_currency": flt(row.get("debit_in_account_currency")),
@@ -420,9 +551,32 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 		value = row.get(fieldname) or ""
 		entry[fieldname] = value
 		entry[f"dim:{fieldname}"] = value
-	for key in ("_total_rows", "_total_debit", "_total_credit"):
+	for key in ("_total_rows", "_total_debit", "_total_credit", "running_net", "creation"):
 		entry.pop(key, None)
 	return entry
+
+
+def _partition_key(spec: AccountExplorerQuerySpec, row: dict) -> tuple:
+	account = row.get("account") or ""
+	if _party_partition_active(spec):
+		return (account, cstr(row.get("party_type") or ""), cstr(row.get("party") or ""))
+	return (account,)
+
+
+def _load_opening_running_state(spec: AccountExplorerQuerySpec) -> dict[tuple, float]:
+	"""Seed running balances with pre-period nets when opening rows are excluded."""
+	if spec.include_opening_entries:
+		return {}
+	gle = frappe.qb.DocType("GL Entry")
+	opening_sql = _opening_seed_sql(spec, gle, [])
+	if not opening_sql:
+		return {}
+	rows = frappe.db.sql(opening_sql, as_dict=True)
+	state: dict[tuple, float] = {}
+	for row in rows:
+		key = _partition_key(spec, row)
+		state[key] = flt(row.get("opening_net"))
+	return state
 
 
 def _export_batch(
@@ -430,30 +584,62 @@ def _export_batch(
 	dimensions: list[dict],
 	*,
 	batch_size: int,
-	after_name: str | None,
+	after_key: tuple | None = None,
+	after_name: str | None = None,
+	running_state: dict[tuple, float] | None = None,
 ) -> list[dict]:
-	"""Return named export rows — field keys are the contract, not tuple indexes."""
+	"""Return named export rows — field keys are the contract, not tuple indexes.
+
+	``after_name`` remains accepted for older call sites; chronological
+	``after_key`` is preferred so running balances stay correct.
+	"""
+	if running_state is None:
+		running_state = _load_opening_running_state(spec)
 	gle = frappe.qb.DocType("GL Entry")
 	acc = frappe.qb.DocType("Account")
 	query = _base_line_query(spec, gle, acc, dimensions)
-	query = query.orderby(gle.name, order=Order.asc).limit(batch_size)
-	if after_name:
+	query = (
+		query.orderby(gle.posting_date, order=Order.asc)
+		.orderby(gle.creation, order=Order.asc)
+		.orderby(gle.name, order=Order.asc)
+		.limit(batch_size)
+	)
+	if after_key:
+		posting_date, creation, name = after_key
+		query = query.where(
+			(gle.posting_date > getdate(posting_date))
+			| ((gle.posting_date == getdate(posting_date)) & (gle.creation > creation))
+			| (
+				(gle.posting_date == getdate(posting_date))
+				& (gle.creation == creation)
+				& (gle.name > name)
+			)
+		)
+	elif after_name:
+		# Legacy name keyset — still chronological within the remaining name order.
 		query = query.where(gle.name > after_name)
 	raw = query.run(as_dict=True)
 	# Batch Party Name once per export page (no per-row N+1).
 	enrich_rows_with_party_names(raw)
 	out: list[dict] = []
 	for row in raw:
+		key = _partition_key(spec, row)
+		running_net = flt(running_state.get(key)) + flt(row.get("debit")) - flt(row.get("credit"))
+		running_state[key] = running_net
+		running_debit, running_credit = _split_running_net(running_net)
 		out.append(
 			{
 				"gl_entry": row.get("gl_entry") or row.get("name"),
 				"posting_date": row.get("posting_date"),
+				"_creation": row.get("creation"),
 				"voucher_type": row.get("voucher_type"),
 				"voucher_no": row.get("voucher_no"),
 				"account_code": row.get("account_code"),
 				"account_name": row.get("account_name"),
 				"debit": row.get("debit"),
 				"credit": row.get("credit"),
+				"running_debit_balance": running_debit,
+				"running_credit_balance": running_credit,
 				"account_currency": row.get("account_currency"),
 				"remarks": row.get("remarks"),
 				"party_type": row.get("party_type") or "",

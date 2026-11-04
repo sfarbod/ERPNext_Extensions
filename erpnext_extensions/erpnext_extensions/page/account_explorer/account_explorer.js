@@ -607,8 +607,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				...(this.analysis_context.party_scope || {}),
 				party_type: value.seed_party_type || selected[0]?.party_type || null,
 				selected_party: value.seed_party || selected[0]?.party || null,
-				party_name_query: null,
-				identifier_query: value.party_identifier || null,
+				party_name_query: this.analysis_context.party_scope?.party_name_query || null,
+				identifier_query: value.party_identifier || this.analysis_context.party_scope?.identifier_query || null,
 				unified_identity: 1,
 				identity_members: selected
 					.filter((m) => m && (Array.isArray(m) ? m[0] && m[1] : m.party_type && m.party))
@@ -618,27 +618,60 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				identity_identifier: value.party_identifier || null,
 			};
 		} else if (!filters.party) {
+			// Preserve document-panel party_scope across axis switches. Prefer live
+			// filter controls so UI-visible Identifier/Party never diverge from query.
+			const prev = this.analysis_context.party_scope || {};
+			const control_party_type = this.filter_controls?.party_type?.get_value?.() || null;
+			const control_party_values = ae_normalize_multi_value(
+				this.filter_controls?.party?.get_value?.()
+			);
+			const control_party = Array.isArray(control_party_values)
+				? control_party_values[0] || null
+				: control_party_values || null;
+			const control_identifier =
+				this.filter_controls?.identifier_query?.get_value?.() || null;
+			const control_party_name =
+				this.filter_controls?.party_name_query?.get_value?.() || null;
+			const control_unified = this.filter_controls?.unified_identity?.get_value?.()
+				? 1
+				: 0;
 			this.analysis_context.party_scope = {
-				party_type: null,
-				selected_party: null,
-				party_name_query: null,
-				identifier_query: null,
-				unified_identity: 0,
-				identity_members: null,
-				identity_available_members: null,
-				identity_display_title: null,
-				identity_identifier: null,
+				party_type: control_party_type || prev.party_type || null,
+				selected_party: control_party || prev.selected_party || null,
+				party_name_query: control_party_name || prev.party_name_query || null,
+				identifier_query: control_identifier || prev.identifier_query || null,
+				unified_identity: control_unified || (prev.unified_identity ? 1 : 0),
+				identity_members: prev.identity_members || null,
+				identity_available_members: prev.identity_available_members || null,
+				identity_display_title: prev.identity_display_title || null,
+				identity_identifier:
+					control_identifier ||
+					prev.identity_identifier ||
+					prev.identifier_query ||
+					null,
 			};
-			this.hide_member_panel?.();
+			if (
+				!this.analysis_context.party_scope.unified_identity &&
+				!(this.analysis_context.party_scope.identity_members || []).length
+			) {
+				this.hide_member_panel?.();
+			}
 		} else {
-			// Simple party chip — do not keep a stale multi-role identity.
+			// Simple party chip — do not keep a stale multi-role identity, but keep Identifier.
+			const prev = this.analysis_context.party_scope || {};
+			const control_identifier =
+				this.filter_controls?.identifier_query?.get_value?.() || prev.identifier_query || null;
+			const control_party_name =
+				this.filter_controls?.party_name_query?.get_value?.() || prev.party_name_query || null;
 			this.analysis_context.party_scope = {
-				...(this.analysis_context.party_scope || {}),
+				...(prev || {}),
 				unified_identity: 0,
 				identity_members: null,
 				identity_available_members: null,
 				identity_display_title: null,
 				identity_identifier: null,
+				identifier_query: control_identifier,
+				party_name_query: control_party_name,
 			};
 		}
 		if (!filters.unified_party) {
@@ -1180,13 +1213,28 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 	setup_reset_dropdown($parent) {
 		const $group = $('<div class="ae-reset-group btn-group"></div>').appendTo($parent);
-		$('<button type="button" class="btn btn-default btn-sm dropdown-toggle ae-reset-btn">')
+		$('<button type="button" class="btn btn-default btn-sm ae-reset-btn">')
 			.text(__("Reset"))
+			.attr("title", __("Clear all filters except Company, Fiscal Year, and dates"))
+			.on("click", () => this.reset_all_filters())
+			.appendTo($group);
+		$('<button type="button" class="btn btn-default btn-sm dropdown-toggle dropdown-toggle-split ae-reset-caret">')
 			.attr("data-toggle", "dropdown")
 			.attr("aria-haspopup", "true")
 			.attr("aria-expanded", "false")
+			.append($('<span class="sr-only">').text(__("Toggle Reset Menu")))
 			.appendTo($group);
 		const $menu = $('<ul class="dropdown-menu dropdown-menu-right ae-reset-menu"></ul>').appendTo($group);
+		$("<li>")
+			.append(
+				$("<a href='#'>")
+					.text(__("Reset All Filters"))
+					.on("click", (event) => {
+						event.preventDefault();
+						this.reset_all_filters();
+					})
+			)
+			.appendTo($menu);
 		$("<li>")
 			.append(
 				$("<a href='#'>")
@@ -2403,22 +2451,27 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				options: ["", ...party_types],
 			},
 			() => {
+				// Clearing Party Type clears Party selection only — Identifier Field is preserved.
 				this.filter_controls.party?.set_value(null);
 			}
 		);
-		this.filter_controls.party = this.make_filter_control(accounting_body, {
-			fieldtype: "MultiSelectList",
-			label: __("Party"),
-			fieldname: "party",
-			options: "party_type",
-			get_data: (txt) => {
-				const party_type = this.filter_controls.party_type?.get_value();
-				if (!party_type) {
-					return Promise.resolve([]);
-				}
-				return frappe.db.get_link_options(party_type, txt);
+		this.filter_controls.party = this.make_filter_control(
+			accounting_body,
+			{
+				fieldtype: "MultiSelectList",
+				label: __("Party"),
+				fieldname: "party",
+				options: "party_type",
+				get_data: (txt) => {
+					const party_type = this.filter_controls.party_type?.get_value();
+					if (!party_type) {
+						return Promise.resolve([]);
+					}
+					return frappe.db.get_link_options(party_type, txt);
+				},
 			},
-		});
+			() => this.sync_identifier_from_selected_party()
+		);
 		this.filter_controls.party_name_query = this.make_filter_control(accounting_body, {
 			fieldtype: "Data",
 			label: __("Party Name"),
@@ -2435,6 +2488,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			fieldname: "unified_identity",
 			default: 0,
 		});
+		this._identifier_manual_override = false;
+		const identifier_input = this.filter_controls.identifier_query?.$input;
+		if (identifier_input?.on) {
+			identifier_input.on("input", () => {
+				this._identifier_manual_override = true;
+			});
+		}
 
 		const dimensions_body = this.make_filter_section(__("Dimensions"), $grid, "dimensions");
 		this.filter_controls.dimensions = {};
@@ -2896,7 +2956,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 	}
 
-	clear_all_analysis_filters() {
+	clear_all_analysis_filters({ refresh = true } = {}) {
 		this.analysis_filters = erpnext_extensions.account_explorer.core.AnalysisFilters.empty();
 		this.store.clear_analysis_filters({ silent: true });
 		this.store.patch({ analysis_filters: this.analysis_filters }, { silent: true });
@@ -2910,7 +2970,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._sync_store_context({ emit: true });
 		this.render_filter_summary();
 		this.schedule_workspace_url_update({ push: false });
-		if (this.document_scope.from_date && this.document_scope.to_date) {
+		if (refresh && this.document_scope.from_date && this.document_scope.to_date) {
 			this.refresh_summary({ new_execution: true, reason: "filters_cleared" });
 		}
 	}
@@ -3346,15 +3406,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			return;
 		}
 		if (view_axis === "party") {
+			// Clear axis drill selection only — preserve Identifier Field / document panel filters.
+			const prev = this.analysis_context.party_scope || {};
 			this.analysis_context.party_scope = {
-				party_type: null,
+				...prev,
 				selected_party: null,
-				party_name_query: null,
-				identifier_query: null,
-				unified_identity: 0,
-				identity_members: null,
+				identity_members: prev.unified_identity ? prev.identity_members : null,
 			};
-			this.hide_member_panel();
+			if (!this.analysis_context.party_scope.unified_identity) {
+				this.hide_member_panel();
+			}
 			return;
 		}
 		if (view_axis === "unified_party") {
@@ -3441,7 +3502,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			inventory_account: __("Inventory Account"),
 		};
 
-		(this.metadata.axes || []).forEach((axis) => {
+		((this.metadata && this.metadata.axes) || []).forEach((axis) => {
 			// Unified Parties / legacy Inventory Account tabs hidden (backend retained if needed).
 			if (
 				!axis.enabled ||
@@ -3525,7 +3586,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		$sub.toggle(has_sub);
 
 		// Measure-family hint: stock journey vs GL (no banner mode switch).
-		const axis_meta = (this.metadata.axes || []).find(
+		const axis_meta = ((this.metadata && this.metadata.axes) || []).find(
 			(a) => a.id === this.analysis_context.view_axis
 		);
 		this.$nav.find(".ae-measure-family-hint").remove();
@@ -3554,6 +3615,52 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				.attr("data-inventory-filter-mode", mode || "")
 				.text(__(hint))
 				.appendTo(this.$nav);
+		}
+	}
+
+	_ensure_sort_field_for_axis(view_axis) {
+		const defaults = {
+			account_level: "display_code",
+			party: "party_type",
+			unified_party: "display_title",
+			dimension: "display_code",
+			currency: "currency",
+			voucher: "posting_date",
+			item_group: "display_code",
+			item: "display_code",
+			inventory_account: "display_code",
+		};
+		const allowed = {
+			account_level: ["display_code", "display_title", "period_debit", "period_credit", "debit_balance", "credit_balance", "opening_debit", "opening_credit"],
+			party: ["party_type", "display_code", "display_title", "party_identifier", "period_debit", "period_credit", "debit_balance", "credit_balance"],
+			unified_party: ["display_title", "display_code", "period_debit", "period_credit", "debit_balance", "credit_balance"],
+			dimension: ["display_code", "display_title", "period_debit", "period_credit", "debit_balance", "credit_balance"],
+			currency: ["currency", "period_debit", "period_credit", "company_period_debit", "company_period_credit"],
+			voucher: [
+				"posting_date",
+				"voucher_type",
+				"voucher_no",
+				"gl_entry",
+				"account",
+				"account_code",
+				"account_name",
+				"party_type",
+				"party",
+				"party_name",
+				"debit",
+				"credit",
+				"running_debit_balance",
+				"running_credit_balance",
+				"remarks",
+				"description",
+			],
+			item_group: ["display_code", "display_title", "inward_value", "outward_value", "debit_balance", "credit_balance"],
+			item: ["display_code", "display_title", "inward_value", "outward_value", "debit_balance", "credit_balance"],
+		};
+		const axis = view_axis || "account_level";
+		const current = this.analysis_context.sort_field;
+		if (!(allowed[axis] || []).includes(current)) {
+			this.analysis_context.sort_field = defaults[axis] || "display_code";
 		}
 	}
 
@@ -3675,6 +3782,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				this.user_preferences.get_axis_key(view_axis, dimension_type)
 			);
 		}
+		// Preferences must not leave an axis with a sort field the server rejects.
+		this._ensure_sort_field_for_axis(view_axis);
 		this.render_navigator();
 		this.render_detail_header();
 		const breadcrumb_started = performance.now();
@@ -5554,6 +5663,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			"against_account",
 			"party_type",
 			"party",
+			"running_debit_balance",
+			"running_credit_balance",
 			"remarks",
 			"debit_in_account_currency",
 			"credit_in_account_currency",
@@ -7699,6 +7810,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 	reset_analysis(refresh = true) {
 		this._reset_breadcrumbs([]);
+		this.clear_all_analysis_filters({ refresh: false });
 		this.analysis_context.view_axis = "account_level";
 		this.analysis_context.account_scope = {
 			mode: "tree",
@@ -7711,6 +7823,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.analysis_context.party_scope = {
 			party_type: null,
 			selected_party: null,
+			party_name_query: null,
+			identifier_query: null,
+			unified_identity: 0,
+			identity_members: null,
+			identity_available_members: null,
+			identity_display_title: null,
+			identity_identifier: null,
 		};
 		this.analysis_context.unified_party_scope = {
 			selected_unified_party: null,
@@ -7721,44 +7840,138 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			voucher_type: null,
 			voucher_no: null,
 		};
+		this.analysis_context.item_group_scope = { selected_item_group: null };
+		this.analysis_context.item_scope = { selected_item: null };
 		this.analysis_context.detail_mode = "summary";
 		this.analysis_context.level_sequence = this.metadata?.default_level_sequence;
 		this.analysis_context.page = 1;
 		this.voucher_header = null;
+		this.analysis_source = null;
+		this.commercial_semantics = null;
 		this.hide_member_panel();
+		this.clear_grid_selection();
 		this.render_navigator();
 		this.render_breadcrumbs();
 		this.render_detail_header();
+		this.render_filter_summary();
 		this._sync_store_context({ emit: true });
 		if (refresh) {
-			this.refresh_summary();
+			this.refresh_summary({ new_execution: true, reason: "reset_analysis" });
 		}
 	}
 
-	reset_document_scope() {
+	reset_document_scope({ preserve_framing = false } = {}) {
 		const defaults = this.metadata?.defaults || {};
 		const scopeDefaults = defaults.document_scope || defaults;
-		if (scopeDefaults.company) {
-			this.company_field.set_value(scopeDefaults.company);
+		const company = preserve_framing
+			? this.document_scope.company || this.company_field?.get_value() || scopeDefaults.company || null
+			: scopeDefaults.company || null;
+		const fiscal_year = preserve_framing
+			? this.document_scope.fiscal_year || this.fy_field?.get_value() || scopeDefaults.fiscal_year || null
+			: scopeDefaults.fiscal_year || null;
+		const from_date = preserve_framing
+			? this.document_scope.from_date || this.from_date_field?.get_value() || scopeDefaults.from_date || null
+			: scopeDefaults.from_date || null;
+		const to_date = preserve_framing
+			? this.document_scope.to_date || this.to_date_field?.get_value() || scopeDefaults.to_date || null
+			: scopeDefaults.to_date || null;
+
+		if (!preserve_framing) {
+			if (company) {
+				this.company_field.set_value(company);
+			}
+			if (fiscal_year) {
+				this.fy_field.set_value(fiscal_year);
+			}
+			this.from_date_field.set_value(from_date || "");
+			this.to_date_field.set_value(to_date || "");
 		}
-		if (scopeDefaults.fiscal_year) {
-			this.fy_field.set_value(scopeDefaults.fiscal_year);
-		}
-		this.from_date_field.set_value(scopeDefaults.from_date || "");
-		this.to_date_field.set_value(scopeDefaults.to_date || "");
+
+		const status_defaults = this.get_scope_status_defaults();
 		this.document_scope = ae_default_document_scope({
-			company: scopeDefaults.company || null,
-			fiscal_year: scopeDefaults.fiscal_year || null,
-			from_date: scopeDefaults.from_date || null,
-			to_date: scopeDefaults.to_date || null,
-			hide_zero_rows: scopeDefaults.hide_zero_rows ?? 1,
-			status: { ...ae_default_document_scope().status, ...(scopeDefaults.status || {}) },
-			currency: { ...ae_default_document_scope().currency, ...(scopeDefaults.currency || {}) },
+			company,
+			fiscal_year,
+			from_date,
+			to_date,
+			hide_zero_rows: this.document_scope?.hide_zero_rows ?? scopeDefaults.hide_zero_rows ?? 1,
+			status: { ...ae_default_document_scope().status, ...status_defaults },
+			currency: { ...ae_default_document_scope().currency },
 		});
+		this._identifier_manual_override = false;
 		this.sync_filter_controls_from_document_scope();
+		this.filter_controls.party_name_query?.set_value("");
+		this.filter_controls.identifier_query?.set_value("");
+		this.filter_controls.unified_identity?.set_value(0);
 		this.update_advanced_filters_button();
 		this.render_filter_summary();
-		this.render_prompt(__("Document scope reset. Click Apply to reload."));
+		if (!preserve_framing) {
+			this.render_prompt(__("Document scope reset. Click Apply to reload."));
+		}
+	}
+
+	reset_all_filters() {
+		/** Global Reset: keep Company / Fiscal Year / From / To; clear everything else and reload. */
+		const company = this.document_scope.company || this.company_field?.get_value() || null;
+		const fiscal_year = this.document_scope.fiscal_year || this.fy_field?.get_value() || null;
+		const from_date = this.document_scope.from_date || this.from_date_field?.get_value() || null;
+		const to_date = this.document_scope.to_date || this.to_date_field?.get_value() || null;
+
+		this.reset_document_scope({ preserve_framing: true });
+		this.document_scope.company = company;
+		this.document_scope.fiscal_year = fiscal_year;
+		this.document_scope.from_date = from_date;
+		this.document_scope.to_date = to_date;
+		this.analysis_context.party_scope = {
+			party_type: null,
+			selected_party: null,
+			party_name_query: null,
+			identifier_query: null,
+			unified_identity: 0,
+			identity_members: null,
+			identity_available_members: null,
+			identity_display_title: null,
+			identity_identifier: null,
+		};
+		this.reset_analysis(false);
+		this._new_ae_execution_id("reset_all");
+		this.prepared_mode = null;
+		this._force_datatable_remount = true;
+		this.update_advanced_filters_button();
+		this.render_filter_summary();
+		this.schedule_workspace_url_update({ push: true });
+		this.announce_grid_status(__("All filters reset. Reloading report…"));
+		this.refresh_summary({ new_execution: true, reason: "reset_all" });
+	}
+
+	sync_identifier_from_selected_party() {
+		const party_type = this.filter_controls.party_type?.get_value() || null;
+		const party_values = ae_normalize_multi_value(this.filter_controls.party?.get_value());
+		const party = Array.isArray(party_values) ? party_values[0] || null : party_values || null;
+		if (!party_type || !party) {
+			// Clearing Party must not clear Identifier Field.
+			return;
+		}
+		this._identifier_manual_override = false;
+		frappe.call({
+			method: `${this.api_base}.resolve_party_identifier`,
+			args: { party_type, party },
+			callback: (r) => {
+				const identifier = r.message?.identifier;
+				if (identifier == null || identifier === "") {
+					return;
+				}
+				const as_text = String(identifier);
+				this.filter_controls.identifier_query?.set_value(as_text);
+				this.analysis_context.party_scope = {
+					...(this.analysis_context.party_scope || {}),
+					party_type,
+					selected_party: party,
+					identifier_query: as_text,
+					identity_identifier: as_text,
+				};
+				this.render_filter_summary();
+			},
+		});
 	}
 
 	render_totals() {

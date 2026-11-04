@@ -69,6 +69,8 @@ VOUCHER_SORTABLE_FIELDS = frozenset(
 		"party_name",
 		"debit",
 		"credit",
+		"running_debit_balance",
+		"running_credit_balance",
 		"remarks",
 		"description",
 		"voucher_title",
