@@ -188,15 +188,24 @@ class TestPECancelFunding(unittest.TestCase):
 
 	def test_allocation_guard_blocks_cancel(self):
 		"""If PM Clearance allocations exceed post-cancel funded amount, cancel is blocked."""
+		from erpnext_extensions.petty_management.tests.pm_cancel_qa_fixtures import (
+			prepare_pi_for_clearance_fixture,
+		)
+		from erpnext_extensions.petty_management.tests.test_pm_request_multi_pe import (
+			_close_pm_request,
+		)
+
 		emp = tpm._make_employee()
 		tpm._make_holder(emp)
 		req = _new_submitted_request(emp, 100_000)
 		pe1 = _create_funding_pe(req, 50_000)
 		_sync_funding_fields(req)
+		# v5.6.32: Partially Paid Requests must be Closed (or Paid) before Clearance.
+		_close_pm_request(req, close_reason="Partial Approval")
+		_sync_funding_fields(req)
 
 		pi = tpm._make_pi_outstanding(40_000)
-		pi.insert()
-		pi.submit()
+		prepare_pi_for_clearance_fixture(pi)
 		cl = frappe.new_doc("PM Clearance")
 		cl.company = tpm.COMPANY
 		cl.employee = emp
@@ -229,6 +238,13 @@ class TestPECancelFunding(unittest.TestCase):
 
 	def test_cancel_allowed_when_remaining_covers_allocations(self):
 		"""PE1+PE2 fund 100k; 40k reserved; cancel PE1 (50k) → remaining 50k ≥ reserved."""
+		from erpnext_extensions.petty_management.tests.pm_cancel_qa_fixtures import (
+			prepare_pi_for_clearance_fixture,
+		)
+		from erpnext_extensions.petty_management.tests.test_pm_request_multi_pe import (
+			_close_pm_request,
+		)
+
 		emp = tpm._make_employee()
 		tpm._make_holder(emp)
 		req = _new_submitted_request(emp, 100_000)
@@ -240,10 +256,13 @@ class TestPECancelFunding(unittest.TestCase):
 		pe1 = _create_funding_pe(req, 50_000)
 		pe2 = _create_funding_pe(req, 50_000)
 		_sync_funding_fields(req)
+		# Fully funded → Paid; close not required, but keep Closed-or-Paid gate explicit.
+		if frappe.db.get_value("PM Request", req, "payment_status") == "Partially Paid":
+			_close_pm_request(req, close_reason="Partial Approval")
+			_sync_funding_fields(req)
 
 		pi = tpm._make_pi_outstanding(40_000)
-		pi.insert()
-		pi.submit()
+		prepare_pi_for_clearance_fixture(pi)
 		cl = frappe.new_doc("PM Clearance")
 		cl.company = tpm.COMPANY
 		cl.employee = emp

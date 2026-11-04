@@ -365,6 +365,36 @@ def _first_department_for_company() -> str | None:
 	return row[0][0] if row else None
 
 
+_EMPLOYEE_REUSE_OFFSET = 0
+# Employees borrowed from the site (not created by tests) — never delete in tearDown.
+REUSED_EMPLOYEES: set[str] = set()
+
+
+def _reuse_existing_employee() -> str:
+	"""Pick a distinct Active Employee when site hooks block Employee insert (e.g. broken Raven)."""
+	global _EMPLOYEE_REUSE_OFFSET
+	rows = frappe.db.sql(
+		"""
+		select name from `tabEmployee`
+		where company = %s and ifnull(status, '') = 'Active'
+		order by name
+		""",
+		(COMPANY,),
+	)
+	if not rows:
+		raise unittest.SkipTest("No Active Employee to reuse; cannot create test Employee.")
+	emp = rows[_EMPLOYEE_REUSE_OFFSET % len(rows)][0]
+	_EMPLOYEE_REUSE_OFFSET += 1
+	REUSED_EMPLOYEES.add(emp)
+	# Real employees may stamp a manager without Petty Management User; tests need a
+	# workflow-safe expense_approver so PM Request submit does not fail.
+	if frappe.db.exists("User", "Administrator"):
+		frappe.db.set_value(
+			"Employee", emp, "expense_approver", "Administrator", update_modified=False
+		)
+	return emp
+
+
 def _make_employee() -> str:
 	"""Create Employee without ERPNext ``test_employee`` (that import pulls in BootStrapTestData / fiscal-year seeding)."""
 	dept = _first_department_for_company()
@@ -382,8 +412,19 @@ def _make_employee() -> str:
 	# v4.0.2 manager stamp: Employee.expense_approver (User)
 	if frappe.db.exists("User", "Administrator"):
 		doc.expense_approver = "Administrator"
-	doc.insert(ignore_permissions=True)
-	return doc.name
+	try:
+		doc.insert(ignore_permissions=True)
+		return doc.name
+	except ImportError as e:
+		# Site may ship incomplete Raven DocType modules; Employee insert then fails in hooks.
+		if "raven" not in str(e).lower():
+			raise
+		frappe.db.rollback()
+		return _reuse_existing_employee()
+	except frappe.QueryDeadlockError:
+		# Concurrent test suites can collide on tabSeries; fall back to reuse.
+		frappe.db.rollback()
+		return _reuse_existing_employee()
 
 
 def _pm_holder_primary_key(employee: str, company: str) -> str:
@@ -465,18 +506,25 @@ def _fund_pm_request(employee: str, amount: float) -> tuple[str, str]:
 _po_required_prev: str | None = None
 
 
+_pr_required_prev = None
+
+
 def _ensure_test_pi_without_po() -> None:
-	"""Buying Settings on this site may require PO; PM clearance fixtures need bare PIs."""
-	global _po_required_prev
-	if _po_required_prev is not None:
-		return
+	"""Buying Settings on this site may require PO/PR; PM clearance fixtures need bare PIs."""
+	global _po_required_prev, _pr_required_prev
 	try:
-		cur = frappe.db.get_single_value("Buying Settings", "po_required")
+		if _po_required_prev is None:
+			cur = frappe.db.get_single_value("Buying Settings", "po_required")
+			_po_required_prev = cur
+			if (cur or "").strip() == "Yes":
+				frappe.db.set_single_value("Buying Settings", "po_required", "No")
+		if _pr_required_prev is None:
+			cur_pr = frappe.db.get_single_value("Buying Settings", "pr_required")
+			_pr_required_prev = cur_pr
+			if (cur_pr or "").strip() == "Yes":
+				frappe.db.set_single_value("Buying Settings", "pr_required", "No")
 	except Exception:
 		return
-	_po_required_prev = cur
-	if (cur or "").strip() == "Yes":
-		frappe.db.set_single_value("Buying Settings", "po_required", "No")
 
 
 def _make_pi_outstanding(amount: float):
@@ -743,6 +791,13 @@ class TestPMClearanceAllocation(unittest.TestCase):
 		frappe.set_user("Administrator")
 		for doctype, name in reversed(self._cleanup_names):
 			try:
+				# Never delete site Employees/Holders borrowed when Raven blocks insert.
+				if doctype == "Employee" and name in REUSED_EMPLOYEES:
+					continue
+				if doctype == "PM Holder":
+					emp = frappe.db.get_value("PM Holder", name, "employee")
+					if emp and emp in REUSED_EMPLOYEES:
+						continue
 				if doctype == "PM Request" and frappe.db.exists("PM Request", name):
 					pe = frappe.db.get_value("PM Request", name, "payment_entry")
 					if pe and frappe.db.exists("Payment Entry", pe):
@@ -1428,8 +1483,9 @@ class TestPMClearanceAllocation(unittest.TestCase):
 		self._track("PM Clearance", cl.name)
 
 		# v4.7.2: draft/Pending* clearances stay docstatus=0 until Finance Approve.
+		# v5.5.5+: active reservation includes Draft (docstatus=0) until Rejected/Cancelled.
 		self.assertEqual(cint(cl.docstatus), 0)
-		self.assertLess(flt(sum_prior_pm_request_allocations(req_name, None)), 1e-3)
+		self.assertGreaterEqual(flt(sum_prior_pm_request_allocations(req_name, None)), 3_000.0 - 1e-3)
 
 		_approve_pm_clearance_for_reservation(cl.name)
 		self.assertGreaterEqual(flt(sum_prior_pm_request_allocations(req_name, None)), 3_000.0 - 1e-3)
@@ -2096,6 +2152,12 @@ class TestPMClearanceLifecyclePolicy(unittest.TestCase):
 		frappe.set_user("Administrator")
 		for doctype, name in reversed(self._cleanup_names):
 			try:
+				if doctype == "Employee" and name in REUSED_EMPLOYEES:
+					continue
+				if doctype == "PM Holder":
+					emp = frappe.db.get_value("PM Holder", name, "employee")
+					if emp and emp in REUSED_EMPLOYEES:
+						continue
 				if doctype == "PM Request" and frappe.db.exists("PM Request", name):
 					pe = frappe.db.get_value("PM Request", name, "payment_entry")
 					if pe and frappe.db.exists("Payment Entry", pe):
