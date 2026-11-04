@@ -38,6 +38,11 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 		return { kind: "dimension", fieldname: text };
 	};
 
+	const filters_has_party_identity = (bag) => {
+		const normalized = AF.normalize_bag(bag || {});
+		return !!normalized.party_identity;
+	};
+
 	Object.assign(AF, {
 		build_summary_rows(bag, { document_scope = null, analysis_context = null, metadata = null } = {}) {
 			const rows = [];
@@ -107,6 +112,16 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 					__("Document Party"),
 					[doc.accounting.party_type, doc.accounting.party].filter(Boolean).join(" / ")
 				);
+			}
+			const party_scope = ctx.party_scope || {};
+			if (party_scope.identifier_query && !filters_has_party_identity(bag)) {
+				push_doc("identifier_query", __("Identifier Field"), party_scope.identifier_query);
+			}
+			if (party_scope.party_name_query) {
+				push_doc("party_name_query", __("Party Name"), party_scope.party_name_query);
+			}
+			if (cint(party_scope.unified_identity) && !filters_has_party_identity(bag)) {
+				push_doc("unified_identity", __("Unified Party / Related Identity"), __("Yes"));
 			}
 			Object.entries(doc.accounting_dimensions || {}).forEach(([field, value]) => {
 				if (ae_af_is_empty(value)) {

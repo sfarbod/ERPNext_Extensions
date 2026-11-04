@@ -525,4 +525,22 @@ def AccountExplorerQuerySpec_from_client(
 		)
 		if members:
 			spec.resolved_member_tuples = [(m["party_type"], m["party"]) for m in members]
+	elif (
+		spec.party_scope.identifier_query
+		and not spec.party_scope.selected_party
+		and not spec.party_scope.unified_identity
+	):
+		# Identifier-only: resolve matching masters across configured Party Types.
+		# Do not broaden when an explicit Party selection is active without Unified Identity.
+		from erpnext_extensions.iran_accounting.account_explorer.party_identity import (
+			resolve_identity_members,
+		)
+
+		members = resolve_identity_members(
+			party_type=None,
+			party=None,
+			identifier_value=spec.party_scope.identifier_query,
+		)
+		if members:
+			spec.resolved_member_tuples = [(m["party_type"], m["party"]) for m in members]
 	return spec

@@ -206,9 +206,8 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 		].forEach((node) => graph.register_node(node));
 
 		[
-			// v4.6.3: filter intent scopes the account only; keep current Account Levels pill.
-			// advance_level is navigate-only so Analyze on Group 11 stays at Group (one row),
-			// while explicit navigate / second click still reveals children (1110, 1112, …).
+			// v5.6.35: Analyze on an Account Group applies hierarchy scope AND advances
+			// presentation to descendants so the parent is not duplicated as a detail row.
 			{
 				from_node: "AccountGroup",
 				intent: "filter",
@@ -217,6 +216,13 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 				policy: "replace_filter",
 				filter_key: "account",
 				lifetime: "session",
+			},
+			{
+				from_node: "AccountGroup",
+				intent: "filter",
+				edge_type: "advance_level",
+				target: "GeneralLedger",
+				policy: "keep_filters",
 			},
 			{
 				from_node: "AccountGroup",
@@ -233,6 +239,13 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 				policy: "replace_filter",
 				filter_key: "account",
 				lifetime: "session",
+			},
+			{
+				from_node: "GeneralLedger",
+				intent: "filter",
+				edge_type: "advance_level",
+				target: "SubsidiaryLedger",
+				policy: "keep_filters",
 			},
 			{
 				from_node: "GeneralLedger",

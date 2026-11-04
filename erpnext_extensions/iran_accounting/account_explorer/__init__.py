@@ -52,6 +52,15 @@ def get_party_identity_analysis(payload=None):
 
 
 @frappe.whitelist()
+def resolve_party_identifier(party_type=None, party=None):
+	from erpnext_extensions.iran_accounting.account_explorer.api import (
+		resolve_party_identifier as _resolve,
+	)
+
+	return _resolve(party_type=party_type, party=party)
+
+
+@frappe.whitelist()
 def get_classification_exclusion_details(payload=None):
 	from erpnext_extensions.iran_accounting.account_explorer.api import (
 		get_classification_exclusion_details as _details,

@@ -346,6 +346,8 @@ def get_export_columns(spec: AccountExplorerQuerySpec) -> list[dict[str, str]]:
 			{"fieldname": "account", "label": _("Account")},
 			{"fieldname": "debit", "label": _("Debit")},
 			{"fieldname": "credit", "label": _("Credit")},
+			{"fieldname": "running_debit_balance", "label": _("Running Debit Balance")},
+			{"fieldname": "running_credit_balance", "label": _("Running Credit Balance")},
 			{"fieldname": "account_currency", "label": _("Account Currency")},
 			{"fieldname": "remarks", "label": _("Description")},
 			{"fieldname": "party_type", "label": _("Party Type")},

@@ -85,6 +85,8 @@ VOUCHER_COLUMNS = [
 	{"id": "party", "label": "Party", "fieldtype": "Data", "width": 120},
 	{"id": "debit", "label": "Debit", "fieldtype": "Currency", "width": 130},
 	{"id": "credit", "label": "Credit", "fieldtype": "Currency", "width": 130},
+	{"id": "running_debit_balance", "label": "Running Debit Balance", "fieldtype": "Currency", "width": 150},
+	{"id": "running_credit_balance", "label": "Running Credit Balance", "fieldtype": "Currency", "width": 150},
 	{"id": "account_currency", "label": "Account Currency", "fieldtype": "Data", "width": 100},
 	{"id": "debit_in_account_currency", "label": "Debit in Account Currency", "fieldtype": "Currency", "width": 150},
 	{"id": "credit_in_account_currency", "label": "Credit in Account Currency", "fieldtype": "Currency", "width": 150},
@@ -832,6 +834,33 @@ def get_account_scope_preview(payload) -> dict:
 	return {
 		"account_scope": _analysis_context_response(spec)["account_scope"],
 		"scoped_account_count": len(spec.included_account_names or []),
+	}
+
+
+def resolve_party_identifier(party_type: str | None = None, party: str | None = None) -> dict:
+	"""Resolve the configured Identifier Field value for a Party master (string-safe)."""
+	from frappe.utils import cstr
+
+	from erpnext_extensions.iran_accounting.account_explorer.permissions import assert_accounts_role
+	from erpnext_extensions.iran_accounting.account_explorer.party_sources import (
+		get_party_identifier,
+		get_party_source_config_map,
+	)
+
+	assert_accounts_role()
+	party_type = cstr(party_type or "").strip()
+	party = cstr(party or "").strip()
+	if not party_type or not party:
+		return {"identifier": None, "identifier_field": None, "party_type": party_type, "party": party}
+
+	source = get_party_source_config_map().get(party_type)
+	identifier_field = source.identifier_field if source else None
+	raw = get_party_identifier(party_type, party, identifier_field)
+	return {
+		"identifier": None if raw is None else cstr(raw),
+		"identifier_field": identifier_field,
+		"party_type": party_type,
+		"party": party,
 	}
 
 
