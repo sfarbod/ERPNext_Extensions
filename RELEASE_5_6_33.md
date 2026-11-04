@@ -56,6 +56,18 @@ only where core already aggregates messages).
 | `hooks.py` | `doctype_js` for Delivery Note |
 | `stock_extensions/delivery_note_check_submission/tests/test_delivery_note_check_submission_v5633.py` | Automated coverage |
 
+### Tests
+
+| Suite | Result |
+|---|---|
+| `test_delivery_note_check_submission_v5633` (13) | OK |
+
+Coverage: Write-without-Submit allowed, Submit user allowed, no-perm rejected,
+valid DN success + caveat, insufficient stock / I4 error, invalid warehouse,
+missing batch, invalid serial, non-draft rejected, no SLE/GLE/Bin/`modified`
+leak, doctype_js hook registered.
+
 ### Version
 
 - `erpnext_extensions`: **5.6.33**
+- Commit: `40b5490514f1ac92765a6407ebe6dace185d9a02`
