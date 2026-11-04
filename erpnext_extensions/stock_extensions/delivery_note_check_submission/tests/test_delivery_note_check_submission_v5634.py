@@ -417,7 +417,7 @@ class TestDeliveryNoteCheckSubmissionV5634(unittest.TestCase):
 			)
 
 		with mock.patch(
-			"erpnext_extensions.stock_extensions.delivery_note_check_submission.validator._run_category_a_erpnext",
+			"erpnext_extensions.stock_extensions.delivery_note_check_submission.validator._run_category_a_groups",
 			side_effect=_evil,
 		):
 			with self.assertRaises(ReadOnlyViolation):
