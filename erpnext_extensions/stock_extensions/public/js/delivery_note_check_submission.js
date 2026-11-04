@@ -1,5 +1,5 @@
 // Copyright (c) 2026, ERPNext Extensions contributors
-// Check Submission — dry-run Delivery Note submit validations (Write, no Submit required).
+// Check Submission — strict read-only Delivery Note validations (Write, no Submit required).
 
 frappe.ui.form.on("Delivery Note", {
 	refresh(frm) {
@@ -15,7 +15,6 @@ erpnext_extensions.dn_check_submission.toggle_button = function (frm) {
 	if (frm.is_new() || frm.doc.docstatus !== 0) {
 		return;
 	}
-	// Write is enough; Submit must not be required.
 	if (!(frm.perm && frm.perm[0] && frm.perm[0].write)) {
 		return;
 	}
@@ -41,21 +40,19 @@ erpnext_extensions.dn_check_submission.run = function (frm) {
 	}
 
 	frm._dn_check_submission_busy = true;
-	frm.dashboard.set_headline_alert(__("Running submission validations…"), "blue");
+	frm.dashboard.set_headline_alert(__("Running read-only submission validations…"), "blue");
 
 	frappe.call({
 		method:
 			"erpnext_extensions.stock_extensions.delivery_note_check_submission.api.validate_delivery_note_before_submit",
 		args: { name: frm.doc.name },
 		freeze: true,
-		freeze_message: __("Checking submission validations…"),
+		freeze_message: __("Checking submission validations (read-only)…"),
 		callback(r) {
 			const result = (r && r.message) || {};
 			erpnext_extensions.dn_check_submission.show_result(result);
 		},
-		error() {
-			// frappe.call already surfaces server exceptions; keep UI unlock only.
-		},
+		error() {},
 		always() {
 			frm._dn_check_submission_busy = false;
 			frm.dashboard.clear_headline();
@@ -63,7 +60,26 @@ erpnext_extensions.dn_check_submission.run = function (frm) {
 	});
 };
 
+erpnext_extensions.dn_check_submission._limitations_html = function (limitations) {
+	if (!limitations || !limitations.length) {
+		return "";
+	}
+	const items = limitations
+		.map((lim) => {
+			const sev = frappe.utils.escape_html((lim && lim.severity) || "advisory");
+			const msg = frappe.utils.escape_html((lim && lim.message) || "");
+			const code = frappe.utils.escape_html((lim && lim.code) || "");
+			return `<li><strong>[${sev}]</strong> ${code ? `<code>${code}</code>: ` : ""}${msg}</li>`;
+		})
+		.join("");
+	return `<hr/><p><strong>${__("Limitations")}</strong></p><ul>${items}</ul>`;
+};
+
 erpnext_extensions.dn_check_submission.show_result = function (result) {
+	const limitations_html = erpnext_extensions.dn_check_submission._limitations_html(
+		result.limitations
+	);
+
 	if (result.ok) {
 		const caveat = result.caveat
 			? `<p class="text-muted small mt-2">${frappe.utils.escape_html(result.caveat)}</p>`
@@ -75,15 +91,15 @@ erpnext_extensions.dn_check_submission.show_result = function (result) {
 				`<p>${frappe.utils.escape_html(
 					result.message ||
 						__(
-							"All submission validations passed. This Delivery Note is ready for submission."
+							"All supported read-only submission validations passed."
 						)
-				)}</p>${caveat}`,
+				)}</p>${caveat}${limitations_html}`,
 		});
 		return;
 	}
 
 	const errors = result.errors || [];
-	const items = errors
+	const error_items = errors
 		.map((err) => {
 			const msg = frappe.utils.escape_html((err && err.message) || "");
 			const typ = frappe.utils.escape_html((err && err.exc_type) || "");
@@ -91,13 +107,14 @@ erpnext_extensions.dn_check_submission.show_result = function (result) {
 		})
 		.join("");
 
+	const incomplete = !errors.length && (result.limitations || []).some((l) => l.severity === "blocking");
 	frappe.msgprint({
-		title: __("Submission validation failed"),
-		indicator: "red",
+		title: incomplete ? __("Check Submission incomplete") : __("Submission validation failed"),
+		indicator: incomplete ? "orange" : "red",
 		message:
-			items ||
+			(error_items ? `<ul>${error_items}</ul>` : "") +
 			`<p>${frappe.utils.escape_html(
 				result.message || __("Submission validation failed.")
-			)}</p>`,
+			)}</p>${limitations_html}`,
 	});
 };

@@ -81,7 +81,7 @@ doctype_js = {
 	"Sales Order": [
 		"public/js/pdc_create_from_order.js",
 	],
-	# v5.6.33: Check Submission dry-run for users with Write but without Submit.
+	# v5.6.34: Check Submission strict read-only for users with Write but without Submit.
 	"Delivery Note": [
 		"stock_extensions/public/js/delivery_note_check_submission.js",
 	],
