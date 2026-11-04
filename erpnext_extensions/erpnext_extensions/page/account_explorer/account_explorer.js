@@ -3190,6 +3190,38 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			});
 		});
 
+		// Effective hierarchy Analyze must appear in the path even when breadcrumbs
+		// were not pushed (filter chip alone is not enough for the user).
+		const account_filter = this.get_analysis_filters?.()?.account;
+		const account_scope = this.analysis_context.account_scope || {};
+		const path_has_account = scope_trail.some(
+			(chip) =>
+				chip.selected_account ||
+				chip.virtual_row_key ||
+				(chip.bound_to && String(chip.bound_to).startsWith("account"))
+		);
+		if (!path_has_account && (account_filter || account_scope.selected_account || account_scope.tree_root_account)) {
+			const meta = account_filter?.meta || {};
+			const label =
+				meta.display_label ||
+				meta.display_title ||
+				account_scope.selected_account ||
+				account_scope.tree_root_account ||
+				account_filter?.value;
+			if (label) {
+				segments.push({
+					step: "scope:account_filter",
+					label: String(label),
+					kind: "scope",
+					scope_index: scope_trail.length,
+					is_virtual: !!meta.is_virtual_group,
+					clickable: false,
+					removable: true,
+					from_analysis_filter: true,
+				});
+			}
+		}
+
 		if (on_voucher_path) {
 			segments.push({
 				step: "voucher_axis",
@@ -3377,6 +3409,19 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	navigate_to_axis_root(view_axis) {
 		this._reset_breadcrumbs([]);
 		this.clear_axis_scopes(view_axis);
+		// Hierarchy Analyze leaves a session account filter. Returning to axis root must
+		// clear it or build_payload re-projects tree_root and sibling groups stay hidden.
+		if (view_axis === "account_level") {
+			const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+			const bag = this.get_analysis_filters();
+			if (bag.account) {
+				this.analysis_filters = AF.remove_entry(bag, "account");
+				this.store.remove_analysis_filter("account", { silent: true });
+				this.store.patch({ analysis_filters: this.analysis_filters }, { silent: true });
+				this._clear_legacy_scope_for_filter_key?.("account");
+				this.render_filter_summary();
+			}
+		}
 		this.analysis_context.view_axis = view_axis;
 		this.analysis_context.detail_mode = "summary";
 		this.analysis_context.voucher_scope = { voucher_type: null, voucher_no: null };
@@ -7181,37 +7226,45 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.analysis_context.page = 1;
 	}
 
-	drill_row(row, explicit_intent = null) {
+	drill_row(row, explicit_intent = null, opts = null) {
 		if (this.analysis_context.detail_mode === "grouped_gl") {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 
 		const axis = this.analysis_context.view_axis || "account_level";
+		const options = opts && typeof opts === "object" ? opts : {};
+		const skip_refresh = !!options.skip_refresh;
 		// Analyze (explicit filter intent) stays; row expansion/drill does not.
 		if (axis === "account_level" && explicit_intent !== "filter") {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 		if (axis === "party" && explicit_intent !== "filter") {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 		if (["dimension", "currency", "item_group", "item"].includes(axis) && explicit_intent !== "filter") {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 		if (axis === "unified_party" && (row.is_virtual_group || !row.unified_party)) {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 		if (axis === "dimension" && (row.is_virtual_group || !row.drill_down_enabled)) {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 		if (axis === "currency" && !row.currency) {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
-		if (axis === "account_level" && !row.drill_down_enabled && row.drill_down_enabled !== undefined) {
-			return;
+		// Explicit Analyze must never be blocked by presentation drill_down_enabled.
+		if (
+			explicit_intent !== "filter" &&
+			axis === "account_level" &&
+			!row.drill_down_enabled &&
+			row.drill_down_enabled !== undefined
+		) {
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 		if (axis === "item_group") {
 			if (row.is_virtual_group || !row.item_group) {
-				return;
+				return { applied: false, changed_filters: false, navigated: false };
 			}
 		}
 
@@ -7224,7 +7277,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		});
 
 		if (!resolution.actions?.length) {
-			return;
+			return { applied: false, changed_filters: false, navigated: false };
 		}
 
 		const result = this.apply_drill_graph_resolution(resolution);
@@ -7239,9 +7292,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 		// Always refresh when Analysis Filters changed — axis switch / level advance must
 		// see the new WHERE even if the primary action also navigated.
-		if (result.changed_filters || !result.navigated) {
+		if (!skip_refresh && (result.changed_filters || !result.navigated)) {
 			this._refresh_after_drill();
 		}
+		return {
+			applied: true,
+			changed_filters: !!result.changed_filters,
+			navigated: !!result.navigated,
+		};
 	}
 
 	_drill_item_group_row(row) {
@@ -7273,11 +7331,80 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 	analyze_row_as_filter(row) {
 		/** Explicit Analyze / Use as Filter — always session filter intent. */
+		if (!row) {
+			return;
+		}
 		if (this.analysis_context.view_axis === "party") {
 			this.analyze_party_identity(row);
 			return;
 		}
-		this.drill_row(row, "filter");
+		const before_crumbs = (this.breadcrumbs || []).length;
+		const before_level = this.analysis_context.level_sequence;
+		const is_account_nav =
+			this.analysis_context.view_axis === "account_level" &&
+			(row.selected_account || row.is_virtual_group);
+		// Defer refresh until NestedSet parent + child level are forced, otherwise a
+		// first refresh can race a second one and restore sibling Group rows.
+		this.drill_row(row, "filter", is_account_nav ? { skip_refresh: true } : null);
+		if (is_account_nav) {
+			if ((this.breadcrumbs || []).length === before_crumbs) {
+				this.push_breadcrumb({
+					label: row.display_title || row.display_code || row.selected_account,
+					axis: "account_level",
+					selected_account: row.is_virtual_group ? null : row.selected_account,
+					virtual_row_key: row.is_virtual_group ? row.row_key : null,
+					level_sequence: row.level_sequence,
+					is_virtual_group: row.is_virtual_group ? 1 : 0,
+					bound_to: row.is_virtual_group
+						? `account_virtual:${row.row_key}`
+						: `account:${row.selected_account}`,
+				});
+			}
+			if (!row.is_virtual_group && row.selected_account) {
+				// Force NestedSet parent even when drill already mirrored a stale scope.
+				this.analysis_context.account_scope = {
+					mode: "account",
+					selected_account: row.selected_account,
+					virtual_row_key: null,
+					is_virtual_group: 0,
+					level_sequence: row.level_sequence,
+					tree_root_account: row.selected_account,
+				};
+				const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+				const bag = this.get_analysis_filters();
+				if (!bag.account || String(bag.account.value) !== String(row.selected_account)) {
+					const entry = this.build_filter_entry_from_row(
+						this.row_to_drill_node(row),
+						row,
+						{
+							filter_key: "account",
+							lifetime: "session",
+							policy: "replace_filter",
+						}
+					);
+					if (entry) {
+						this.set_analysis_filters_bag(
+							AF.apply_policy(bag, "replace_filter", entry)
+						);
+					}
+				}
+			}
+			const levels = (this.metadata?.levels || []).sort((a, b) => a.sequence - b.sequence);
+			const next = levels.find(
+				(lvl) => lvl.enabled && Number(lvl.sequence) > Number(row.level_sequence || before_level || 0)
+			);
+			if (next && Number(this.analysis_context.level_sequence) <= Number(row.level_sequence || before_level || 0)) {
+				this.analysis_context.level_sequence = next.sequence;
+			}
+			this.analysis_context.page = 1;
+			this.render_navigator();
+			this.render_breadcrumbs();
+			this.render_filter_summary();
+			this._sync_store_context({ emit: true });
+			this.schedule_workspace_url_update({ push: true });
+			this.refresh_summary({ new_execution: true, reason: "account_analyze_navigation" });
+			return;
+		}
 	}
 
 	analyze_party_identity(row) {

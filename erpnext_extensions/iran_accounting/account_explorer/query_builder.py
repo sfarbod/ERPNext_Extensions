@@ -9,9 +9,12 @@ from frappe.utils.caching import request_cache
 from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.account_explorer.account_hierarchy import (
+	account_in_subtree,
 	account_matches_configured_level,
+	accounts_by_name,
 	code_prefix,
 	configured_level_lengths,
+	direct_child_accounts,
 	find_account_by_normalized_number,
 	is_pure_numeric_code,
 	load_company_accounts,
@@ -192,6 +195,30 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	for row in rows:
 		finalize_measures(row)
 
+	# Analyze / hierarchy drill: NestedSet is authoritative. Code-prefix rollups can
+	# invent sibling labels when a leaf is mis-parented under another branch
+	# (e.g. account_number 111206 under Group 21 → phantom Group 11).
+	tree_root = spec.account_scope.tree_root_account or (
+		spec.account_scope.selected_account if spec.account_scope.mode == "account" else None
+	)
+	if tree_root:
+		rows = _filter_rows_to_nested_set_subtree(
+			rows,
+			accounts,
+			tree_root,
+			exclude_root=True,
+		)
+		if not rows:
+			# Prefer NestedSet direct children over silently returning company-wide groups.
+			rows = _build_nested_set_child_rows(
+				accounts,
+				tree_root,
+				measures_by_account,
+				level_sequence=int(level.sequence),
+			)
+			for row in rows:
+				finalize_measures(row)
+
 	if spec.hide_zero_rows:
 		rows = [row for row in rows if row_has_activity(row)]
 
@@ -309,6 +336,80 @@ def _accumulate_unclassified_residual(
 		"credit_balance": flt(measures.get("credit_balance")),
 	}
 	excluded.append(row)
+
+
+def _filter_rows_to_nested_set_subtree(
+	rows: list[dict],
+	accounts: list[dict],
+	tree_root: str,
+	*,
+	exclude_root: bool = True,
+) -> list[dict]:
+	"""Keep only presentation rows whose selected_account lies in the NestedSet subtree."""
+	by_name = accounts_by_name(accounts)
+	root = by_name.get(tree_root)
+	if not root:
+		frappe.throw(
+			_("Account hierarchy node {0} was not found for company scope.").format(tree_root)
+		)
+	kept: list[dict] = []
+	for row in rows:
+		selected = row.get("selected_account")
+		if not selected:
+			# Virtual prefix without a real Account master — only keep when the
+			# display code itself resolves inside the NestedSet subtree.
+			code = normalize_account_number(row.get("display_code"))
+			matched = find_account_by_normalized_number(accounts, code) if code else None
+			selected = matched.name if matched else None
+		if not selected:
+			continue
+		if not account_in_subtree(
+			by_name,
+			selected,
+			tree_root,
+			include_root=not exclude_root,
+		):
+			continue
+		kept.append(row)
+	return kept
+
+
+def _build_nested_set_child_rows(
+	accounts: list[dict],
+	tree_root: str,
+	measures_by_account: dict[str, dict],
+	*,
+	level_sequence: int,
+) -> list[dict]:
+	"""Aggregate NestedSet direct children of ``tree_root`` (Analyze destination)."""
+	by_name = accounts_by_name(accounts)
+	root = by_name.get(tree_root)
+	if not root:
+		frappe.throw(
+			_("Account hierarchy node {0} was not found for company scope.").format(tree_root)
+		)
+	rows: list[dict] = []
+	for child in direct_child_accounts(accounts, tree_root):
+		subtree_names = [
+			row.name
+			for row in accounts
+			if int(row.lft) >= int(child.lft) and int(row.rgt) <= int(child.rgt)
+		]
+		group = {
+			"row_key": f"{REAL_ACCOUNT_KEY_PREFIX}:{child.name}",
+			"display_code": normalize_account_number(child.account_number) or child.name,
+			"display_title": child.account_name or child.name,
+			"is_virtual_group": 0,
+			"level_sequence": level_sequence,
+			"selected_account": child.name,
+			"is_group": 1 if child.is_group else 0,
+			"has_direct_group_posting": 0,
+			**zero_measures(),
+		}
+		for name in subtree_names:
+			add_measures(group, measures_by_account.get(name, zero_measures()))
+		rows.append(group)
+	return rows
 
 
 def _finalize_group_rows(groups: dict, level, accounts: list[dict], configured_lengths: set[int]) -> None:

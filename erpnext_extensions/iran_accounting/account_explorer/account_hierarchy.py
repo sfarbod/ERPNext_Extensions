@@ -60,6 +60,36 @@ def descendant_accounts(accounts: list[dict], root_account: str | None) -> list[
 	return [row.name for row in accounts if row.lft >= root.lft and row.rgt <= root.rgt]
 
 
+def account_in_subtree(
+	accounts: list[dict] | dict[str, dict],
+	account_name: str | None,
+	root_account: str | None,
+	*,
+	include_root: bool = True,
+) -> bool:
+	"""True when ``account_name`` is in the NestedSet subtree of ``root_account``."""
+	if not account_name or not root_account:
+		return False
+	if isinstance(accounts, dict):
+		by_name = accounts
+	else:
+		by_name = accounts_by_name(accounts)
+	root = by_name.get(root_account)
+	node = by_name.get(account_name)
+	if not root or not node:
+		return False
+	if node.name == root.name:
+		return bool(include_root)
+	return int(node.lft) >= int(root.lft) and int(node.rgt) <= int(root.rgt)
+
+
+def direct_child_accounts(accounts: list[dict], root_account: str | None) -> list[dict]:
+	"""Return NestedSet direct children of ``root_account`` (same company list)."""
+	if not root_account:
+		return []
+	return [row for row in accounts if row.parent_account == root_account]
+
+
 def find_account_by_normalized_number(accounts: list[dict], normalized_number: str) -> dict | None:
 	for row in accounts:
 		if normalize_account_number(row.account_number) == normalized_number:

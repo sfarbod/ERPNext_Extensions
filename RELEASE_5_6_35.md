@@ -19,14 +19,21 @@ filters except Company / Fiscal Year / dates then reloads.
 - Explicit Party selection without Unified Identity does **not** silently broaden.
 - Filter Summary shows Identifier Field when active.
 
-### 2. Account Group Analyze
+### 2. Account Group Analyze (NestedSet navigation)
 
-- Analyze on Account Group / General Ledger applies hierarchy scope **and**
-  advances the presentation level to descendants.
-- Sibling branches (e.g. Group 21 when analyzing Group 11) are excluded via
-  NestedSet `lft`/`rgt`.
-- The selected parent remains in Analysis Path / breadcrumb context and is not
-  duplicated as a detail row at the child level.
+- Analyze is hierarchy **navigation**, not a filter-chip-only operation.
+- Clicking Analyze sets `tree_root_account`, advances to the child level, and
+  issues a single new prepared execution (no stale company-wide refresh race).
+- Presentation rows are filtered by NestedSet `lft`/`rgt` under the selected
+  parent. Code-prefix rollups cannot invent sibling groups (e.g. phantom Group
+  11 from a mis-parented `111206` under Group 21).
+- Empty NestedSet child sets fall back to direct `parent_account` children —
+  never silently to the company-wide Group grid.
+- Analysis Path includes the selected Account Group (breadcrumb and/or effective
+  account filter). Back restores the prior hierarchy scope.
+- Identity filters (Document Party, Identifier, Unified Party tuples) remain
+  combined with hierarchy scope as AND of NestedSet descendants and valid
+  `(party_type, party)` OR tuples.
 
 ### 3. Running Debit / Credit Balance (Vouchers)
 
