@@ -81,6 +81,10 @@ doctype_js = {
 	"Sales Order": [
 		"public/js/pdc_create_from_order.js",
 	],
+	# v5.6.34: Check Submission strict read-only for users with Write but without Submit.
+	"Delivery Note": [
+		"stock_extensions/public/js/delivery_note_check_submission.js",
+	],
 	"Facility": [
 		"facility_management/public/js/facility_dimension_link_queries.js",
 		"facility_management/public/js/facility_settings_defaults.js",
