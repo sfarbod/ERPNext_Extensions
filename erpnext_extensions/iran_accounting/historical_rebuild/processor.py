@@ -383,18 +383,22 @@ def manufacture_product_reject_rate_issues(voucher_no: str) -> list[dict[str, An
 		return []
 	try:
 		from erpnext_extensions.iran_accounting.scrap_costing import (
+			CLASS_MAIN_PRODUCT_REJECT,
+			classify_manufacture_outputs,
 			historical_zero_product_reject_needs_repair,
+			historical_zero_reject_only_needs_repair,
 		)
 
 		doc = frappe.get_doc("Stock Entry", voucher_no)
-		if not historical_zero_product_reject_needs_repair(doc):
+		fg_reject = historical_zero_product_reject_needs_repair(doc)
+		reject_only = historical_zero_reject_only_needs_repair(doc)
+		if not fg_reject and not reject_only:
 			return []
-		from erpnext_extensions.iran_accounting.scrap_costing import (
-			CLASS_MAIN_PRODUCT_REJECT,
-			classify_manufacture_outputs,
-		)
 
 		classified = classify_manufacture_outputs(doc)
+		reason = (
+			"zero_reject_only_manufacture_rate" if reject_only and not fg_reject else "zero_main_product_reject_rate"
+		)
 		issues = []
 		for row in classified.get(CLASS_MAIN_PRODUCT_REJECT) or []:
 			if cint(row.get("allow_zero_valuation_rate")):
@@ -411,7 +415,7 @@ def manufacture_product_reject_rate_issues(voucher_no: str) -> list[dict[str, An
 					"item_code": row.get("item_code"),
 					"qty": qty,
 					"basic_rate": row.get("basic_rate"),
-					"reason": "zero_main_product_reject_rate",
+					"reason": reason,
 				}
 			)
 		return issues

@@ -1218,6 +1218,111 @@ def repair_historical_zero_product_reject(doc) -> bool:
 	return bool(applied)
 
 
+def historical_zero_reject_only_needs_repair(doc) -> bool:
+	"""True when Manufacture has zero MAIN_FG and illegal zero MAIN_PRODUCT_REJECT.
+
+	Stage Job Cards often set ``finished_good`` to the scrap/reject item itself
+	(e.g. MAT-STE-2026-27570 / PO-JOB07953). Classification then yields
+	MAIN_PRODUCT_REJECT with no MAIN_FG. The FG+reject absorbed-cost path
+	(:func:`historical_zero_product_reject_needs_repair`) does not apply, so
+	valued consume stays unmatched and Core posts the full pool to Stock
+	Adjustment. Intentional zero (``allow_zero_valuation_rate``) is excluded.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if cint(doc.get("docstatus")) != 1:
+		return False
+	if not is_irr_company(doc.get("company")):
+		return False
+	classified = classify_manufacture_outputs(doc)
+	if classified.get(CLASS_MAIN_FG):
+		return False
+	rejects = classified.get(CLASS_MAIN_PRODUCT_REJECT) or []
+	if not rejects:
+		return False
+	consume_amt = sum(flt(row.get("basic_amount")) for row in (doc.get("items") or []) if row.get("s_warehouse"))
+	if consume_amt <= 0.5:
+		return False
+	for row in rejects:
+		if _row_qty(row) <= 0:
+			continue
+		if cint(row.get("allow_zero_valuation_rate")):
+			continue
+		if abs(flt(row.get("basic_rate"))) <= 1e-9 and abs(flt(row.get("valuation_rate"))) <= 1e-9:
+			return True
+	return False
+
+
+def allocate_reject_only_absorbed_cost(doc) -> bool:
+	"""Allocate the full material pool onto MAIN_PRODUCT_REJECT when no MAIN_FG.
+
+	IRR: ``basic_rate = ROUND_HALF_UP(pool / total_reject_qty)`` and
+	``basic_amount = qty × basic_rate``. Pool leftover after composition remains
+	as native Manufacture ``value_difference`` → Stock Adjustment (TYPE C), never
+	as a fabricated Round Off / WIP counter-entry.
+	"""
+	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
+		return False
+	if not is_irr_company(doc.company):
+		return False
+
+	classified = classify_manufacture_outputs(doc)
+	if classified.get(CLASS_MAIN_FG):
+		return False
+	rejects = list(classified.get(CLASS_MAIN_PRODUCT_REJECT) or [])
+	if not rejects:
+		return False
+
+	apply_bulk_scrap_zero_valuation(doc)
+	currency = get_company_currency(doc.company)
+	# Component scrap keeps issued-rate economics and is removed from the pool.
+	component_rows = list(classified.get(CLASS_COMPONENT_SCRAP) or [])
+	for row in component_rows:
+		rate = _issued_rate_for_component(doc, row)
+		if rate > 0:
+			_apply(row, round_monetary_rate(rate, currency), currency)
+
+	rows = doc.get("items") or []
+	outgoing = sum(flt(row.get("basic_amount")) for row in rows if row.get("s_warehouse"))
+	other_incoming = sum(
+		flt(row.get("basic_amount"))
+		for row in rows
+		if _is_incoming(row) and row not in rejects
+	)
+	pool = outgoing - other_incoming
+	if pool <= 0.5:
+		return False
+
+	total_qty = sum(_row_qty(row) for row in rejects)
+	if total_qty <= 0:
+		return False
+
+	rate = round_monetary_rate(pool / total_qty, currency)
+	if rate <= 0:
+		return False
+	for row in rejects:
+		_apply(row, rate, currency)
+	# Clear sticky zero-authorization so RIV cannot re-zero the reject.
+	for row in rejects:
+		if cint(row.get("allow_zero_valuation_rate")):
+			row.allow_zero_valuation_rate = 0
+	return True
+
+
+def repair_historical_zero_reject_only(doc) -> bool:
+	"""Price illegal zero MAIN_PRODUCT_REJECT on reject-only historical Manufacture."""
+	if not historical_zero_reject_only_needs_repair(doc):
+		return False
+	applied = allocate_reject_only_absorbed_cost(doc)
+	if applied:
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			claim_product_reject_ownership,
+		)
+
+		claim_product_reject_ownership(doc)
+	return bool(applied)
+
+
 def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	"""Canonical Iran Manufacture output contract (submit and RIV).
 
@@ -1253,7 +1358,9 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	)
 
 	if not uses_v533_contract(doc):
-		return repair_historical_zero_product_reject(doc)
+		if repair_historical_zero_product_reject(doc):
+			return True
+		return repair_historical_zero_reject_only(doc)
 
 	stamp_contract_version(doc)
 	clear_core_auto_valuation_for_stage_bridge(doc)

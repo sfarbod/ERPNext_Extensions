@@ -61,7 +61,7 @@ def diagnose_source_needs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 			if drift:
 				detail_parts.append(f"SED/SLE amount drift on {len(drift)} row(s)")
 			if reject_gap:
-				detail_parts.append("zero_main_product_reject")
+				detail_parts.append(",".join(reject_gap.get("flags") or ["zero_main_product_reject"]))
 			out["detail"] = "; ".join(detail_parts)
 			out["gaps"] = gaps_out
 		return out
@@ -72,7 +72,7 @@ def diagnose_source_needs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 	out["gaps"] = stale[:20]
 	if reject_gap:
 		out["gaps"].append(reject_gap)
-		out["detail"] += "; zero_main_product_reject"
+		out["detail"] += "; " + ",".join(reject_gap.get("flags") or ["zero_main_product_reject"])
 	return out
 
 
@@ -83,11 +83,14 @@ def _zero_product_reject_gap(voucher_no: str) -> dict | None:
 	try:
 		from erpnext_extensions.iran_accounting.scrap_costing import (
 			historical_zero_product_reject_needs_repair,
+			historical_zero_reject_only_needs_repair,
 		)
 
 		doc = frappe.get_doc("Stock Entry", voucher_no)
 		if historical_zero_product_reject_needs_repair(doc):
 			return {"voucher": voucher_no, "flags": ["zero_main_product_reject"]}
+		if historical_zero_reject_only_needs_repair(doc):
+			return {"voucher": voucher_no, "flags": ["zero_reject_only_manufacture"]}
 	except Exception:
 		return None
 	return None
@@ -148,19 +151,28 @@ def apply_source_reconstruction(voucher_type: str, voucher_no: str) -> dict[str,
 			try:
 				from erpnext_extensions.iran_accounting.scrap_costing import (
 					historical_zero_product_reject_needs_repair,
+					historical_zero_reject_only_needs_repair,
 					repair_historical_zero_product_reject,
+					repair_historical_zero_reject_only,
 				)
 
 				doc = frappe.get_doc("Stock Entry", voucher_no)
+				repaired = False
 				if historical_zero_product_reject_needs_repair(doc):
 					if repair_historical_zero_product_reject(doc):
-						for row in doc.get("items") or []:
-							if row.get("name"):
-								row.db_update()
-						if hasattr(doc, "set_total_incoming_outgoing_value"):
-							doc.set_total_incoming_outgoing_value()
-						doc.db_update()
+						repaired = True
 						actions.append("repair_historical_zero_product_reject")
+				elif historical_zero_reject_only_needs_repair(doc):
+					if repair_historical_zero_reject_only(doc):
+						repaired = True
+						actions.append("repair_historical_zero_reject_only")
+				if repaired:
+					for row in doc.get("items") or []:
+						if row.get("name"):
+							row.db_update()
+					if hasattr(doc, "set_total_incoming_outgoing_value"):
+						doc.set_total_incoming_outgoing_value()
+					doc.db_update()
 			except Exception as e:
 				actions.append(f"product_reject_repair_skip:{e}")
 			try:
