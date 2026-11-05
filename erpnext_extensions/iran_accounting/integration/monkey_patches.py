@@ -448,6 +448,11 @@ def _patch_stock_controller():
 
 				if is_irr_company(self.company) and gl_entries is not None:
 					apply_irr_rate_rounding_residual_gl(self, gl_entries)
+					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+						apply_sabe_localization_sa_gl,
+					)
+
+					apply_sabe_localization_sa_gl(self, gl_entries)
 					from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
 						align_irr_gl_map_to_currency_precision,
 					)
@@ -1287,6 +1292,14 @@ def _patch_stock_ledger_engine():
 								"purpose",
 							),
 						)
+					# Integer SABE policy after Core selection + warehouse clear:
+					# localize SABE rates/SVD; at consume-to-zero leave WH SLE SVD
+					# (Case B) and queue A2 localization to Stock Adjustment.
+					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+						apply_integer_sabe_policy_to_sle,
+					)
+
+					apply_integer_sabe_policy_to_sle(sle, engine=self)
 					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
 						# Vanilla already wrote; restore pre-RIV economics so target
 						# RIV does not create new I1 on unrelated FG cascades.
@@ -1297,6 +1310,7 @@ def _patch_stock_ledger_engine():
 			finally:
 				frappe.local.iran_riv_update_entries_after = None
 
+		process_sle._iran_sabe_integer_policy = True
 		sl.update_entries_after.process_sle = process_sle
 		sl._iran_patched_update_entries_after = True
 
@@ -1323,6 +1337,9 @@ def _patch_stock_ledger_engine():
 
 		process_sle_with_pending_pi_align._iran_pending_pi_align = True
 		process_sle_with_pending_pi_align._iran_pending_pi_post_econ = True
+		process_sle_with_pending_pi_align._iran_sabe_integer_policy = getattr(
+			_live_process, "_iran_sabe_integer_policy", None
+		)
 		process_sle_with_pending_pi_align._iran_original = _live_process
 		sl.update_entries_after.process_sle = process_sle_with_pending_pi_align
 	elif not getattr(sl.update_entries_after.process_sle, "_iran_pending_pi_post_econ", None):
@@ -1347,8 +1364,42 @@ def _patch_stock_ledger_engine():
 
 		process_sle_with_pending_pi_post_econ._iran_pending_pi_align = True
 		process_sle_with_pending_pi_post_econ._iran_pending_pi_post_econ = True
+		process_sle_with_pending_pi_post_econ._iran_sabe_integer_policy = getattr(
+			_live_process, "_iran_sabe_integer_policy", None
+		)
 		process_sle_with_pending_pi_post_econ._iran_original = _live_process
 		sl.update_entries_after.process_sle = process_sle_with_pending_pi_post_econ
+
+	# Hot-upgrade: integer SABE policy after Core when older process_sle lacks it.
+	if not getattr(sl.update_entries_after.process_sle, "_iran_sabe_integer_policy", None):
+		_live_sabe = sl.update_entries_after.process_sle
+
+		def process_sle_with_sabe_integer(self, sle):
+			result = _live_sabe(self, sle)
+			try:
+				company = getattr(self, "company", None) or (
+					sle.get("company") if hasattr(sle, "get") else None
+				)
+				if company and is_irr_company(company):
+					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+						apply_integer_sabe_policy_to_sle,
+					)
+
+					apply_integer_sabe_policy_to_sle(sle, engine=self)
+					persist_processed_sle_if_possible(sle)
+			except Exception:
+				pass
+			return result
+
+		process_sle_with_sabe_integer._iran_sabe_integer_policy = True
+		process_sle_with_sabe_integer._iran_pending_pi_align = getattr(
+			_live_sabe, "_iran_pending_pi_align", None
+		)
+		process_sle_with_sabe_integer._iran_pending_pi_post_econ = getattr(
+			_live_sabe, "_iran_pending_pi_post_econ", None
+		)
+		process_sle_with_sabe_integer._iran_original = _live_sabe
+		sl.update_entries_after.process_sle = process_sle_with_sabe_integer
 
 	# Incoming healing: allow receipts that reduce an already-negative running qty.
 	# Installed independently so a process_sle-only older patch still gets this wrap.
@@ -1484,19 +1535,20 @@ def _patch_serial_batch_irr_integer_guard(sl):
 		if not bundle:
 			return
 
-		# During RIV, Core MA reintroduces fractional SABE on Stock Entry / SR
-		# (two-slice rewrite applies only to DN/SI). Integerize those bundles
-		# explicitly so dependent DN pools stay integer-valued, and refresh
-		# ``doc`` totals that Core already stamped from float MA.
-		if through_riv and not rewritten:
-			# Includes RIV short-pool fallthrough (two-slice returned None after
-			# audit) and non-DN/SI Core MA paths. integerize_bundle_sabe asserts
-			# no residual fractional IRR rate/SVD may persist.
-			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
-				integerize_bundle_sabe,
+		# Live + RIV: after Core (and optional DN/SI two-slice), integerize SABE
+		# from Core raw rates so A2 = integerized − ROUND(raw) is measurable.
+		# Do NOT call integerize_bundle_sabe alone during RIV — that erased raw
+		# rates before A2 could be queued and left SLE/Bin/GL unrepaired.
+		#
+		# align_sle=False here: warehouse qty_after / ABSORB is not final yet
+		# inside update_serial_batch_no_valuation. Final SLE alignment runs at
+		# the end of the Iran process_sle wrapper (align_sle=True).
+		if not rewritten:
+			from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+				apply_integer_sabe_policy_to_sle,
 			)
 
-			integerize_bundle_sabe(bundle, company=company)
+			apply_integer_sabe_policy_to_sle(sle, engine=self, align_sle=False)
 			rows = frappe.get_all(
 				"Serial and Batch Entry",
 				filters={"parent": bundle},
@@ -1507,7 +1559,11 @@ def _patch_serial_batch_irr_integer_guard(sl):
 			avg = abs(ta / tq) if tq else 0.0
 			if doc is not None and hasattr(doc, "update"):
 				doc.update({"total_qty": tq, "total_amount": ta, "avg_rate": avg})
-			return
+			# Fall through to fractional guard — SABE should now be integer.
+			# During RIV still return early after integerize so era TVA exceptions
+			# are not required mid-campaign (guard would otherwise re-scan).
+			if through_riv:
+				return
 		from frappe import _
 
 		from erpnext_extensions.iran_accounting.domain.currency import (

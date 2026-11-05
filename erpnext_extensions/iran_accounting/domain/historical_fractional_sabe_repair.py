@@ -66,24 +66,37 @@ def assert_bundle_integer_irr(bundle_name: str) -> None:
 	rows = frappe.get_all(
 		"Serial and Batch Entry",
 		filters={"parent": bundle_name},
-		fields=["name", "incoming_rate", "stock_value_difference", "qty"],
+		fields=["name", "incoming_rate", "outgoing_rate", "stock_value_difference", "qty"],
 	)
 	for r in rows or []:
-		rate = _d(r.incoming_rate)
+		in_rate = _d(r.incoming_rate)
+		out_rate = _d(getattr(r, "outgoing_rate", None) or 0)
 		svd = _d(r.stock_value_difference)
-		if rate != rate.to_integral_value() or svd != svd.to_integral_value():
+		fractional = in_rate != in_rate.to_integral_value() or svd != svd.to_integral_value()
+		# outgoing_rate is optional on older rows / unit fixtures — only enforce when set.
+		if getattr(r, "outgoing_rate", None) not in (None, "", 0, 0.0):
+			fractional = fractional or out_rate != out_rate.to_integral_value()
+		if fractional:
 			frappe.throw(
 				f"IRR SABE still fractional after integerize: bundle={bundle_name} "
-				f"entry={r.name} rate={rate} svd={svd}",
+				f"entry={r.name} incoming={in_rate} outgoing={out_rate} svd={svd}",
 				title="Historical SABE integerize",
 			)
 
 
-def integerize_sabe_row(entry_name: str, *, company: str | None = None) -> dict[str, Any] | None:
-	"""RHU-integerize one SABE row's rate and stock_value_difference. Returns diff or None.
+def integerize_sabe_row(
+	entry_name: str, *, company: str | None = None, dry_run: bool = False
+) -> dict[str, Any] | None:
+	"""RHU-integerize one SABE row's rates and stock_value_difference. Returns diff or None.
 
-	Idempotent: already-integral rows with matching qty×rate identity are no-ops.
+	Uses the approved localization formula (integer qty → qty×RHU(rate);
+	fractional qty → RHU(raw SVD)). Idempotent: already-integral matching rows
+	are no-ops. ``dry_run=True`` reports proposed changes without writing.
 	"""
+	from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+		localize_sabe_row_values,
+	)
+
 	row = frappe.db.get_value(
 		"Serial and Batch Entry",
 		entry_name,
@@ -91,6 +104,7 @@ def integerize_sabe_row(entry_name: str, *, company: str | None = None) -> dict[
 			"name",
 			"qty",
 			"incoming_rate",
+			"outgoing_rate",
 			"stock_value_difference",
 			"item_code",
 			"batch_no",
@@ -109,46 +123,74 @@ def integerize_sabe_row(entry_name: str, *, company: str | None = None) -> dict[
 		return None
 
 	qty = _d(row.qty)
-	rate = _d(row.incoming_rate)
-	svd = _d(row.stock_value_difference)
-	new_rate = int(_rhu(rate)) if rate != 0 else 0
-	if qty == 0:
-		new_svd = Decimal(0)
-	else:
-		sign = Decimal(-1) if qty < 0 else Decimal(1)
-		new_svd = sign * _rhu(abs(qty) * Decimal(new_rate))
+	old_outgoing = flt(getattr(row, "outgoing_rate", None) or 0)
+	raw_rate = flt(row.incoming_rate) or old_outgoing or 0.0
+	loc = localize_sabe_row_values(
+		qty=flt(row.qty),
+		raw_rate=raw_rate,
+		raw_svd=flt(row.stock_value_difference),
+	)
+	new_rate = int(loc["rate"])
+	# Keep Decimal integral (no trailing .0) for audit/idempotency parity with RHU.
+	new_svd = _rhu(_d(loc["svd"]))
+	# Preserve outgoing_rate integerization for outward rows; leave 0 when unused.
+	new_outgoing = float(new_rate) if flt(row.qty) < 0 or old_outgoing else 0.0
 
-	rate_ok = rate == rate.to_integral_value() and int(rate) == new_rate
-	svd_ok = svd == svd.to_integral_value() and svd == new_svd
-	if rate_ok and svd_ok:
+	in_ok = _d(row.incoming_rate) == _d(row.incoming_rate).to_integral_value() and int(
+		_d(row.incoming_rate) or 0
+	) == new_rate
+	out_ok = _d(old_outgoing) == _d(old_outgoing).to_integral_value() and float(
+		_d(old_outgoing)
+	) == float(new_outgoing)
+	svd_ok = _d(row.stock_value_difference) == _d(
+		row.stock_value_difference
+	).to_integral_value() and _d(row.stock_value_difference) == new_svd
+	if in_ok and out_ok and svd_ok:
 		return None
 
-	frappe.db.set_value(
-		"Serial and Batch Entry",
-		entry_name,
-		{"incoming_rate": float(new_rate), "stock_value_difference": float(new_svd)},
-		update_modified=False,
-	)
-	return {
+	payload = {
 		"name": entry_name,
 		"item_code": row.item_code,
 		"warehouse": row.warehouse,
 		"qty": str(qty),
-		"old_rate": str(rate),
+		"old_rate": str(row.incoming_rate),
 		"new_rate": new_rate,
-		"old_svd": str(svd),
+		"old_outgoing_rate": str(old_outgoing),
+		"new_outgoing_rate": new_outgoing,
+		"old_svd": str(row.stock_value_difference),
 		"new_svd": str(new_svd),
+		"localization_difference": loc["localization_difference"],
 		"voucher_type": row.voucher_type,
 		"voucher_no": row.voucher_no,
 		"batch_no": row.batch_no,
+		"dry_run": dry_run,
 	}
+	if dry_run:
+		return payload
+
+	updates = {
+		"incoming_rate": float(new_rate),
+		"stock_value_difference": float(new_svd),
+	}
+	# Only stamp outgoing_rate when the row already carried one or is outward.
+	if flt(row.qty) < 0 or old_outgoing:
+		updates["outgoing_rate"] = float(new_outgoing)
+	frappe.db.set_value(
+		"Serial and Batch Entry",
+		entry_name,
+		updates,
+		update_modified=False,
+	)
+	return payload
 
 
-def integerize_bundle_sabe(bundle_name: str, *, company: str | None = None) -> dict[str, Any]:
+def integerize_bundle_sabe(
+	bundle_name: str, *, company: str | None = None, dry_run: bool = False
+) -> dict[str, Any]:
 	"""Integerize all SABE children of a Serial and Batch Bundle.
 
 	Does not commit — caller owns the transaction. After mutation, asserts no
-	residual fractional IRR rates/amounts remain.
+	residual fractional IRR rates/amounts remain (skipped on dry_run).
 	"""
 	if not bundle_name:
 		return {"repaired": 0, "rows": []}
@@ -160,10 +202,10 @@ def integerize_bundle_sabe(bundle_name: str, *, company: str | None = None) -> d
 	)
 	changed = []
 	for name in names:
-		diff = integerize_sabe_row(name, company=company)
+		diff = integerize_sabe_row(name, company=company, dry_run=dry_run)
 		if diff:
 			changed.append(diff)
-	if changed:
+	if changed and not dry_run:
 		# Keep bundle aggregates aligned with children.
 		total_qty = flt(
 			frappe.db.sql(
@@ -184,8 +226,164 @@ def integerize_bundle_sabe(bundle_name: str, *, company: str | None = None) -> d
 			{"total_qty": total_qty, "total_amount": total_amt, "avg_rate": avg},
 			update_modified=False,
 		)
-	assert_bundle_integer_irr(bundle_name)
-	return {"bundle": bundle_name, "repaired": len(changed), "rows": changed}
+		assert_bundle_integer_irr(bundle_name)
+	return {"bundle": bundle_name, "repaired": len(changed), "rows": changed, "dry_run": dry_run}
+
+
+def find_fractional_sabe_rows(
+	*,
+	item_codes: list[str] | None = None,
+	company: str | None = None,
+	limit: int | None = None,
+) -> list[dict[str, Any]]:
+	"""Identify submitted SABE rows with fractional IRR monetary fields."""
+	params: list[Any] = []
+	item_clause = ""
+	if item_codes:
+		placeholders = ", ".join(["%s"] * len(item_codes))
+		item_clause = f" AND e.item_code IN ({placeholders})"
+		params.extend(item_codes)
+	limit_clause = f" LIMIT {int(limit)}" if limit else ""
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			e.name, e.parent, e.item_code, e.batch_no, e.warehouse,
+			e.qty, e.incoming_rate, e.outgoing_rate, e.stock_value_difference,
+			e.voucher_type, e.voucher_no, e.voucher_detail_no, e.posting_datetime,
+			b.company as bundle_company
+		FROM `tabSerial and Batch Entry` e
+		LEFT JOIN `tabSerial and Batch Bundle` b ON b.name = e.parent
+		WHERE e.docstatus = 1 AND IFNULL(e.is_cancelled, 0) = 0
+		  AND (
+			ABS(e.incoming_rate - ROUND(e.incoming_rate)) > 0.000001
+			OR ABS(IFNULL(e.outgoing_rate,0) - ROUND(IFNULL(e.outgoing_rate,0))) > 0.000001
+			OR ABS(e.stock_value_difference - ROUND(e.stock_value_difference)) > 0.000001
+		  )
+		  {item_clause}
+		ORDER BY e.posting_datetime, e.creation, e.idx
+		{limit_clause}
+		""",
+		tuple(params),
+		as_dict=True,
+	)
+	out = []
+	for r in rows or []:
+		comp = company or r.get("bundle_company")
+		if not comp and r.get("voucher_type") and r.get("voucher_no"):
+			comp = frappe.db.get_value(r.voucher_type, r.voucher_no, "company")
+		if company and comp and comp != company:
+			continue
+		if comp and not is_irr_company(comp):
+			continue
+		out.append(r)
+	return out
+
+
+def dry_run_fractional_sabe_repair(
+	*,
+	item_codes: list[str] | None = None,
+	company: str | None = None,
+) -> dict[str, Any]:
+	"""Read-only report of proposed SABE integerization (Phase 2 gate).
+
+	Does not mutate. Idempotent preview: already-integer rows are omitted.
+	"""
+	candidates = find_fractional_sabe_rows(item_codes=item_codes, company=company)
+	proposed = []
+	localization_net = 0.0
+	for r in candidates:
+		diff = integerize_sabe_row(r.name, company=company, dry_run=True)
+		if diff:
+			proposed.append(diff)
+			localization_net += flt(diff.get("localization_difference"))
+	payload = {
+		"at": str(now_datetime()),
+		"site": frappe.local.site,
+		"mode": "dry_run",
+		"item_codes": item_codes,
+		"company": company,
+		"fractional_candidates": len(candidates),
+		"proposed_repairs": len(proposed),
+		"localization_difference_net": localization_net,
+		"rows": proposed,
+		"policy": (
+			"ROUND_HALF_UP integer rates; integer qty → qty×rate SVD; "
+			"localization_difference = integerized − ROUND(raw) → 621301 after approval; "
+			"warehouse zero-qty SLE clear remains Core/ABSORB (Case B not Type A)."
+		),
+	}
+	path = os.path.join(
+		_audit_dir(),
+		f"dry_run_{now_datetime().strftime('%Y%m%d_%H%M%S')}.json",
+	)
+	with open(path, "w", encoding="utf-8") as fh:
+		json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+	payload["audit_path"] = path
+	return payload
+
+
+def apply_fractional_sabe_repair(
+	*,
+	item_codes: list[str] | None = None,
+	company: str | None = None,
+	dry_run: bool = True,
+	reason: str = "approved_historical_sabe_repair",
+) -> dict[str, Any]:
+	"""Controlled historical SABE repair. Defaults to dry_run (safe).
+
+	When ``dry_run=False``, mutates SABE under a savepoint and writes audit JSON.
+	Does not commit — caller owns the outer transaction. Second execution is a
+	no-op when rows are already integer.
+	"""
+	if dry_run:
+		return dry_run_fractional_sabe_repair(item_codes=item_codes, company=company)
+
+	candidates = find_fractional_sabe_rows(item_codes=item_codes, company=company)
+	savepoint = "iran_sabe_scope_" + frappe.generate_hash(length=8)
+	frappe.db.savepoint(savepoint)
+	changed: list[dict[str, Any]] = []
+	bundles: set[str] = set()
+	try:
+		for r in candidates:
+			diff = integerize_sabe_row(r.name, company=company, dry_run=False)
+			if diff:
+				changed.append(diff)
+				if r.parent:
+					bundles.add(r.parent)
+		for b in bundles:
+			integerize_bundle_sabe(b, company=company, dry_run=False)
+		frappe.db.release_savepoint(savepoint)
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+
+	localization_net = sum(flt(d.get("localization_difference")) for d in changed)
+	payload = {
+		"at": str(now_datetime()),
+		"site": frappe.local.site,
+		"mode": "apply",
+		"reason": reason,
+		"item_codes": item_codes,
+		"company": company,
+		"repaired": len(changed),
+		"localization_difference_net": localization_net,
+		"rows": changed,
+		**_riv_context(),
+		"committed_by_caller": True,
+		"note": (
+			"SABE monetary fields integerized. Stock Adjustment GL for localization "
+			"differences must be posted via the approved accounting mechanism / RIV "
+			"after reconciliation. Case B warehouse-vs-batch gaps are not Type A."
+		),
+	}
+	path = os.path.join(
+		_audit_dir(),
+		f"repair_scope_{now_datetime().strftime('%Y%m%d_%H%M%S')}.json",
+	)
+	with open(path, "w", encoding="utf-8") as fh:
+		json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+	payload["audit_path"] = path
+	return payload
 
 
 def log_riv_short_pool_event(

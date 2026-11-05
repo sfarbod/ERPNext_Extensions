@@ -758,6 +758,54 @@ def ensure_iran_riv_recalculate_wrapper_active(*, bootstrap: bool = True) -> Non
 	)
 
 
+def is_iran_riv_gl_handlers_active() -> bool:
+	"""True when Iran Stock Adjustment GL balance handlers are bound.
+
+	Without these, Core Stock Entry allowance 0.5 throws on a legitimate
+	one-quantum IRR residual (MAT-STE-2026-42067 Difference is -1.0).
+	"""
+	try:
+		import erpnext.accounts.general_ledger as gl
+		from erpnext.controllers.stock_controller import StockController
+
+		dcd = gl.process_debit_credit_difference
+		mge = StockController.make_gl_entries
+		dcd_mod = getattr(dcd, "__module__", "") or ""
+		mge_mod = getattr(mge, "__module__", "") or ""
+		return (
+			"erpnext_extensions.iran_accounting" in dcd_mod
+			or bool(getattr(gl, "_iran_patched", None))
+		) and (
+			"erpnext_extensions.iran_accounting" in mge_mod
+			or bool(getattr(StockController, "_iran_original_make_gl_entries", None))
+		)
+	except Exception:
+		return False
+
+
+def ensure_iran_riv_gl_handlers_active(*, bootstrap: bool = True) -> None:
+	"""Fail closed: RIV must not remake GL on vanilla debit/credit allowance."""
+	if bootstrap:
+		from erpnext_extensions.iran_accounting.integration.bootstrap import (
+			apply as bootstrap_apply,
+		)
+
+		bootstrap_apply()
+	if is_iran_riv_gl_handlers_active():
+		return
+	frappe.throw(
+		frappe._(
+			"IRAN_RIV_GL_HANDLERS_INACTIVE: Iran process_debit_credit_difference / "
+			"StockController.make_gl_entries are not installed. Refusing RIV GL "
+			"remake — Core Stock Entry allowance 0.5 cannot absorb a 1 IRR "
+			"stock-valuation residual into Company.stock_adjustment_account. "
+			"Call bootstrap.apply or riv_execute_guard.execute_reposting_entry "
+			"(never import-time Core execute_reposting_entry)."
+		),
+		title=frappe._("Iran RIV GL Handlers Required"),
+	)
+
+
 def make_recalculate_amounts_wrapper(original):
 	"""L1: apply Iran contract + integrity asserts before any SE row db_update.
 

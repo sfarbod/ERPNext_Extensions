@@ -197,11 +197,15 @@ def on_submit_stock_entry(doc, method=None):
 	apply_irr_manufacture_economic_finalize(doc)
 	# process_sle may have realigned native Material Issue / Transfer SED rates in DB
 	# to match BatchNoValuation/SABB. Refresh memory so db_update cannot re-poison.
+	# Manufacture/Repack ABSORB: SLE warehouse-clear is authoritative — re-mirror
+	# after rate-first finalize so qty×rate cannot overwrite SLE amounts (43536).
 	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 		refresh_native_outgoing_sed_from_db,
+		refresh_sle_authoritative_sed_from_ledger,
 	)
 
 	refresh_native_outgoing_sed_from_db(doc)
+	refresh_sle_authoritative_sed_from_ledger(doc)
 	align_zero_value_transfer_totals(doc)
 	if hasattr(doc, "set_total_incoming_outgoing_value"):
 		doc.set_total_incoming_outgoing_value()
