@@ -186,7 +186,12 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 					net = sum(flt(e.get("debit")) - flt(e.get("credit")) for e in out)
 					self.assertEqual(net, 0.0)
 					partner = next(e for e in out if e.get("_irr_sabe_localization_partner"))
-					self.assertEqual(partner.account, "111701 - WIP")
+					self.assertEqual(partner.account, "Round Off")
+					self.assertNotEqual(partner.account, "111701 - WIP")
+					# Core WIP credit unchanged
+					wip = next(e for e in out if e.get("account") == "111701 - WIP")
+					self.assertEqual(flt(wip.credit), 1000)
+					self.assertEqual(flt(wip.debit), 0)
 
 	def test_a2_fully_covered_by_manufacture_value_difference(self):
 		doc = frappe._dict(
@@ -449,6 +454,9 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 			side_effect=lambda v, c: round(float(v)),
 		), patch(
+			"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_round_off",
+			return_value={"account": "Round Off", "cost_center": "CC-RO"},
+		), patch(
 			"frappe.get_cached_value",
 			side_effect=lambda *a, **k: {
 				("Company", "E", "stock_adjustment_account"): "621301",
@@ -460,9 +468,15 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 		):
 			out = apply_sabe_localization_sa_gl(doc, gl_map)
 		sa = [e for e in out if e.get("account") == "621301"][0]
+		partner = next(e for e in out if e.get("_irr_sabe_localization_partner"))
 		self.assertEqual(sa.get("department"), "Dept-Pack")
 		self.assertEqual(sa.get("cost_center"), "CC-Pack")
 		self.assertEqual(sa.get("posting_date"), "2026-09-02")
+		self.assertEqual(partner.account, "Round Off")
+		self.assertEqual(partner.get("cost_center"), "CC-RO")
+		# Core stock leg untouched
+		self.assertEqual(flt(out[0].credit), 100)
+		self.assertEqual(flt(out[0].debit), 0)
 
 	def test_a2_gl_legs_include_posting_date(self):
 		"""RIV remake submits GLE; missing posting_date → KeyError fiscal_year[0]."""

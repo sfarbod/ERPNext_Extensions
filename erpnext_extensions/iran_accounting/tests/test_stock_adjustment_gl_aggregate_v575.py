@@ -77,6 +77,11 @@ def _leg(
 	return row
 
 
+def _a2_ro_partner(debit=1970.0):
+	"""A2 counter uses configured Round Off — never WIP."""
+	return _leg(RO, debit=debit, remarks="IRR SABE A2 round-off partner")
+
+
 @contextmanager
 def _agg_patches():
 	with patch(
@@ -127,7 +132,7 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 		gl_map = [
 			_leg(SA, credit=461.0),
 			_leg(SA, credit=1970.0, a2=True),
-			_leg(WIP, debit=1970.0, remarks="IRR SABE A2 partner"),
+			_a2_ro_partner(1970.0),
 			_leg(WIP, credit=1000.0),
 			_leg(FG, debit=461.0),
 		]
@@ -148,37 +153,33 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 		]
 		self.assertEqual(before_non_adj, after_non_adj)
 
-	def test_03_wip_retains_original_core_and_a2_partner_rows(self):
+	def test_03_wip_retains_only_core_credit(self):
 		gl_map = [
 			_leg(SA, credit=461.0),
 			_leg(SA, credit=1970.0, a2=True),
+			_a2_ro_partner(1970.0),
 			_leg(WIP, credit=5451221439.0, remarks="Accounting Entry for Stock"),
-			_leg(WIP, debit=1970.0, remarks="IRR SABE A2 partner"),
 		]
 		out = self._agg(gl_map)
 		wip = [e for e in out if e.account == WIP]
-		self.assertEqual(len(wip), 2)
-		self.assertEqual(
-			sorted((flt(e.debit), flt(e.credit), e.remarks) for e in wip),
-			sorted(
-				[
-					(0.0, 5451221439.0, "Accounting Entry for Stock"),
-					(1970.0, 0.0, "IRR SABE A2 partner"),
-				]
-			),
-		)
+		self.assertEqual(len(wip), 1)
+		self.assertEqual(flt(wip[0].credit), 5451221439.0)
+		self.assertEqual(flt(wip[0].debit), 0.0)
+		# A2 partner stays on Round Off (allowlisted, may aggregate with other RO)
+		self.assertTrue(any(e.account == RO and flt(e.debit) == 1970.0 for e in out))
 
-	def test_04_a2_counter_not_merged_into_wip_by_aggregation(self):
+	def test_04_a2_counter_does_not_touch_wip(self):
 		gl_map = [
 			_leg(SA, credit=1970.0, a2=True),
-			_leg(WIP, debit=1970.0, remarks="partner"),
+			_a2_ro_partner(1970.0),
 			_leg(WIP, credit=100.0, remarks="core"),
 		]
 		out = self._agg(gl_map)
-		# Aggregation only touches SA; WIP rows identical count/amounts.
-		self.assertEqual(len([e for e in out if e.account == WIP]), 2)
-		self.assertEqual(sum(flt(e.debit) for e in out if e.account == WIP), 1970.0)
-		self.assertEqual(sum(flt(e.credit) for e in out if e.account == WIP), 100.0)
+		wip = [e for e in out if e.account == WIP]
+		self.assertEqual(len(wip), 1)
+		self.assertEqual(flt(wip[0].credit), 100.0)
+		self.assertEqual(flt(wip[0].debit), 0.0)
+		self.assertEqual(sum(flt(e.debit) for e in out if e.account == RO), 1970.0)
 
 	def test_05_fg_scrap_inventory_expense_revenue_unchanged(self):
 		gl_map = [
@@ -270,7 +271,7 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 		gl_map = [
 			_leg(SA, credit=461.0),
 			_leg(SA, credit=1970.0, a2=True),
-			_leg(WIP, debit=1970.0),
+			_a2_ro_partner(1970.0),
 			_leg(FG, debit=461.0),
 		]
 		before = sum(flt(e.debit) for e in gl_map), sum(flt(e.credit) for e in gl_map)
@@ -284,9 +285,9 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 			return [
 				_leg(SA, credit=461.0),
 				_leg(SA, credit=1970.0, a2=True),
-				_leg(WIP, debit=1970.0, remarks="partner"),
+				_a2_ro_partner(1970.0),
 				_leg(WIP, credit=5000.0, remarks="core"),
-				_leg(FG, debit=461.0 + 5000.0 - 1970.0),
+				_leg(FG, debit=461.0 + 5000.0),
 			]
 
 		live = self._agg(build(), frappe._dict(name="X", doctype="Stock Entry", company="E", flags=frappe._dict()))
@@ -297,30 +298,33 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 		live_wip = sorted((flt(e.debit), flt(e.credit), e.remarks) for e in live if e.account == WIP)
 		riv_wip = sorted((flt(e.debit), flt(e.credit), e.remarks) for e in riv if e.account == WIP)
 		self.assertEqual(live_wip, riv_wip)
+		self.assertEqual(live_wip, [(0.0, 5000.0, "core")])
 
 	def test_13_non_adjustment_regression_fingerprint(self):
-		"""Non-adjustment accounts must match pre-aggregation enhancement fingerprint."""
+		"""Non-adjustment accounts must match pre-aggregation fingerprint (WIP Core only)."""
 		gl_map = [
 			_leg(SA, credit=461.0),
 			_leg(SA, credit=1970.0, a2=True),
+			_a2_ro_partner(1970.0),
 			_leg(WIP, credit=5451221439.0, remarks="Accounting Entry for Stock"),
-			_leg(WIP, debit=1970.0, remarks="IRR SABE A2 partner"),
 			_leg(FG, debit=5404134596.0),
 			_leg("111608 - scrap", debit=15781209.0),
 			_leg("111620 - packing", debit=31306095.0),
 		]
+		# Non-adjustment = everything except SA and Round Off allowlist
 		pre = {
 			(e.account, flt(e.debit), flt(e.credit), e.cost_center, e.remarks)
 			for e in gl_map
-			if e.account != SA
+			if e.account not in (SA, RO)
 		}
 		out = self._agg(gl_map)
 		post = {
 			(e.account, flt(e.debit), flt(e.credit), e.cost_center, e.remarks)
 			for e in out
-			if e.account != SA
+			if e.account not in (SA, RO)
 		}
 		self.assertEqual(pre, post)
+		self.assertEqual(len([e for e in out if e.account == WIP]), 1)
 		# Alias still works
 		with _agg_patches():
 			alias_out = aggregate_stock_adjustment_gl_entries(self.doc, list(gl_map))

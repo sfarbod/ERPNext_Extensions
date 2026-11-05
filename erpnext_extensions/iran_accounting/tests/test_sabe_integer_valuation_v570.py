@@ -67,7 +67,7 @@ class TestSabeLocalizationSaGl(unittest.TestCase):
 		"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 		side_effect=lambda v, c: round(float(v)),
 	)
-	def test_posts_sa_balanced_against_stock_partner(self, *_mocks):
+	def test_posts_sa_balanced_against_round_off_partner(self, *_mocks):
 		def _cached(doctype, name, field=None, **kwargs):
 			if doctype == "Company" and field == "stock_adjustment_account":
 				return "621301 - SA - E"
@@ -114,9 +114,9 @@ class TestSabeLocalizationSaGl(unittest.TestCase):
 			self.assertEqual(len(out), 3)
 			sa = [e for e in out if e.get("_irr_sabe_localization")][0]
 			partner = [e for e in out if e.get("_irr_sabe_localization_partner")][0]
-			# net=-30 → sa_debit = -(-30) = +30 → Debit SA / Credit stock partner
+			# net=-30 → sa_debit = +30 → Debit SA / Credit Round Off (not Stock)
 			self.assertEqual(flt(sa.debit), 30)
-			self.assertEqual(partner.account, "Stock - E")
+			self.assertEqual(partner.account, "Round Off - E")
 			self.assertEqual(flt(partner.credit), 30)
 			# Original stock leg untouched (inventory already integerized).
 			self.assertEqual(flt(out[0].credit), 100)
@@ -130,14 +130,14 @@ class TestSabeLocalizationSaGl(unittest.TestCase):
 		"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 		side_effect=lambda v, c: round(float(v)),
 	)
-	def test_manufacture_a2_partner_is_wip_not_round_off(self, *_mocks):
+	def test_manufacture_a2_partner_is_round_off_not_wip(self, *_mocks):
 		def _cached(doctype, name, field=None, **kwargs):
 			if doctype == "Company" and field == "stock_adjustment_account":
 				return "621301 - SA - E"
 			if doctype == "Company" and field == "round_off_cost_center":
 				return "Main - E"
 			if doctype == "Account" and field == "account_type":
-				if "WIP" in str(name) or "Stock" in str(name):
+				if "WIP" in str(name) or "Stock" in str(name) or "FG" in str(name):
 					return "Stock"
 				return "Expense Account"
 			return None
@@ -167,17 +167,19 @@ class TestSabeLocalizationSaGl(unittest.TestCase):
 				frappe._dict(account="WIP - E", debit=0, credit=500, cost_center="Main - E", project=None),
 				frappe._dict(account="FG - E", debit=500, credit=0, cost_center="Main - E", project=None),
 			]
-			# Force Account type lookup for WIP/FG
 			out = apply_sabe_localization_sa_gl(doc, gl_map)
 			partner = [e for e in out if e.get("_irr_sabe_localization_partner")][0]
 			sa = [e for e in out if e.get("_irr_sabe_localization")][0]
-			self.assertEqual(partner.account, "WIP - E")
-			self.assertNotEqual(partner.account, "Round Off - E")
+			self.assertEqual(partner.account, "Round Off - E")
+			self.assertNotEqual(partner.account, "WIP - E")
 			self.assertEqual(flt(sa.credit), 1.0)
 			self.assertEqual(flt(partner.debit), 1.0)
 			self.assertEqual(flt(sa.credit_in_account_currency), 1.0)
 			self.assertEqual(flt(partner.debit_in_account_currency), 1.0)
 			self.assertEqual(sa.account_currency, "IRR")
+			# Core WIP/FG untouched
+			self.assertEqual(flt(out[0].credit), 500)
+			self.assertEqual(flt(out[1].debit), 500)
 			self.assertEqual(
 				sum(flt(e.get("debit")) - flt(e.get("credit")) for e in out),
 				0.0,

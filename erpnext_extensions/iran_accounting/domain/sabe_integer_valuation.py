@@ -439,50 +439,39 @@ def outstanding_sabe_a2_net(doc, proposed_net: float) -> dict[str, Any]:
 def _resolve_sabe_a2_partner_account(doc, gl_map: list, sa_account: str) -> dict[str, str | None]:
 	"""Counter-entry account for SABE A2 Stock Adjustment legs.
 
-	Inventory policy: never hide localization in Financial Round Off for
-	Manufacture / Repack. Prefer WIP / stock inventory credit legs already on
-	the map (matches Rahkaran 520/58 against WIP). Other stock vouchers keep
-	Round Off only as a last-resort partner when no stock leg is available.
+	A2 must not touch ordinary Core stock accounts (WIP / FG / inventory /
+	scrap). Inventory GL already mirrors integerized SLE; the localization
+	residual is a P&L adjustment between configured adjustment accounts only:
+
+	* Primary: ``Company.stock_adjustment_account`` (posted by caller)
+	* Counter: ``Company.round_off_account`` (this resolver)
+
+	Both are Company-configured adjustment accounts. Never auto-select a
+	Stock-type account from the open GL map as the A2 partner.
 	"""
 	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
 		resolve_company_round_off,
 	)
 
-	purpose = str(doc.get("purpose") or "") if doc.get("doctype") == "Stock Entry" else ""
-	cost_center = frappe.get_cached_value("Company", doc.company, "round_off_cost_center")
-
-	# Prefer an existing Stock inventory leg (WIP credit for Manufacture).
-	stock_partner = None
-	stock_cc = None
-	for e in gl_map:
-		account = e.get("account")
-		if not account or account == sa_account:
-			continue
-		try:
-			acc_type = frappe.get_cached_value("Account", account, "account_type")
-		except Exception:
-			acc_type = None
-		if acc_type != "Stock":
-			continue
-		# Prefer credit-side WIP-like legs (consumption / WIP clearance).
-		if flt(e.get("credit")) > 0 or stock_partner is None:
-			stock_partner = account
-			stock_cc = e.get("cost_center") or cost_center
-			if flt(e.get("credit")) > 0 and purpose in ("Manufacture", "Repack"):
-				break
-
-	if stock_partner and purpose in ("Manufacture", "Repack"):
-		return {"account": stock_partner, "cost_center": stock_cc or cost_center}
-
-	if stock_partner and purpose:
-		# Material Transfer / Issue / etc.: inventory counter when present.
-		return {"account": stock_partner, "cost_center": stock_cc or cost_center}
-
-	round_off_cfg = resolve_company_round_off(doc.company)
-	return {
-		"account": round_off_cfg.get("account"),
-		"cost_center": round_off_cfg.get("cost_center") or cost_center,
-	}
+	round_off_cfg = resolve_company_round_off(doc.company, require=True)
+	partner = round_off_cfg.get("account")
+	if not partner:
+		return {"account": None, "cost_center": None}
+	if partner == sa_account:
+		# Misconfiguration: SA and Round Off must be distinct for a balanced pair.
+		frappe.throw(
+			(
+				f"Company {doc.company}: Stock Adjustment Account and Round Off Account "
+				"must be distinct so SABE A2 can post a balanced adjustment pair "
+				"without touching Core WIP/inventory accounts."
+			),
+			title="Invalid SABE A2 Adjustment Configuration",
+		)
+	cost_center = (
+		round_off_cfg.get("cost_center")
+		or frappe.get_cached_value("Company", doc.company, "round_off_cost_center")
+	)
+	return {"account": partner, "cost_center": cost_center}
 
 
 def _sabe_a2_dimension_values(doc, gl_map: list, template) -> dict:
@@ -529,10 +518,14 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	"""Append balanced Stock Adjustment legs for queued SABE localization deltas.
 
 	Inventory GL already mirrors integerized SLE movements. The localization
-	difference vs ROUND(raw Core amount) must **not** be silently absorbed into
-	inventory again. Post outstanding A2 only (after source-aware dedupe) to
-	``Company.stock_adjustment_account``, balanced against WIP/stock (Manufacture)
-	or Round Off only as last resort — never leave the voucher unbalanced.
+	difference vs ROUND(raw Core amount) must **not** be absorbed into WIP / FG /
+	inventory again. Post outstanding A2 only (after source-aware dedupe) as a
+	balanced pair between configured adjustment accounts:
+
+	* ``Company.stock_adjustment_account`` (A2 SA leg)
+	* ``Company.round_off_account`` (A2 counter leg)
+
+	Core Manufacture WIP / FG / scrap / inventory rows are left untouched.
 	"""
 	if not gl_map or not doc:
 		return gl_map
@@ -632,32 +625,31 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	partner_account = partner_cfg.get("account")
 	if not partner_account:
 		frappe.throw(
-			f"Company {doc.company} has no counter-account for SABE A2 "
-			"(WIP/stock leg or Round Off).",
+			f"Company {doc.company} Round Off Account is required as the SABE A2 "
+			"counter-entry (adjustment-account mechanism). WIP/inventory must not "
+			"be used as the A2 partner.",
 			title="Missing SABE A2 Partner Account",
 		)
 	template = gl_map[0]
-	# Partner (WIP/stock) keeps the inventory leg cost center. SA prefers the
-	# existing in-map Core Stock Adjustment dimensions so live/RIV aggregation
-	# can net Core + A2 into one 621301 row when dimensions are compatible.
+	# SA prefers in-map Core Stock Adjustment dimensions so Core + A2 can
+	# same-side-aggregate on 621301. Partner uses configured Round Off CC.
 	from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
 		align_sabe_a2_sa_dimensions_with_in_map,
 	)
 
 	partner_cost_center = partner_cfg.get("cost_center") or template.get("cost_center")
-	if not partner_cost_center and doc.get("doctype") == "Stock Entry":
-		for row in doc.get("items") or []:
-			if row.get("cost_center"):
-				partner_cost_center = row.get("cost_center")
-				break
 	sa_dims_prefer = align_sabe_a2_sa_dimensions_with_in_map(doc, gl_map, sa)
 	sa_cost_center = (
 		sa_dims_prefer.get("cost_center")
-		or partner_cost_center
 		or template.get("cost_center")
+		or partner_cost_center
 	)
+	if not sa_cost_center and doc.get("doctype") == "Stock Entry":
+		for row in doc.get("items") or []:
+			if row.get("cost_center"):
+				sa_cost_center = row.get("cost_center")
+				break
 	dimensions = _sabe_a2_dimension_values(doc, gl_map, template)
-	# Overlay in-map SA dimensions (department etc.) onto the SA leg only.
 	for key, val in sa_dims_prefer.items():
 		if key == "cost_center" or not val:
 			continue
@@ -671,7 +663,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	)
 
 	# outstanding uses localization_difference sign.
-	# Positive → Credit SA / Debit partner; Negative → Debit SA / Credit partner.
+	# Positive → Credit SA / Debit Round Off; Negative → Debit SA / Credit Round Off.
 	sa_debit = float(round_currency(-outstanding, ccy))
 	remarks = (
 		f"IRR SABE integer localization residual net={outstanding} "
@@ -708,9 +700,6 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			"project": template.get("project"),
 			"is_opening": is_opening,
 			"_irr_sabe_localization_partner": 1,
-			# Distinct voucher_detail_no keeps the A2 counter discrete under
-			# Core merge_similar_entries (Core merge key includes this field).
-			# Aggregation never touches this non-adjustment account.
 			"voucher_detail_no": f"IRR_SABE_A2_PARTNER|{doc.name}",
 			**dimensions,
 		}
@@ -726,7 +715,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 		partner["debit"] = abs(sa_debit)
 		partner["credit"] = 0.0
 
-	# Company currency == account currency for IRR Stock Adjustment / WIP.
+	# Company currency == account currency for IRR Stock Adjustment / Round Off.
 	# Persist account- and transaction-currency mirrors so Desk / GL reports do
 	# not render a legitimate non-zero company-currency leg as 0/0.
 	for leg in (sa_row, partner):
