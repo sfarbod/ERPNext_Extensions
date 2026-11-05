@@ -458,12 +458,17 @@ def _patch_stock_controller():
 					)
 
 					align_irr_gl_map_to_currency_precision(self, gl_entries)
-					# Final-stage SA netting (Core + A2 + residuals) before persist.
+					# Same-side SA aggregation + one-sided row enforcement before persist.
 					from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
 						aggregate_stock_adjustment_gl_entries,
+						ensure_one_sided_gl_entries,
 					)
 
 					gl_entries = aggregate_stock_adjustment_gl_entries(self, gl_entries)
+					# Post-toggle map: enforce one-sided and non-negative amounts.
+					gl_entries = ensure_one_sided_gl_entries(
+						gl_entries, require_non_negative=True
+					)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":
@@ -810,6 +815,16 @@ def _bind_iran_general_ledger_entry_filters(gl):
 			return merged
 		company = merged[0].company if merged else erpnext.get_default_company()
 		company_currency = erpnext.get_company_currency(company)
+		from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+
+		# Core merge sums debit+credit onto one head when keys match. For IRR
+		# stock vouchers that yields forbidden mixed-side rows — split them.
+		if is_irr_company(company):
+			from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+				ensure_one_sided_gl_entries,
+			)
+
+			merged = ensure_one_sided_gl_entries(merged)
 		if not precision:
 			precision = get_field_precision(
 				frappe.get_meta("GL Entry").get_field("debit"), currency=company_currency

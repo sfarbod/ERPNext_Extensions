@@ -708,6 +708,10 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			"project": template.get("project"),
 			"is_opening": is_opening,
 			"_irr_sabe_localization_partner": 1,
+			# Keep A2 WIP/stock counter discrete from Core WIP credit so Core
+			# merge_similar_entries cannot produce a mixed debit+credit row.
+			"_skip_merge": 1,
+			"voucher_detail_no": f"IRR_SABE_A2_PARTNER|{doc.name}",
 			**dimensions,
 		}
 	)
@@ -727,6 +731,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	# not render a legitimate non-zero company-currency leg as 0/0.
 	for leg in (sa_row, partner):
 		leg["account_currency"] = leg.get("account_currency") or ccy
+		leg["transaction_currency"] = leg.get("transaction_currency") or ccy
 		leg["debit_in_account_currency"] = flt(leg.get("debit"))
 		leg["credit_in_account_currency"] = flt(leg.get("credit"))
 		leg["debit_in_transaction_currency"] = flt(leg.get("debit"))

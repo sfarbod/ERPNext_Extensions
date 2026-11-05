@@ -11,7 +11,7 @@ import json
 import re
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 TARGET = "MAT-STE-2026-43536"
 
@@ -69,16 +69,19 @@ def run():
 		"""
 		SELECT name, account, debit, credit,
 		       debit_in_account_currency, credit_in_account_currency,
-		       cost_center, project, remarks
+		       cost_center, project, remarks, is_cancelled
 		FROM `tabGL Entry`
-		WHERE voucher_no=%s AND IFNULL(is_cancelled,0)=0
-		ORDER BY account, creation
+		WHERE voucher_no=%s
+		ORDER BY IFNULL(is_cancelled,0) ASC, account, creation
 		""",
 		TARGET,
 		as_dict=True,
 	)
-	sa_before = [r for r in before if r.account == sa]
-	a2_net = _extract_a2_net(before, sa)
+	active = [r for r in before if not cint(r.is_cancelled)]
+	# Prefer active rows; fall back to cancelled history after a failed remake.
+	pool = active or before
+	sa_before = [r for r in active if r.account == sa]
+	a2_net = _extract_a2_net(pool, sa)
 	# If already aggregated, recover A2 from payload; else from discrete A2 row.
 	if not a2_net and len(sa_before) >= 2:
 		# Heuristic: total SA credit minus smallest core-like credit if known

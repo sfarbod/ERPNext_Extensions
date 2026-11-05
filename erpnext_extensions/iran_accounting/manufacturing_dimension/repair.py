@@ -405,11 +405,13 @@ def compute_proposed_gl_map(se) -> list[dict]:
 		)
 		from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
 			aggregate_stock_adjustment_gl_entries,
+			ensure_one_sided_gl_entries,
 		)
 
 		apply_sabe_localization_sa_gl(se, gl_entries)
 		align_irr_gl_map_to_currency_precision(se, gl_entries)
 		gl_entries = aggregate_stock_adjustment_gl_entries(se, gl_entries)
+		gl_entries = ensure_one_sided_gl_entries(gl_entries)
 	if gl_entries:
 		gl_entries = process_gl_map(gl_entries, merge_entries=True, from_repost=True) or []
 
