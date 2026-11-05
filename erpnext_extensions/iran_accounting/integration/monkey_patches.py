@@ -458,6 +458,12 @@ def _patch_stock_controller():
 					)
 
 					align_irr_gl_map_to_currency_precision(self, gl_entries)
+					# Final-stage SA netting (Core + A2 + residuals) before persist.
+					from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+						aggregate_stock_adjustment_gl_entries,
+					)
+
+					gl_entries = aggregate_stock_adjustment_gl_entries(self, gl_entries)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":

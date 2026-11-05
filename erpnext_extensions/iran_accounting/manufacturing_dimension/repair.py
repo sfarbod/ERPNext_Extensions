@@ -400,7 +400,16 @@ def compute_proposed_gl_map(se) -> list[dict]:
 	gl_entries = toggle_debit_credit_if_negative(se.get_gl_entries(inventory_account_map)) or []
 	if is_irr_company(se.company) and gl_entries is not None:
 		apply_irr_rate_rounding_residual_gl(se, gl_entries)
+		from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+			apply_sabe_localization_sa_gl,
+		)
+		from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+			aggregate_stock_adjustment_gl_entries,
+		)
+
+		apply_sabe_localization_sa_gl(se, gl_entries)
 		align_irr_gl_map_to_currency_precision(se, gl_entries)
+		gl_entries = aggregate_stock_adjustment_gl_entries(se, gl_entries)
 	if gl_entries:
 		gl_entries = process_gl_map(gl_entries, merge_entries=True, from_repost=True) or []
 

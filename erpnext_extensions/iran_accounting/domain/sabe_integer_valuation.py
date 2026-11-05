@@ -637,14 +637,31 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			title="Missing SABE A2 Partner Account",
 		)
 	template = gl_map[0]
-	cost_center = partner_cfg.get("cost_center") or template.get("cost_center")
-	# P&L SA (621301) requires mandatory dimensions (Department on this site).
-	if not cost_center and doc.get("doctype") == "Stock Entry":
+	# Partner (WIP/stock) keeps the inventory leg cost center. SA prefers the
+	# existing in-map Core Stock Adjustment dimensions so live/RIV aggregation
+	# can net Core + A2 into one 621301 row when dimensions are compatible.
+	from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+		align_sabe_a2_sa_dimensions_with_in_map,
+	)
+
+	partner_cost_center = partner_cfg.get("cost_center") or template.get("cost_center")
+	if not partner_cost_center and doc.get("doctype") == "Stock Entry":
 		for row in doc.get("items") or []:
 			if row.get("cost_center"):
-				cost_center = row.get("cost_center")
+				partner_cost_center = row.get("cost_center")
 				break
+	sa_dims_prefer = align_sabe_a2_sa_dimensions_with_in_map(doc, gl_map, sa)
+	sa_cost_center = (
+		sa_dims_prefer.get("cost_center")
+		or partner_cost_center
+		or template.get("cost_center")
+	)
 	dimensions = _sabe_a2_dimension_values(doc, gl_map, template)
+	# Overlay in-map SA dimensions (department etc.) onto the SA leg only.
+	for key, val in sa_dims_prefer.items():
+		if key == "cost_center" or not val:
+			continue
+		dimensions[key] = val
 	idem = idempotency_keys[0] if idempotency_keys else make_sabe_a2_idempotency_key(
 		voucher_type=doc.doctype,
 		voucher_no=doc.name,
@@ -666,7 +683,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	sa_row = frappe._dict(
 		{
 			"account": sa,
-			"cost_center": cost_center,
+			"cost_center": sa_cost_center,
 			"company": doc.company,
 			"posting_date": posting_date,
 			"remarks": remarks,
@@ -682,7 +699,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	partner = frappe._dict(
 		{
 			"account": partner_account,
-			"cost_center": cost_center,
+			"cost_center": partner_cost_center,
 			"company": doc.company,
 			"posting_date": posting_date,
 			"remarks": remarks,
