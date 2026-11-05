@@ -1151,6 +1151,26 @@ def _patch_stock_ledger_engine():
 	# Fail-closed upgrade guard before (re)installing the rate wrapper.
 	assert_erpnext_riv_rate_patch_supported()
 
+	# Reject-only Manufacture: Core get_produced_row_rate keeps historical SLE
+	# incoming_rate when no is_finished_item absorber exists. Surface corrected
+	# SED valuation so bundle update_bundle_rate + SLE SVD follow document cost.
+	if not getattr(sl.update_entries_after, "_iran_reject_only_produced_rate", None):
+		_orig_produced = sl.update_entries_after.get_produced_row_rate
+
+		def get_produced_row_rate(self, sle):
+			from erpnext_extensions.iran_accounting.domain.reject_only_riv_rate import (
+				get_iran_reject_only_produced_rate,
+			)
+
+			iran_rate = get_iran_reject_only_produced_rate(sle)
+			if iran_rate is not None:
+				return iran_rate
+			return _orig_produced(self, sle)
+
+		sl.update_entries_after.get_produced_row_rate = get_produced_row_rate
+		sl.update_entries_after._iran_reject_only_produced_rate = True
+		sl.update_entries_after._iran_original_get_produced_row_rate = _orig_produced
+
 	# PENDING_PURCHASE_INVOICE_VALUATION: honor document-zero PR until PI posts.
 	if not getattr(sl.update_entries_after, "_iran_pending_pi_allow_zero", None):
 		_orig_allow_zero = sl.update_entries_after.check_if_allow_zero_valuation_rate

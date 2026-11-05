@@ -107,6 +107,22 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 		record_failure,
 	)
 
+	# Reject-only SED valued / SLE still zero: a chronologically covering Completed
+	# RIV must not skip — the valuation source changed after that RIV finished.
+	force_keys: set[tuple[str, str]] = set()
+	if voucher_type == "Stock Entry":
+		try:
+			from erpnext_extensions.iran_accounting.domain.reject_only_riv_rate import (
+				clear_reject_only_riv_cache,
+				reject_only_sed_sle_lag_identities,
+			)
+
+			clear_reject_only_riv_cache()
+			for lag in reject_only_sed_sle_lag_identities(voucher_no):
+				force_keys.add((lag["item_code"], lag["warehouse"]))
+		except Exception:
+			force_keys = set()
+
 	covers: list[str] = []
 	need_create: list[dict] = []
 	blocked_ids: list[tuple[str, str]] = []
@@ -116,8 +132,9 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 		if key in seen:
 			continue
 		seen.add(key)
+		force_fresh = key in force_keys
 		cov = find_covering_riv(sle.item_code, sle.warehouse, sle.posting_date, sle.posting_time)
-		if cov:
+		if cov and not force_fresh:
 			covers.append(cov)
 			continue
 		# Also reuse Queued/In Progress covering same identity at earlier/equal boundary.
@@ -132,7 +149,7 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 			""",
 			(sle.item_code, sle.warehouse, sle.posting_date),
 		)
-		if open_cov:
+		if open_cov and not force_fresh:
 			covers.append(open_cov[0][0])
 			continue
 		# Never create replacement RIV for an unresolved Failed identity.
@@ -148,6 +165,10 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 				voucher_hint=f"{voucher_type}/{voucher_no}",
 			)
 			continue
+		# Tag forced identities so the create loop does not reuse Completed RIVs.
+		if force_fresh:
+			sle = frappe._dict(sle)
+			sle["_iran_force_fresh_riv"] = True
 		need_create.append(sle)
 
 	if blocked_ids and not need_create and not covers:
@@ -214,6 +235,11 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 	else:
 		for sle in need_create:
 			try:
+				force_fresh = bool(
+					sle.get("_iran_force_fresh_riv")
+					if hasattr(sle, "get")
+					else getattr(sle, "_iran_force_fresh_riv", False)
+				)
 				before = frappe.db.get_value(
 					"Repost Item Valuation",
 					{
@@ -223,12 +249,19 @@ def create_or_link_rivs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 						"posting_date": sle.posting_date,
 						"status": ("in", ["Queued", "In Progress", "Completed"]),
 					},
-					"name",
+					["name", "status"],
+					as_dict=True,
 					order_by="creation desc",
 				)
+				# Reuse Queued/In Progress always. Reuse Completed only when the
+				# valuation source has not changed (no reject-only SED→SLE lag).
 				if before:
-					created_names.append(before)
-					continue
+					if before.status in ("Queued", "In Progress"):
+						created_names.append(before.name)
+						continue
+					if before.status == "Completed" and not force_fresh:
+						created_names.append(before.name)
+						continue
 				create_repost_item_valuation_entry(
 					frappe._dict(
 						based_on="Item and Warehouse",
@@ -383,18 +416,22 @@ def manufacture_product_reject_rate_issues(voucher_no: str) -> list[dict[str, An
 		return []
 	try:
 		from erpnext_extensions.iran_accounting.scrap_costing import (
+			CLASS_MAIN_PRODUCT_REJECT,
+			classify_manufacture_outputs,
 			historical_zero_product_reject_needs_repair,
+			historical_zero_reject_only_needs_repair,
 		)
 
 		doc = frappe.get_doc("Stock Entry", voucher_no)
-		if not historical_zero_product_reject_needs_repair(doc):
+		fg_reject = historical_zero_product_reject_needs_repair(doc)
+		reject_only = historical_zero_reject_only_needs_repair(doc)
+		if not fg_reject and not reject_only:
 			return []
-		from erpnext_extensions.iran_accounting.scrap_costing import (
-			CLASS_MAIN_PRODUCT_REJECT,
-			classify_manufacture_outputs,
-		)
 
 		classified = classify_manufacture_outputs(doc)
+		reason = (
+			"zero_reject_only_manufacture_rate" if reject_only and not fg_reject else "zero_main_product_reject_rate"
+		)
 		issues = []
 		for row in classified.get(CLASS_MAIN_PRODUCT_REJECT) or []:
 			if cint(row.get("allow_zero_valuation_rate")):
@@ -411,7 +448,7 @@ def manufacture_product_reject_rate_issues(voucher_no: str) -> list[dict[str, An
 					"item_code": row.get("item_code"),
 					"qty": qty,
 					"basic_rate": row.get("basic_rate"),
-					"reason": "zero_main_product_reject_rate",
+					"reason": reason,
 				}
 			)
 		return issues
@@ -462,7 +499,129 @@ def verify_voucher_basic(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 		if reject_issues:
 			ok = False
 			detail += f"; zero_product_reject={len(reject_issues)}"
+		# SED valued but Reject SLE still zero after historical repair — not covered.
+		try:
+			from erpnext_extensions.iran_accounting.domain.reject_only_riv_rate import (
+				clear_reject_only_riv_cache,
+				reject_only_sed_sle_lag_identities,
+			)
+
+			clear_reject_only_riv_cache()
+			lags = reject_only_sed_sle_lag_identities(voucher_no)
+			if lags:
+				ok = False
+				detail += f"; reject_only_sed_sle_lag={len(lags)}"
+		except Exception:
+			pass
+		# Reject-only accounting evidence: Reject inventory GL debit ≈ SLE value;
+		# Stock Adjustment must not still hold the full consume pool.
+		try:
+			gl_ev = _reject_only_gl_evidence(voucher_no)
+			if gl_ev and not gl_ev.get("ok"):
+				ok = False
+				detail += f"; reject_only_gl:{gl_ev.get('reason')}"
+		except Exception:
+			pass
 	return {"ok": ok, "detail": detail}
+
+
+def _reject_only_gl_evidence(voucher_no: str) -> dict[str, Any] | None:
+	"""Return None when not reject-only; else ok/reason for Reject GL vs SLE.
+
+	Requires:
+	* GL balanced for the Stock Entry
+	* Reject warehouse inventory account debit ≈ incoming Reject SLE SVD
+	* Stock Adjustment absolute net ≤ max(legitimate residual, 1) — not full pool
+	"""
+	from erpnext_extensions.iran_accounting.scrap_costing import _has_reject_only
+
+	if frappe.db.get_value("Stock Entry", voucher_no, "purpose") != "Manufacture":
+		return None
+	doc = frappe.get_doc("Stock Entry", voucher_no)
+	if not _has_reject_only(doc):
+		return None
+
+	company = doc.company
+	sa = frappe.get_cached_value("Company", company, "stock_adjustment_account")
+	gl = frappe.db.sql(
+		"""
+		select account, sum(debit) d, sum(credit) c
+		from `tabGL Entry`
+		where voucher_type='Stock Entry' and voucher_no=%s and ifnull(is_cancelled,0)=0
+		group by account
+		""",
+		voucher_no,
+		as_dict=True,
+	) or []
+	if not gl:
+		return {"ok": False, "reason": "no_gl"}
+	debit = sum(flt(r.d) for r in gl)
+	credit = sum(flt(r.c) for r in gl)
+	if abs(debit - credit) > 0.5:
+		return {"ok": False, "reason": f"gl_unbalanced:{debit-credit}"}
+
+	from erpnext_extensions.iran_accounting.scrap_costing import (
+		CLASS_MAIN_PRODUCT_REJECT,
+		classify_manufacture_outputs,
+	)
+
+	rejects = classify_manufacture_outputs(doc).get(CLASS_MAIN_PRODUCT_REJECT) or []
+	sle_value = 0.0
+	reject_accounts: set[str] = set()
+	for row in rejects:
+		sle = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{
+				"voucher_type": "Stock Entry",
+				"voucher_no": voucher_no,
+				"voucher_detail_no": row.name,
+				"is_cancelled": 0,
+				"actual_qty": (">", 0),
+			},
+			["stock_value_difference", "warehouse"],
+			as_dict=True,
+		)
+		if not sle:
+			return {"ok": False, "reason": f"missing_reject_sle:{row.name}"}
+		sle_value += flt(sle.stock_value_difference)
+		try:
+			from erpnext.stock.doctype.warehouse.warehouse import get_warehouse_account
+
+			acct = get_warehouse_account(
+				frappe.get_cached_doc("Warehouse", sle.warehouse), company
+			)
+		except Exception:
+			acct = frappe.db.get_value("Warehouse", sle.warehouse, "account")
+		if acct:
+			reject_accounts.add(acct)
+
+	if sle_value <= 0.5:
+		return {"ok": False, "reason": "reject_sle_value_zero"}
+
+	rej_debit = sum(flt(r.d) for r in gl if r.account in reject_accounts)
+	if abs(rej_debit - sle_value) > 0.5:
+		return {
+			"ok": False,
+			"reason": f"reject_gl_debit_mismatch:gl={rej_debit},sle={sle_value}",
+		}
+
+	consume = sum(
+		flt(r.basic_amount) for r in (doc.get("items") or []) if r.get("s_warehouse")
+	)
+	sa_net = 0.0
+	if sa:
+		sa_row = next((r for r in gl if r.account == sa), None)
+		sa_net = flt(sa_row.d if sa_row else 0) - flt(sa_row.c if sa_row else 0)
+	# Full-pool SA (pre-fix) is illegal once Reject carries the value.
+	if consume > 0.5 and abs(sa_net) > 0.5 and abs(abs(sa_net) - consume) <= 0.5:
+		return {"ok": False, "reason": f"full_pool_stock_adjustment:{sa_net}"}
+	return {
+		"ok": True,
+		"reason": "reject_gl_ok",
+		"reject_gl_debit": rej_debit,
+		"sle_value": sle_value,
+		"sa_net": sa_net,
+	}
 
 
 def process_campaign_item(item_name: str, *, stop_check=None) -> dict[str, Any]:

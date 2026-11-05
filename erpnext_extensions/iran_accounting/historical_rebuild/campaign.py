@@ -4,6 +4,10 @@
 Commands (development.localhost / production under Maintenance Mode):
 
   create / build_manifest / start / pause / stop / resume / status
+  create_scoped / discover_manufacture_zero_rate / reassess_pending
+  prepare_sequential_rebuild / run_sequential_rebuild / finalize_sequential_rebuild
+
+Optional ``start_date`` on create/create_scoped aliases ``posting_boundary_from``.
 """
 
 from __future__ import annotations
@@ -325,27 +329,65 @@ def _build_progress_view(counters: dict[str, int], seq: dict) -> dict[str, Any]:
 	}
 
 
-def create(company: str | None = None, posting_boundary_from: str | None = None, remarks: str | None = None) -> dict:
-	"""Create a Draft Historical Rebuild Campaign."""
+def _resolve_start_date(start_date=None, posting_boundary_from=None):
+	"""Optional rebuild-scope start date (alias: posting_boundary_from).
+
+	Controls which vouchers enter the campaign manifest / execution scope.
+	Does not prevent the rebuild engine from reading earlier SLE history when
+	computing opening valuation for in-scope transactions.
+	"""
+	from frappe.utils import getdate
+
+	raw = start_date if start_date not in (None, "") else posting_boundary_from
+	if raw in (None, ""):
+		return None
+	try:
+		return getdate(raw)
+	except Exception:
+		frappe.throw(f"Invalid start_date / posting_boundary_from: {raw!r}")
+
+
+def create(
+	company: str | None = None,
+	posting_boundary_from: str | None = None,
+	remarks: str | None = None,
+	start_date: str | None = None,
+) -> dict:
+	"""Create a Draft Historical Rebuild Campaign.
+
+	``start_date`` is an optional alias for ``posting_boundary_from``. Omitting
+	both preserves full historical scope (backward compatible).
+	"""
 	if not company:
 		company = frappe.db.get_single_value("Global Defaults", "default_company")
 	if not company:
 		company = frappe.db.get_value("Company", {"is_group": 0}, "name", order_by="creation asc")
 	if not company:
 		frappe.throw("company is required")
+	boundary = _resolve_start_date(start_date, posting_boundary_from)
 	doc = frappe.get_doc(
 		{
 			"doctype": CAMPAIGN_DOCTYPE,
 			"company": company,
 			"status": STATUS_DRAFT,
-			"posting_boundary_from": posting_boundary_from,
+			"posting_boundary_from": boundary,
 			"remarks": remarks or "Phase 2 complete historical rebuild",
 		}
 	)
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	_append_log(doc.name, f"Created campaign for company={company}")
-	return {"campaign": doc.name, "status": doc.status, "company": company}
+	_append_log(
+		doc.name,
+		f"Created campaign for company={company}"
+		+ (f" start_date={boundary}" if boundary else " start_date=None (full scope)"),
+	)
+	return {
+		"campaign": doc.name,
+		"status": doc.status,
+		"company": company,
+		"start_date": str(boundary) if boundary else None,
+		"posting_boundary_from": str(boundary) if boundary else None,
+	}
 
 
 def build_manifest(campaign: str) -> dict:
@@ -957,6 +999,7 @@ def status(campaign: str) -> dict:
 		if id_total is not None
 		else f"{seq.get('identities_done', 0):,} / (plan_size not recorded)"
 	)
+	start_date_val = str(doc.posting_boundary_from) if doc.posting_boundary_from else None
 	text = f"""
 HISTORICAL REBUILD CAMPAIGN
 
@@ -965,6 +1008,9 @@ Campaign:
 
 Status:
 {doc.status}
+
+Start Date (posting_boundary_from):
+{start_date_val or '— (full historical scope)'}
 
 Active Session:
 {seq.get('active_session_id') or '—'}
@@ -1065,6 +1111,8 @@ Recent Logs:
 	return {
 		"campaign": doc.name,
 		"status": doc.status,
+		"start_date": start_date_val,
+		"posting_boundary_from": start_date_val,
 		"counters": counters,
 		"progress": progress,
 		"counter_semantics": COUNTER_SEMANTICS,
@@ -1169,6 +1217,7 @@ def create_scoped(
 	seed_vouchers: list | None = None,
 	seed_identities: list | None = None,
 	posting_boundary_from: str | None = None,
+	start_date: str | None = None,
 	scope_label: str = "scoped-test",
 	remarks: str | None = None,
 	use_default_569_scope: bool = False,
@@ -1177,6 +1226,9 @@ def create_scoped(
 
 	Does not discover the full company ledger. Expands seeds to all vouchers
 	that touch the resulting Item/Warehouse identities.
+
+	``start_date`` aliases ``posting_boundary_from`` (optional; None = no
+	posting-date floor on the expanded scoped manifest).
 	"""
 	from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
 		create_scoped_campaign,
@@ -1188,11 +1240,38 @@ def create_scoped(
 		seed_vouchers = scope["seed_vouchers"]
 		seed_identities = scope["seed_identities"]
 		scope_label = scope_label or "5.6.9-validation"
+	boundary = _resolve_start_date(start_date, posting_boundary_from)
 	return create_scoped_campaign(
 		company=company,
 		seed_vouchers=seed_vouchers,
 		seed_identities=seed_identities,
-		posting_boundary_from=posting_boundary_from,
+		posting_boundary_from=boundary,
+		scope_label=scope_label,
+		remarks=remarks,
+	)
+
+
+def create_exact_vouchers(
+	company: str | None = None,
+	*,
+	vouchers: list | None = None,
+	scope_label: str = "exact-vouchers",
+	remarks: str | None = None,
+) -> dict:
+	"""Create a Ready campaign Manifest with **exactly** the listed vouchers.
+
+	Does not expand to sibling vouchers on the same Item/Warehouse identities.
+	Preferred for the six reject-only Manufacture documents on Production when
+	``HRC-00009`` is absent. Prefer ``resume('HRC-00009')`` when that campaign
+	already exists with the same six items.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+		create_exact_voucher_campaign,
+	)
+
+	return create_exact_voucher_campaign(
+		company=company,
+		vouchers=vouchers,
 		scope_label=scope_label,
 		remarks=remarks,
 	)
@@ -1236,3 +1315,41 @@ def finalize_sequential_rebuild(campaign: str, session_id: str | None = None) ->
 	)
 
 	return finalize_sequential_campaign(campaign, session_id=session_id)
+
+
+def discover_manufacture_zero_rate(
+	company: str | None = None,
+	start_date: str | None = None,
+	limit: int | None = None,
+) -> dict:
+	"""Read-only discovery of Manufacture zero-rate defect families."""
+	from erpnext_extensions.iran_accounting.historical_rebuild.manufacture_zero_rate import (
+		discover_manufacture_zero_rate_defects,
+	)
+
+	return discover_manufacture_zero_rate_defects(
+		company=company, start_date=start_date, limit=limit
+	)
+
+
+def reassess_pending(
+	campaign: str,
+	*,
+	limit: int | None = None,
+	include_skipped_covered_zero_reject: bool = True,
+) -> dict:
+	"""Read-only reassessment of campaign pending items (+ optional covered defects).
+
+	Statuses:
+	  REQUIRES REBUILD / ALREADY CORRECTED / ALREADY COVERED BY RIV /
+	  NOT APPLICABLE / BLOCKED — ROOT CAUSE UNKNOWN
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.case_reassess import (
+		reassess_campaign_cases,
+	)
+
+	return reassess_campaign_cases(
+		campaign,
+		limit=limit,
+		include_skipped_covered_zero_reject=include_skipped_covered_zero_reject,
+	)

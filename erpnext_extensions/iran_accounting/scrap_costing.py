@@ -995,15 +995,128 @@ def _spread_operating_cost(
 			row.valuation_rate = integer_valuation_rate_from_amount(row.amount, qty, currency)
 
 
+def _header_operating_cost(doc) -> float:
+	"""Capitalised operating cost from the STE Additional Costs child table only.
+
+	Work Order planned/actual operating cost is **not** invented here — Core
+	must already have placed eligible amounts on ``additional_costs``. Mixing
+	WO fields would double-count or invent cost that never hit this voucher.
+	"""
+	return sum(
+		flt(t.get("base_amount") if t.get("base_amount") not in (None, "") else t.get("amount"))
+		for t in (doc.get("additional_costs") or [])
+	)
+
+
+def _apply_absorbed_product_rates(
+	doc,
+	*,
+	good_row,
+	scrap_rows: list,
+	pool: float,
+	currency: str,
+) -> bool:
+	"""Price MAIN_FG (optional) + MAIN_PRODUCT_REJECT from the material pool.
+
+	Shared model for Main+Reject (CASE F) and Reject-only:
+
+	- Material share → ``basic_rate`` / ``basic_amount`` (IRR integer policy).
+	- Header ``additional_costs`` → ``_spread_operating_cost`` onto product rows.
+	- Integer composition leftover → TYPE C Stock Adjustment (not Round Off / WIP).
+	"""
+	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
+		uses_type_c_sa_residual_policy,
+	)
+
+	def _qty(row) -> float:
+		value = row.get("transfer_qty")
+		if value in (None, ""):
+			value = row.get("qty")
+		return flt(value)
+
+	scrap_qty = sum(_qty(row) for row in scrap_rows)
+	if scrap_qty <= 0:
+		return False
+
+	good_qty = _qty(good_row) if good_row is not None else 0.0
+	if good_row is not None and good_qty <= 0:
+		return False
+
+	precision = get_currency_precision(currency)
+	type_c = uses_type_c_sa_residual_policy(doc)
+	product_rows = ([good_row] if good_row is not None else []) + list(scrap_rows)
+	header_operating = _header_operating_cost(doc)
+	if type_c:
+		for row in product_rows:
+			row.additional_cost = 0
+		operating_total = header_operating
+	else:
+		operating_total = None
+
+	# Reject-only: one ROUND_HALF_UP rate over all reject qty (same identity as
+	# compose_shared_integer_rate_family). Main+Reject keeps CASE F pairing.
+	if good_row is None:
+		rate = round_monetary_rate(pool / scrap_qty, currency)
+		if rate <= 0:
+			return False
+		for row in scrap_rows:
+			_apply(row, rate, currency)
+		leftover = pool - sum(flt(row.get("basic_amount")) for row in scrap_rows)
+		_spread_operating_cost(
+			product_rows,
+			currency,
+			leftover,
+			absorb_leftover=not type_c,
+			operating_total=operating_total if type_c else None,
+		)
+		return True
+
+	units = good_qty + scrap_qty
+	if precision != 0:
+		rate = round_monetary_rate(pool / units, currency)
+		_apply(good_row, rate, currency)
+		for row in scrap_rows:
+			_apply(row, rate, currency)
+		_spread_operating_cost(
+			product_rows,
+			currency,
+			operating_total=operating_total if type_c else None,
+		)
+		return True
+
+	pair = _integer_rate_pair(pool, good_qty, scrap_qty)
+	if pair is None:
+		return False
+	good_rate, scrap_rate, leftover = pair
+	_apply(good_row, good_rate, currency)
+	for row in scrap_rows:
+		_apply(row, scrap_rate, currency)
+	_spread_operating_cost(
+		product_rows,
+		currency,
+		leftover,
+		absorb_leftover=not type_c,
+		operating_total=operating_total if type_c else None,
+	)
+	return True
+
+
 def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
-	"""Split the manufacturing cost pool between finished good and scrap.
+	"""Split the manufacturing cost pool across MAIN_FG and/or MAIN_PRODUCT_REJECT.
 
 	Returns ``True`` when an allocation was applied, so callers can tell an
 	untouched document from a costed one.
 
+	Supported shapes (shared allocator):
+
+	- **Main + Reject** — CASE F: material pool shared; header additional costs
+	  spread per unit across good and reject.
+	- **Reject-only** — no MAIN_FG: the same material pool and header additional
+	  costs are capitalised onto MAIN_PRODUCT_REJECT (approved reject-only policy).
+
 	Process loss takes no share: only units that physically exist at the end of
-	the operation (good + scrap) receive cost, which is precisely how the cost
-	of the lost units ends up carried by the survivors.
+	the operation receive cost. Multi-MAIN_FG remains a different question and
+	is left to STAGE_CO / same-item Multi-FG strategies.
 	"""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
 		return False
@@ -1016,12 +1129,11 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 		return False
 
 	good_rows = [row for row in rows if row.get("is_finished_item") and row.get("t_warehouse")]
-	if len(good_rows) != 1:
+	if len(good_rows) > 1:
 		# Multi-FG output is a different allocation question (co-products carry
 		# their own basis); leave ERPNext's own numbers alone.
 		return False
 
-	finished_item = good_rows[0].get("item_code")
 	classified = classify_manufacture_outputs(doc)
 	scrap_rows = list(classified[CLASS_MAIN_PRODUCT_REJECT])
 	# Bulk Scrap stays at intentional zero — never issued-rate, never absorbed.
@@ -1046,19 +1158,10 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 		# Component rejects only: they keep issued cost. FG must consume the
 		# remaining pool — ERPNext 16.34 may already have set a negative FG
 		# from live warehouse/batch scrap valuation.
+		if len(good_rows) != 1:
+			return bool(component_rows)
 		restored = _restore_finished_good_as_residual(doc, good_rows[0])
 		return bool(component_rows) or restored
-
-	def _qty(row) -> float:
-		value = row.get("transfer_qty")
-		if value in (None, ""):
-			value = row.get("qty")
-		return flt(value)
-
-	good_qty = _qty(good_rows[0])
-	scrap_qty = sum(_qty(row) for row in scrap_rows)
-	if good_qty <= 0 or scrap_qty <= 0:
-		return False
 
 	# The material pool. Capitalised operating cost is not mixed in here — it
 	# keeps ERPNext's own semantics of riding on `amount` rather than
@@ -1067,65 +1170,23 @@ def allocate_scrap_absorbed_cost(doc, method=None) -> bool:
 	outgoing = sum(flt(row.get("basic_amount")) for row in rows if row.get("s_warehouse"))
 	# Co-Product / By-Product / Additional Finished Good and rejected components
 	# keep their own allocation and are removed from the pool before it is split.
+	good_row = good_rows[0] if good_rows else None
 	other_incoming = sum(
 		flt(row.get("basic_amount"))
 		for row in rows
-		if _is_incoming(row) and row not in scrap_rows and row is not good_rows[0]
+		if _is_incoming(row) and row not in scrap_rows and row is not good_row
 	)
 	pool = outgoing - other_incoming
 	if pool <= 0:
 		return False
 
-	currency = get_company_currency(doc.company)
-	precision = get_currency_precision(currency)
-
-	if precision != 0:
-		rate = round_monetary_rate(pool / (good_qty + scrap_qty), currency)
-		_apply(good_rows[0], rate, currency)
-		for row in scrap_rows:
-			_apply(row, rate, currency)
-		_spread_operating_cost([good_rows[0]] + scrap_rows, currency)
-		return True
-
-	pair = _integer_rate_pair(pool, good_qty, scrap_qty)
-	if pair is None:
-		return False
-
-	good_rate, scrap_rate, leftover = pair
-	# Both rows keep rate × qty == basic_amount exactly. Under TYPE C (v5.3.34+)
-	# the allocation leftover is NOT injected into additional_cost — Core posts
-	# it via the Difference Account / Stock Adjustment. Legacy 5.3.3 stamps
-	# still absorb leftover into additional_cost for RIV determinism.
-	from erpnext_extensions.iran_accounting.domain.manufacture_irr_residual import (
-		uses_type_c_sa_residual_policy,
+	return _apply_absorbed_product_rates(
+		doc,
+		good_row=good_row,
+		scrap_rows=scrap_rows,
+		pool=pool,
+		currency=currency_code,
 	)
-
-	type_c = uses_type_c_sa_residual_policy(doc)
-	product_rows = [good_rows[0]] + scrap_rows
-	# Real operating cost under TYPE C comes only from the header Additional Costs
-	# table (ERPNext's semantic source). Row.additional_cost leftover plugs are cleared.
-	header_operating = sum(
-		flt(t.get("base_amount") if t.get("base_amount") not in (None, "") else t.get("amount"))
-		for t in (doc.get("additional_costs") or [])
-	)
-	if type_c:
-		for row in product_rows:
-			row.additional_cost = 0
-		operating_total = header_operating
-	else:
-		operating_total = None  # legacy: use current row ac sum inside spread
-
-	_apply(good_rows[0], good_rate, currency)
-	for row in scrap_rows:
-		_apply(row, scrap_rate, currency)
-	_spread_operating_cost(
-		product_rows,
-		currency,
-		leftover,
-		absorb_leftover=not type_c,
-		operating_total=operating_total if type_c else None,
-	)
-	return True
 
 
 def _has_product_reject(doc) -> bool:
@@ -1135,6 +1196,14 @@ def _has_product_reject(doc) -> bool:
 		return False
 	finished_item = good_rows[0].get("item_code")
 	return any(is_scrap_row(row) and is_product_reject(row, finished_item) for row in rows)
+
+
+def _has_reject_only(doc) -> bool:
+	"""True when MAIN_PRODUCT_REJECT exists and no MAIN_FG row is present."""
+	classified = classify_manufacture_outputs(doc)
+	if classified.get(CLASS_MAIN_FG):
+		return False
+	return bool(classified.get(CLASS_MAIN_PRODUCT_REJECT))
 
 
 def _erpnext_manufacture_state_is_valid(doc) -> bool:
@@ -1218,6 +1287,74 @@ def repair_historical_zero_product_reject(doc) -> bool:
 	return bool(applied)
 
 
+def historical_zero_reject_only_needs_repair(doc) -> bool:
+	"""True when Manufacture has zero MAIN_FG and illegal zero MAIN_PRODUCT_REJECT.
+
+	SFG-stage Manufactures may record the entire completed qty as Scrap → Reject
+	warehouse with no MAIN_FG Quarantine row (e.g. MAT-STE-2026-27570). Job Card
+	``finished_good`` remains the stage SFG item — Reject is STE disposition, not
+	a different JC finished item. CASE F
+	(:func:`historical_zero_product_reject_needs_repair`) requires MAIN_FG and
+	therefore does not run; valued consume posts fully to Stock Adjustment until
+	the shared absorbed-cost allocator prices Reject. Intentional zero
+	(``allow_zero_valuation_rate``) is excluded.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if cint(doc.get("docstatus")) != 1:
+		return False
+	if not is_irr_company(doc.get("company")):
+		return False
+	classified = classify_manufacture_outputs(doc)
+	if classified.get(CLASS_MAIN_FG):
+		return False
+	rejects = classified.get(CLASS_MAIN_PRODUCT_REJECT) or []
+	if not rejects:
+		return False
+	consume_amt = sum(flt(row.get("basic_amount")) for row in (doc.get("items") or []) if row.get("s_warehouse"))
+	if consume_amt <= 0.5:
+		return False
+	for row in rejects:
+		if _row_qty(row) <= 0:
+			continue
+		if cint(row.get("allow_zero_valuation_rate")):
+			continue
+		if abs(flt(row.get("basic_rate"))) <= 1e-9 and abs(flt(row.get("valuation_rate"))) <= 1e-9:
+			return True
+	return False
+
+
+def allocate_reject_only_absorbed_cost(doc) -> bool:
+	"""Allocate eligible manufacture cost onto MAIN_PRODUCT_REJECT when no MAIN_FG.
+
+	Delegates to :func:`allocate_scrap_absorbed_cost` (shared Main+Reject /
+	Reject-only model). Material pool → integer ``basic_rate``; header
+	``additional_costs`` → row ``additional_cost`` via ``_spread_operating_cost``.
+	Composition leftover remains native TYPE C Stock Adjustment.
+	"""
+	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
+		return False
+	if not is_irr_company(doc.company):
+		return False
+	if not _has_reject_only(doc):
+		return False
+	return allocate_scrap_absorbed_cost(doc)
+
+
+def repair_historical_zero_reject_only(doc) -> bool:
+	"""Price illegal zero MAIN_PRODUCT_REJECT on reject-only historical Manufacture."""
+	if not historical_zero_reject_only_needs_repair(doc):
+		return False
+	applied = allocate_reject_only_absorbed_cost(doc)
+	if applied:
+		from erpnext_extensions.iran_accounting.manufacture_output_contract import (
+			claim_product_reject_ownership,
+		)
+
+		claim_product_reject_ownership(doc)
+	return bool(applied)
+
+
 def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	"""Canonical Iran Manufacture output contract (submit and RIV).
 
@@ -1253,7 +1390,9 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	)
 
 	if not uses_v533_contract(doc):
-		return repair_historical_zero_product_reject(doc)
+		if repair_historical_zero_product_reject(doc):
+			return True
+		return repair_historical_zero_reject_only(doc)
 
 	stamp_contract_version(doc)
 	clear_core_auto_valuation_for_stage_bridge(doc)
@@ -1279,10 +1418,18 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 		assert_bridged_product_reject_priced(doc)
 		assert_bridged_component_scrap_priced(doc)
 		return applied
-	# Priority 2: Product Reject (existing absorbed-cost path).
+	# Priority 2: Product Reject (Main + Reject absorbed-cost path).
 	if _has_product_reject(doc):
 		# Multi-FG + Product Reject is unsupported — fail closed before inventing economics.
 		assert_multi_fg_fail_closed(doc)
+		applied = allocate_scrap_absorbed_cost(doc, method) or component_applied
+		if applied:
+			claim_product_reject_ownership(doc)
+		assert_bridged_product_reject_priced(doc)
+		assert_bridged_component_scrap_priced(doc)
+		return applied
+	# Priority 2b: Reject-only — same allocator, no MAIN_FG (v5.7.0 policy).
+	if _has_reject_only(doc):
 		applied = allocate_scrap_absorbed_cost(doc, method) or component_applied
 		if applied:
 			claim_product_reject_ownership(doc)
