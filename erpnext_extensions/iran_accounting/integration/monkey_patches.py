@@ -746,11 +746,14 @@ def _install_iran_process_debit_credit_difference(gl):
 			else:
 				# Ordinary accounting rounding → ERPNext Round Off account.
 				gl.make_round_off_gle(gl_map, debit_credit_diff, trx_cur_debit_credit_diff, precision)
-				gl_map[:] = [
-					e
-					for e in gl_map
-					if flt(e.get("debit"), precision) != 0 or flt(e.get("credit"), precision) != 0
-				]
+
+		# Always drop company-currency 0/0 legs after residual absorb (stock SA
+		# or Round Off). Previously only the Round Off branch stripped zeros.
+		gl_map[:] = [
+			e
+			for e in gl_map
+			if flt(e.get("debit"), precision) != 0 or flt(e.get("credit"), precision) != 0
+		]
 
 		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
 		if abs(debit_credit_diff) > allowance:
@@ -764,36 +767,8 @@ def _install_iran_process_debit_credit_difference(gl):
 	gl.process_debit_credit_difference = process_debit_credit_difference
 
 
-def _patch_general_ledger():
-	import erpnext.accounts.general_ledger as gl
-
-	if getattr(gl, "_iran_patched", None):
-		# Upgrade path: rebind debit/credit handler so Stock Adjustment contract
-		# replaces any previously installed Round-Off destination for stock vouchers.
-		_install_iran_process_debit_credit_difference(gl)
-		return
-
-	gl._iran_original_merge_similar_entries = gl.merge_similar_entries
-	gl._iran_original_save_entries = gl.save_entries
-	gl._iran_original_process_debit_credit_difference = gl.process_debit_credit_difference
-	gl._iran_original_make_entry = gl.make_entry
-	gl._iran_original_get_debit_credit_difference = gl.get_debit_credit_difference
-
-	gl.absorb_gl_map_rounding_residual = zvt.absorb_gl_map_rounding_residual
-
-	gl._iran_original_distribute_cc = gl.distribute_gl_based_on_cost_center_allocation
-
-	def distribute_gl_based_on_cost_center_allocation(gl_map, precision=None, from_repost=False):
-		from erpnext_extensions.iran_accounting.domain.gl_cost_center_allocation import (
-			distribute_gl_based_on_cost_center_allocation_irr,
-		)
-
-		return distribute_gl_based_on_cost_center_allocation_irr(
-			gl_map, precision=precision, from_repost=from_repost
-		)
-
-	gl.distribute_gl_based_on_cost_center_allocation = distribute_gl_based_on_cost_center_allocation
-
+def _bind_iran_general_ledger_entry_filters(gl):
+	"""Bind merge/save/make_entry zero-value filters (idempotent rebind)."""
 
 	def _is_non_zero_gl_entry(x, precision):
 		if (
@@ -854,6 +829,25 @@ def _patch_general_ledger():
 		doc.value_difference = frappe.get_cached_value("Stock Entry", voucher_no, "value_difference")
 		return zvt.finalize_zero_value_transfer_gl_map(doc, gl_map)
 
+	def _strip_zero_company_currency_gl_entries(gl_map):
+		"""Drop legs where company-currency debit and credit are both zero."""
+		if not gl_map:
+			return gl_map
+		company = gl_map[0].company if hasattr(gl_map[0], "company") else gl_map[0].get("company")
+		company_currency = erpnext.get_company_currency(company) if company else None
+		from erpnext_extensions.iran_accounting.domain.currency import (
+			get_currency_precision,
+			is_irr_company,
+		)
+
+		if company and is_irr_company(company):
+			precision = get_currency_precision(company_currency)
+		else:
+			precision = get_field_precision(
+				frappe.get_meta("GL Entry").get_field("debit"), currency=company_currency
+			)
+		return [e for e in gl_map if _is_non_zero_gl_entry(e, precision)]
+
 	def save_entries(gl_map, adv_adj, update_outstanding, from_repost=False):
 		if not from_repost:
 			gl.validate_cwip_accounts(gl_map)
@@ -861,6 +855,7 @@ def _patch_general_ledger():
 		gl_map = _finalize_zero_value_stock_entry_gl_map_before_save(gl_map)
 		gl.process_debit_credit_difference(gl_map)
 		gl_map = _finalize_zero_value_stock_entry_gl_map_before_save(gl_map)
+		gl_map = _strip_zero_company_currency_gl_entries(gl_map)
 
 		dimension_filter_map = gl.get_dimension_filter_map()
 		if gl_map:
@@ -874,8 +869,6 @@ def _patch_general_ledger():
 			gl.make_entry(entry, adv_adj, update_outstanding, from_repost)
 
 	gl.save_entries = save_entries
-
-	_install_iran_process_debit_credit_difference(gl)
 
 	def make_entry(args, adv_adj, update_outstanding, from_repost=False):
 		round_gl_entry_amounts(args)
@@ -898,14 +891,72 @@ def _patch_general_ledger():
 			credit = flt(args.get("credit") if isinstance(args, dict) else args.credit, precision)
 			if not debit and not credit:
 				return None
+
+			def _get(key, default=0):
+				return args.get(key, default) if isinstance(args, dict) else getattr(args, key, default)
+
+			def _set(key, val):
+				if isinstance(args, dict):
+					args[key] = val
+				else:
+					setattr(args, key, val)
+
+			acct_cur = _get("account_currency") or company_currency
+			if not _get("account_currency"):
+				_set("account_currency", acct_cur)
+			if debit and not flt(_get("debit_in_account_currency")):
+				_set("debit_in_account_currency", debit)
+			if credit and not flt(_get("credit_in_account_currency")):
+				_set("credit_in_account_currency", credit)
+			if debit and not flt(_get("debit_in_transaction_currency")):
+				_set("debit_in_transaction_currency", debit)
+			if credit and not flt(_get("credit_in_transaction_currency")):
+				_set("credit_in_transaction_currency", credit)
 		return gl._iran_original_make_entry(args, adv_adj, update_outstanding, from_repost)
+
+	gl.make_entry = make_entry
+	gl._iran_zero_value_filters_bound = True
+
+
+def _patch_general_ledger():
+	import erpnext.accounts.general_ledger as gl
+
+	if getattr(gl, "_iran_patched", None):
+		# Upgrade path: rebind debit/credit + zero-value filters so workers pick
+		# up A2 account-currency / 0/0 strip without requiring a full restart.
+		_install_iran_process_debit_credit_difference(gl)
+		_bind_iran_general_ledger_entry_filters(gl)
+		return
+
+	gl._iran_original_merge_similar_entries = gl.merge_similar_entries
+	gl._iran_original_save_entries = gl.save_entries
+	gl._iran_original_process_debit_credit_difference = gl.process_debit_credit_difference
+	gl._iran_original_make_entry = gl.make_entry
+	gl._iran_original_get_debit_credit_difference = gl.get_debit_credit_difference
+
+	gl.absorb_gl_map_rounding_residual = zvt.absorb_gl_map_rounding_residual
+
+	gl._iran_original_distribute_cc = gl.distribute_gl_based_on_cost_center_allocation
+
+	def distribute_gl_based_on_cost_center_allocation(gl_map, precision=None, from_repost=False):
+		from erpnext_extensions.iran_accounting.domain.gl_cost_center_allocation import (
+			distribute_gl_based_on_cost_center_allocation_irr,
+		)
+
+		return distribute_gl_based_on_cost_center_allocation_irr(
+			gl_map, precision=precision, from_repost=from_repost
+		)
+
+	gl.distribute_gl_based_on_cost_center_allocation = distribute_gl_based_on_cost_center_allocation
+
+	_bind_iran_general_ledger_entry_filters(gl)
+	_install_iran_process_debit_credit_difference(gl)
 
 	def get_debit_credit_difference(gl_map, precision):
 		for entry in gl_map:
 			round_gl_entry_amounts(entry)
 		return gl._iran_original_get_debit_credit_difference(gl_map, precision)
 
-	gl.make_entry = make_entry
 	gl.get_debit_credit_difference = get_debit_credit_difference
 	gl._iran_patched = True
 

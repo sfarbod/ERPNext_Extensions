@@ -705,6 +705,22 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 		partner["debit"] = abs(sa_debit)
 		partner["credit"] = 0.0
 
+	# Company currency == account currency for IRR Stock Adjustment / WIP.
+	# Persist account- and transaction-currency mirrors so Desk / GL reports do
+	# not render a legitimate non-zero company-currency leg as 0/0.
+	for leg in (sa_row, partner):
+		leg["account_currency"] = leg.get("account_currency") or ccy
+		leg["debit_in_account_currency"] = flt(leg.get("debit"))
+		leg["credit_in_account_currency"] = flt(leg.get("credit"))
+		leg["debit_in_transaction_currency"] = flt(leg.get("debit"))
+		leg["credit_in_transaction_currency"] = flt(leg.get("credit"))
+
+	# Never append a zero-value A2 pair (both company legs empty).
+	if abs(flt(sa_row.get("debit"))) < 0.5 and abs(flt(sa_row.get("credit"))) < 0.5:
+		doc.flags = getattr(doc, "flags", None) or frappe._dict()
+		doc.flags.iran_sabe_a2_recon = recon
+		return gl_map
+
 	gl_map.append(sa_row)
 	gl_map.append(partner)
 	doc.flags = getattr(doc, "flags", None) or frappe._dict()

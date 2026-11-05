@@ -175,6 +175,9 @@ class TestSabeLocalizationSaGl(unittest.TestCase):
 			self.assertNotEqual(partner.account, "Round Off - E")
 			self.assertEqual(flt(sa.credit), 1.0)
 			self.assertEqual(flt(partner.debit), 1.0)
+			self.assertEqual(flt(sa.credit_in_account_currency), 1.0)
+			self.assertEqual(flt(partner.debit_in_account_currency), 1.0)
+			self.assertEqual(sa.account_currency, "IRR")
 			self.assertEqual(
 				sum(flt(e.get("debit")) - flt(e.get("credit")) for e in out),
 				0.0,
