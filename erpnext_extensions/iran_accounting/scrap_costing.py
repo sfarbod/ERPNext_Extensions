@@ -842,6 +842,9 @@ def _restore_finished_good_as_residual(doc, fg_row) -> bool:
 	ERPNext 16.34 may have already set FG from (RM − poisoned scrap). After
 	component scrap is moved to issued rate, FG must consume the remaining
 	pool rather than stay negative. Large gaps are not ±1 residuals.
+
+	Negative header ``additional_costs`` reduce FG ``amount`` here. Positive
+	header operating already on the row (Core distribute) is preserved.
 	"""
 	currency_code = get_company_currency(doc.company)
 	outgoing_basic = sum(
@@ -860,6 +863,9 @@ def _restore_finished_good_as_residual(doc, fg_row) -> bool:
 	qty = _row_qty(fg_row)
 	if qty <= 0:
 		return False
+	header = _header_operating_cost(doc)
+	if header < 0:
+		fg_row.additional_cost = round_currency(header, currency_code)
 	fg_row.basic_amount = material
 	fg_row.basic_rate = round_monetary_rate(material / qty, currency_code)
 	fg_row.amount = round_currency(material + _capitalized(fg_row), currency_code)
@@ -975,6 +981,16 @@ def _spread_operating_cost(
 			row.additional_cost = share
 			assigned += share
 		product_rows[0].additional_cost = round_currency(total - assigned, currency)
+	elif total < 0:
+		# Negative header operating must reduce inventory value on SED.
+		# Positive path keeps per-unit spread across good+reject. Negative
+		# follows the residual FG formula used by healthy SLE/GL:
+		#   FG = consume + addl − reject/scrap allocations
+		# so the entire negative header lands on the finished-good row and
+		# reject/scrap keep their material amounts.
+		for row in product_rows:
+			row.additional_cost = 0
+		product_rows[0].additional_cost = round_currency(total, currency)
 	else:
 		for row in product_rows:
 			row.additional_cost = 0
@@ -1355,15 +1371,136 @@ def repair_historical_zero_reject_only(doc) -> bool:
 	return bool(applied)
 
 
+def historical_zero_component_scrap_needs_repair(doc) -> bool:
+	"""True when submitted Manufacture has illegal zero COMPONENT_SCRAP.
+
+	SFG / input-material scrap of a consumed item must keep the issued rate.
+	``allow_zero_valuation_rate`` intentional bulk zero is excluded. Distinct
+	from MAIN_PRODUCT_REJECT zero repair (same-as-FG absorbed cost).
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if cint(doc.get("docstatus")) != 1:
+		return False
+	if not is_irr_company(doc.get("company")):
+		return False
+	classified = classify_manufacture_outputs(doc)
+	currency = get_company_currency(doc.company)
+	for row in classified.get(CLASS_COMPONENT_SCRAP) or []:
+		if _row_qty(row) <= 0:
+			continue
+		if cint(row.get("allow_zero_valuation_rate")):
+			continue
+		if is_intentional_bulk_scrap_zero(row):
+			continue
+		issued = _issued_rate_for_component(doc, row)
+		if issued <= 0:
+			continue
+		issued = round_monetary_rate(issued, currency)
+		if abs(flt(row.get("basic_rate"))) <= 1e-9 and abs(flt(row.get("valuation_rate"))) <= 1e-9:
+			return True
+		if abs(flt(row.get("basic_rate")) - issued) > ISSUED_RATE_TOLERANCE:
+			return True
+	return False
+
+
+def repair_historical_zero_component_scrap(doc) -> bool:
+	"""Price illegal zero COMPONENT_SCRAP and restore FG residual pool."""
+	if not historical_zero_component_scrap_needs_repair(doc):
+		return False
+	applied = apply_component_scrap_issued_rates(doc)
+	good_rows = [
+		row
+		for row in (doc.get("items") or [])
+		if row.get("is_finished_item") and row.get("t_warehouse")
+	]
+	if applied and len(good_rows) == 1:
+		_restore_finished_good_as_residual(doc, good_rows[0])
+	return bool(applied)
+
+
+def historical_negative_additional_cost_needs_repair(doc) -> bool:
+	"""True when negative header additional cost is missing from FG SED amount.
+
+	Healthy SLE/GL already absorb the negative operating into FG stock value.
+	Stale SED that keeps material-only ``amount`` (additional_cost cleared) must
+	be corrected so SED ↔ SLE do not drift and SLE←SED sync cannot destroy GL.
+	"""
+	if getattr(doc, "doctype", None) != "Stock Entry" or doc.get("purpose") != "Manufacture":
+		return False
+	if cint(doc.get("docstatus")) != 1:
+		return False
+	if not is_irr_company(doc.get("company")):
+		return False
+	header = _header_operating_cost(doc)
+	if header >= -0.5:
+		return False
+	good_rows = [
+		row
+		for row in (doc.get("items") or [])
+		if row.get("is_finished_item") and row.get("t_warehouse")
+	]
+	if len(good_rows) != 1:
+		return False
+	fg = good_rows[0]
+	currency = get_company_currency(doc.company)
+	outgoing = sum(
+		flt(row.get("basic_amount")) for row in (doc.get("items") or []) if row.get("s_warehouse")
+	)
+	other_incoming = sum(
+		flt(row.get("basic_amount"))
+		for row in (doc.get("items") or [])
+		if _is_incoming(row) and row is not fg
+	)
+	expected_amount = round_currency(outgoing + header - other_incoming, currency)
+	if expected_amount < 0:
+		return False
+	return abs(flt(fg.get("amount")) - flt(expected_amount)) > 1.0
+
+
+def repair_historical_negative_additional_cost(doc) -> bool:
+	"""Persist negative header operating onto FG SED amount / valuation_rate."""
+	if not historical_negative_additional_cost_needs_repair(doc):
+		return False
+	currency = get_company_currency(doc.company)
+	header = _header_operating_cost(doc)
+	good_rows = [
+		row
+		for row in (doc.get("items") or [])
+		if row.get("is_finished_item") and row.get("t_warehouse")
+	]
+	fg = good_rows[0]
+	classified = classify_manufacture_outputs(doc)
+	product_rows = [fg] + list(classified.get(CLASS_MAIN_PRODUCT_REJECT) or [])
+	# Reject/scrap keep material amounts; entire negative header on FG.
+	for row in product_rows[1:]:
+		row.additional_cost = 0
+		qty = _row_qty(row)
+		row.amount = round_currency(flt(row.get("basic_amount")) + _capitalized(row), currency)
+		if qty:
+			row.valuation_rate = integer_valuation_rate_from_amount(row.amount, qty, currency)
+	fg.additional_cost = round_currency(header, currency)
+	qty = _row_qty(fg)
+	fg.amount = round_currency(flt(fg.get("basic_amount")) + _capitalized(fg), currency)
+	if qty:
+		fg.valuation_rate = integer_valuation_rate_from_amount(fg.amount, qty, currency)
+	if flt(fg.amount):
+		fg.allow_zero_valuation_rate = 0
+	return True
+
+
 def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	"""Canonical Iran Manufacture output contract (submit and RIV).
 
 	v5.3.3 drafts and stamped documents: Component Scrap at issued rate, then
 	equivalent-unit Stage Output allocation when Co-Products participate.
-	Submitted historical documents without a contract stamp are left untouched
-	**except** when MAIN_PRODUCT_REJECT carries an illegal zero rate (qty>0 and
-	``allow_zero_valuation_rate`` unset): then absorbed-cost allocation runs so
-	Historical Rebuild / RIV cannot leave reject FG valued at zero.
+
+	Unstamped submitted historical documents run only the explicit illegal-zero /
+	negative-addl repair lane:
+
+	- MAIN_PRODUCT_REJECT zero (Main+Reject and Reject-only)
+	- COMPONENT_SCRAP zero / issued-rate mismatch (``allow_zero`` unset)
+	- Negative header Additional Costs missing from FG SED amount
 	"""
 	if doc.doctype != "Stock Entry" or doc.purpose != "Manufacture":
 		return False
@@ -1390,9 +1527,18 @@ def apply_iran_manufacture_output_contract(doc, method=None) -> bool:
 	)
 
 	if not uses_v533_contract(doc):
+		# Unstamped submitted historical: only explicit illegal-zero / negative-addl
+		# repairs run. Full v5.3.3+ contract remains draft/stamped-era deterministic.
+		applied = False
 		if repair_historical_zero_product_reject(doc):
-			return True
-		return repair_historical_zero_reject_only(doc)
+			applied = True
+		elif repair_historical_zero_reject_only(doc):
+			applied = True
+		elif repair_historical_zero_component_scrap(doc):
+			applied = True
+		if repair_historical_negative_additional_cost(doc):
+			applied = True
+		return applied
 
 	stamp_contract_version(doc)
 	clear_core_auto_valuation_for_stage_bridge(doc)

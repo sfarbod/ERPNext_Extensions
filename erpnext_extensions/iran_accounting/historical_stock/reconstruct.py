@@ -348,33 +348,78 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 				)
 
 				sle_drift = _manufacture_sle_disagrees_with_se(vn)
+				drift_authority = (
+					classify_manufacture_sed_sle_authority(vn) if sle_drift else "ALIGNED"
+				)
 				se_healthy = preview.get("status") == "HEALTHY" or (
 					not preview.get("needs_repair") and preview.get("confidence") == CONFIDENCE_EXACT
 				)
+				# SLE_AUTHORITATIVE ⇒ never SLE←SED from stale/inflated SED.
+				# SED_AUTHORITATIVE + SE healthy ⇒ classic SLE sync only.
+				# needs_repair ⇒ always persist SED from the Iran contract first.
+				refuse_sle_sync = bool(sle_drift and drift_authority == "SLE_AUTHORITATIVE")
 				if se_healthy and not sle_drift:
 					applied.append({**preview, "written": False, "status": "ALREADY_HEALTHY"})
 					append_entry(log, preview, written=False)
 					continue
-				if se_healthy and sle_drift:
+				if sle_drift or not se_healthy:
 					preview = {
 						**preview,
-						"needs_repair": True,
-						"status": STATUS_RECONSTRUCTABLE,
-						"confidence": CONFIDENCE_EXACT,
-						"eligible": True,
-						"sle_se_drift": True,
-						"source_of_truth": "5.3.0_se_to_sle_sync",
+						"needs_repair": True if (not se_healthy or sle_drift) else preview.get("needs_repair"),
+						"status": preview.get("status")
+						if preview.get("needs_repair")
+						else STATUS_RECONSTRUCTABLE,
+						"confidence": CONFIDENCE_EXACT
+						if (se_healthy and sle_drift) or preview.get("confidence") == CONFIDENCE_EXACT
+						else preview.get("confidence"),
+						"eligible": True
+						if (not se_healthy or sle_drift or preview.get("eligible"))
+						else False,
+						"sle_se_drift": bool(sle_drift),
+						"drift_authority": drift_authority,
+						"refuse_sle_from_sed_sync": refuse_sle_sync,
+						"source_of_truth": (
+							"sle_economic_authoritative_sed_stale"
+							if refuse_sle_sync
+							else (
+								"5.3.0_se_to_sle_sync"
+								if se_healthy and drift_authority == "SED_AUTHORITATIVE"
+								else preview.get("source_of_truth") or "5.3.0_manufacture_output_contract"
+							)
+						),
 					}
+					if se_healthy and sle_drift:
+						preview["status"] = STATUS_RECONSTRUCTABLE
+						preview["eligible"] = True
+						preview["confidence"] = CONFIDENCE_EXACT
 				assert_ready(preview)
 				if dry_run:
-					applied.append({**preview, "written": False, "sle_se_drift": sle_drift})
+					applied.append(
+						{
+							**preview,
+							"written": False,
+							"sle_se_drift": sle_drift,
+							"drift_authority": drift_authority,
+							"refuse_sle_from_sed_sync": refuse_sle_sync,
+						}
+					)
 					append_entry(log, preview, written=False)
 					continue
 				savepoint = f"mfg_{frappe.generate_hash(length=8)}"
 				frappe.db.savepoint(savepoint)
 				try:
 					doc = frappe.get_doc("Stock Entry", vn)
-					if not preview.get("sle_se_drift"):
+					refuse_sle_sync = bool(preview.get("refuse_sle_from_sed_sync"))
+					# Persist SED whenever the Iran contract has work, or when SLE is
+					# authoritative and SED must catch up. Skip SED rewrite only for
+					# the classic SE-healthy + SED_AUTHORITATIVE SLE-sync lane.
+					classic_sle_only = bool(
+						se_healthy
+						and sle_drift
+						and drift_authority == "SED_AUTHORITATIVE"
+						and not preview.get("changed_rows")
+					)
+					if not classic_sle_only:
 						apply_manufacture_preview_to_doc(doc)
 						from erpnext_extensions.iran_accounting.stock_entry import (
 							persist_irr_stock_entry_header_and_rows,
@@ -398,7 +443,12 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 										(d.item_code, d.t_warehouse or d.s_warehouse, d.batch_no)
 									)
 
-					sle_sync = sync_sle_from_stock_entry_detail(vn)
+					if refuse_sle_sync:
+						# Keep economically correct SLE/GL; only normalize txn rate
+						# fields from existing SVD (cosmetic), never SED→SVD overwrite.
+						sle_sync = write_sle_transaction_rates(vn)
+					else:
+						sle_sync = sync_sle_from_stock_entry_detail(vn)
 					replayed = []
 					seen = set()
 					for item_code, wh, batch in targets:
@@ -418,8 +468,11 @@ def repair_manufacture_selected(rows: list[dict], *, dry_run=True) -> dict:
 								f"{replay.get('status')}: {replay.get('reason')} "
 								f"(voucher={replay.get('voucher')})"
 							)
-						sync_sle_from_stock_entry_detail(vn, item_code)
-						write_sle_transaction_rates(vn, item_code)
+						if refuse_sle_sync:
+							write_sle_transaction_rates(vn, item_code)
+						else:
+							sync_sle_from_stock_entry_detail(vn, item_code)
+							write_sle_transaction_rates(vn, item_code)
 						sync_sabb_from_sle(vn, item_code)
 						neg_after = _count_neg_valuation(item_code, wh)
 						if neg_after > neg_before:
@@ -499,6 +552,59 @@ def _manufacture_sle_disagrees_with_se(voucher_no: str) -> bool:
 		if abs(expected - current) > max(1.0, RATE_EPS):
 			return True
 	return False
+
+
+def classify_manufacture_sed_sle_authority(voucher_no: str) -> str:
+	"""Evidence-based SED vs SLE authority for Manufacture drift.
+
+	Returns one of:
+	- ``ALIGNED`` — SED amounts and SLE SVD agree within TYPE C tolerance
+	- ``SLE_AUTHORITATIVE`` — SLE inbound sum matches consume+header_addl economics;
+	  SED does not (typical negative-additional-cost stale SED)
+	- ``SED_AUTHORITATIVE`` — SED inbound sum matches economics; SLE does not
+	- ``BOTH_DEFECTIVE`` — neither side matches economic truth
+
+	``sle_se_drift`` must not alone authorize SLE←SED synchronization.
+	"""
+	from erpnext_extensions.iran_accounting.historical_stock import VALUE_EPS
+	from erpnext_extensions.iran_accounting.scrap_costing import _header_operating_cost
+
+	if not voucher_no or not frappe.db.exists("Stock Entry", voucher_no):
+		return "BOTH_DEFECTIVE"
+	doc = frappe.get_doc("Stock Entry", voucher_no)
+	if doc.purpose != "Manufacture":
+		return "BOTH_DEFECTIVE"
+
+	header = _header_operating_cost(doc)
+	consume = sum(flt(r.basic_amount) for r in (doc.items or []) if r.s_warehouse)
+	sed_inbound = sum(
+		flt(r.amount if r.amount is not None else r.basic_amount)
+		for r in (doc.items or [])
+		if r.t_warehouse and not r.s_warehouse
+	)
+	sle_inbound = flt(
+		frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(stock_value_difference), 0)
+			FROM `tabStock Ledger Entry`
+			WHERE voucher_type='Stock Entry' AND voucher_no=%s
+			  AND is_cancelled=0 AND actual_qty > 0
+			""",
+			voucher_no,
+		)[0][0]
+	)
+	economic = consume + header
+	tol = max(1.0, abs(VALUE_EPS), abs(economic) * 1e-9)
+	sed_ok = abs(sed_inbound - economic) <= tol
+	sle_ok = abs(sle_inbound - economic) <= tol
+	sed_sle_aligned = abs(sed_inbound - sle_inbound) <= tol
+	if sed_sle_aligned and (sed_ok or sle_ok):
+		return "ALIGNED"
+	if sle_ok and not sed_ok:
+		return "SLE_AUTHORITATIVE"
+	if sed_ok and not sle_ok:
+		return "SED_AUTHORITATIVE"
+	return "BOTH_DEFECTIVE"
 
 
 def _ensure_pz_row_in_cache(pz_voucher: str, cache: dict) -> None:
