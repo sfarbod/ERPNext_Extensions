@@ -128,7 +128,12 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 			self.assertFalse(is_adjustable_gl_account("E", WIP))
 			self.assertFalse(is_adjustable_gl_account("E", FG))
 
-	def test_02_sa_core_461_plus_a2_1970_to_credit_2431(self):
+	def test_02_historical_sa_same_side_aggregate_still_works(self):
+		"""Aggregation helper remains for legacy maps that still carry A2 SA legs.
+
+		New postings no longer emit A2+RO pairs; when both Core and A2 SA credits
+		are present historically, same-side aggregate still merges them.
+		"""
 		gl_map = [
 			_leg(SA, credit=461.0),
 			_leg(SA, credit=1970.0, a2=True),
@@ -152,6 +157,25 @@ class TestAdjustmentOnlyGlAggregateV575(unittest.TestCase):
 			if e.account not in (SA, RO)
 		]
 		self.assertEqual(before_non_adj, after_non_adj)
+
+	def test_02b_core_only_sa_461_unchanged_by_aggregate(self):
+		"""Desired net model: Core SA Cr 461 alone — aggregate is a no-op."""
+		gl_map = [
+			_leg(SA, credit=461.0),
+			_leg(WIP, credit=5451221439.0),
+			_leg(FG, debit=5404134596.0),
+			_leg("111608 - scrap", debit=15781209.0),
+			_leg("111620 - packing", debit=31306095.0),
+		]
+		out = self._agg(gl_map)
+		sa = [e for e in out if e.account == SA]
+		self.assertEqual(len(sa), 1)
+		self.assertEqual(flt(sa[0].credit), 461.0)
+		self.assertFalse(any(e.account == RO for e in out))
+		self.assertEqual(
+			sum(flt(e.debit) for e in out),
+			sum(flt(e.credit) for e in out),
+		)
 
 	def test_03_wip_retains_only_core_credit(self):
 		gl_map = [

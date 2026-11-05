@@ -386,37 +386,67 @@ def existing_sabe_a2_recognition(doc) -> dict[str, Any]:
 	}
 
 
-def outstanding_sabe_a2_net(doc, proposed_net: float) -> dict[str, Any]:
-	"""Return outstanding A2 after subtracting source-aware existing recognition.
+def core_stock_adjustment_net_in_map(gl_map: list | None, sa_account: str) -> float:
+	"""Credit−debit of Core (non-A2) Stock Adjustment legs already on the map."""
+	net = 0.0
+	for e in gl_map or []:
+		if (e.get("account") if hasattr(e, "get") else getattr(e, "account", None)) != sa_account:
+			continue
+		if e.get("_irr_sabe_localization") or e.get("_irr_sabe_localization_partner"):
+			continue
+		remarks = str(e.get("remarks") or "")
+		if "IRR_SABE_A2|" in remarks or "IRR SABE integer localization" in remarks:
+			continue
+		if "IRR_SA_AGG|" in remarks and "iran_a2" in remarks:
+			# Aggregated row that already mixed A2 — treat whole as non-core for coverage.
+			continue
+		net += flt(e.get("credit")) - flt(e.get("debit"))
+	return net
 
-	``proposed_net`` uses localization_difference sign (integerized − raw_rounded).
-	Existing GL recognition uses credit−debit on 621301 (positive = already
-	credited SA for a positive proposed net).
 
-	During RIV GL remake, DB GL may be mid-cancel — do not subtract unmarked or
-	stale DB rows. Rely on Manufacture ``value_difference`` coverage and in-map
-	dedupe instead. Outside RIV, marked ``IRR_SABE_A2|`` GL rows count.
+def reconcile_final_stock_adjustment_net(
+	doc, gl_map: list | None, proposed_a2: float
+) -> dict[str, Any]:
+	"""Reconcile Core SA and intermediate A2 into the final SA net to keep.
+
+	Sign convention (credit-positive): ``credit − debit`` on Stock Adjustment.
+
+	Formula
+	-------
+	``gross = core_sa_net + proposed_a2``
+	``final_sa_net = core_sa_net`` when Core already posted SA (A2 is intermediate
+	and must not inflate the plug): equivalently
+	``final_sa_net = gross + a2_recon_effect`` with ``a2_recon_effect = −proposed_a2``.
+
+	When no Core SA exists: ``final_sa_net = proposed_a2`` (A2 becomes the plug).
+
+	``outstanding_to_post = final_sa_net − core_sa_net``
+	→ 0 whenever Core SA is present; → ``proposed_a2`` when Core SA is absent.
+
+	Also honors exact Manufacture ``value_difference`` match and previously
+	posted ``IRR_SABE_A2|`` recognition (remake / amend safety).
 	"""
 	ccy = get_company_currency(doc.company)
-	proposed = float(round_currency(proposed_net, ccy))
+	proposed = float(round_currency(proposed_a2, ccy))
+	sa = frappe.get_cached_value("Company", doc.company, "stock_adjustment_account")
+	core_sa = float(round_currency(core_stock_adjustment_net_in_map(gl_map, sa), ccy)) if sa else 0.0
+
 	through_riv = bool(frappe.flags.get("through_repost_item_valuation"))
 	existing = (
-		{"stock_adjustment_account": None, "recognized_signed_credit_minus_debit": 0.0, "matches": []}
+		{"stock_adjustment_account": sa, "recognized_signed_credit_minus_debit": 0.0, "matches": []}
 		if through_riv
 		else existing_sabe_a2_recognition(doc)
 	)
-	recognized = float(
+	prior_a2_gl = float(
 		round_currency(existing["recognized_signed_credit_minus_debit"], ccy)
 	)
 
-	# Manufacture value_difference may already host the same A2 economically
-	# (live submit and RIV remake both rebuild SA from value_difference).
 	vd = flt(doc.get("value_difference"))
 	vd_covers = False
-	if str(doc.get("purpose") or "") in ("Manufacture", "Repack") and abs(proposed) >= 0.5:
+	purpose = str(doc.get("purpose") or "")
+	if purpose in ("Manufacture", "Repack") and abs(proposed) >= 0.5:
 		if abs(vd - proposed) < 0.5:
 			vd_covers = True
-			recognized = float(round_currency(proposed, ccy))
 			existing["matches"].append(
 				{
 					"source": "manufacture_value_difference",
@@ -425,53 +455,79 @@ def outstanding_sabe_a2_net(doc, proposed_net: float) -> dict[str, Any]:
 				}
 			)
 
-	outstanding = float(round_currency(proposed - recognized, ccy))
+	# Core SA / exact Manufacture value_difference → final plug; eliminate A2.
+	if abs(core_sa) >= 0.5:
+		final_sa = core_sa
+		a2_recon_effect = float(round_currency(-proposed, ccy)) if abs(proposed) >= 0.5 else 0.0
+		coverage_source = "core_stock_adjustment"
+		outstanding = 0.0
+	elif vd_covers:
+		# Core will (or already did) recognize A2 via value_difference — do not post A2.
+		final_sa = float(round_currency(vd, ccy))
+		a2_recon_effect = float(round_currency(-proposed, ccy)) if abs(proposed) >= 0.5 else 0.0
+		coverage_source = "manufacture_value_difference"
+		outstanding = 0.0
+	elif abs(proposed) >= 0.5:
+		final_sa = proposed
+		a2_recon_effect = 0.0
+		coverage_source = "a2_becomes_stock_adjustment"
+		outstanding = float(round_currency(final_sa - core_sa, ccy))
+	else:
+		final_sa = 0.0
+		a2_recon_effect = 0.0
+		coverage_source = "noop"
+		outstanding = 0.0
+
+	# Prior marked A2 GL (non-RIV) already on voucher reduces further posting.
+	if abs(prior_a2_gl) >= 0.5 and abs(outstanding) >= 0.5:
+		outstanding = float(round_currency(outstanding - prior_a2_gl, ccy))
+
 	return {
-		"proposed_net": proposed,
-		"recognized_net": recognized,
-		"outstanding_net": outstanding,
+		"proposed_a2": proposed,
+		"proposed_net": proposed,  # backward-compatible key
+		"core_sa_net": core_sa,
+		"final_sa_net": final_sa,
+		"a2_recon_effect": a2_recon_effect,
+		"gross_sa_before_recon": float(round_currency(core_sa + proposed, ccy)),
+		"outstanding_to_post": outstanding,
+		"outstanding_net": outstanding,  # backward-compatible
+		"recognized_net": float(round_currency(proposed - outstanding, ccy)),
 		"value_difference_covers": vd_covers,
+		"coverage_source": coverage_source,
 		"through_riv": through_riv,
+		"prior_a2_gl": prior_a2_gl,
 		"existing": existing,
+		"formula": (
+			"final_sa_net = core_sa_net when Core SA present "
+			"(a2_recon_effect = -proposed_a2); else final_sa_net = proposed_a2; "
+			"outstanding_to_post = final_sa_net - core_sa_net"
+		),
 	}
 
 
-def _resolve_sabe_a2_partner_account(doc, gl_map: list, sa_account: str) -> dict[str, str | None]:
-	"""Counter-entry account for SABE A2 Stock Adjustment legs.
+def outstanding_sabe_a2_net(doc, proposed_net: float, gl_map: list | None = None) -> dict[str, Any]:
+	"""Backward-compatible wrapper around ``reconcile_final_stock_adjustment_net``.
 
-	A2 must not touch ordinary Core stock accounts (WIP / FG / inventory /
-	scrap). Inventory GL already mirrors integerized SLE; the localization
-	residual is a P&L adjustment between configured adjustment accounts only:
-
-	* Primary: ``Company.stock_adjustment_account`` (posted by caller)
-	* Counter: ``Company.round_off_account`` (this resolver)
-
-	Both are Company-configured adjustment accounts. Never auto-select a
-	Stock-type account from the open GL map as the A2 partner.
+	When ``gl_map`` is omitted, load active GL for Core SA coverage (campaign /
+	amend preview). During RIV remake the open ``gl_map`` is passed by the hook.
 	"""
-	from erpnext_extensions.iran_accounting.domain.irr_rounding_residual import (
-		resolve_company_round_off,
-	)
-
-	round_off_cfg = resolve_company_round_off(doc.company, require=True)
-	partner = round_off_cfg.get("account")
-	if not partner:
-		return {"account": None, "cost_center": None}
-	if partner == sa_account:
-		# Misconfiguration: SA and Round Off must be distinct for a balanced pair.
-		frappe.throw(
-			(
-				f"Company {doc.company}: Stock Adjustment Account and Round Off Account "
-				"must be distinct so SABE A2 can post a balanced adjustment pair "
-				"without touching Core WIP/inventory accounts."
-			),
-			title="Invalid SABE A2 Adjustment Configuration",
-		)
-	cost_center = (
-		round_off_cfg.get("cost_center")
-		or frappe.get_cached_value("Company", doc.company, "round_off_cost_center")
-	)
-	return {"account": partner, "cost_center": cost_center}
+	if gl_map is None and doc and doc.get("name") and not frappe.flags.get("through_repost_item_valuation"):
+		try:
+			if frappe.db.exists(doc.doctype, doc.name):
+				rows = frappe.db.sql(
+					"""
+					SELECT account, debit, credit, remarks
+					FROM `tabGL Entry`
+					WHERE voucher_type=%s AND voucher_no=%s
+					  AND IFNULL(is_cancelled, 0)=0
+					""",
+					(doc.doctype, doc.name),
+					as_dict=True,
+				)
+				gl_map = rows or []
+		except Exception:
+			gl_map = gl_map
+	return reconcile_final_stock_adjustment_net(doc, gl_map, proposed_net)
 
 
 def _sabe_a2_dimension_values(doc, gl_map: list, template) -> dict:
@@ -515,17 +571,17 @@ def _sabe_a2_dimension_values(doc, gl_map: list, template) -> dict:
 
 
 def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
-	"""Append balanced Stock Adjustment legs for queued SABE localization deltas.
+	"""Reconcile A2 into the final Stock Adjustment net — no artificial counters.
 
-	Inventory GL already mirrors integerized SLE movements. The localization
-	difference vs ROUND(raw Core amount) must **not** be absorbed into WIP / FG /
-	inventory again. Post outstanding A2 only (after source-aware dedupe) as a
-	balanced pair between configured adjustment accounts:
+	A2 (``localization_difference``) is an intermediate valuation component.
+	Core ``get_gl_entries`` already posts ``Company.stock_adjustment_account``
+	when Manufacture/Repack ``value_difference`` (or other Core SA) is the
+	authoritative plug. In that case A2 must **not** add SA turnover or any
+	WIP / Round Off / inventory counter-entry.
 
-	* ``Company.stock_adjustment_account`` (A2 SA leg)
-	* ``Company.round_off_account`` (A2 counter leg)
-
-	Core Manufacture WIP / FG / scrap / inventory rows are left untouched.
+	Only when Core has no SA and an outstanding net remains may a single
+	one-sided SA leg be appended — and only if the open map's debit−credit
+	gap already equals that outstanding (so no partner is required).
 	"""
 	if not gl_map or not doc:
 		return gl_map
@@ -533,12 +589,10 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 		return gl_map
 
 	deltas = consume_localization_deltas(doc)
-	# Also pick up process_sle-local queue if bridge did not stamp the doc.
 	deltas.extend(consume_localization_deltas(None))
 	if not deltas:
 		return gl_map
 
-	# Net by voucher; skip duplicate queue copies (doc + frappe.local).
 	net = 0.0
 	seen = set()
 	idempotency_keys = []
@@ -564,18 +618,21 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	if abs(net) < 0.5:
 		return gl_map
 
-	# Skip A2 legs already present in this gl_map (RIV remake / double hook).
+	# Skip if this map already carries an A2-marked SA leg (RIV remake / double hook).
 	for e in gl_map:
 		if e.get("_irr_sabe_localization") and "IRR_SABE_A2|" in str(e.get("remarks") or ""):
 			return gl_map
 
-	recon = outstanding_sabe_a2_net(doc, net)
-	outstanding = recon["outstanding_net"]
+	recon = reconcile_final_stock_adjustment_net(doc, gl_map, net)
+	outstanding = recon["outstanding_to_post"]
+	recon["in_map_sa_net"] = recon["core_sa_net"]
+	recon["in_map_sa_covers"] = abs(recon["core_sa_net"]) >= 0.5 and abs(outstanding) < 0.5
 
-	# Fully covered by Manufacture value_difference / existing GL — no SA lookup.
+	doc.flags = getattr(doc, "flags", None) or frappe._dict()
+	doc.flags.iran_sabe_a2_recon = recon
+
+	# Final SA already equals Core SA (A2 eliminated) — nothing to post.
 	if abs(outstanding) < 0.5:
-		doc.flags = getattr(doc, "flags", None) or frappe._dict()
-		doc.flags.iran_sabe_a2_recon = recon
 		return gl_map
 
 	sa = frappe.get_cached_value("Company", doc.company, "stock_adjustment_account")
@@ -586,63 +643,26 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			title="Missing Stock Adjustment Account",
 		)
 
-	# In-map SA coverage (RIV/live remake): Core Manufacture get_gl_entries may
-	# already post Company.stock_adjustment_account for the same localization
-	# magnitude (remarks often "Accounting Entry for Stock" / Rahkaran). Do not
-	# double-post IRR_SABE_A2 when the open GL map already carries that SA net.
-	sa_net_in_map = 0.0
-	for e in gl_map:
-		if e.get("account") != sa:
-			continue
-		if e.get("_irr_sabe_localization") or e.get("_irr_sabe_localization_partner"):
-			continue
-		sa_net_in_map += flt(e.get("credit")) - flt(e.get("debit"))
-	sa_net_in_map = float(round_currency(sa_net_in_map, ccy))
-	if abs(sa_net_in_map - outstanding) < 0.5:
-		recon["in_map_sa_covers"] = True
-		recon["in_map_sa_net"] = sa_net_in_map
-		recon["matches"] = list(recon.get("existing", {}).get("matches") or [])
-		recon["matches"].append(
-			{
-				"source": "in_map_stock_adjustment",
-				"sa_net_in_map": sa_net_in_map,
-				"outstanding_before": outstanding,
-			}
-		)
-		recon["recognized_net"] = float(
-			round_currency(recon["proposed_net"], ccy)
-		)
-		outstanding = 0.0
-		recon["outstanding_net"] = 0.0
-		doc.flags = getattr(doc, "flags", None) or frappe._dict()
+	# Single-sided SA append only when the open map already needs that plug
+	# (debit−credit gap == outstanding as credit-positive SA). No partner.
+	map_delta = sum(flt(e.get("debit")) - flt(e.get("credit")) for e in gl_map)
+	map_delta = float(round_currency(map_delta, ccy))
+	# outstanding > 0 means we need SA credit of outstanding → map must have excess debit.
+	if abs(map_delta - outstanding) >= 0.5:
+		recon["skipped_unbalanced_without_partner"] = True
+		recon["map_delta"] = map_delta
 		doc.flags.iran_sabe_a2_recon = recon
 		return gl_map
 
-	recon["in_map_sa_covers"] = False
-	recon["in_map_sa_net"] = sa_net_in_map
-
-	partner_cfg = _resolve_sabe_a2_partner_account(doc, gl_map, sa)
-	partner_account = partner_cfg.get("account")
-	if not partner_account:
-		frappe.throw(
-			f"Company {doc.company} Round Off Account is required as the SABE A2 "
-			"counter-entry (adjustment-account mechanism). WIP/inventory must not "
-			"be used as the A2 partner.",
-			title="Missing SABE A2 Partner Account",
-		)
-	template = gl_map[0]
-	# SA prefers in-map Core Stock Adjustment dimensions so Core + A2 can
-	# same-side-aggregate on 621301. Partner uses configured Round Off CC.
 	from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
 		align_sabe_a2_sa_dimensions_with_in_map,
 	)
 
-	partner_cost_center = partner_cfg.get("cost_center") or template.get("cost_center")
+	template = gl_map[0]
 	sa_dims_prefer = align_sabe_a2_sa_dimensions_with_in_map(doc, gl_map, sa)
 	sa_cost_center = (
 		sa_dims_prefer.get("cost_center")
 		or template.get("cost_center")
-		or partner_cost_center
 	)
 	if not sa_cost_center and doc.get("doctype") == "Stock Entry":
 		for row in doc.get("items") or []:
@@ -661,79 +681,43 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 		company=doc.company,
 		amount=outstanding,
 	)
-
-	# outstanding uses localization_difference sign.
-	# Positive → Credit SA / Debit Round Off; Negative → Debit SA / Credit Round Off.
-	sa_debit = float(round_currency(-outstanding, ccy))
 	remarks = (
-		f"IRR SABE integer localization residual net={outstanding} "
-		f"proposed={net} recognized={recon['recognized_net']} "
+		f"IRR SABE net stock adjustment outstanding={outstanding} "
+		f"proposed_a2={net} final_sa={recon['final_sa_net']} "
+		f"core_sa={recon['core_sa_net']} a2_recon_effect={recon['a2_recon_effect']} "
 		f"voucher={doc.name} {idem}"
 	)
-	posting_date = template.get("posting_date") or doc.get("posting_date")
-	is_opening = template.get("is_opening") or "No"
+	# outstanding credit-positive → Credit SA; debit-positive outstanding → Debit SA.
+	sa_credit = outstanding if outstanding > 0 else 0.0
+	sa_debit = abs(outstanding) if outstanding < 0 else 0.0
 	sa_row = frappe._dict(
 		{
 			"account": sa,
 			"cost_center": sa_cost_center,
 			"company": doc.company,
-			"posting_date": posting_date,
+			"posting_date": template.get("posting_date") or doc.get("posting_date"),
 			"remarks": remarks,
 			"voucher_type": doc.doctype,
 			"voucher_no": doc.name,
 			"project": template.get("project"),
-			"is_opening": is_opening,
+			"is_opening": template.get("is_opening") or "No",
+			"debit": sa_debit,
+			"credit": sa_credit,
+			"account_currency": ccy,
+			"transaction_currency": ccy,
+			"debit_in_account_currency": sa_debit,
+			"credit_in_account_currency": sa_credit,
+			"debit_in_transaction_currency": sa_debit,
+			"credit_in_transaction_currency": sa_credit,
 			"_irr_inventory_valuation_residual": 1,
 			"_irr_sabe_localization": 1,
 			**dimensions,
 		}
 	)
-	partner = frappe._dict(
-		{
-			"account": partner_account,
-			"cost_center": partner_cost_center,
-			"company": doc.company,
-			"posting_date": posting_date,
-			"remarks": remarks,
-			"voucher_type": doc.doctype,
-			"voucher_no": doc.name,
-			"project": template.get("project"),
-			"is_opening": is_opening,
-			"_irr_sabe_localization_partner": 1,
-			"voucher_detail_no": f"IRR_SABE_A2_PARTNER|{doc.name}",
-			**dimensions,
-		}
-	)
-	if sa_debit >= 0:
-		sa_row["debit"] = sa_debit
-		sa_row["credit"] = 0.0
-		partner["debit"] = 0.0
-		partner["credit"] = sa_debit
-	else:
-		sa_row["debit"] = 0.0
-		sa_row["credit"] = abs(sa_debit)
-		partner["debit"] = abs(sa_debit)
-		partner["credit"] = 0.0
-
-	# Company currency == account currency for IRR Stock Adjustment / Round Off.
-	# Persist account- and transaction-currency mirrors so Desk / GL reports do
-	# not render a legitimate non-zero company-currency leg as 0/0.
-	for leg in (sa_row, partner):
-		leg["account_currency"] = leg.get("account_currency") or ccy
-		leg["transaction_currency"] = leg.get("transaction_currency") or ccy
-		leg["debit_in_account_currency"] = flt(leg.get("debit"))
-		leg["credit_in_account_currency"] = flt(leg.get("credit"))
-		leg["debit_in_transaction_currency"] = flt(leg.get("debit"))
-		leg["credit_in_transaction_currency"] = flt(leg.get("credit"))
-
-	# Never append a zero-value A2 pair (both company legs empty).
-	if abs(flt(sa_row.get("debit"))) < 0.5 and abs(flt(sa_row.get("credit"))) < 0.5:
-		doc.flags = getattr(doc, "flags", None) or frappe._dict()
-		doc.flags.iran_sabe_a2_recon = recon
+	if abs(sa_debit) < 0.5 and abs(sa_credit) < 0.5:
 		return gl_map
 
 	gl_map.append(sa_row)
-	gl_map.append(partner)
-	doc.flags = getattr(doc, "flags", None) or frappe._dict()
+	recon["posted_sa_only"] = True
 	doc.flags.iran_sabe_a2_recon = recon
 	return gl_map

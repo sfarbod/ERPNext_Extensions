@@ -117,7 +117,8 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 		sa = next(e for e in gl_map if e["account"] == "621301 - SA")
 		self.assertEqual(float(sa["debit"]), 1.0)
 
-	def test_larger_a2_positive_and_negative_balance(self):
+	def test_larger_a2_positive_and_negative_with_core_sa_no_partner(self):
+		"""Core SA present for ±A2 → final SA = Core; no Round Off / WIP partner."""
 		import frappe
 
 		cases = (520.0, -58.0, 776.0, -1.0, 1.0)
@@ -126,8 +127,6 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 				def _cached(doctype, name, field=None, **kwargs):
 					if doctype == "Company" and field == "stock_adjustment_account":
 						return "621301 - SA"
-					if doctype == "Company" and field == "round_off_cost_center":
-						return "CC"
 					if doctype == "Account" and field == "account_type":
 						return "Stock"
 					return None
@@ -142,9 +141,14 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 					"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 					side_effect=lambda v, c: round(float(v)),
 				), patch(
-					"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_round_off",
-					return_value={"account": "Round Off", "cost_center": "CC"},
+					"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.existing_sabe_a2_recognition",
+					return_value={
+						"stock_adjustment_account": "621301 - SA",
+						"recognized_signed_credit_minus_debit": 0.0,
+						"matches": [],
+					},
 				), patch.object(frappe, "get_cached_value", side_effect=_cached):
+					core_sa = 10.0 if amount > 0 else -10.0
 					doc = frappe._dict(
 						name="MAT-STE-A2",
 						doctype="Stock Entry",
@@ -175,8 +179,15 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 							project=None,
 						),
 						frappe._dict(
+							account="621301 - SA",
+							debit=abs(core_sa) if core_sa < 0 else 0,
+							credit=core_sa if core_sa > 0 else 0,
+							cost_center="CC",
+							remarks="Accounting Entry for Stock",
+						),
+						frappe._dict(
 							account="111625 - FG",
-							debit=1000,
+							debit=1000 + core_sa,
 							credit=0,
 							cost_center="CC",
 							project=None,
@@ -185,13 +196,13 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 					out = apply_sabe_localization_sa_gl(doc, gl_map)
 					net = sum(flt(e.get("debit")) - flt(e.get("credit")) for e in out)
 					self.assertEqual(net, 0.0)
-					partner = next(e for e in out if e.get("_irr_sabe_localization_partner"))
-					self.assertEqual(partner.account, "Round Off")
-					self.assertNotEqual(partner.account, "111701 - WIP")
-					# Core WIP credit unchanged
+					self.assertFalse(any(e.get("_irr_sabe_localization_partner") for e in out))
+					self.assertFalse(any(e.get("account") == "Round Off" for e in out))
 					wip = next(e for e in out if e.get("account") == "111701 - WIP")
 					self.assertEqual(flt(wip.credit), 1000)
 					self.assertEqual(flt(wip.debit), 0)
+					sa = next(e for e in out if e.get("account") == "621301 - SA")
+					self.assertEqual(flt(sa.credit) - flt(sa.debit), core_sa)
 
 	def test_a2_fully_covered_by_manufacture_value_difference(self):
 		doc = frappe._dict(
@@ -268,6 +279,14 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 				"recognized_signed_credit_minus_debit": 0.0,  # unmarked ignored
 				"matches": [],
 			},
+		), patch(
+			"frappe.get_cached_value",
+			side_effect=lambda *a, **k: "621301"
+			if a and a[-1] == "stock_adjustment_account"
+			else None,
+		), patch(
+			"frappe.db.exists",
+			return_value=False,
 		), patch(
 			"frappe.flags",
 			{},
@@ -415,7 +434,7 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			name="MAT-STE-DIM-1",
 			doctype="Stock Entry",
 			company="E",
-			purpose="Manufacture",
+			purpose="Material Transfer",
 			value_difference=0,
 			items=[frappe._dict(department="Dept-Pack", cost_center="CC-Pack")],
 		)
@@ -434,15 +453,24 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			],
 		)
 		setattr(frappe.local, PENDING_SABE_LOCALIZATION_ATTR, [])
+		# Map gap = +7 debit excess → SA-only credit 7 (no partner).
 		gl_map = [
 			frappe._dict(
 				account="Stock-WIP",
+				debit=107,
+				credit=0,
+				cost_center="CC-Pack",
+				project=None,
+				posting_date="2026-09-02",
+			),
+			frappe._dict(
+				account="Stock-FG",
 				debit=0,
 				credit=100,
 				cost_center="CC-Pack",
 				project=None,
 				posting_date="2026-09-02",
-			)
+			),
 		]
 		with patch(
 			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.is_irr_company",
@@ -454,8 +482,12 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 			side_effect=lambda v, c: round(float(v)),
 		), patch(
-			"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_round_off",
-			return_value={"account": "Round Off", "cost_center": "CC-RO"},
+			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.existing_sabe_a2_recognition",
+			return_value={
+				"stock_adjustment_account": "621301",
+				"recognized_signed_credit_minus_debit": 0.0,
+				"matches": [],
+			},
 		), patch(
 			"frappe.get_cached_value",
 			side_effect=lambda *a, **k: {
@@ -468,23 +500,18 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 		):
 			out = apply_sabe_localization_sa_gl(doc, gl_map)
 		sa = [e for e in out if e.get("account") == "621301"][0]
-		partner = next(e for e in out if e.get("_irr_sabe_localization_partner"))
+		self.assertFalse(any(e.get("_irr_sabe_localization_partner") for e in out))
 		self.assertEqual(sa.get("department"), "Dept-Pack")
 		self.assertEqual(sa.get("cost_center"), "CC-Pack")
 		self.assertEqual(sa.get("posting_date"), "2026-09-02")
-		self.assertEqual(partner.account, "Round Off")
-		self.assertEqual(partner.get("cost_center"), "CC-RO")
-		# Core stock leg untouched
-		self.assertEqual(flt(out[0].credit), 100)
-		self.assertEqual(flt(out[0].debit), 0)
+		self.assertEqual(flt(sa.credit), 7.0)
+		self.assertEqual(sum(flt(e.get("debit")) - flt(e.get("credit")) for e in out), 0.0)
 
 	def test_a2_gl_legs_include_posting_date(self):
 		"""RIV remake submits GLE; missing posting_date → KeyError fiscal_year[0]."""
 		def _cached(doctype, name, field=None, **kwargs):
 			if doctype == "Company" and field == "stock_adjustment_account":
 				return "621301 - SA"
-			if doctype == "Company" and field == "round_off_cost_center":
-				return "CC"
 			if doctype == "Account" and field == "account_type":
 				return "Stock"
 			return None
@@ -499,16 +526,20 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 			side_effect=lambda v, c: round(float(v)),
 		), patch(
-			"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_round_off",
-			return_value={"account": "Round Off", "cost_center": "CC"},
+			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.existing_sabe_a2_recognition",
+			return_value={
+				"stock_adjustment_account": "621301 - SA",
+				"recognized_signed_credit_minus_debit": 0.0,
+				"matches": [],
+			},
 		), patch.object(frappe, "get_cached_value", side_effect=_cached):
 			doc = frappe._dict(
 				name="MAT-STE-A2-DATE",
 				doctype="Stock Entry",
 				company="E",
-				purpose="Manufacture",
+				purpose="Material Transfer",
 				posting_date="2026-06-17",
-				value_difference=999999.0,
+				value_difference=0.0,
 			)
 			setattr(
 				frappe.local,
@@ -527,20 +558,29 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			gl_map = [
 				frappe._dict(
 					account="111701 - WIP",
+					debit=113,
+					credit=0,
+					cost_center="CC",
+					project=None,
+					posting_date="2026-06-17",
+					is_opening="No",
+				),
+				frappe._dict(
+					account="111625 - FG",
 					debit=0,
 					credit=100,
 					cost_center="CC",
 					project=None,
 					posting_date="2026-06-17",
 					is_opening="No",
-				)
+				),
 			]
 			out = apply_sabe_localization_sa_gl(doc, gl_map)
 			sa = next(e for e in out if e.get("_irr_sabe_localization"))
-			partner = next(e for e in out if e.get("_irr_sabe_localization_partner"))
+			self.assertFalse(any(e.get("_irr_sabe_localization_partner") for e in out))
 			self.assertEqual(sa.get("posting_date"), "2026-06-17")
-			self.assertEqual(partner.get("posting_date"), "2026-06-17")
 			self.assertEqual(sa.get("is_opening"), "No")
+			self.assertEqual(flt(sa.credit), 13.0)
 
 	def test_phase3_does_not_bind_core_execute_at_import(self):
 		import erpnext_extensions.iran_accounting.domain.riv_sabe_integer_phase3 as phase3

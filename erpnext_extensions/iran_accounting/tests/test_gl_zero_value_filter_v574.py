@@ -18,11 +18,12 @@ from erpnext_extensions.iran_accounting.integration import monkey_patches as mp
 
 class TestGlZeroValueFilterV574(unittest.TestCase):
 	def test_a2_legs_mirror_account_currency(self):
+		"""SA-only append mirrors account/transaction currency (no Round Off partner)."""
 		doc = frappe._dict(
 			name="MAT-STE-Z0",
 			doctype="Stock Entry",
 			company="E",
-			purpose="Manufacture",
+			purpose="Material Transfer",
 			value_difference=0,
 			items=[frappe._dict(department="D", cost_center="CC")],
 		)
@@ -41,15 +42,24 @@ class TestGlZeroValueFilterV574(unittest.TestCase):
 			],
 		)
 		setattr(frappe.local, PENDING_SABE_LOCALIZATION_ATTR, [])
+		# Excess debit 461 → SA credit 461 only
 		gl_map = [
 			frappe._dict(
 				account="WIP",
+				debit=561,
+				credit=0,
+				cost_center="CC",
+				project=None,
+				posting_date="2026-09-02",
+			),
+			frappe._dict(
+				account="FG",
 				debit=0,
 				credit=100,
 				cost_center="CC",
 				project=None,
 				posting_date="2026-09-02",
-			)
+			),
 		]
 		with patch(
 			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.is_irr_company",
@@ -61,8 +71,12 @@ class TestGlZeroValueFilterV574(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
 			side_effect=lambda v, c: round(float(v)),
 		), patch(
-			"erpnext_extensions.iran_accounting.domain.irr_rounding_residual.resolve_company_round_off",
-			return_value={"account": "Round Off - E", "cost_center": "CC"},
+			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.existing_sabe_a2_recognition",
+			return_value={
+				"stock_adjustment_account": "621301",
+				"recognized_signed_credit_minus_debit": 0.0,
+				"matches": [],
+			},
 		), patch(
 			"frappe.get_cached_value",
 			side_effect=lambda *a, **k: {
@@ -75,16 +89,12 @@ class TestGlZeroValueFilterV574(unittest.TestCase):
 		):
 			out = apply_sabe_localization_sa_gl(doc, gl_map)
 		sa = next(e for e in out if e.get("_irr_sabe_localization"))
-		partner = next(e for e in out if e.get("_irr_sabe_localization_partner"))
+		self.assertFalse(any(e.get("_irr_sabe_localization_partner") for e in out))
 		self.assertEqual(flt(sa.credit), 461.0)
 		self.assertEqual(flt(sa.credit_in_account_currency), 461.0)
 		self.assertEqual(flt(sa.debit_in_account_currency), 0.0)
 		self.assertEqual(sa.account_currency, "IRR")
-		self.assertEqual(partner.account, "Round Off - E")
-		self.assertEqual(flt(partner.debit_in_account_currency), 461.0)
-		# Core WIP untouched
-		self.assertEqual(flt(out[0].credit), 100)
-		self.assertEqual(flt(out[0].debit), 0)
+		self.assertEqual(sum(flt(e.get("debit")) - flt(e.get("credit")) for e in out), 0.0)
 
 	def test_a2_skips_append_when_outstanding_rounds_to_zero_pair(self):
 		# outstanding path already returns early; still assert no 0/0 append helper

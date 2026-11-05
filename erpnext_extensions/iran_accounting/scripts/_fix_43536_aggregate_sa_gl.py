@@ -1,9 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Dev-only: regenerate MAT-STE-2026-43536 GL with adjustment-only aggregation.
+"""Dev-only: regenerate MAT-STE-2026-43536 GL with net Stock Adjustment only.
 
-Uses supported make_reverse_gl_entries + make_gl_entries. Re-queues A2 net from
-prior IRR_SABE_A2 / IRR_SA_AGG remarks. Reports before/after for SA, WIP, and
-all non-adjustment accounts.
+Uses supported make_reverse_gl_entries + make_gl_entries. Re-queues A2 net so
+reconcile_final_stock_adjustment_net can eliminate it against Core SA.
+Expected: 621301 Cr = Core net only; no Round Off / WIP A2 counter.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from frappe.utils import cint, flt
 TARGET = "MAT-STE-2026-43536"
 
 
-def _extract_a2_net(rows, sa):
+def _extract_a2_net(rows, sa, round_off=None):
 	for r in rows:
 		if r.account != sa:
 			continue
@@ -31,14 +31,28 @@ def _extract_a2_net(rows, sa):
 			except Exception:
 				pass
 		m = re.search(r"residual net=(-?[0-9]+(?:\.[0-9]+)?)", remarks)
-		if m and "IRR_SABE_A2|" in remarks:
+		if m and ("IRR_SABE_A2|" in remarks or "IRR SABE" in remarks):
 			return flt(m.group(1))
+		m2 = re.search(r"proposed_a2=(-?[0-9]+(?:\.[0-9]+)?)", remarks)
+		if m2:
+			return flt(m2.group(1))
 	a2 = sum(
 		flt(r.credit) - flt(r.debit)
 		for r in rows
 		if r.account == sa and "IRR_SABE_A2|" in str(r.remarks or "")
 	)
-	return a2
+	if abs(a2) >= 0.5:
+		return a2
+	# Legacy RO partner: Debit Round Off mirrored the eliminated A2 credit.
+	if round_off:
+		ro_net = sum(
+			flt(r.debit) - flt(r.credit)
+			for r in rows
+			if r.account == round_off
+		)
+		if abs(ro_net) >= 0.5:
+			return ro_net
+	return 0.0
 
 
 def _fingerprint(rows, exclude=None):
@@ -86,6 +100,7 @@ def run():
 
 	allow = get_adjustable_gl_accounts(se.company)
 	sa = frappe.db.get_value("Company", se.company, "stock_adjustment_account")
+	round_off = frappe.db.get_value("Company", se.company, "round_off_account")
 
 	before_all = frappe.db.sql(
 		"""
@@ -98,7 +113,7 @@ def run():
 	)
 	active_before = [r for r in before_all if not cint(r.is_cancelled)]
 	pool = active_before or before_all
-	a2_net = _extract_a2_net(pool, sa) or 1970.0
+	a2_net = _extract_a2_net(pool, sa, round_off=round_off) or 1970.0
 
 	sle_before = frappe.db.sql(
 		"""
