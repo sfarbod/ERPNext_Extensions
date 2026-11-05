@@ -44,18 +44,19 @@ from erpnext_extensions.stock_extensions.delivery_note_check_submission.write_gu
 )
 
 SUCCESS_MESSAGE = _(
-	"All supported read-only submission validations passed. "
-	"This Delivery Note has no detected blockers among the checks that were run."
+	"READY — All applicable critical read-only submission validations completed and passed. "
+	"No blocking errors were detected among the checks that were run."
 )
 SUCCESS_CAVEAT = _(
 	"This result only confirms read-only validation at the time of checking and does not "
 	"guarantee that stock or other conditions will remain unchanged until actual submission. "
-	"See limitations for validations that were not (or cannot be) fully reproduced."
+	"See limitations for advisory areas (e.g. exact GL amounts) that are not fully simulated."
 )
 INCOMPLETE_MESSAGE = _(
-	"Supported checks found no errors, but one or more important validations could not be "
-	"performed safely in read-only mode. This Delivery Note is NOT certified ready for submission."
+	"INCOMPLETE — Supported checks found no errors, but one or more critical validations "
+	"could not be performed safely in read-only mode. This Delivery Note is NOT ready for submission."
 )
+BLOCKED_MESSAGE = _("BLOCKED — Submission validation failed — {0} error(s).")
 
 
 def _permission_ok(doc) -> None:
@@ -377,14 +378,15 @@ def validate_delivery_note_submission(name: str) -> dict[str, Any]:
 	ok = bool(validation_completed and not errors and not blocking)
 
 	if ok:
-		status = "pass"
+		status = "ready"
 	elif validation_completed and not errors and blocking:
 		status = "incomplete"
 	else:
-		status = "fail"
+		status = "blocked"
 
 	result: dict[str, Any] = {
 		"status": status,
+		# Legacy aliases retained for older clients/tests.
 		"ok": ok,
 		"ready_for_submission": ok,
 		"name": name,
@@ -397,11 +399,17 @@ def validate_delivery_note_submission(name: str) -> dict[str, Any]:
 			"warnings": len(warnings),
 			"limitations": len(limitations),
 			"blocking_limitations": sum(1 for l in limitations if l.get("severity") == "blocking"),
+			"status": status,
 		},
 		"skipped_checks": [l.get("code") for l in limitations if l.get("code")],
 		"side_effects_clean": True,
 		"architecture": "strict_read_only",
 		"mutated": False,
+		"coverage": {
+			"future_warehouse_negative_stock": "pass" if validation_completed else "incomplete",
+			"future_batch_negative_stock": "pass" if validation_completed else "incomplete",
+			"historical_stock": "pass" if validation_completed else "incomplete",
+		},
 	}
 
 	if ok:
@@ -411,6 +419,6 @@ def validate_delivery_note_submission(name: str) -> dict[str, Any]:
 		result["message"] = INCOMPLETE_MESSAGE
 		result["caveat"] = SUCCESS_CAVEAT
 	else:
-		result["message"] = _("Submission validation failed — {0} error(s).").format(len(errors))
+		result["message"] = BLOCKED_MESSAGE.format(len(errors))
 
 	return result

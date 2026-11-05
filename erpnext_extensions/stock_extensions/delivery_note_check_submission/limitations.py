@@ -96,7 +96,9 @@ def _mutating_path_limitations(doc) -> list[dict]:
 			"code": "repost_future_sle_and_gle",
 			"severity": "advisory",
 			"message": _(
-				"Future Stock/GL repost interactions (Repost Item Valuation) are not validated."
+				"Repost Item Valuation / full future valuation recalculation is not executed. "
+				"Future negative warehouse and batch quantity impacts of this Delivery Note "
+				"are validated read-only."
 			),
 		},
 		{

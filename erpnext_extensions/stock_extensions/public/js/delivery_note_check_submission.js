@@ -189,30 +189,27 @@ erpnext_extensions.dn_check_submission.show_result = function (result) {
 	const warnings_html = erpnext_extensions.dn_check_submission._warnings_html(result.warnings);
 	const summary = result.summary || {};
 	const error_count = summary.errors != null ? summary.errors : (result.errors || []).length;
+	const status = result.status || (result.ok ? "ready" : error_count ? "blocked" : "incomplete");
 
-	if (result.ok || result.status === "pass") {
+	if (result.ok || status === "ready" || status === "pass") {
 		const caveat = result.caveat
 			? `<p class="text-muted small mt-2">${frappe.utils.escape_html(result.caveat)}</p>`
 			: "";
 		frappe.msgprint({
-			title: __("Check Submission"),
+			title: __("Check Submission — READY"),
 			indicator: "green",
 			message:
 				`<p>${frappe.utils.escape_html(
-					result.message ||
-						__("All supported read-only submission validations passed.")
+					result.message || __("READY — All applicable critical validations passed.")
 				)}</p>${caveat}${warnings_html}${limitations_html}`,
 		});
 		return;
 	}
 
-	const incomplete =
-		result.status === "incomplete" ||
-		(!error_count && (result.limitations || []).some((l) => l.severity === "blocking"));
-
+	const incomplete = status === "incomplete";
 	const title = incomplete
-		? __("Check Submission incomplete")
-		: __("Submission validation failed — {0} error(s)", [error_count]);
+		? __("Check Submission — INCOMPLETE")
+		: __("Check Submission — BLOCKED ({0} error(s))", [error_count]);
 
 	const errors_html = erpnext_extensions.dn_check_submission._errors_html(result.errors || []);
 
@@ -222,7 +219,10 @@ erpnext_extensions.dn_check_submission.show_result = function (result) {
 		message:
 			(errors_html || "") +
 			`<p>${frappe.utils.escape_html(
-				result.message || __("Submission validation failed.")
+				result.message ||
+					(incomplete
+						? __("INCOMPLETE — Critical validations could not be completed.")
+						: __("BLOCKED — Submission validation failed."))
 			)}</p>${warnings_html}${limitations_html}`,
 	});
 };

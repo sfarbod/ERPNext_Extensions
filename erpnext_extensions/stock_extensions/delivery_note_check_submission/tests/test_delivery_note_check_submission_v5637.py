@@ -334,10 +334,11 @@ class TestDeliveryNoteCheckSubmissionV5637(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.e2e_bootstrap import apply_stock_entry_site_defaults
 
 		item = _make_item(self.company)
-		# Receive 10 on day -20
+		# Receive 20 on day -20 so a later issue of 8 still leaves enough headroom
+		# for a backdated DN of 5 (future SLE must not go negative — Submit parity).
 		se = make_stock_entry(
 			item_code=item,
-			qty=10,
+			qty=20,
 			rate=40,
 			target=self.warehouse,
 			company=self.company,
@@ -353,7 +354,7 @@ class TestDeliveryNoteCheckSubmissionV5637(unittest.TestCase):
 		se.insert()
 		se.submit()
 
-		# Later consume 8 so today's bin is 2, but DN on day -15 should see ~10
+		# Later consume 8 so today's bin (12) differs from historical balance at DN date (20)
 		se2 = make_stock_entry(
 			item_code=item,
 			qty=8,
@@ -375,7 +376,8 @@ class TestDeliveryNoteCheckSubmissionV5637(unittest.TestCase):
 		bin_now = flt(
 			frappe.db.get_value("Bin", {"item_code": item, "warehouse": self.warehouse}, "actual_qty")
 		)
-		self.assertLess(bin_now, 10)
+		self.assertLess(bin_now, 20)
+		self.assertGreaterEqual(bin_now, 5)
 
 		dn = create_delivery_note(
 			company=self.company,
@@ -462,7 +464,7 @@ class TestDeliveryNoteCheckSubmissionV5637(unittest.TestCase):
 		)
 		# Never Ready when incomplete/fail
 		self.assertFalse(result["ready_for_submission"])
-		self.assertIn(result["status"], ("fail", "incomplete"))
+		self.assertIn(result["status"], ("fail", "blocked", "incomplete"))
 		self._assert_immutable(before, dn.name, stock_item, self.warehouse)
 
 	def test_duplicate_error_suppression(self):
@@ -492,7 +494,7 @@ class TestDeliveryNoteCheckSubmissionV5637(unittest.TestCase):
 			do_not_submit=True,
 		)
 		result = validate_delivery_note_submission(dn.name)
-		self.assertIn(result["status"], ("pass", "fail", "incomplete"))
+		self.assertIn(result["status"], ("ready", "blocked", "incomplete", "pass", "fail"))
 		self.assertIn("summary", result)
 		self.assertIn("errors", result["summary"])
 		self.assertEqual(result["architecture"], "strict_read_only")
