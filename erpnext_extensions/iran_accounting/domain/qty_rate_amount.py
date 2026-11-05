@@ -281,6 +281,11 @@ def align_stock_entry_item_amounts(doc) -> None:
 		# Closed-plan owned rows: amount-first polish; skip rate-first rewrite.
 		if protect_closed_row_amounts(doc, row, currency):
 			continue
+		# SLE-authoritative consume (ABSORB / warehouse clear): do not rate-first
+		# overwrite the final SLE amount with qty × valuation_rate.
+		flags = getattr(row, "flags", None)
+		if flags and getattr(flags, "iran_sle_authoritative_amount", None) is not None:
+			continue
 
 		transfer_qty = flt(
 			row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty")

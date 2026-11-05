@@ -27,6 +27,12 @@ erpnext_extensions/cheque_management/release_reports/PDC_PARTY_POLLUTION_RECOVER
 # Local one-off Iran Accounting #59476 Dev harness scripts (never publish)
 erpnext_extensions/iran_accounting/tests/_tmp/
 
+# Local Iran Accounting session diagnostics / recon scratch (never publish)
+erpnext_extensions/_recon_tmp/
+erpnext_extensions/iran_accounting/scripts/_dbg_*.py
+erpnext_extensions/iran_accounting/scripts/_diag_42067_*.py
+erpnext_extensions/iran_accounting/scripts/_caseb_*.py
+
 # local secrets
 .env
 .env.*

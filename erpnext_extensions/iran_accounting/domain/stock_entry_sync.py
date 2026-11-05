@@ -953,6 +953,140 @@ def refresh_native_outgoing_sed_from_db(doc) -> None:
 		row.amount = live.amount
 
 
+def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
+	"""Mirror final SLE movements onto SED for SLE-authoritative rows.
+
+	Manufacture / Repack:
+	* Consume-to-zero ABSORB makes SLE the warehouse-clear authority.
+	* Incoming FG / by-product / scrap SLE may be SABE-integer aligned after
+	  ``process_sle``; SED must follow that SLE or the SLE↔SED mirror fails
+	  (MAT-STE-2026-43536 FG +461).
+
+	``apply_irr_manufacture_economic_finalize`` rate-first must not win over
+	these SLE amounts before ``db_update``.
+
+	Also used before ``get_gl_entries`` so inventory GL consumes ABSORB /
+	SABE-aligned amounts rather than stale draft SED figures.
+
+	Returns the number of SED rows rewritten.
+	"""
+	if not doc or getattr(doc, "doctype", None) != "Stock Entry":
+		return 0
+	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+
+	if not is_irr_company(doc.company):
+		return 0
+
+	purpose = str(doc.purpose or "")
+	refresh_incoming = purpose in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES
+	ccy = get_company_currency(doc.company)
+	changed = 0
+	for row in doc.get("items") or []:
+		if not row.get("name"):
+			continue
+		if cint(row.get("set_basic_rate_manually")):
+			continue
+		is_outgoing = bool(row.get("s_warehouse")) and not (
+			row.get("s_warehouse") and row.get("t_warehouse")
+		)
+		is_incoming = bool(row.get("t_warehouse")) and not (
+			row.get("s_warehouse") and row.get("t_warehouse")
+		)
+		# Pure transfer rows keep other paths; Manufacture legs are one-sided.
+		if row.get("s_warehouse") and row.get("t_warehouse"):
+			continue
+		if is_outgoing:
+			pass
+		elif is_incoming and refresh_incoming:
+			pass
+		else:
+			continue
+
+		sle = frappe.db.get_value(
+			"Stock Ledger Entry",
+			{
+				"voucher_type": "Stock Entry",
+				"voucher_no": doc.name,
+				"voucher_detail_no": row.name,
+				"is_cancelled": 0,
+			},
+			[
+				"name",
+				"actual_qty",
+				"stock_value_difference",
+				"qty_after_transaction",
+				"stock_value",
+				"outgoing_rate",
+				"incoming_rate",
+				"valuation_rate",
+			],
+			as_dict=True,
+		)
+		if not sle:
+			continue
+		if is_outgoing and flt(sle.actual_qty) >= 0:
+			continue
+		if is_incoming and flt(sle.actual_qty) <= 0:
+			continue
+
+		movement = flt(sle.stock_value_difference)
+		magnitude = float(round_currency(abs(movement), ccy))
+		qty = abs(
+			flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
+		) or abs(flt(sle.actual_qty))
+		rate = float(round_monetary_rate(magnitude / qty, ccy)) if qty > 1e-9 else 0.0
+		# Prefer SLE rates when already integerized by the ledger path.
+		sle_rate = (
+			flt(sle.outgoing_rate)
+			if is_outgoing
+			else (flt(sle.incoming_rate) or flt(sle.valuation_rate))
+		) or flt(sle.valuation_rate)
+		if sle_rate and abs(sle_rate - rate) <= 0.5:
+			rate = float(round_monetary_rate(sle_rate, ccy))
+
+		basic_amount = magnitude
+		amount = float(
+			round_currency(
+				basic_amount
+				+ flt(row.get("additional_cost"))
+				+ flt(row.get("landed_cost_voucher_amount")),
+				ccy,
+			)
+		)
+		valuation_rate = rate
+		if flt(row.get("additional_cost")) or flt(row.get("landed_cost_voucher_amount")):
+			if qty > 1e-9:
+				valuation_rate = float(round_monetary_rate(amount / qty, ccy))
+
+		if (
+			abs(flt(row.get("basic_amount")) - basic_amount) > 0.5
+			or abs(flt(row.get("amount")) - amount) > 0.5
+			or abs(flt(row.get("basic_rate")) - rate) > 0.5
+		):
+			changed += 1
+
+		row.basic_rate = rate
+		row.valuation_rate = valuation_rate
+		row.basic_amount = basic_amount
+		row.amount = amount
+		# Durable marker so a later rate-first pass can skip this row if needed.
+		row.flags = getattr(row, "flags", None) or frappe._dict()
+		row.flags.iran_sle_authoritative_amount = magnitude
+
+		frappe.db.set_value(
+			"Stock Entry Detail",
+			row.name,
+			{
+				"basic_rate": rate,
+				"valuation_rate": valuation_rate,
+				"basic_amount": basic_amount,
+				"amount": amount,
+			},
+			update_modified=False,
+		)
+	return changed
+
+
 def sync_native_outgoing_sed_into_memory_for_gl(doc) -> bool:
 	"""Refresh in-memory SED (+ header totals) before Stock Entry inventory GL.
 
@@ -969,10 +1103,19 @@ def sync_native_outgoing_sed_into_memory_for_gl(doc) -> bool:
 
 	if not is_irr_company(doc.company):
 		return False
-	if str(doc.purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
-		return False
 
-	refresh_native_outgoing_sed_from_db(doc)
+	refreshed = False
+	if str(doc.purpose or "") in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		refresh_native_outgoing_sed_from_db(doc)
+		refreshed = True
+	# Manufacture / Repack: SLE ABSORB may have rewritten DB SED while memory
+	# still holds rate-first draft amounts — mirror SLE before inventory GL.
+	if str(doc.purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		if refresh_sle_authoritative_sed_from_ledger(doc):
+			refreshed = True
+
+	if not refreshed:
+		return False
 
 	# Keep ZVT / balanced-transfer header gates coherent with refreshed rows.
 	from erpnext_extensions.iran_accounting.stock_entry import align_zero_value_transfer_totals

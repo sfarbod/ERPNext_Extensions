@@ -448,11 +448,23 @@ def _patch_stock_controller():
 
 				if is_irr_company(self.company) and gl_entries is not None:
 					apply_irr_rate_rounding_residual_gl(self, gl_entries)
+					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+						apply_sabe_localization_sa_gl,
+					)
+
+					apply_sabe_localization_sa_gl(self, gl_entries)
 					from erpnext_extensions.iran_accounting.domain.irr_gl_precision_align import (
 						align_irr_gl_map_to_currency_precision,
 					)
 
 					align_irr_gl_map_to_currency_precision(self, gl_entries)
+					# Adjustment-account-only same-side aggregation (SA / round-off).
+					# Never rewrite WIP/FG/inventory/other Core accounts here.
+					from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+						aggregate_adjustment_gl_entries,
+					)
+
+					gl_entries = aggregate_adjustment_gl_entries(self, gl_entries)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":
@@ -741,11 +753,14 @@ def _install_iran_process_debit_credit_difference(gl):
 			else:
 				# Ordinary accounting rounding → ERPNext Round Off account.
 				gl.make_round_off_gle(gl_map, debit_credit_diff, trx_cur_debit_credit_diff, precision)
-				gl_map[:] = [
-					e
-					for e in gl_map
-					if flt(e.get("debit"), precision) != 0 or flt(e.get("credit"), precision) != 0
-				]
+
+		# Always drop company-currency 0/0 legs after residual absorb (stock SA
+		# or Round Off). Previously only the Round Off branch stripped zeros.
+		gl_map[:] = [
+			e
+			for e in gl_map
+			if flt(e.get("debit"), precision) != 0 or flt(e.get("credit"), precision) != 0
+		]
 
 		debit_credit_diff, trx_cur_debit_credit_diff = gl.get_debit_credit_difference(gl_map, precision)
 		if abs(debit_credit_diff) > allowance:
@@ -759,36 +774,8 @@ def _install_iran_process_debit_credit_difference(gl):
 	gl.process_debit_credit_difference = process_debit_credit_difference
 
 
-def _patch_general_ledger():
-	import erpnext.accounts.general_ledger as gl
-
-	if getattr(gl, "_iran_patched", None):
-		# Upgrade path: rebind debit/credit handler so Stock Adjustment contract
-		# replaces any previously installed Round-Off destination for stock vouchers.
-		_install_iran_process_debit_credit_difference(gl)
-		return
-
-	gl._iran_original_merge_similar_entries = gl.merge_similar_entries
-	gl._iran_original_save_entries = gl.save_entries
-	gl._iran_original_process_debit_credit_difference = gl.process_debit_credit_difference
-	gl._iran_original_make_entry = gl.make_entry
-	gl._iran_original_get_debit_credit_difference = gl.get_debit_credit_difference
-
-	gl.absorb_gl_map_rounding_residual = zvt.absorb_gl_map_rounding_residual
-
-	gl._iran_original_distribute_cc = gl.distribute_gl_based_on_cost_center_allocation
-
-	def distribute_gl_based_on_cost_center_allocation(gl_map, precision=None, from_repost=False):
-		from erpnext_extensions.iran_accounting.domain.gl_cost_center_allocation import (
-			distribute_gl_based_on_cost_center_allocation_irr,
-		)
-
-		return distribute_gl_based_on_cost_center_allocation_irr(
-			gl_map, precision=precision, from_repost=from_repost
-		)
-
-	gl.distribute_gl_based_on_cost_center_allocation = distribute_gl_based_on_cost_center_allocation
-
+def _bind_iran_general_ledger_entry_filters(gl):
+	"""Bind merge/save/make_entry zero-value filters (idempotent rebind)."""
 
 	def _is_non_zero_gl_entry(x, precision):
 		if (
@@ -819,6 +806,9 @@ def _patch_general_ledger():
 		return False
 
 	def merge_similar_entries(gl_map, precision=None):
+		# Preserve ERPNext Core merge semantics for all accounts. Iran only
+		# strips zero-value rows afterward; adjustment aggregation is isolated
+		# in aggregate_adjustment_gl_entries (allowlisted accounts only).
 		merged = gl._iran_original_merge_similar_entries(gl_map, precision)
 		if not merged:
 			return merged
@@ -849,6 +839,25 @@ def _patch_general_ledger():
 		doc.value_difference = frappe.get_cached_value("Stock Entry", voucher_no, "value_difference")
 		return zvt.finalize_zero_value_transfer_gl_map(doc, gl_map)
 
+	def _strip_zero_company_currency_gl_entries(gl_map):
+		"""Drop legs where company-currency debit and credit are both zero."""
+		if not gl_map:
+			return gl_map
+		company = gl_map[0].company if hasattr(gl_map[0], "company") else gl_map[0].get("company")
+		company_currency = erpnext.get_company_currency(company) if company else None
+		from erpnext_extensions.iran_accounting.domain.currency import (
+			get_currency_precision,
+			is_irr_company,
+		)
+
+		if company and is_irr_company(company):
+			precision = get_currency_precision(company_currency)
+		else:
+			precision = get_field_precision(
+				frappe.get_meta("GL Entry").get_field("debit"), currency=company_currency
+			)
+		return [e for e in gl_map if _is_non_zero_gl_entry(e, precision)]
+
 	def save_entries(gl_map, adv_adj, update_outstanding, from_repost=False):
 		if not from_repost:
 			gl.validate_cwip_accounts(gl_map)
@@ -856,6 +865,17 @@ def _patch_general_ledger():
 		gl_map = _finalize_zero_value_stock_entry_gl_map_before_save(gl_map)
 		gl.process_debit_credit_difference(gl_map)
 		gl_map = _finalize_zero_value_stock_entry_gl_map_before_save(gl_map)
+		# Invoice / JE round-off legs may appear during process_debit_credit_difference.
+		# Aggregate allowlisted adjustment accounts only (never WIP/FG/party/etc.).
+		from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+		from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+			aggregate_adjustment_gl_entries,
+		)
+
+		company = gl_map[0].company if gl_map else None
+		if company and is_irr_company(company):
+			gl_map = aggregate_adjustment_gl_entries(None, gl_map)
+		gl_map = _strip_zero_company_currency_gl_entries(gl_map)
 
 		dimension_filter_map = gl.get_dimension_filter_map()
 		if gl_map:
@@ -869,8 +889,6 @@ def _patch_general_ledger():
 			gl.make_entry(entry, adv_adj, update_outstanding, from_repost)
 
 	gl.save_entries = save_entries
-
-	_install_iran_process_debit_credit_difference(gl)
 
 	def make_entry(args, adv_adj, update_outstanding, from_repost=False):
 		round_gl_entry_amounts(args)
@@ -893,14 +911,72 @@ def _patch_general_ledger():
 			credit = flt(args.get("credit") if isinstance(args, dict) else args.credit, precision)
 			if not debit and not credit:
 				return None
+
+			def _get(key, default=0):
+				return args.get(key, default) if isinstance(args, dict) else getattr(args, key, default)
+
+			def _set(key, val):
+				if isinstance(args, dict):
+					args[key] = val
+				else:
+					setattr(args, key, val)
+
+			acct_cur = _get("account_currency") or company_currency
+			if not _get("account_currency"):
+				_set("account_currency", acct_cur)
+			if debit and not flt(_get("debit_in_account_currency")):
+				_set("debit_in_account_currency", debit)
+			if credit and not flt(_get("credit_in_account_currency")):
+				_set("credit_in_account_currency", credit)
+			if debit and not flt(_get("debit_in_transaction_currency")):
+				_set("debit_in_transaction_currency", debit)
+			if credit and not flt(_get("credit_in_transaction_currency")):
+				_set("credit_in_transaction_currency", credit)
 		return gl._iran_original_make_entry(args, adv_adj, update_outstanding, from_repost)
+
+	gl.make_entry = make_entry
+	gl._iran_zero_value_filters_bound = True
+
+
+def _patch_general_ledger():
+	import erpnext.accounts.general_ledger as gl
+
+	if getattr(gl, "_iran_patched", None):
+		# Upgrade path: rebind debit/credit + zero-value filters so workers pick
+		# up A2 account-currency / 0/0 strip without requiring a full restart.
+		_install_iran_process_debit_credit_difference(gl)
+		_bind_iran_general_ledger_entry_filters(gl)
+		return
+
+	gl._iran_original_merge_similar_entries = gl.merge_similar_entries
+	gl._iran_original_save_entries = gl.save_entries
+	gl._iran_original_process_debit_credit_difference = gl.process_debit_credit_difference
+	gl._iran_original_make_entry = gl.make_entry
+	gl._iran_original_get_debit_credit_difference = gl.get_debit_credit_difference
+
+	gl.absorb_gl_map_rounding_residual = zvt.absorb_gl_map_rounding_residual
+
+	gl._iran_original_distribute_cc = gl.distribute_gl_based_on_cost_center_allocation
+
+	def distribute_gl_based_on_cost_center_allocation(gl_map, precision=None, from_repost=False):
+		from erpnext_extensions.iran_accounting.domain.gl_cost_center_allocation import (
+			distribute_gl_based_on_cost_center_allocation_irr,
+		)
+
+		return distribute_gl_based_on_cost_center_allocation_irr(
+			gl_map, precision=precision, from_repost=from_repost
+		)
+
+	gl.distribute_gl_based_on_cost_center_allocation = distribute_gl_based_on_cost_center_allocation
+
+	_bind_iran_general_ledger_entry_filters(gl)
+	_install_iran_process_debit_credit_difference(gl)
 
 	def get_debit_credit_difference(gl_map, precision):
 		for entry in gl_map:
 			round_gl_entry_amounts(entry)
 		return gl._iran_original_get_debit_credit_difference(gl_map, precision)
 
-	gl.make_entry = make_entry
 	gl.get_debit_credit_difference = get_debit_credit_difference
 	gl._iran_patched = True
 
@@ -1287,6 +1363,14 @@ def _patch_stock_ledger_engine():
 								"purpose",
 							),
 						)
+					# Integer SABE policy after Core selection + warehouse clear:
+					# localize SABE rates/SVD; at consume-to-zero leave WH SLE SVD
+					# (Case B) and queue A2 localization to Stock Adjustment.
+					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+						apply_integer_sabe_policy_to_sle,
+					)
+
+					apply_integer_sabe_policy_to_sle(sle, engine=self)
 					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
 						# Vanilla already wrote; restore pre-RIV economics so target
 						# RIV does not create new I1 on unrelated FG cascades.
@@ -1297,6 +1381,7 @@ def _patch_stock_ledger_engine():
 			finally:
 				frappe.local.iran_riv_update_entries_after = None
 
+		process_sle._iran_sabe_integer_policy = True
 		sl.update_entries_after.process_sle = process_sle
 		sl._iran_patched_update_entries_after = True
 
@@ -1323,6 +1408,9 @@ def _patch_stock_ledger_engine():
 
 		process_sle_with_pending_pi_align._iran_pending_pi_align = True
 		process_sle_with_pending_pi_align._iran_pending_pi_post_econ = True
+		process_sle_with_pending_pi_align._iran_sabe_integer_policy = getattr(
+			_live_process, "_iran_sabe_integer_policy", None
+		)
 		process_sle_with_pending_pi_align._iran_original = _live_process
 		sl.update_entries_after.process_sle = process_sle_with_pending_pi_align
 	elif not getattr(sl.update_entries_after.process_sle, "_iran_pending_pi_post_econ", None):
@@ -1347,8 +1435,42 @@ def _patch_stock_ledger_engine():
 
 		process_sle_with_pending_pi_post_econ._iran_pending_pi_align = True
 		process_sle_with_pending_pi_post_econ._iran_pending_pi_post_econ = True
+		process_sle_with_pending_pi_post_econ._iran_sabe_integer_policy = getattr(
+			_live_process, "_iran_sabe_integer_policy", None
+		)
 		process_sle_with_pending_pi_post_econ._iran_original = _live_process
 		sl.update_entries_after.process_sle = process_sle_with_pending_pi_post_econ
+
+	# Hot-upgrade: integer SABE policy after Core when older process_sle lacks it.
+	if not getattr(sl.update_entries_after.process_sle, "_iran_sabe_integer_policy", None):
+		_live_sabe = sl.update_entries_after.process_sle
+
+		def process_sle_with_sabe_integer(self, sle):
+			result = _live_sabe(self, sle)
+			try:
+				company = getattr(self, "company", None) or (
+					sle.get("company") if hasattr(sle, "get") else None
+				)
+				if company and is_irr_company(company):
+					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+						apply_integer_sabe_policy_to_sle,
+					)
+
+					apply_integer_sabe_policy_to_sle(sle, engine=self)
+					persist_processed_sle_if_possible(sle)
+			except Exception:
+				pass
+			return result
+
+		process_sle_with_sabe_integer._iran_sabe_integer_policy = True
+		process_sle_with_sabe_integer._iran_pending_pi_align = getattr(
+			_live_sabe, "_iran_pending_pi_align", None
+		)
+		process_sle_with_sabe_integer._iran_pending_pi_post_econ = getattr(
+			_live_sabe, "_iran_pending_pi_post_econ", None
+		)
+		process_sle_with_sabe_integer._iran_original = _live_sabe
+		sl.update_entries_after.process_sle = process_sle_with_sabe_integer
 
 	# Incoming healing: allow receipts that reduce an already-negative running qty.
 	# Installed independently so a process_sle-only older patch still gets this wrap.
@@ -1484,19 +1606,20 @@ def _patch_serial_batch_irr_integer_guard(sl):
 		if not bundle:
 			return
 
-		# During RIV, Core MA reintroduces fractional SABE on Stock Entry / SR
-		# (two-slice rewrite applies only to DN/SI). Integerize those bundles
-		# explicitly so dependent DN pools stay integer-valued, and refresh
-		# ``doc`` totals that Core already stamped from float MA.
-		if through_riv and not rewritten:
-			# Includes RIV short-pool fallthrough (two-slice returned None after
-			# audit) and non-DN/SI Core MA paths. integerize_bundle_sabe asserts
-			# no residual fractional IRR rate/SVD may persist.
-			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
-				integerize_bundle_sabe,
+		# Live + RIV: after Core (and optional DN/SI two-slice), integerize SABE
+		# from Core raw rates so A2 = integerized − ROUND(raw) is measurable.
+		# Do NOT call integerize_bundle_sabe alone during RIV — that erased raw
+		# rates before A2 could be queued and left SLE/Bin/GL unrepaired.
+		#
+		# align_sle=False here: warehouse qty_after / ABSORB is not final yet
+		# inside update_serial_batch_no_valuation. Final SLE alignment runs at
+		# the end of the Iran process_sle wrapper (align_sle=True).
+		if not rewritten:
+			from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+				apply_integer_sabe_policy_to_sle,
 			)
 
-			integerize_bundle_sabe(bundle, company=company)
+			apply_integer_sabe_policy_to_sle(sle, engine=self, align_sle=False)
 			rows = frappe.get_all(
 				"Serial and Batch Entry",
 				filters={"parent": bundle},
@@ -1507,7 +1630,11 @@ def _patch_serial_batch_irr_integer_guard(sl):
 			avg = abs(ta / tq) if tq else 0.0
 			if doc is not None and hasattr(doc, "update"):
 				doc.update({"total_qty": tq, "total_amount": ta, "avg_rate": avg})
-			return
+			# Fall through to fractional guard — SABE should now be integer.
+			# During RIV still return early after integerize so era TVA exceptions
+			# are not required mid-campaign (guard would otherwise re-scan).
+			if through_riv:
+				return
 		from frappe import _
 
 		from erpnext_extensions.iran_accounting.domain.currency import (

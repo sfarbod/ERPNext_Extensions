@@ -65,14 +65,17 @@ def _ensure_iran_runtime_for_riv() -> None:
 	(``_execute_reposting_entry``, bench console, campaign drivers) can skip
 	those hooks. Without patches, vanilla RIV writes float ``basic_rate =
 	|SVD|/qty`` and Core Multi-FG can double-count the material pool on
-	Manufacture recalculate. Fail closed if the recalculate wrapper is still
-	inactive after bootstrap.
+	Manufacture recalculate. Without Iran GL handlers, Core Stock Entry
+	allowance 0.5 throws on a legitimate 1 IRR residual (Difference is -1.0).
+	Fail closed if recalculate wrapper or GL handlers are still inactive.
 	"""
 	from erpnext_extensions.iran_accounting.domain.riv_valuation_guard import (
+		ensure_iran_riv_gl_handlers_active,
 		ensure_iran_riv_recalculate_wrapper_active,
 	)
 
 	ensure_iran_riv_recalculate_wrapper_active(bootstrap=True)
+	ensure_iran_riv_gl_handlers_active(bootstrap=False)
 
 
 def _should_defer_riv_execution(name: str) -> bool:
