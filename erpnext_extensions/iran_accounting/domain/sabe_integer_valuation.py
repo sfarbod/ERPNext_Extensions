@@ -708,9 +708,9 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			"project": template.get("project"),
 			"is_opening": is_opening,
 			"_irr_sabe_localization_partner": 1,
-			# Keep A2 WIP/stock counter discrete from Core WIP credit so Core
-			# merge_similar_entries cannot produce a mixed debit+credit row.
-			"_skip_merge": 1,
+			# Distinct voucher_detail_no keeps the A2 counter discrete under
+			# Core merge_similar_entries (Core merge key includes this field).
+			# Aggregation never touches this non-adjustment account.
 			"voucher_detail_no": f"IRR_SABE_A2_PARTNER|{doc.name}",
 			**dimensions,
 		}

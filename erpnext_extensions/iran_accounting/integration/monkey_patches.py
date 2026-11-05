@@ -458,17 +458,13 @@ def _patch_stock_controller():
 					)
 
 					align_irr_gl_map_to_currency_precision(self, gl_entries)
-					# Same-side SA aggregation + one-sided row enforcement before persist.
+					# Adjustment-account-only same-side aggregation (SA / round-off).
+					# Never rewrite WIP/FG/inventory/other Core accounts here.
 					from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
-						aggregate_stock_adjustment_gl_entries,
-						ensure_one_sided_gl_entries,
+						aggregate_adjustment_gl_entries,
 					)
 
-					gl_entries = aggregate_stock_adjustment_gl_entries(self, gl_entries)
-					# Post-toggle map: enforce one-sided and non-negative amounts.
-					gl_entries = ensure_one_sided_gl_entries(
-						gl_entries, require_non_negative=True
-					)
+					gl_entries = aggregate_adjustment_gl_entries(self, gl_entries)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":
@@ -810,21 +806,14 @@ def _bind_iran_general_ledger_entry_filters(gl):
 		return False
 
 	def merge_similar_entries(gl_map, precision=None):
+		# Preserve ERPNext Core merge semantics for all accounts. Iran only
+		# strips zero-value rows afterward; adjustment aggregation is isolated
+		# in aggregate_adjustment_gl_entries (allowlisted accounts only).
 		merged = gl._iran_original_merge_similar_entries(gl_map, precision)
 		if not merged:
 			return merged
 		company = merged[0].company if merged else erpnext.get_default_company()
 		company_currency = erpnext.get_company_currency(company)
-		from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
-
-		# Core merge sums debit+credit onto one head when keys match. For IRR
-		# stock vouchers that yields forbidden mixed-side rows — split them.
-		if is_irr_company(company):
-			from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
-				ensure_one_sided_gl_entries,
-			)
-
-			merged = ensure_one_sided_gl_entries(merged)
 		if not precision:
 			precision = get_field_precision(
 				frappe.get_meta("GL Entry").get_field("debit"), currency=company_currency
@@ -876,6 +865,16 @@ def _bind_iran_general_ledger_entry_filters(gl):
 		gl_map = _finalize_zero_value_stock_entry_gl_map_before_save(gl_map)
 		gl.process_debit_credit_difference(gl_map)
 		gl_map = _finalize_zero_value_stock_entry_gl_map_before_save(gl_map)
+		# Invoice / JE round-off legs may appear during process_debit_credit_difference.
+		# Aggregate allowlisted adjustment accounts only (never WIP/FG/party/etc.).
+		from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+		from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+			aggregate_adjustment_gl_entries,
+		)
+
+		company = gl_map[0].company if gl_map else None
+		if company and is_irr_company(company):
+			gl_map = aggregate_adjustment_gl_entries(None, gl_map)
 		gl_map = _strip_zero_company_currency_gl_entries(gl_map)
 
 		dimension_filter_map = gl.get_dimension_filter_map()

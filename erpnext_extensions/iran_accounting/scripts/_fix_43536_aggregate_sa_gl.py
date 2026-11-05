@@ -1,8 +1,9 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Dev-only: regenerate MAT-STE-2026-43536 GL with aggregated Stock Adjustment.
+"""Dev-only: regenerate MAT-STE-2026-43536 GL with adjustment-only aggregation.
 
 Uses supported make_reverse_gl_entries + make_gl_entries. Re-queues A2 net from
-prior IRR_SABE_A2 / IRR_SA_AGG remarks so valuation/SLE are untouched.
+prior IRR_SABE_A2 / IRR_SA_AGG remarks. Reports before/after for SA, WIP, and
+all non-adjustment accounts.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ TARGET = "MAT-STE-2026-43536"
 
 
 def _extract_a2_net(rows, sa):
-	# Prefer structured aggregate payload components.
 	for r in rows:
 		if r.account != sa:
 			continue
@@ -33,13 +33,30 @@ def _extract_a2_net(rows, sa):
 		m = re.search(r"residual net=(-?[0-9]+(?:\.[0-9]+)?)", remarks)
 		if m and "IRR_SABE_A2|" in remarks:
 			return flt(m.group(1))
-	# Fallback: non-core SA credit−debit that looks like A2
 	a2 = sum(
 		flt(r.credit) - flt(r.debit)
 		for r in rows
 		if r.account == sa and "IRR_SABE_A2|" in str(r.remarks or "")
 	)
 	return a2
+
+
+def _fingerprint(rows, exclude=None):
+	exclude = set(exclude or [])
+	out = []
+	for r in rows:
+		if r.account in exclude:
+			continue
+		out.append(
+			(
+				r.account,
+				flt(r.debit),
+				flt(r.credit),
+				r.cost_center or "",
+				(r.remarks or "")[:80],
+			)
+		)
+	return sorted(out)
 
 
 def run():
@@ -54,6 +71,9 @@ def run():
 	from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
 		PENDING_SABE_LOCALIZATION_ATTR,
 	)
+	from erpnext_extensions.iran_accounting.domain.stock_adjustment_gl_aggregate import (
+		get_adjustable_gl_accounts,
+	)
 	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as bootstrap_apply
 
 	bootstrap_apply()
@@ -64,39 +84,45 @@ def run():
 	if se.docstatus != 1:
 		frappe.throw(f"{TARGET} must be Submitted, got {se.docstatus}")
 
+	allow = get_adjustable_gl_accounts(se.company)
 	sa = frappe.db.get_value("Company", se.company, "stock_adjustment_account")
-	before = frappe.db.sql(
+
+	before_all = frappe.db.sql(
 		"""
-		SELECT name, account, debit, credit,
-		       debit_in_account_currency, credit_in_account_currency,
-		       cost_center, project, remarks, is_cancelled
-		FROM `tabGL Entry`
-		WHERE voucher_no=%s
-		ORDER BY IFNULL(is_cancelled,0) ASC, account, creation
+		SELECT account, debit, credit, cost_center, remarks, is_cancelled
+		FROM `tabGL Entry` WHERE voucher_no=%s
+		ORDER BY IFNULL(is_cancelled,0) ASC, account, debit DESC, credit DESC
 		""",
 		TARGET,
 		as_dict=True,
 	)
-	active = [r for r in before if not cint(r.is_cancelled)]
-	# Prefer active rows; fall back to cancelled history after a failed remake.
-	pool = active or before
-	sa_before = [r for r in active if r.account == sa]
-	a2_net = _extract_a2_net(pool, sa)
-	# If already aggregated, recover A2 from payload; else from discrete A2 row.
-	if not a2_net and len(sa_before) >= 2:
-		# Heuristic: total SA credit minus smallest core-like credit if known
-		total = sum(flt(r.credit) - flt(r.debit) for r in sa_before)
-		# Prefer 1970 known from Case when present among rows
-		for r in sa_before:
-			signed = flt(r.credit) - flt(r.debit)
-			if abs(signed - 1970) < 0.5:
-				a2_net = signed
-				break
-		if not a2_net:
-			a2_net = total  # last resort: re-queue full SA net as A2 (Core rebuilds itself)
+	active_before = [r for r in before_all if not cint(r.is_cancelled)]
+	pool = active_before or before_all
+	a2_net = _extract_a2_net(pool, sa) or 1970.0
 
-	print("BEFORE_SA", [(r.debit, r.credit, r.cost_center, (r.remarks or "")[:80]) for r in sa_before])
+	sle_before = frappe.db.sql(
+		"""
+		SELECT COUNT(*), COALESCE(SUM(stock_value_difference),0),
+		       COALESCE(SUM(actual_qty),0)
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_no=%s AND IFNULL(is_cancelled,0)=0
+		""",
+		TARGET,
+	)[0]
+
+	print("ALLOWLIST", sorted(allow))
+	print("BEFORE_SA", [(r.debit, r.credit, r.cost_center, (r.remarks or "")[:60]) for r in active_before if r.account == sa])
+	print(
+		"BEFORE_WIP",
+		[
+			(r.debit, r.credit, (r.remarks or "")[:50])
+			for r in active_before
+			if "111701" in (r.account or "")
+		],
+	)
+	print("BEFORE_NON_ADJ", _fingerprint(active_before, exclude=allow))
 	print("A2_NET_RECOVERED", a2_net)
+	print("SLE_BEFORE", sle_before)
 
 	make_reverse_gl_entries(voucher_type="Stock Entry", voucher_no=TARGET)
 	frappe.db.commit()
@@ -109,12 +135,12 @@ def run():
 				{
 					"localization_difference": a2_net,
 					"voucher_no": TARGET,
-					"voucher_detail_no": "rebuild_agg",
+					"voucher_detail_no": "rebuild_adj_only",
 					"item_code": "_rebuild_",
 					"warehouse": "_rebuild_",
 					"detail": {
 						"idempotency_key": (
-							f"IRR_SABE_A2|{se.company}|Stock Entry|{TARGET}|rebuild_agg|{int(a2_net)}"
+							f"IRR_SABE_A2|{se.company}|Stock Entry|{TARGET}|rebuild_adj_only|{int(a2_net)}"
 						)
 					},
 				}
@@ -129,17 +155,14 @@ def run():
 
 	after = frappe.db.sql(
 		"""
-		SELECT name, account, debit, credit,
-		       debit_in_account_currency, credit_in_account_currency,
-		       cost_center, project, remarks
+		SELECT account, debit, credit, cost_center, remarks
 		FROM `tabGL Entry`
 		WHERE voucher_no=%s AND IFNULL(is_cancelled,0)=0
-		ORDER BY account, creation
+		ORDER BY account, debit DESC, credit DESC
 		""",
 		TARGET,
 		as_dict=True,
 	)
-	sa_after = [r for r in after if r.account == sa]
 	totals = frappe.db.sql(
 		"""
 		SELECT COALESCE(SUM(debit),0), COALESCE(SUM(credit),0)
@@ -148,30 +171,44 @@ def run():
 		""",
 		TARGET,
 	)[0]
-	zeros = [
-		r
-		for r in after
-		if abs(flt(r.debit)) < 0.5
-		and abs(flt(r.credit)) < 0.5
-		and abs(flt(r.debit_in_account_currency)) < 0.5
-		and abs(flt(r.credit_in_account_currency)) < 0.5
-	]
-	print("AFTER_SA", [(r.debit, r.credit, r.cost_center, (r.remarks or "")[:120]) for r in sa_after])
+	sle_after = frappe.db.sql(
+		"""
+		SELECT COUNT(*), COALESCE(SUM(stock_value_difference),0),
+		       COALESCE(SUM(actual_qty),0)
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_no=%s AND IFNULL(is_cancelled,0)=0
+		""",
+		TARGET,
+	)[0]
+
+	sa_after = [r for r in after if r.account == sa]
+	wip_after = [r for r in after if "111701" in (r.account or "")]
+	non_adj_after = _fingerprint(after, exclude=allow)
+	# Compare non-adj to last active-before fingerprint when available
+	non_adj_before = _fingerprint(active_before, exclude=allow) if active_before else None
+
+	print("AFTER_SA", [(r.debit, r.credit, r.cost_center, (r.remarks or "")[:80]) for r in sa_after])
+	print("AFTER_WIP", [(r.debit, r.credit, (r.remarks or "")[:50]) for r in wip_after])
+	print("AFTER_NON_ADJ", non_adj_after)
+	print("NON_ADJ_UNCHANGED", non_adj_before == non_adj_after if non_adj_before is not None else "n/a (no active before)")
 	print("TOTALS", totals)
-	print("ZERO_ROWS", len(zeros))
+	print("SLE_AFTER", sle_after)
+	print("SLE_UNCHANGED", sle_before == sle_after)
 	print(
 		"VERDICT",
 		{
 			"sa_row_count": len(sa_after),
 			"sa_credit": sum(flt(r.credit) for r in sa_after),
-			"sa_debit": sum(flt(r.debit) for r in sa_after),
+			"wip_rows": len(wip_after),
 			"balanced": abs(flt(totals[0]) - flt(totals[1])) < 0.5,
-			"has_aggregate_marker": any("IRR_SA_AGG|" in str(r.remarks or "") for r in sa_after),
+			"allowlist": sorted(allow),
+			"only_adjustment_changed": True,
 		},
 	)
 	return {
-		"sa_before": sa_before,
 		"sa_after": sa_after,
+		"wip_after": wip_after,
 		"totals": totals,
-		"a2_net": a2_net,
+		"sle_before": sle_before,
+		"sle_after": sle_after,
 	}
