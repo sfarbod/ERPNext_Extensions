@@ -193,6 +193,17 @@ def apply_integer_sabe_policy_to_sle(
 	if not rows:
 		return None
 
+	# Reject-only Manufacture: Iran SED sync may already price the SLE while
+	# SABE still holds Core's historical zero (no FG absorber). Seed SABE from
+	# the SLE before integerization so align_sle cannot clobber document value.
+	from erpnext_extensions.iran_accounting.domain.reject_only_riv_rate import (
+		seed_sabe_rows_from_sle,
+		should_seed_sabe_from_document_sle,
+	)
+
+	if should_seed_sabe_from_document_sle(sle, rows):
+		seed_sabe_rows_from_sle(sle, rows)
+
 	changed = []
 	total_new_svd = 0.0
 	total_diff = 0.0

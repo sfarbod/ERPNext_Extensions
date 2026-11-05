@@ -50,7 +50,12 @@ def diagnose_source_needs(voucher_type: str, voucher_no: str) -> dict[str, Any]:
 	reject_gap = _zero_product_reject_gap(voucher_no)
 	if not stale:
 		# Also check SED amount vs |SLE SVD| for native-outgoing style drift.
-		drift = _sed_sle_amount_drift(voucher_no)
+		# Reject-only TYPE C: SED.amount may still hold the consume pool while SLE
+		# carries rate×qty (residual → Stock Adjustment). That is not a source gap
+		# once Reject SLE is already valued.
+		drift = _filter_reject_only_type_c_residual_drift(
+			voucher_no, _sed_sle_amount_drift(voucher_no)
+		)
 		gaps_out = list(drift or [])
 		if reject_gap:
 			gaps_out.append(reject_gap)
@@ -115,6 +120,59 @@ def _sed_sle_amount_drift(voucher_no: str) -> list[dict]:
 		as_dict=True,
 	)
 	return rows or []
+
+
+def _filter_reject_only_type_c_residual_drift(
+	voucher_no: str, drift_rows: list[dict] | None
+) -> list[dict]:
+	"""Drop residual-only SED.amount↔SLE gaps on already-valued reject-only outputs.
+
+	After reject-only allocation, ``SED.amount`` can remain the consume pool while
+	SLE ``stock_value_difference`` is ``ROUND_HALF_UP(pool/qty)×qty``. The leftover
+	is legitimate TYPE C Stock Adjustment — not a stale source rate requiring
+	re-allocation on campaign resume.
+	"""
+	if not drift_rows:
+		return []
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if purpose != "Manufacture":
+		return list(drift_rows)
+	try:
+		from erpnext_extensions.iran_accounting.domain.reject_only_riv_rate import (
+			clear_reject_only_riv_cache,
+			reject_only_sed_sle_lag_identities,
+		)
+		from erpnext_extensions.iran_accounting.scrap_costing import (
+			CLASS_MAIN_PRODUCT_REJECT,
+			_has_reject_only,
+			classify_manufacture_outputs,
+		)
+
+		clear_reject_only_riv_cache()
+		if reject_only_sed_sle_lag_identities(voucher_no):
+			# Still lagging — keep drift so source/RIV force path can run.
+			return list(drift_rows)
+		doc = frappe.get_doc("Stock Entry", voucher_no)
+		if not _has_reject_only(doc):
+			return list(drift_rows)
+		reject_names = {
+			r.name for r in (classify_manufacture_outputs(doc).get(CLASS_MAIN_PRODUCT_REJECT) or [])
+		}
+	except Exception:
+		return list(drift_rows)
+
+	kept: list[dict] = []
+	for row in drift_rows:
+		sed_name = row.get("sed_name")
+		if sed_name not in reject_names:
+			kept.append(row)
+			continue
+		# Valued reject SLE with residual amount gap only — ignore.
+		sle_abs = flt(row.get("sle_abs"))
+		if sle_abs > 0.5:
+			continue
+		kept.append(row)
+	return kept
 
 
 def apply_source_reconstruction(voucher_type: str, voucher_no: str) -> dict[str, Any]:

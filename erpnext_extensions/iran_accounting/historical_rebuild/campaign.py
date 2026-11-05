@@ -1251,6 +1251,32 @@ def create_scoped(
 	)
 
 
+def create_exact_vouchers(
+	company: str | None = None,
+	*,
+	vouchers: list | None = None,
+	scope_label: str = "exact-vouchers",
+	remarks: str | None = None,
+) -> dict:
+	"""Create a Ready campaign Manifest with **exactly** the listed vouchers.
+
+	Does not expand to sibling vouchers on the same Item/Warehouse identities.
+	Preferred for the six reject-only Manufacture documents on Production when
+	``HRC-00009`` is absent. Prefer ``resume('HRC-00009')`` when that campaign
+	already exists with the same six items.
+	"""
+	from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+		create_exact_voucher_campaign,
+	)
+
+	return create_exact_voucher_campaign(
+		company=company,
+		vouchers=vouchers,
+		scope_label=scope_label,
+		remarks=remarks,
+	)
+
+
 def prepare_sequential_rebuild(campaign: str = "HRC-00001") -> dict:
 	"""Delete all RIVs, reset campaign to REPOST_PLANNED, open sequential session."""
 	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (

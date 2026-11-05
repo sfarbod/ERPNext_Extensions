@@ -252,6 +252,152 @@ def build_scoped_manifest(
 	}
 
 
+def create_exact_voucher_campaign(
+	*,
+	company: str | None = None,
+	vouchers: list[dict | tuple] | None = None,
+	scope_label: str = "exact-vouchers",
+	remarks: str | None = None,
+) -> dict[str, Any]:
+	"""Create a Ready campaign whose Manifest is **exactly** the listed vouchers.
+
+	Unlike :func:`create_scoped_campaign`, this does **not** expand to other
+	vouchers that touch the same Item/Warehouse identities. Use for the
+	approved six reject-only Manufacture documents (and similar operator-scoped
+	lists). Still stamps ``SCOPED_HRC_TEST:`` so allowlist helpers recognize it.
+	"""
+	if not company:
+		company = frappe.db.get_single_value("Global Defaults", "default_company")
+	if not company:
+		company = frappe.db.get_value("Company", {"is_group": 0}, "name", order_by="creation asc")
+	if not company:
+		frappe.throw("company is required")
+
+	normalized = _normalize_seed_vouchers(vouchers)
+	if not normalized:
+		frappe.throw("vouchers is required (non-empty list of voucher_type/voucher_no)")
+
+	rows: list[dict[str, Any]] = []
+	idents: list[tuple[str, str]] = []
+	for vt, vn in normalized:
+		meta = frappe.db.get_value(
+			vt,
+			vn,
+			["company", "posting_date", "posting_time", "creation"],
+			as_dict=True,
+		)
+		if not meta:
+			frappe.throw(f"Voucher missing: {vt} {vn}")
+		rows.append(
+			{
+				"doctype": vt,
+				"name": vn,
+				"company": meta.company or company,
+				"posting_date": meta.posting_date,
+				"posting_time": getattr(meta, "posting_time", None),
+				"creation": meta.creation,
+			}
+		)
+	idents = expand_identities_from_vouchers(normalized)
+	rows.sort(
+		key=lambda r: (
+			str(r.get("posting_date") or ""),
+			_posting_time_key(r.get("posting_time")),
+			str(r.get("creation") or ""),
+			str(r.get("doctype") or ""),
+			str(r.get("name") or ""),
+		)
+	)
+	for i, r in enumerate(rows, start=1):
+		r["ordinal"] = i
+
+	checksum = manifest_checksum(rows)
+	scope_payload = {
+		"label": scope_label,
+		"exact_vouchers_only": True,
+		"seed_vouchers": [{"voucher_type": a, "voucher_no": b} for a, b in normalized],
+		"identities": [{"item_code": i, "warehouse": w} for i, w in idents],
+		"posting_boundary_from": None,
+		"identity_count": len(idents),
+		"manifest_total": len(rows),
+	}
+	base = remarks.strip() if remarks else scope_label
+	if SCOPED_REMARK_PREFIX not in base:
+		base = f"{SCOPED_REMARK_PREFIX}{base}"
+	doc = frappe.get_doc(
+		{
+			"doctype": CAMPAIGN_DOCTYPE,
+			"company": company,
+			"status": STATUS_DRAFT,
+			"posting_boundary_from": None,
+			"remarks": base[:1000],
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	frappe.db.commit()
+
+	import os
+
+	scope_dir = frappe.get_site_path("private", "files", "hrc_scoped_campaigns")
+	os.makedirs(scope_dir, exist_ok=True)
+	scope_path = os.path.join(scope_dir, f"{doc.name}_scope.json")
+	with open(scope_path, "w", encoding="utf-8") as fh:
+		json.dump(scope_payload, fh, indent=2, default=str)
+
+	for r in rows:
+		frappe.get_doc(
+			{
+				"doctype": ITEM_DOCTYPE,
+				"campaign": doc.name,
+				"ordinal": r["ordinal"],
+				"company": r.get("company") or company,
+				"voucher_type": r["doctype"],
+				"voucher_no": r["name"],
+				"posting_date": r["posting_date"],
+				"posting_time": str(r.get("posting_time") or ""),
+				"creation_ts": r.get("creation"),
+				"item_status": ITEM_PENDING,
+			}
+		).insert(ignore_permissions=True)
+	frappe.db.commit()
+
+	frappe.db.set_value(
+		CAMPAIGN_DOCTYPE,
+		doc.name,
+		{
+			"status": STATUS_READY,
+			"manifest_checksum": checksum,
+			"total_documents": len(rows),
+			"completed": 0,
+			"pending": len(rows),
+			"failed": 0,
+			"blocked": 0,
+			"skipped_covered": 0,
+			"last_ordinal": 0,
+			"last_activity": now_datetime(),
+		},
+		update_modified=False,
+	)
+	frappe.db.commit()
+
+	return {
+		"campaign": doc.name,
+		"status": STATUS_READY,
+		"company": company,
+		"scoped": True,
+		"exact_vouchers_only": True,
+		"scope_label": scope_label,
+		"scope_path": scope_path,
+		"total": len(rows),
+		"identity_count": len(idents),
+		"identities": scope_payload["identities"],
+		"seed_vouchers": scope_payload["seed_vouchers"],
+		"checksum": checksum,
+		"doctype_counts": doctype_counts(rows),
+		"expected_riv_count": len(idents),
+	}
+
+
 def create_scoped_campaign(
 	*,
 	company: str | None = None,
