@@ -71,9 +71,10 @@ def collect_accounting_errors(doc) -> tuple[list[dict], list[dict]]:
 			"code": "full_gl_valuation",
 			"severity": "advisory",
 			"message": _(
-				"Full GL Entry amounts, FIFO/moving-average valuation, and future Stock Ledger "
-				"integrity are not simulated (would require creating SLE/GLE). Account configuration "
-				"and expense/cost-center readiness were checked."
+				"Exact GL Entry amounts and FIFO/moving-average valuation rates are not simulated "
+				"(would require creating SLE/GLE). Account configuration and expense/cost-center "
+				"readiness were checked. Future negative stock quantity impacts are validated "
+				"separately in stock availability."
 			),
 		}
 	)
