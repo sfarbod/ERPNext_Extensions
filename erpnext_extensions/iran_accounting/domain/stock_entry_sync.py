@@ -954,15 +954,19 @@ def refresh_native_outgoing_sed_from_db(doc) -> None:
 
 
 def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
-	"""Mirror final SLE movements onto SED for SLE-authoritative source rows.
+	"""Mirror final SLE movements onto SED for SLE-authoritative rows.
 
-	Manufacture / Repack consume-to-zero ABSORB makes SLE the warehouse-clear
-	authority (full previous layer). ``apply_irr_manufacture_economic_finalize``
-	rate-first ``qty × valuation_rate`` must not overwrite that amount before
-	``db_update`` or the SLE/SED contract fails (MAT-STE-2026-43536).
+	Manufacture / Repack:
+	* Consume-to-zero ABSORB makes SLE the warehouse-clear authority.
+	* Incoming FG / by-product / scrap SLE may be SABE-integer aligned after
+	  ``process_sle``; SED must follow that SLE or the SLE↔SED mirror fails
+	  (MAT-STE-2026-43536 FG +461).
 
-	Also used before ``get_gl_entries`` so inventory GL consumes ABSORB amounts
-	rather than stale draft SED figures.
+	``apply_irr_manufacture_economic_finalize`` rate-first must not win over
+	these SLE amounts before ``db_update``.
+
+	Also used before ``get_gl_entries`` so inventory GL consumes ABSORB /
+	SABE-aligned amounts rather than stale draft SED figures.
 
 	Returns the number of SED rows rewritten.
 	"""
@@ -973,13 +977,31 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 	if not is_irr_company(doc.company):
 		return 0
 
+	purpose = str(doc.purpose or "")
+	refresh_incoming = purpose in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES
 	ccy = get_company_currency(doc.company)
 	changed = 0
 	for row in doc.get("items") or []:
-		if not row.get("name") or not row.get("s_warehouse"):
+		if not row.get("name"):
 			continue
 		if cint(row.get("set_basic_rate_manually")):
 			continue
+		is_outgoing = bool(row.get("s_warehouse")) and not (
+			row.get("s_warehouse") and row.get("t_warehouse")
+		)
+		is_incoming = bool(row.get("t_warehouse")) and not (
+			row.get("s_warehouse") and row.get("t_warehouse")
+		)
+		# Pure transfer rows keep other paths; Manufacture legs are one-sided.
+		if row.get("s_warehouse") and row.get("t_warehouse"):
+			continue
+		if is_outgoing:
+			pass
+		elif is_incoming and refresh_incoming:
+			pass
+		else:
+			continue
+
 		sle = frappe.db.get_value(
 			"Stock Ledger Entry",
 			{
@@ -995,11 +1017,16 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 				"qty_after_transaction",
 				"stock_value",
 				"outgoing_rate",
+				"incoming_rate",
 				"valuation_rate",
 			],
 			as_dict=True,
 		)
-		if not sle or flt(sle.actual_qty) >= 0:
+		if not sle:
+			continue
+		if is_outgoing and flt(sle.actual_qty) >= 0:
+			continue
+		if is_incoming and flt(sle.actual_qty) <= 0:
 			continue
 
 		movement = flt(sle.stock_value_difference)
@@ -1009,7 +1036,11 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 		) or abs(flt(sle.actual_qty))
 		rate = float(round_monetary_rate(magnitude / qty, ccy)) if qty > 1e-9 else 0.0
 		# Prefer SLE rates when already integerized by the ledger path.
-		sle_rate = flt(sle.outgoing_rate) or flt(sle.valuation_rate)
+		sle_rate = (
+			flt(sle.outgoing_rate)
+			if is_outgoing
+			else (flt(sle.incoming_rate) or flt(sle.valuation_rate))
+		) or flt(sle.valuation_rate)
 		if sle_rate and abs(sle_rate - rate) <= 0.5:
 			rate = float(round_monetary_rate(sle_rate, ccy))
 

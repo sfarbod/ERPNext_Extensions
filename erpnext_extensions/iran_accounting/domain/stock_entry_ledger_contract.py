@@ -121,6 +121,12 @@ def expected_header_totals(doc) -> tuple[float, float]:
 
 
 def _gl_stock_account_net(gl_rows: list[dict], company: str) -> float:
+	"""Net of Stock-type GL legs, excluding SABE A2 WIP/stock counter-entries.
+
+	Manufacture A2 posts localization to ``621301`` balanced against WIP/Stock.
+	Those partner stock legs are not SLE movements; including them would break
+	``|GL stock net| == |Σ SLE|`` even when inventory ledgers are coherent.
+	"""
 	stock_accounts = set(
 		frappe.db.sql_list(
 			"""
@@ -133,6 +139,9 @@ def _gl_stock_account_net(gl_rows: list[dict], company: str) -> float:
 	net = 0.0
 	for row in gl_rows:
 		if row.get("account") not in stock_accounts:
+			continue
+		remarks = str(row.get("remarks") or "")
+		if "IRR_SABE_A2|" in remarks or "IRR SABE integer localization" in remarks:
 			continue
 		net += flt(row.get("debit")) - flt(row.get("credit"))
 	return net

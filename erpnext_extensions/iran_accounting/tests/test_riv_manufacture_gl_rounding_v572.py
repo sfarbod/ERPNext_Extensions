@@ -400,6 +400,70 @@ class TestManufactureGlRoundingResidualV572(unittest.TestCase):
 			self.assertEqual(len([e for e in out if e.get("account") == "621301 - SA"]), 1)
 			self.assertTrue(doc.flags.iran_sabe_a2_recon.get("in_map_sa_covers"))
 
+	def test_a2_gl_legs_include_department_dimension(self):
+		from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+			PENDING_SABE_LOCALIZATION_ATTR,
+			apply_sabe_localization_sa_gl,
+		)
+
+		doc = frappe._dict(
+			name="MAT-STE-DIM-1",
+			doctype="Stock Entry",
+			company="E",
+			purpose="Manufacture",
+			value_difference=0,
+			items=[frappe._dict(department="Dept-Pack", cost_center="CC-Pack")],
+		)
+		setattr(
+			doc,
+			PENDING_SABE_LOCALIZATION_ATTR,
+			[
+				{
+					"localization_difference": 7.0,
+					"voucher_no": "MAT-STE-DIM-1",
+					"voucher_detail_no": "d1",
+					"item_code": "X",
+					"warehouse": "W",
+					"detail": {"idempotency_key": "IRR_SABE_A2|E|Stock Entry|MAT-STE-DIM-1|d1|7"},
+				}
+			],
+		)
+		setattr(frappe.local, PENDING_SABE_LOCALIZATION_ATTR, [])
+		gl_map = [
+			frappe._dict(
+				account="Stock-WIP",
+				debit=0,
+				credit=100,
+				cost_center="CC-Pack",
+				project=None,
+				posting_date="2026-09-02",
+			)
+		]
+		with patch(
+			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.is_irr_company",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.get_company_currency",
+			return_value="IRR",
+		), patch(
+			"erpnext_extensions.iran_accounting.domain.sabe_integer_valuation.round_currency",
+			side_effect=lambda v, c: round(float(v)),
+		), patch(
+			"frappe.get_cached_value",
+			side_effect=lambda *a, **k: {
+				("Company", "E", "stock_adjustment_account"): "621301",
+				("Account", "Stock-WIP", "account_type"): "Stock",
+			}.get(a if len(a) == 3 else a[:3]),
+		), patch(
+			"erpnext.accounts.doctype.accounting_dimension.accounting_dimension.get_accounting_dimensions",
+			return_value=["cost_center", "department"],
+		):
+			out = apply_sabe_localization_sa_gl(doc, gl_map)
+		sa = [e for e in out if e.get("account") == "621301"][0]
+		self.assertEqual(sa.get("department"), "Dept-Pack")
+		self.assertEqual(sa.get("cost_center"), "CC-Pack")
+		self.assertEqual(sa.get("posting_date"), "2026-09-02")
+
 	def test_a2_gl_legs_include_posting_date(self):
 		"""RIV remake submits GLE; missing posting_date → KeyError fiscal_year[0]."""
 		def _cached(doctype, name, field=None, **kwargs):

@@ -244,6 +244,44 @@ class TestRefreshSleAuthoritativeSed(unittest.TestCase):
 		self.assertEqual(row.amount, 43350902)
 		self.assertTrue(set_value.called)
 
+	def test_manufacture_fg_mirrors_sabe_aligned_sle(self):
+		row = frappe._dict(
+			name="sed-fg",
+			s_warehouse=None,
+			t_warehouse="FG-WH",
+			qty=1532,
+			transfer_qty=1532,
+			basic_rate=3527503,
+			valuation_rate=3527503,
+			basic_amount=5404134135,
+			amount=5404134135,
+			additional_cost=0,
+			landed_cost_voucher_amount=0,
+			set_basic_rate_manually=0,
+			is_finished_item=1,
+		)
+		doc = frappe._dict(
+			name="MAT-STE-2026-43536",
+			doctype="Stock Entry",
+			company="E",
+			purpose="Manufacture",
+			items=[row],
+		)
+		sle = frappe._dict(
+			name="sle-fg",
+			actual_qty=1532,
+			stock_value_difference=5404134596,
+			qty_after_transaction=1532,
+			stock_value=5404134596,
+			incoming_rate=3527503,
+			valuation_rate=3527503,
+		)
+		n, set_value = self._run_refresh(doc, sle)
+		self.assertEqual(n, 1)
+		self.assertEqual(row.basic_amount, 5404134596)
+		self.assertEqual(row.amount, 5404134596)
+		self.assertTrue(set_value.called)
+
 	def test_case_b_full_warehouse_clear_amount(self):
 		row = frappe._dict(
 			name="sed-303",

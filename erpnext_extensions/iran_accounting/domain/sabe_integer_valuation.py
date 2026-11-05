@@ -485,6 +485,46 @@ def _resolve_sabe_a2_partner_account(doc, gl_map: list, sa_account: str) -> dict
 	}
 
 
+def _sabe_a2_dimension_values(doc, gl_map: list, template) -> dict:
+	"""Accounting dimensions required on P&L Stock Adjustment (e.g. Department).
+
+	Prefer values already present on the open GL map / template, then Stock Entry
+	item rows, then the document header.
+	"""
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+		get_accounting_dimensions,
+	)
+
+	dims = [d for d in get_accounting_dimensions() if d != "cost_center"]
+	out: dict = {}
+	sources = []
+	if template:
+		sources.append(template)
+	sources.extend(gl_map or [])
+	for dim in dims:
+		for src in sources:
+			val = src.get(dim) if hasattr(src, "get") else getattr(src, dim, None)
+			if val:
+				out[dim] = val
+				break
+		if dim in out:
+			continue
+		# Stock Entry Detail rows carry department/cost_center in this site.
+		if doc.get("doctype") == "Stock Entry":
+			for row in doc.get("items") or []:
+				val = row.get(dim) if hasattr(row, "get") else getattr(row, dim, None)
+				if val:
+					out[dim] = val
+					break
+		if dim in out:
+			continue
+		if hasattr(doc, "get"):
+			val = doc.get(dim)
+			if val:
+				out[dim] = val
+	return out
+
+
 def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 	"""Append balanced Stock Adjustment legs for queued SABE localization deltas.
 
@@ -598,6 +638,13 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 		)
 	template = gl_map[0]
 	cost_center = partner_cfg.get("cost_center") or template.get("cost_center")
+	# P&L SA (621301) requires mandatory dimensions (Department on this site).
+	if not cost_center and doc.get("doctype") == "Stock Entry":
+		for row in doc.get("items") or []:
+			if row.get("cost_center"):
+				cost_center = row.get("cost_center")
+				break
+	dimensions = _sabe_a2_dimension_values(doc, gl_map, template)
 	idem = idempotency_keys[0] if idempotency_keys else make_sabe_a2_idempotency_key(
 		voucher_type=doc.doctype,
 		voucher_no=doc.name,
@@ -629,6 +676,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			"is_opening": is_opening,
 			"_irr_inventory_valuation_residual": 1,
 			"_irr_sabe_localization": 1,
+			**dimensions,
 		}
 	)
 	partner = frappe._dict(
@@ -643,6 +691,7 @@ def apply_sabe_localization_sa_gl(doc, gl_map: list | None) -> list | None:
 			"project": template.get("project"),
 			"is_opening": is_opening,
 			"_irr_sabe_localization_partner": 1,
+			**dimensions,
 		}
 	)
 	if sa_debit >= 0:
