@@ -1389,8 +1389,14 @@ def _patch_stock_ledger_engine():
 					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
 						apply_integer_sabe_policy_to_sle,
 					)
+					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						reassert_document_amount_authority_sle,
+					)
 
 					apply_integer_sabe_policy_to_sle(sle, engine=self)
+					# Manufacture/Repack: keep SED.amount on SLE even when SABE
+					# qty×rate or a no-bundle Core path drifted (43598/43604/43606).
+					reassert_document_amount_authority_sle(sle)
 					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
 						# Vanilla already wrote; restore pre-RIV economics so target
 						# RIV does not create new I1 on unrelated FG cascades.
@@ -1475,8 +1481,12 @@ def _patch_stock_ledger_engine():
 					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
 						apply_integer_sabe_policy_to_sle,
 					)
+					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						reassert_document_amount_authority_sle,
+					)
 
 					apply_integer_sabe_policy_to_sle(sle, engine=self)
+					reassert_document_amount_authority_sle(sle)
 					persist_processed_sle_if_possible(sle)
 			except Exception:
 				pass

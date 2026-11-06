@@ -263,8 +263,26 @@ def apply_integer_sabe_policy_to_sle(
 	actual_qty = flt(sle.get("actual_qty") if hasattr(sle, "get") else sle.actual_qty)
 	consume_to_zero = abs(qty_after) <= 1e-9 and actual_qty < 0
 
+	# Manufacture/Repack: SED.amount is inventory authority. qty×rate drift is an
+	# intentional residual / additional_cost composition — not SABE A2.
+	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+		DOCUMENT_AMOUNT_AUTHORITY_PURPOSES,
+		reassert_document_amount_authority_sle,
+	)
+
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	purpose = (
+		frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+		if voucher_no
+		and (sle.get("voucher_type") if hasattr(sle, "get") else getattr(sle, "voucher_type", None))
+		== "Stock Entry"
+		else None
+	)
+	document_amount_authority = str(purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES
+
 	# Queue localization difference once per SLE (sum of SABE row diffs).
-	if abs(total_diff) >= 0.5:
+	# Skip A2 when document amount owns the SLE (residual is Class A / addl cost).
+	if abs(total_diff) >= 0.5 and not document_amount_authority:
 		detail_no = (
 			sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
 		)
@@ -281,9 +299,7 @@ def apply_integer_sabe_policy_to_sle(
 						if hasattr(sle, "get")
 						else getattr(sle, "voucher_type", None)
 					),
-					voucher_no=(
-						sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
-					),
+					voucher_no=voucher_no,
 					voucher_detail_no=detail_no,
 					company=company,
 					amount=total_diff,
@@ -296,10 +312,11 @@ def apply_integer_sabe_policy_to_sle(
 			"bundle": bundle,
 			"changed": len(changed),
 			"total_new_svd": total_new_svd,
-			"localization_difference": total_diff,
+			"localization_difference": 0.0 if document_amount_authority else total_diff,
 			"sle_adjusted": False,
 			"consume_to_zero": consume_to_zero,
 			"align_sle": False,
+			"document_amount_authority": document_amount_authority,
 		}
 
 	if consume_to_zero:
@@ -308,10 +325,29 @@ def apply_integer_sabe_policy_to_sle(
 			"bundle": bundle,
 			"changed": len(changed),
 			"total_new_svd": total_new_svd,
-			"localization_difference": total_diff,
+			"localization_difference": 0.0 if document_amount_authority else total_diff,
 			"sle_adjusted": False,
 			"consume_to_zero": True,
 			"align_sle": True,
+			"document_amount_authority": document_amount_authority,
+		}
+
+	if document_amount_authority:
+		# Keep SED.amount on SLE; do not stamp qty×integer_rate (43598/43604/43606).
+		reasserted = reassert_document_amount_authority_sle(sle)
+		if engine is not None and getattr(engine, "wh_data", None) is not None:
+			engine.wh_data.stock_value = flt(sle.stock_value)
+			engine.wh_data.valuation_rate = flt(sle.valuation_rate)
+			engine.wh_data.prev_stock_value = flt(sle.stock_value)
+		return {
+			"bundle": bundle,
+			"changed": len(changed),
+			"total_new_svd": flt(sle.stock_value_difference),
+			"localization_difference": 0.0,
+			"sle_adjusted": bool(reasserted),
+			"consume_to_zero": False,
+			"align_sle": True,
+			"document_amount_authority": True,
 		}
 
 	# Non-zero remaining qty: SLE movement follows integerized SABE total.
@@ -348,6 +384,7 @@ def apply_integer_sabe_policy_to_sle(
 		"sle_adjusted": True,
 		"consume_to_zero": False,
 		"align_sle": True,
+		"document_amount_authority": False,
 	}
 
 

@@ -962,6 +962,10 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 	  ``process_sle``; SED must follow that SLE or the SLE↔SED mirror fails
 	  (MAT-STE-2026-43536 FG +461).
 
+	Incoming Manufacture legs: SLE already carries the full document amount
+	(including ``additional_cost`` / LCV). Do **not** add those again onto
+	``amount`` (MAT-STE-2026-43598 / 43604 / 43606).
+
 	``apply_irr_manufacture_economic_finalize`` rate-first must not win over
 	these SLE amounts before ``db_update``.
 
@@ -1034,6 +1038,18 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 		qty = abs(
 			flt(row.get("transfer_qty") if row.get("transfer_qty") not in (None, "") else row.get("qty"))
 		) or abs(flt(sle.actual_qty))
+		addl = flt(row.get("additional_cost"))
+		lcv = flt(row.get("landed_cost_voucher_amount"))
+
+		if is_incoming and refresh_incoming:
+			# SLE movement already equals capitalization-aware SED.amount.
+			amount = magnitude
+			basic_amount = float(round_currency(magnitude - addl - lcv, ccy))
+		else:
+			# Outgoing ABSORB: SLE is pure stock clear; addl/LCV stay on SED.
+			basic_amount = magnitude
+			amount = float(round_currency(basic_amount + addl + lcv, ccy))
+
 		rate = float(round_monetary_rate(magnitude / qty, ccy)) if qty > 1e-9 else 0.0
 		# Prefer SLE rates when already integerized by the ledger path.
 		sle_rate = (
@@ -1044,28 +1060,21 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 		if sle_rate and abs(sle_rate - rate) <= 0.5:
 			rate = float(round_monetary_rate(sle_rate, ccy))
 
-		basic_amount = magnitude
-		amount = float(
-			round_currency(
-				basic_amount
-				+ flt(row.get("additional_cost"))
-				+ flt(row.get("landed_cost_voucher_amount")),
-				ccy,
-			)
-		)
 		valuation_rate = rate
-		if flt(row.get("additional_cost")) or flt(row.get("landed_cost_voucher_amount")):
-			if qty > 1e-9:
-				valuation_rate = float(round_monetary_rate(amount / qty, ccy))
+		if (addl or lcv) and qty > 1e-9:
+			valuation_rate = float(round_monetary_rate(amount / qty, ccy))
+		basic_rate = rate
+		if is_incoming and refresh_incoming and qty > 1e-9 and abs(basic_amount) > 0.5:
+			basic_rate = float(round_monetary_rate(basic_amount / qty, ccy))
 
 		if (
 			abs(flt(row.get("basic_amount")) - basic_amount) > 0.5
 			or abs(flt(row.get("amount")) - amount) > 0.5
-			or abs(flt(row.get("basic_rate")) - rate) > 0.5
+			or abs(flt(row.get("basic_rate")) - basic_rate) > 0.5
 		):
 			changed += 1
 
-		row.basic_rate = rate
+		row.basic_rate = basic_rate
 		row.valuation_rate = valuation_rate
 		row.basic_amount = basic_amount
 		row.amount = amount
@@ -1077,7 +1086,7 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 			"Stock Entry Detail",
 			row.name,
 			{
-				"basic_rate": rate,
+				"basic_rate": basic_rate,
 				"valuation_rate": valuation_rate,
 				"basic_amount": basic_amount,
 				"amount": amount,
@@ -1085,6 +1094,94 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 			update_modified=False,
 		)
 	return changed
+
+
+def reassert_document_amount_authority_sle(sle) -> bool:
+	"""Restore Manufacture/Repack SLE movement from SED.amount after SABE qty×rate.
+
+	Integer SABE localization sets ``SVD = qty × ROUND_HALF_UP(rate)``, which
+	diverges from capitalization-aware ``SED.amount`` (additional_cost / LCV /
+	intentional amount−rate×qty residual). The ledger contract requires
+	``SLE.stock_value_difference == signed SED.amount``. Returns True when SLE
+	was rewritten.
+	"""
+	if sle is None:
+		return False
+	company = sle.get("company") if hasattr(sle, "get") else getattr(sle, "company", None)
+	if not company or not is_irr_company(company):
+		return False
+	voucher_type = sle.get("voucher_type") if hasattr(sle, "get") else getattr(sle, "voucher_type", None)
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	detail_no = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	if voucher_type != "Stock Entry" or not voucher_no or not detail_no:
+		return False
+	if cint(sle.get("is_cancelled") if hasattr(sle, "get") else getattr(sle, "is_cancelled", 0)):
+		return False
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if str(purpose or "") not in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+
+	row = frappe.db.get_value(
+		"Stock Entry Detail",
+		detail_no,
+		[
+			"qty",
+			"transfer_qty",
+			"basic_rate",
+			"basic_amount",
+			"additional_cost",
+			"landed_cost_voucher_amount",
+			"valuation_rate",
+			"amount",
+			"allow_zero_valuation_rate",
+			"set_basic_rate_manually",
+			"parent",
+		],
+		as_dict=True,
+	)
+	if not row:
+		return False
+
+	ccy = get_company_currency(company)
+	actual_qty = flt(sle.get("actual_qty") if hasattr(sle, "get") else getattr(sle, "actual_qty", 0))
+	magnitude = stock_entry_row_amount(row, company)
+	movement = float(
+		round_currency(
+			signed_movement_from_row_amount(magnitude, actual_qty, sle=sle, row=row),
+			ccy,
+		)
+	)
+	prev = flt(
+		sle.get("stock_value_difference")
+		if hasattr(sle, "get")
+		else getattr(sle, "stock_value_difference", 0)
+	)
+	if abs(prev - movement) <= 0.5:
+		return False
+
+	value_after = flt(sle.get("stock_value") if hasattr(sle, "get") else getattr(sle, "stock_value", 0))
+	value_before = value_after - prev
+	sle.stock_value_difference = movement
+	sle.stock_value = float(round_currency(value_before + movement, ccy))
+	qty = abs(actual_qty)
+	rate = float(round_monetary_rate(abs(movement) / qty, ccy)) if qty > 1e-9 else 0.0
+	sle.valuation_rate = rate
+	if actual_qty > 0:
+		sle.incoming_rate = rate
+	elif actual_qty < 0:
+		sle.outgoing_rate = rate
+	qty_after = flt(
+		sle.get("qty_after_transaction")
+		if hasattr(sle, "get")
+		else getattr(sle, "qty_after_transaction", 0)
+	)
+	if qty_after > 1e-9:
+		sle.valuation_rate = float(
+			round_monetary_rate(flt(sle.stock_value) / qty_after, ccy)
+		)
+	return True
 
 
 def sync_native_outgoing_sed_into_memory_for_gl(doc) -> bool:
