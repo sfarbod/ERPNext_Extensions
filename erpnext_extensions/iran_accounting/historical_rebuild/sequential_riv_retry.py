@@ -41,8 +41,14 @@ SEQ_RETRY_DELAY_SECONDS = 120
 SEQ_POST_EXHAUST_GRACE_WAITS = 1
 # Additional In Progress polls after grace (each delay_s). Prefer Pause over Failed
 # when still In Progress (HRC-00008 Session/RIV divergence).
-SEQ_IN_PROGRESS_MAX_WAITS = 15  # 15 * 120s = 30 minutes wall after grace
+# v5.7.2: default raised after HRC-00009 Production pause — RIV 611vj32kg4 needed
+# ~61 minutes while the prior default barrier was only ~30 minutes.
+SEQ_IN_PROGRESS_MAX_WAITS = 45  # 45 * 120s = 90 minutes wall after grace
+# Hard cap so site_config cannot request an unbounded wait (still heartbeat-protected).
+SEQ_IN_PROGRESS_MAX_WAITS_CAP = 120  # 120 * 120s = 4 hours
 RETRYABLE_MARIADB_ERRNOS = frozenset({1020, 1205, 1213})
+# Banner prepended to RIV.error_log after successful Completed reconcile (audit preserved).
+COMPLETED_ERROR_ARCHIVE_BANNER = "[HISTORICAL RETRY ERRORS — ARCHIVED"
 
 # Injectable clock/sleep for tests — never sleep inside an open transaction.
 _sleep_fn: Callable[[float], None] = time.sleep
@@ -92,14 +98,22 @@ def seq_post_exhaust_grace_waits() -> int:
 
 
 def seq_in_progress_max_waits() -> int:
+	"""Bounded In-Progress barrier waits (each ``seq_retry_delay_seconds``).
+
+	Site config: ``hrc_seq_riv_in_progress_max_waits`` (integer). Clamped to
+	``[0, SEQ_IN_PROGRESS_MAX_WAITS_CAP]`` so Production cannot disable the
+	controlled pause forever, while still allowing ~4h for heavy identities.
+	"""
 	try:
-		return int(
-			frappe.conf.get("hrc_seq_riv_in_progress_max_waits")
-			if frappe.conf.get("hrc_seq_riv_in_progress_max_waits") is not None
-			else SEQ_IN_PROGRESS_MAX_WAITS
-		)
+		raw = frappe.conf.get("hrc_seq_riv_in_progress_max_waits")
+		val = int(raw) if raw is not None else SEQ_IN_PROGRESS_MAX_WAITS
 	except Exception:
-		return SEQ_IN_PROGRESS_MAX_WAITS
+		val = SEQ_IN_PROGRESS_MAX_WAITS
+	if val < 0:
+		val = 0
+	if val > SEQ_IN_PROGRESS_MAX_WAITS_CAP:
+		val = SEQ_IN_PROGRESS_MAX_WAITS_CAP
+	return val
 
 
 def is_non_retryable_business_error(exc_or_msg: BaseException | str | None) -> bool:
@@ -153,10 +167,13 @@ def wait_for_retry_delay(
 	delay_s: float | None = None,
 	stop_check: Callable[[], bool] | None = None,
 	poll_s: float = 1.0,
+	heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
 	"""Sleep outside any DB transaction; honor STOP mid-wait.
 
 	Commits/rollbacks must already have completed before calling this.
+	``heartbeat`` (v5.7.2) refreshes executor / RIV ownership locks each poll
+	so long In-Progress barriers cannot silently drop Redis TTL.
 	"""
 	delay = float(delay_s if delay_s is not None else seq_retry_delay_seconds())
 	# Ensure connection is idle / clean before waiting.
@@ -166,15 +183,24 @@ def wait_for_retry_delay(
 		pass
 	deadline = _now_fn() + max(delay, 0.0)
 	interrupted = False
+	heartbeats = 0
 	while _now_fn() < deadline:
 		if stop_check and stop_check():
 			interrupted = True
 			break
+		if heartbeat is not None:
+			try:
+				heartbeat()
+				heartbeats += 1
+			except Exception:
+				# Heartbeat must not abort the wait; ownership is re-checked on execute.
+				pass
 		remaining = deadline - _now_fn()
 		_sleep_fn(min(poll_s, max(remaining, 0.0)))
 	return {
 		"waited_s": delay,
 		"interrupted_by_stop": interrupted,
+		"heartbeats": heartbeats,
 		"at": _stamp(),
 	}
 
@@ -194,7 +220,11 @@ def append_retry_audit(sess: dict, event: dict[str, Any]) -> None:
 
 
 def mark_identity_done_once(sess: dict, *, identity_key: str, riv_name: str) -> dict[str, Any]:
-	"""Advance identities_done / riv_completed exactly once."""
+	"""Advance identities_done / riv_completed exactly once.
+
+	If the identity is already in ``identities_done``, do not append another RIV
+	name to ``riv_completed`` (prevents resume counter inflation after Pause).
+	"""
 	done = sess.setdefault("identities_done", [])
 	completed = sess.setdefault("riv_completed", [])
 	failed = sess.setdefault("riv_failed", [])
@@ -202,8 +232,8 @@ def mark_identity_done_once(sess: dict, *, identity_key: str, riv_name: str) -> 
 	already_riv = riv_name in completed
 	if not already_done:
 		done.append(identity_key)
-	if not already_riv:
-		completed.append(riv_name)
+		if not already_riv:
+			completed.append(riv_name)
 	# Clear stale failure pointer for this RIV without erasing audit history.
 	if riv_name in failed:
 		# keep in riv_failed_history for audit; remove from active failed list
@@ -243,11 +273,13 @@ def final_completion_barrier(
 	grace_waits: int | None = None,
 	prior_audit: list | None = None,
 	exhausted_error: str | None = None,
+	heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
 	"""Post-exhaustion / pre-Failed barrier: wait, re-read, reconcile or fail closed.
 
 	Must run outside an open transaction. Does not create RIVs. Does not treat
 	``Completed`` alone as success — SLE chain verification is mandatory.
+	``heartbeat`` refreshes ownership locks during each barrier wait (v5.7.2).
 	"""
 	delay = float(delay_s if delay_s is not None else seq_retry_delay_seconds())
 	waits = int(grace_waits if grace_waits is not None else seq_post_exhaust_grace_waits())
@@ -314,7 +346,7 @@ def final_completion_barrier(
 		)
 		sess["status"] = "RetryWait"
 		_persist()
-		wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check)
+		wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check, heartbeat=heartbeat)
 		audit.append({"event": "final_barrier_wait", "grace": grace, **wait_out})
 		if wait_out.get("interrupted_by_stop"):
 			return {
@@ -355,7 +387,7 @@ def final_completion_barrier(
 		)
 		sess["status"] = "RetryWait"
 		_persist()
-		wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check)
+		wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check, heartbeat=heartbeat)
 		audit.append({"event": "in_progress_barrier_wait", "wait": ip_wait, **wait_out})
 		if wait_out.get("interrupted_by_stop"):
 			return {
@@ -430,6 +462,62 @@ def final_completion_barrier(
 	}
 
 
+def archive_completed_riv_attempt_errors(sess: dict, riv_name: str) -> dict[str, Any]:
+	"""Preserve prior-attempt error_log after Completed reconcile without erasing it.
+
+	Core leaves the last failed-attempt text on a later-Completed RIV. We:
+	1. Copy the full text into ``sess['riv_error_archive']`` (session audit).
+	2. Prepend a clear banner so Desk readers see Final=Completed vs historical retry.
+	Never deletes the original traceback body.
+	"""
+	out: dict[str, Any] = {"archived": False, "bannered": False}
+	try:
+		err = frappe.db.get_value("Repost Item Valuation", riv_name, "error_log")
+	except Exception:
+		return out
+	if not err:
+		return out
+	err_s = str(err)
+	archive = sess.setdefault("riv_error_archive", [])
+	# Idempotent archive per riv+content prefix
+	already = any(
+		isinstance(a, dict) and a.get("riv") == riv_name and a.get("error_log", "")[:200] == err_s[:200]
+		for a in archive
+	)
+	if not already:
+		archive.append(
+			{
+				"riv": riv_name,
+				"archived_at": _stamp(),
+				"final_status": "Completed",
+				"error_log": err_s[:8000],
+				"note": "prior_attempt_errors_before_completed_reconcile",
+			}
+		)
+		if len(archive) > 100:
+			del archive[:-100]
+		out["archived"] = True
+	if not err_s.startswith(COMPLETED_ERROR_ARCHIVE_BANNER):
+		banner = (
+			f"{COMPLETED_ERROR_ARCHIVE_BANNER} {_stamp()}]\n"
+			"Final status: Completed. Text below is from earlier retry attempts "
+			"(also copied to sequential session riv_error_archive). "
+			"It is NOT a terminal failure.\n"
+			f"{'=' * 60}\n"
+		)
+		try:
+			frappe.db.set_value(
+				"Repost Item Valuation",
+				riv_name,
+				{"error_log": (banner + err_s)[:12000]},
+				update_modified=False,
+			)
+			out["bannered"] = True
+		except Exception:
+			pass
+	return out
+
+
 def reconcile_completed_riv(
 	*,
 	riv_name: str,
@@ -463,16 +551,23 @@ def reconcile_completed_riv(
 
 	identity_key = f"{item_code}|{warehouse}"
 	progress = mark_identity_done_once(sess, identity_key=identity_key, riv_name=riv_name)
+	archive = archive_completed_riv_attempt_errors(sess, riv_name)
 	append_retry_audit(
 		sess,
 		{
 			"phase": "reconcile_completed",
 			"riv": riv_name,
 			"identity": identity_key,
+			"error_archive": archive,
 			**progress,
 		},
 	)
 	sess["status"] = "Running"
+	# Clear sticky current pointers once this RIV is reconciled (resume safety).
+	if sess.get("current_riv") == riv_name:
+		sess["current_riv"] = None
+		sess["current_item_code"] = None
+		sess["current_warehouse"] = None
 	return {
 		"ok": True,
 		"reconciled": True,
@@ -481,7 +576,90 @@ def reconcile_completed_riv(
 		"item_code": item_code,
 		"warehouse": warehouse,
 		"sle_count": chain.get("sle_count"),
+		"error_archive": archive,
 		**progress,
+	}
+
+
+def reconcile_session_current_riv(
+	sess: dict,
+	*,
+	company: str,
+	verify_chain: Callable[..., dict],
+	save_session: Callable[[dict], None] | None = None,
+) -> dict[str, Any]:
+	"""v5.7.2 resume gate: reconcile session current_riv when already Completed.
+
+	Must run before creating another RIV. Does not create RIVs. Idempotent via
+	``mark_identity_done_once``. If current is still Queued/In Progress, returns
+	``needs_reattach=True`` so the caller can resume the same RIV without a
+	duplicate create.
+	"""
+	riv = sess.get("current_riv")
+	item = sess.get("current_item_code")
+	wh = sess.get("current_warehouse")
+	if not riv:
+		return {"ok": True, "skipped": True, "reason": "no_current_riv"}
+	if not item or not wh:
+		meta = read_riv_status(riv)
+		if meta:
+			item = item or meta.item_code
+			wh = wh or meta.warehouse
+		if not item or not wh:
+			return {
+				"ok": False,
+				"skipped": True,
+				"reason": "current_riv_missing_identity",
+				"riv": riv,
+			}
+	meta = read_riv_status(riv)
+	if not meta:
+		return {"ok": True, "skipped": True, "reason": "riv_missing", "riv": riv}
+	st = (meta.status or "").strip()
+	if st == "Completed":
+		out = reconcile_completed_riv(
+			riv_name=riv,
+			item_code=item,
+			warehouse=wh,
+			posting_date=meta.posting_date,
+			posting_time=meta.posting_time,
+			company=company,
+			sess=sess,
+			verify_chain=verify_chain,
+		)
+		out["resume_reconcile"] = True
+		append_retry_audit(
+			sess,
+			{
+				"phase": "resume_reconcile_current",
+				"riv": riv,
+				"status": st,
+				"ok": bool(out.get("ok")),
+				"advanced": bool(out.get("advanced")),
+			},
+		)
+		if save_session:
+			save_session(sess)
+		return out
+	if st in ("In Progress", "Queued"):
+		return {
+			"ok": False,
+			"skipped": True,
+			"needs_reattach": True,
+			"reason": "current_still_active",
+			"status": st,
+			"riv": riv,
+			"item_code": item,
+			"warehouse": wh,
+			"posting_date": meta.posting_date,
+			"posting_time": meta.posting_time,
+		}
+	return {
+		"ok": True,
+		"skipped": True,
+		"reason": f"current_status:{st}",
+		"status": st,
+		"riv": riv,
 	}
 
 
@@ -500,11 +678,13 @@ def run_resilient_riv_execution(
 	save_session: Callable[[dict], None] | None = None,
 	max_attempts: int | None = None,
 	delay_s: float | None = None,
+	heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
 	"""Execute one RIV with bounded transient retry + completion reconciliation.
 
 	``execute_fn(riv_name)`` must run Core ``execute_reposting_entry`` (or test double).
 	Caller owns outer session persistence via ``save_session``.
+	``heartbeat`` (v5.7.2) refreshes executor + RIV ownership during waits.
 	"""
 	attempts = int(max_attempts if max_attempts is not None else seq_retry_max_attempts())
 	delay = float(delay_s if delay_s is not None else seq_retry_delay_seconds())
@@ -565,7 +745,7 @@ def run_resilient_riv_execution(
 				},
 			)
 			_persist()
-			wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check)
+			wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check, heartbeat=heartbeat)
 			audit.append({"attempt": attempt, "event": "wait_in_progress", **wait_out})
 			if wait_out.get("interrupted_by_stop"):
 				return {
@@ -716,7 +896,7 @@ def run_resilient_riv_execution(
 				)
 				sess["status"] = "RetryWait"
 				_persist()
-				wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check)
+				wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check, heartbeat=heartbeat)
 				audit[-1]["wait"] = wait_out
 				if wait_out.get("interrupted_by_stop"):
 					return {
@@ -748,6 +928,7 @@ def run_resilient_riv_execution(
 					delay_s=delay,
 					prior_audit=audit,
 					exhausted_error=str(exc)[:500],
+					heartbeat=heartbeat,
 				)
 				out["attempt"] = attempt
 				out["duration"] = round(_now_fn() - t0, 3)
@@ -821,7 +1002,7 @@ def run_resilient_riv_execution(
 			)
 			sess["status"] = "RetryWait"
 			_persist()
-			wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check)
+			wait_out = wait_for_retry_delay(delay_s=delay, stop_check=stop_check, heartbeat=heartbeat)
 			audit[-1]["wait"] = wait_out
 			if wait_out.get("interrupted_by_stop"):
 				return {
@@ -880,6 +1061,7 @@ def run_resilient_riv_execution(
 		delay_s=delay,
 		prior_audit=audit,
 		exhausted_error="retry_attempts_exhausted",
+		heartbeat=heartbeat,
 	)
 	out["duration"] = round(_now_fn() - t0, 3)
 	return out

@@ -185,7 +185,9 @@ def claim_riv_execution(riv_name: str, *, ttl_s: int | None = None) -> str | Non
 	if ttl <= 0:
 		return None
 	conn = _redis()
-	token = f"{frappe.local.site}:{riv_name}:{time.time_ns()}"
+	# Site may be unbound in unit tests; token uniqueness still holds via time_ns.
+	site = getattr(frappe.local, "site", None) or "nosite"
+	token = f"{site}:{riv_name}:{time.time_ns()}"
 	key = riv_exec_lock_key(riv_name)
 	ok = bool(conn.set(key, token, nx=True, ex=ttl))
 	if not ok:

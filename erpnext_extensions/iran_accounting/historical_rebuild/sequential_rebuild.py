@@ -498,6 +498,142 @@ def _wait_until_riv_queue_clear(
 	)
 
 
+def _reattach_existing_session_riv(
+	*,
+	riv_name: str,
+	item_code: str,
+	warehouse: str,
+	posting_date,
+	posting_time,
+	company: str,
+	campaign: str | None,
+	sess: dict,
+) -> dict[str, Any]:
+	"""Resume resilient execution on session current_riv without creating a duplicate."""
+	from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
+		execute_reposting_entry as _exec_riv,
+	)
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry import (
+		run_resilient_riv_execution,
+	)
+	from erpnext_extensions.iran_accounting.historical_stock.db_concurrency import (
+		assert_riv_execution_owner,
+		claim_riv_execution,
+		refresh_riv_execution_claim,
+		release_riv_execution_claim,
+	)
+
+	sess["current_riv"] = riv_name
+	sess["current_item_code"] = item_code
+	sess["current_warehouse"] = warehouse
+	if riv_name not in (sess.get("riv_created") or []):
+		sess.setdefault("riv_created", []).append(riv_name)
+
+	claim_token = claim_riv_execution(riv_name)
+	if not claim_token:
+		# Another owner holds the claim — Pause; do not Fail or create.
+		_save_seq(sess)
+		return {
+			"ok": False,
+			"reason": "riv_exec_claim_held",
+			"riv": riv_name,
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"error": "another executor already owns this RIV claim",
+			"stop_chain": False,
+			"in_progress_unresolved": True,
+			"reattach": True,
+		}
+	frappe.local.iran_hr_riv_exec_owner = riv_name
+	_save_seq(sess)
+	frappe.db.commit()
+
+	def _ownership_heartbeat() -> None:
+		refresh_riv_execution_claim(riv_name, claim_token)
+		camp = campaign or sess.get("campaign")
+		sid = sess.get("session_id")
+		if camp and sid:
+			_refresh_executor_lock(camp, sid)
+
+	def _save_seq_refresh(payload: dict) -> None:
+		_ownership_heartbeat()
+		_save_seq(payload)
+
+	def _execute_fn(riv: str) -> None:
+		assert_riv_execution_owner(riv_name, claim_token)
+		_empty_rq()
+		_exec_riv(riv, continue_reposting=False)
+
+	exec_out: dict[str, Any] | None = None
+	try:
+		exec_out = run_resilient_riv_execution(
+			riv_name=riv_name,
+			item_code=item_code,
+			warehouse=warehouse,
+			posting_date=posting_date,
+			posting_time=posting_time,
+			company=company,
+			sess=sess,
+			execute_fn=_execute_fn,
+			verify_chain=inspect_sle_chain,
+			stop_check=_stop_requested,
+			save_session=_save_seq_refresh,
+			heartbeat=_ownership_heartbeat,
+		)
+	finally:
+		release_riv_execution_claim(riv_name, claim_token)
+		if getattr(frappe.local, "iran_hr_riv_exec_owner", None) == riv_name:
+			frappe.local.iran_hr_riv_exec_owner = None
+
+	if exec_out is None:
+		return {
+			"ok": False,
+			"riv": riv_name,
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"error": "resilient_reattach_aborted",
+			"stop_chain": True,
+			"reattach": True,
+		}
+	if exec_out.get("ok"):
+		_save_seq(sess)
+		return {
+			"ok": True,
+			"riv": riv_name,
+			"status": "Completed",
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"reconciled": bool(exec_out.get("reconciled")),
+			"reattach": True,
+			"attempt": exec_out.get("attempt"),
+		}
+	if exec_out.get("in_progress_unresolved") or exec_out.get("stopped"):
+		_save_seq(sess)
+		return {
+			"ok": False,
+			"riv": riv_name,
+			"status": frappe.db.get_value("Repost Item Valuation", riv_name, "status"),
+			"error": exec_out.get("error"),
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"stop_chain": False,
+			"stopped": bool(exec_out.get("stopped")),
+			"in_progress_unresolved": bool(exec_out.get("in_progress_unresolved")),
+			"reattach": True,
+		}
+	_save_seq(sess)
+	return {
+		"ok": False,
+		"riv": riv_name,
+		"error": exec_out.get("error"),
+		"item_code": item_code,
+		"warehouse": warehouse,
+		"stop_chain": bool(exec_out.get("stop_chain", True)),
+		"non_retryable": bool(exec_out.get("non_retryable")),
+		"reattach": True,
+	}
+
+
 def execute_one_identity(
 	item_code: str,
 	warehouse: str,
@@ -518,6 +654,74 @@ def execute_one_identity(
 	key = f"{item_code}|{warehouse}"
 	if key in (sess.get("identities_done") or []):
 		return {"ok": True, "skipped_done": True, "item_code": item_code, "warehouse": warehouse}
+
+	# v5.7.2: before creating, reconcile a sticky current_riv that already Completed
+	# after an In-Progress Pause (HRC-00009 / 611vj32kg4), or refuse to create while
+	# a different current RIV is still Queued/In Progress.
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry import (
+		reconcile_session_current_riv,
+	)
+
+	recon = reconcile_session_current_riv(
+		sess,
+		company=company,
+		verify_chain=inspect_sle_chain,
+		save_session=_save_seq,
+	)
+	if recon.get("ok") and recon.get("reconciled"):
+		# Current was Completed — counters advanced exactly once. If it was this
+		# identity, we are done; otherwise continue to create for the requested row.
+		recon_key = f"{recon.get('item_code')}|{recon.get('warehouse')}"
+		if recon_key == key:
+			return {
+				"ok": True,
+				"riv": recon.get("riv"),
+				"status": "Completed",
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"reconciled": True,
+				"resume_reconcile": True,
+				"advanced": bool(recon.get("advanced")),
+			}
+		# Different identity already reconciled — fall through to create for ``key``.
+	elif recon.get("needs_reattach"):
+		cur_key = f"{recon.get('item_code')}|{recon.get('warehouse')}"
+		if cur_key != key:
+			# Another identity's RIV is still active — pause; do not create.
+			return {
+				"ok": False,
+				"riv": recon.get("riv"),
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"error": "session_current_riv_still_active",
+				"in_progress_unresolved": True,
+				"stop_chain": False,
+				"current_riv": recon.get("riv"),
+				"current_status": recon.get("status"),
+			}
+		# Same identity still In Progress/Queued — re-enter resilient path without create.
+		return _reattach_existing_session_riv(
+			riv_name=recon["riv"],
+			item_code=item_code,
+			warehouse=warehouse,
+			posting_date=recon.get("posting_date") or posting_date,
+			posting_time=recon.get("posting_time") or posting_time,
+			company=company,
+			campaign=campaign,
+			sess=sess,
+		)
+	elif recon.get("verify_failed") or recon.get("fail_closed"):
+		return {
+			"ok": False,
+			"riv": recon.get("riv"),
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"error": recon.get("reason") or "resume_reconcile_failed",
+			"verify_failed": True,
+			"fail_closed": True,
+			"stop_chain": True,
+			"issues_sample": recon.get("issues_sample"),
+		}
 
 	# v5.6.14: wait for site-wide RIV queue (do not fail-start on temporary occupancy).
 	qwait = _wait_until_riv_queue_clear(campaign=campaign or sess.get("campaign"), sess=sess)
@@ -634,9 +838,18 @@ def execute_one_identity(
 		_empty_rq()
 		_exec_riv(riv, continue_reposting=False)
 
+	def _ownership_heartbeat() -> None:
+		# v5.7.2: refresh RIV claim + campaign executor lock during long waits so
+		# scheduler/second executor cannot take over a still-active session.
+		refresh_riv_execution_claim(name, claim_token)
+		camp = campaign or sess.get("campaign")
+		sid = sess.get("session_id")
+		if camp and sid:
+			_refresh_executor_lock(camp, sid)
+
 	def _save_seq_refresh(payload: dict) -> None:
 		# Best-effort heartbeat during waits; lost ownership is enforced on next execute.
-		refresh_riv_execution_claim(name, claim_token)
+		_ownership_heartbeat()
 		_save_seq(payload)
 
 	exec_out: dict[str, Any] | None = None
@@ -655,6 +868,7 @@ def execute_one_identity(
 			verify_chain=inspect_sle_chain,
 			stop_check=_stop_requested,
 			save_session=_save_seq_refresh,
+			heartbeat=_ownership_heartbeat,
 		)
 	finally:
 		release_riv_execution_claim(name, claim_token)
@@ -1057,6 +1271,50 @@ def run_sequential(
 			"identities_attempted": 0,
 			"identities_completed": 0,
 			"identities_failed": 0,
+		}
+
+	# v5.7.2: on resume, reconcile sticky current_riv if it Completed during Pause
+	# (HRC-00009 / 611vj32kg4) before creating any new RIV.
+	from erpnext_extensions.iran_accounting.historical_rebuild.sequential_riv_retry import (
+		reconcile_session_current_riv,
+	)
+
+	resume_recon = reconcile_session_current_riv(
+		sess,
+		company=company,
+		verify_chain=inspect_sle_chain,
+		save_session=_save_seq,
+	)
+	if resume_recon.get("ok") and resume_recon.get("reconciled"):
+		done_keys = set(sess.get("identities_done") or [])
+		todo = [r for r in idents if f"{r.item_code}|{r.warehouse}" not in done_keys]
+		if max_identities is not None:
+			todo = todo[: cint(max_identities)]
+	elif resume_recon.get("verify_failed") or resume_recon.get("fail_closed"):
+		sess = get_seq_session() or sess
+		failure = {
+			"at": str(now_datetime()),
+			"riv": resume_recon.get("riv"),
+			"error": resume_recon.get("reason") or "resume_reconcile_failed",
+			"verify_failed": True,
+		}
+		sess["last_failure"] = failure
+		sess["status"] = "Failed"
+		_save_seq(sess)
+		sync_campaign_execution_state(
+			campaign, status=STATUS_FAILED, session_id=session_id, failure=failure
+		)
+		frappe.db.commit()
+		_release_executor_lock(campaign, session_id)
+		return {
+			"session_id": session_id,
+			"campaign": campaign,
+			"campaign_status": STATUS_FAILED,
+			"resume_reconcile": resume_recon,
+			"gates_ok": False,
+			"identities_attempted": 0,
+			"identities_completed": 0,
+			"identities_failed": 1,
 		}
 
 	results = []
