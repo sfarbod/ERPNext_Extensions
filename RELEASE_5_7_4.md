@@ -35,21 +35,47 @@ that correctly tripwired fail-fast.
 
 ### Fix
 
-After SABE SLE alignment (and after document-amount reassert), re-apply Case D via
-`_apply_case_d_after_sabe_align` so remaining positive qty never keeps negative
-`stock_value`. Idempotent. Does not bypass the ledger contract validator. Does not
-create artificial SA/JE/Round Off.
+1. After SABE SLE alignment, re-apply Case D via `_apply_case_d_after_sabe_align`.
+2. After document-amount authority reassert (Manufacture/Repack path), re-apply the
+   same Case D guard.
+3. Monkey-patch no-bundle / hot-upgrade `process_sle` path calls the same helper
+   after SABE + reassert.
+4. Idempotent: no-op when `stock_value` is already non-negative with remaining qty.
 
-### Explicitly unchanged
+Does **not** bypass the ledger contract validator. Does **not** create artificial
+SA / JE / Round Off. Preserves integer IRR and `ROUND_HALF_UP`. Preserves SED
+amount authority (v5.7.3) and does not double-count additional_cost / LCV.
 
-- Sequential resume/reconcile architecture (v5.7.2).
-- Fail-fast on true CONFIRMED_CORRUPTION when Case D cannot apply.
-- No auto-resume of HRC-00009.
+### Explicitly unchanged / limitations
+
+- Sequential resume/reconcile architecture (v5.7.2) unchanged.
+- Fail-fast on true `CONFIRMED_CORRUPTION` when Case D cannot apply.
+- Do **not** auto-resume `HRC-00009`. Prefer a **new** Production campaign for
+  remaining work.
+- Case D may leave positive remaining qty with `stock_value = 0` when historical
+  SED/SABE rates overshoot the capitalized layer. That is not proof of a correct
+  historical unit rate; it only prevents `NEGATIVE_STOCK_VALUE`.
+
+### Development validation (bounded)
+
+Scoped campaign `HRC-00010` (Dev only) reprocessed the single failed identity with
+v5.7.4: RIV Completed; target SLE `MAT-SLE-2026-210109` went from
+`sv=-155330802` to `sv=0`; identity-wide `qty>0 && sv<0` count went 197 → 0.
 
 ### Tests
 
-`test_sabe_case_d_after_align_v574.py`
+New: `test_sabe_case_d_after_align_v574.py`
+
+Verified regression suites (Bench / `development.localhost`):
+
+| Suite | Result |
+|-------|--------|
+| `test_sabe_case_d_after_align_v574` | 2/2 |
+| `test_case_d_30100023_negative_sv_v561` | 4/4 |
+| `test_sabe_integer_valuation_v570` | 11/11 |
+| `test_sequential_pause_resume_v572` | 19/19 |
+| `test_se_ledger_amount_authority_v573` | 8/8 |
 
 ### Version
 
-`erpnext_extensions.__version__` → **5.7.4**
+`erpnext_extensions.__version__` → **5.7.4** (flit dynamic version from `__init__.py`)
