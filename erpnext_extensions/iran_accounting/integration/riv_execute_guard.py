@@ -103,8 +103,16 @@ def execute_reposting_entry(name, continue_reposting=False):
 			# Sync campaign owns this RIV — do not start a second executor.
 			return
 	except Exception:
-		# Fail-open: lock probe must never block legitimate upstream execution.
-		pass
+		# v5.7.2 fail-closed: ownership probe errors must not allow a scheduler
+		# worker to race a Sequential-owned In-Progress RIV (HRC-00009 dual-exec).
+		try:
+			frappe.log_error(
+				title="RIV execute guard ownership probe failed — deferred",
+				message=f"execute_reposting_entry deferred for {name!r}",
+			)
+		except Exception:
+			pass
+		return
 
 	original = _resolve_original_execute_reposting_entry()
 	return original(name, continue_reposting=continue_reposting)
@@ -121,7 +129,15 @@ def _wrapped_private_execute_reposting_entry(name):
 		if _should_defer_riv_execution(name):
 			return
 	except Exception:
-		pass
+		# v5.7.2 fail-closed — same dual-exec protection as public execute.
+		try:
+			frappe.log_error(
+				title="RIV execute guard ownership probe failed — deferred",
+				message=f"_execute_reposting_entry deferred for {name!r}",
+			)
+		except Exception:
+			pass
+		return
 	original = _ORIG_PRIVATE_EXECUTE_REPOSTING_ENTRY
 	if original is None:
 		import erpnext.stock.doctype.repost_item_valuation.repost_item_valuation as riv_mod
@@ -145,7 +161,15 @@ def enqueue_reposting_entry(name):
 		if riv_exec_lock_held(name):
 			return None
 	except Exception:
-		pass
+		# v5.7.2 fail-closed: refuse enqueue when claim probe errors.
+		try:
+			frappe.log_error(
+				title="RIV enqueue guard ownership probe failed — skipped",
+				message=f"enqueue_reposting_entry skipped for {name!r}",
+			)
+		except Exception:
+			pass
+		return None
 	original = _ORIG_ENQUEUE_REPOSTING_ENTRY
 	if original is None:
 		import erpnext.stock.doctype.repost_item_valuation.repost_item_valuation as riv_mod
