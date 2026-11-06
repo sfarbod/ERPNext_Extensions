@@ -150,6 +150,47 @@ def make_sabe_a2_idempotency_key(
 	)
 
 
+def _apply_case_d_after_sabe_align(sle, *, engine=None, ccy: str) -> bool:
+	"""Re-apply Case D after SABE/document align so qty>0 never keeps sv<0.
+
+	``sync_irr_sle_from_stock_entry_row`` may already have reconstructed an
+	overshoot (native MT-for-Manufacture / Manufacture). SABE qty×rate or a
+	later document reassert can re-poison the same SLE (HRC-00009 identity
+	``13100023`` / MAT-STE-2026-29941 → NEGATIVE_STOCK_VALUE). This guard is
+	idempotent: no-op when stock_value is already non-negative.
+	"""
+	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+		reconstruct_nonnegative_remaining_layer,
+	)
+
+	detail_no = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	row = None
+	if detail_no:
+		row = frappe.db.get_value(
+			"Stock Entry Detail",
+			detail_no,
+			[
+				"qty",
+				"transfer_qty",
+				"basic_rate",
+				"basic_amount",
+				"additional_cost",
+				"landed_cost_voucher_amount",
+				"valuation_rate",
+				"amount",
+			],
+			as_dict=True,
+		)
+	repaired = reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
+	if repaired and engine is not None and getattr(engine, "wh_data", None) is not None:
+		engine.wh_data.stock_value = flt(sle.stock_value)
+		engine.wh_data.valuation_rate = flt(sle.valuation_rate)
+		engine.wh_data.prev_stock_value = flt(sle.stock_value)
+	return bool(repaired)
+
+
 def apply_integer_sabe_policy_to_sle(
 	sle, *, engine=None, align_sle: bool = True
 ) -> dict[str, Any] | None:
@@ -335,6 +376,8 @@ def apply_integer_sabe_policy_to_sle(
 	if document_amount_authority:
 		# Keep SED.amount on SLE; do not stamp qty×integer_rate (43598/43604/43606).
 		reasserted = reassert_document_amount_authority_sle(sle)
+		# SED/SABE may still overshoot the capitalized layer (Case D).
+		case_d = _apply_case_d_after_sabe_align(sle, engine=engine, ccy=ccy)
 		if engine is not None and getattr(engine, "wh_data", None) is not None:
 			engine.wh_data.stock_value = flt(sle.stock_value)
 			engine.wh_data.valuation_rate = flt(sle.valuation_rate)
@@ -344,10 +387,11 @@ def apply_integer_sabe_policy_to_sle(
 			"changed": len(changed),
 			"total_new_svd": flt(sle.stock_value_difference),
 			"localization_difference": 0.0,
-			"sle_adjusted": bool(reasserted),
+			"sle_adjusted": bool(reasserted or case_d),
 			"consume_to_zero": False,
 			"align_sle": True,
 			"document_amount_authority": True,
+			"case_d_reconstructed": bool(case_d),
 		}
 
 	# Non-zero remaining qty: SLE movement follows integerized SABE total.
@@ -370,6 +414,9 @@ def apply_integer_sabe_policy_to_sle(
 		sle.valuation_rate = float(
 			round_monetary_rate(flt(sle.stock_value) / qty_after, ccy)
 		)
+	# HRC-00009 / 13100023: SABE qty×poisoned_rate after Case D reconstruct
+	# re-created qty>0 with stock_value<0 (NEGATIVE_STOCK_VALUE). Cap again.
+	case_d = _apply_case_d_after_sabe_align(sle, engine=engine, ccy=ccy)
 	# Keep engine warehouse state coherent for the next SLE in-chain.
 	if engine is not None and getattr(engine, "wh_data", None) is not None:
 		engine.wh_data.stock_value = flt(sle.stock_value)
@@ -379,12 +426,13 @@ def apply_integer_sabe_policy_to_sle(
 	return {
 		"bundle": bundle,
 		"changed": len(changed),
-		"total_new_svd": new_svd,
+		"total_new_svd": flt(sle.stock_value_difference),
 		"localization_difference": total_diff,
 		"sle_adjusted": True,
 		"consume_to_zero": False,
 		"align_sle": True,
 		"document_amount_authority": False,
+		"case_d_reconstructed": bool(case_d),
 	}
 
 
