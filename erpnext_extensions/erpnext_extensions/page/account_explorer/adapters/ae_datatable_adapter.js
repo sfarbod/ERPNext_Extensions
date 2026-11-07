@@ -372,13 +372,19 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		this._last_refresh_signature = this._build_refresh_signature(dt_columns, dt_rows);
 		this._bind_resize_observer();
 		this._bind_column_resize_listener();
+		this._active_column_filters = { ...(options.initial_column_filters || {}) };
 		this._apply_sticky_first_column();
+		this._bind_server_column_filters(options);
+		this._patch_header_refresh_to_keep_filters();
+		this._sync_column_filter_dom(this._active_column_filters);
 		this._sync_loading_state();
 		await this._finalize_mount(generation);
 		if (this._is_stale_mount(generation)) {
 			this._teardown_instance();
 			return null;
 		}
+		// Header may rebuild during finalize/sticky — restore again after paint.
+		this._sync_column_filter_dom(this._active_column_filters);
 		this._sync_active_row_dom();
 		const elapsed_ms = this._record_perf_stat("mount", perf_started_at, {
 			row_count: rows.length,
@@ -404,6 +410,9 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		if (options.density) {
 			this._density = options.density;
 		}
+		this._active_column_filters = {
+			...(options.initial_column_filters || this._options.initial_column_filters || {}),
+		};
 		this._column_defs = columns || [];
 		const dt_columns = this.map_columns(this._column_defs, this._options);
 		const dt_rows = this.map_rows(rows, dt_columns, this._options);
@@ -428,11 +437,16 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 			return null;
 		}
 		this._apply_sticky_first_column();
+		// refresh() rebuilds header and hides the filter row by default — re-show + restore.
+		this._bind_server_column_filters(this._options);
+		this._patch_header_refresh_to_keep_filters();
+		this._sync_column_filter_dom(this._active_column_filters);
 		this._sync_loading_state();
 		await this._finalize_mount(generation);
 		if (this._is_stale_mount(generation)) {
 			return null;
 		}
+		this._sync_column_filter_dom(this._active_column_filters);
 		this._sync_active_row_dom();
 		const elapsed_ms = this._record_perf_stat("update", perf_started_at, {
 			row_count: rows.length,
@@ -446,6 +460,48 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 			clusterize,
 		});
 		return this._datatable;
+	}
+
+	_sync_column_filter_dom(filters_by_id = {}) {
+		this._show_filter_row();
+		this._restore_column_filter_inputs(filters_by_id);
+		this._decorate_column_filter_inputs(filters_by_id);
+	}
+
+	_show_filter_row() {
+		if (!this._host || !this._options?.inline_filters) {
+			return;
+		}
+		const row = this._host.querySelector(".dt-row-filter");
+		if (row) {
+			row.style.display = "";
+		}
+		const column_manager = this._datatable?.columnmanager;
+		if (column_manager) {
+			column_manager.$filterRow = row || column_manager.$filterRow;
+			column_manager.isFilterShown = true;
+			if (typeof column_manager.toggleFilter === "function") {
+				column_manager.toggleFilter(true);
+			}
+		}
+	}
+
+	_patch_header_refresh_to_keep_filters() {
+		const column_manager = this._datatable?.columnmanager;
+		if (!column_manager || column_manager._ae_filter_refresh_patched) {
+			return;
+		}
+		const original = column_manager.refreshHeader?.bind(column_manager);
+		if (typeof original !== "function") {
+			return;
+		}
+		const adapter = this;
+		column_manager.refreshHeader = function patchedRefreshHeader(...args) {
+			const result = original(...args);
+			adapter._sync_column_filter_dom(adapter._active_column_filters || {});
+			return result;
+		};
+		column_manager._ae_filter_refresh_patched = true;
 	}
 
 	async _await_frames(frame_count = 2) {
@@ -529,6 +585,110 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		};
 	}
 
+	_bind_server_column_filters(options = {}) {
+		if (!options.inline_filters || !options.on_server_column_filters || !this._datatable) {
+			return;
+		}
+		const column_manager = this._datatable.columnmanager;
+		if (!column_manager) {
+			return;
+		}
+		// Replace client-only page filter with server-side Account Explorer filters.
+		column_manager.applyFilter = (filters) => {
+			options.on_server_column_filters(filters || {});
+		};
+		if (typeof column_manager.toggleFilter === "function") {
+			column_manager.toggleFilter(true);
+		}
+	}
+
+	_resolve_filter_value_for_column(col, filters_by_id = {}) {
+		if (!col?.id) {
+			return "";
+		}
+		if (filters_by_id[col.id] != null && filters_by_id[col.id] !== "") {
+			return String(filters_by_id[col.id]);
+		}
+		// Party Name column uses display_title; accept party_name alias.
+		if (col.id === "display_title" && filters_by_id.party_name) {
+			return String(filters_by_id.party_name);
+		}
+		if (col.id === "party_name" && filters_by_id.display_title) {
+			return String(filters_by_id.display_title);
+		}
+		return "";
+	}
+
+	_restore_column_filter_inputs(filters_by_id = {}) {
+		if (!this._datatable || !this._host) {
+			return;
+		}
+		const columns = this._column_defs || [];
+		const offset = this._options?.checkbox_column === false ? 0 : 1;
+		const filter_row = this._host.querySelector(".dt-row-filter") || this._host;
+		columns.forEach((col, index) => {
+			const value = this._resolve_filter_value_for_column(col, filters_by_id);
+			const input = filter_row.querySelector(`.dt-cell--col-${index + offset} .dt-filter`);
+			if (!input) {
+				return;
+			}
+			input.setAttribute("data-ae-column-filter", col.id);
+			input.setAttribute("aria-label", __("Filter {0}", [__(col.label || col.id)]));
+			if (value) {
+				input.value = value;
+				input.classList.add("ae-dt-filter--active");
+			} else if (!input.value) {
+				input.classList.remove("ae-dt-filter--active");
+			}
+		});
+	}
+
+	_decorate_column_filter_inputs(filters_by_id = {}) {
+		if (!this._datatable || !this._host) {
+			return;
+		}
+		const columns = this._column_defs || [];
+		const offset = this._options?.checkbox_column === false ? 0 : 1;
+		const filter_row = this._host.querySelector(".dt-row-filter") || this._host;
+		columns.forEach((col, index) => {
+			const cell = filter_row.querySelector(`.dt-cell--filter.dt-cell--col-${index + offset}`);
+			const input = cell?.querySelector?.(".dt-filter");
+			if (!cell || !input) {
+				return;
+			}
+			cell.classList.add("ae-dt-filter-cell");
+			let clear_btn = cell.querySelector(".ae-dt-filter-clear");
+			if (!clear_btn) {
+				clear_btn = document.createElement("button");
+				clear_btn.type = "button";
+				clear_btn.className = "ae-dt-filter-clear";
+				clear_btn.setAttribute("aria-label", __("Clear filter"));
+				clear_btn.setAttribute("data-ae-clear-column-filter-input", col.id);
+				clear_btn.textContent = "×";
+				clear_btn.addEventListener("click", (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+					input.value = "";
+					input.classList.remove("ae-dt-filter--active");
+					clear_btn.hidden = true;
+					cell.classList.remove("ae-dt-filter-cell--active");
+					if (typeof this._options?.on_clear_column_filter === "function") {
+						this._options.on_clear_column_filter(col.id);
+					} else {
+						input.dispatchEvent(new Event("input", { bubbles: true }));
+						input.dispatchEvent(new Event("change", { bubbles: true }));
+					}
+				});
+				cell.appendChild(clear_btn);
+			} else {
+				clear_btn.setAttribute("data-ae-clear-column-filter-input", col.id);
+			}
+			const value = this._resolve_filter_value_for_column(col, filters_by_id) || input.value;
+			clear_btn.hidden = !value;
+			cell.classList.toggle("ae-dt-filter-cell--active", !!value);
+		});
+	}
+
 	_format_text_cell(display, options = {}) {
 		const text = display ?? "";
 		const escaped = frappe.utils.escape_html(String(text));
@@ -542,6 +702,14 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		const source_row = this._resolve_source_row(row);
 		if (column.id === "__ae_actions") {
 			return options.render_actions_html?.(source_row) || "";
+		}
+		if (source_col?.id === "running_balance" || source_col?.id === "running_balance_display") {
+			const display =
+				options.format_running_balance?.(value, source_row) ||
+				source_row?.running_balance_display ||
+				value ||
+				"";
+			return this._format_text_cell(display);
 		}
 		if (source_col?.fieldtype === "Currency") {
 			const formatted = options.format_amount?.(value, source_row, source_col) || {

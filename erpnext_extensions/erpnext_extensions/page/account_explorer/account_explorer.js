@@ -343,11 +343,13 @@ function ae_bootstrap_scope_defaults() {
 	const company =
 		frappe.defaults.get_user_default("Company") || frappe.boot?.sysdefaults?.company || null;
 	const fiscal_year = frappe.defaults.get_user_default("fiscal_year") || null;
+	// Dates must come from Fiscal Year year_start_date / year_end_date — never calendar
+	// year_start() or get_today(). Resolved asynchronously via sync_dates_from_fy().
 	return {
 		company,
 		fiscal_year,
-		from_date: frappe.datetime.year_start(),
-		to_date: frappe.datetime.get_today(),
+		from_date: null,
+		to_date: null,
 	};
 }
 
@@ -459,7 +461,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			sort_order: "asc",
 			page: 1,
 			page_size: 50,
+			column_filters: {},
 		};
+		this._dates_user_override = false;
+		this._syncing_fy_dates = false;
+		this._column_filter_timer = null;
 
 		this.breadcrumbs = [];
 		this._datatable_grid_namespace = ".aeDatatableGrid";
@@ -911,10 +917,26 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (hydrate.applied) {
 			this.user_preferences.apply_axis_to_controller();
 			this.workspace_state.sync_controls_from_controller(this);
+			// URL/workspace carried explicit dates — preserve across Analyze/Back/refresh.
+			if (this.document_scope.from_date && this.document_scope.to_date) {
+				this._dates_user_override = true;
+			}
 		}
-		if (hydrate.auto_refresh) {
+		// Fill missing From/To from Fiscal Year closing range (never calendar/today).
+		if (!this.document_scope.from_date || !this.document_scope.to_date) {
+			await this.sync_dates_from_fy({ reason: "bootstrap", force: true });
+		}
+		const can_refresh = !!(
+			this.document_scope.company &&
+			this.document_scope.from_date &&
+			this.document_scope.to_date
+		);
+		if (hydrate.auto_refresh || (!hydrate.applied && can_refresh)) {
 			this._workspace_hydration_refresh = true;
-			await this.refresh_summary();
+			await this.refresh_summary({
+				new_execution: true,
+				reason: hydrate.auto_refresh ? "workspace_hydrate" : "fy_default_bootstrap",
+			});
 			this._workspace_hydration_refresh = false;
 			await this.workspace_state.write_url({ push: false });
 		}
@@ -1060,7 +1082,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				options: "Fiscal Year",
 				change: () => {
 					this.document_scope.fiscal_year = this.fy_field.get_value();
-					this.sync_dates_from_fy();
+					// FY change always re-resolves the closing range (intentional FY selection).
+					this._dates_user_override = false;
+					this.sync_dates_from_fy({ reason: "fiscal_year_change" }).then((ok) => {
+						if (ok) {
+							this.refresh_summary({ new_execution: true, reason: "fiscal_year_change" });
+						}
+					});
 				},
 			},
 			render_input: true,
@@ -1079,6 +1107,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				reqd: 1,
 				change: () => {
 					this.document_scope.from_date = this.from_date_field.get_value();
+					if (!this._syncing_fy_dates) {
+						this._dates_user_override = true;
+					}
 				},
 			},
 			render_input: true,
@@ -1093,6 +1124,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				reqd: 1,
 				change: () => {
 					this.document_scope.to_date = this.to_date_field.get_value();
+					if (!this._syncing_fy_dates) {
+						this._dates_user_override = true;
+					}
 				},
 			},
 			render_input: true,
@@ -1105,6 +1139,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (scopeDefaults.to_date) {
 			this.to_date_field.set_value(scopeDefaults.to_date);
 			this.document_scope.to_date = scopeDefaults.to_date;
+		}
+		// Progressive UI fill; authoritative await happens in _initialize_after_metadata.
+		if (
+			this.document_scope.fiscal_year &&
+			(!this.document_scope.from_date || !this.document_scope.to_date)
+		) {
+			this._fy_dates_bootstrap_promise = this.sync_dates_from_fy({ reason: "bootstrap" });
 		}
 	}
 
@@ -1683,14 +1724,19 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 	get_summary_hidden_columns() {
 		const stored = this.store?.get("presentation")?.hidden_columns;
-		if (Array.isArray(this.grid_hidden_columns) && this.grid_hidden_columns.length) {
-			return this.grid_hidden_columns;
-		}
-		return Array.isArray(stored) ? stored : [];
+		const raw =
+			Array.isArray(this.grid_hidden_columns) && this.grid_hidden_columns.length
+				? this.grid_hidden_columns
+				: Array.isArray(stored)
+					? stored
+					: [];
+		return this._migrate_legacy_running_balance_preferences(raw);
 	}
 
 	set_summary_hidden_columns(hidden_ids = []) {
-		this.grid_hidden_columns = [...new Set((hidden_ids || []).filter(Boolean))];
+		this.grid_hidden_columns = [
+			...new Set(this._migrate_legacy_running_balance_preferences(hidden_ids || []).filter(Boolean)),
+		];
 		this._patch_presentation({ schedule_save: true });
 	}
 
@@ -3694,8 +3740,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				"party_name",
 				"debit",
 				"credit",
-				"running_debit_balance",
-				"running_credit_balance",
+				"running_balance",
 				"remarks",
 				"description",
 			],
@@ -4089,7 +4134,43 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				ordered.push(col.id);
 			}
 		});
+		if (
+			this.analysis_context.view_axis === "voucher" &&
+			this.analysis_context.detail_mode === "summary"
+		) {
+			return this._enforce_voucher_balance_column_order(ordered);
+		}
 		return ordered;
+	}
+
+	_enforce_voucher_balance_column_order(ordered = []) {
+		/** Keep Debit → Credit → Running Balance → Remarks as one contiguous block. */
+		const block = this.get_voucher_balance_column_block();
+		const block_set = new Set([...block, "description"]);
+		const present_block = [];
+		block.forEach((id) => {
+			if (ordered.includes(id) && !present_block.includes(id)) {
+				present_block.push(id);
+			}
+		});
+		// Prefer remarks; fall back to description only when remarks is absent.
+		if (!present_block.includes("remarks") && ordered.includes("description")) {
+			present_block.push("description");
+		}
+		if (present_block.length < 2) {
+			return ordered;
+		}
+		const rest = ordered.filter((id) => !block_set.has(id));
+		let insert_at = rest.indexOf("account_name");
+		if (insert_at < 0) {
+			insert_at = rest.indexOf("account_code");
+		}
+		if (insert_at < 0) {
+			insert_at = rest.length;
+		} else {
+			insert_at += 1;
+		}
+		return [...rest.slice(0, insert_at), ...present_block, ...rest.slice(insert_at)];
 	}
 
 	build_datatable_column_state(visible_columns) {
@@ -4367,7 +4448,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			sort_field: this.analysis_context.sort_field,
 			sort_order: this.analysis_context.sort_order,
 			checkbox_column: true,
-			inline_filters: false,
+			inline_filters: true,
 			density: this.get_grid_density(),
 			clusterize: this.datatable_adapter?.should_clusterize?.(this.rows.length) ?? this.rows.length > 50,
 			translate: (label) => __(label),
@@ -4381,6 +4462,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 							? { width: 110 }
 							: null,
 			format_amount: (value) => this.format_display_amount(value),
+			format_running_balance: (value, row) => this.format_running_balance_display(value, row),
 			render_actions_html: (row) =>
 				show_voucher_actions
 					? this.build_voucher_actions_html(row)
@@ -4393,12 +4475,60 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 								: "",
 			column_widths: { ...(this.grid_column_widths || {}) },
 			on_server_sort: (column_id, column) => this.handle_datatable_server_sort(column_id, column),
+			on_server_column_filters: (filters) => this.handle_datatable_column_filters(filters),
+			on_clear_column_filter: (field) => this.clear_single_column_filter(field),
 			on_selection_change: (checked_rows) => this.handle_datatable_selection_change(checked_rows),
 			on_column_removed: () => this.handle_datatable_column_state_changed(),
 			on_column_switched: () => this.handle_datatable_column_state_changed(),
 			on_column_resized: () => this.handle_datatable_column_state_changed(),
-			empty_message: __("No rows match the current scope."),
+			empty_message: Object.keys(this.analysis_context.column_filters || {}).length
+				? __("No rows match the current column filters.")
+				: __("No rows match the current scope."),
+			initial_column_filters: { ...(this.analysis_context.column_filters || {}) },
 		};
+	}
+
+	format_running_balance_display(value, row = null) {
+		if (row?.running_balance_display) {
+			return row.running_balance_display;
+		}
+		const net = flt(value);
+		if (Math.abs(net) < 0.0000001) {
+			return "0";
+		}
+		const amount = this.format_display_amount(Math.abs(net));
+		const compact = amount?.compact ?? amount ?? String(Math.abs(net));
+		return net > 0 ? `${compact} ${__("Dr")}` : `${compact} ${__("Cr")}`;
+	}
+
+	handle_datatable_column_filters(filters_by_col_index) {
+		const columns = this.last_summary_columns || this.columns || [];
+		const visible = this.get_summary_visible_columns
+			? this.get_summary_visible_columns(columns)
+			: columns;
+		// DataTable checkbox column occupies colIndex 0 when enabled.
+		const offset = 1;
+		const mapped = {};
+		Object.entries(filters_by_col_index || {}).forEach(([col_index, value]) => {
+			const idx = cint(col_index) - offset;
+			if (idx < 0) {
+				return;
+			}
+			const col = visible[idx] || columns[idx];
+			if (!col?.id || String(col.id).startsWith("__")) {
+				return;
+			}
+			let field = col.id;
+			// Party axis "Party Name" column id is display_title.
+			if (field === "party_name" && this.analysis_context.view_axis === "party") {
+				field = "display_title";
+			}
+			mapped[field] = value;
+		});
+		clearTimeout(this._column_filter_timer);
+		this._column_filter_timer = setTimeout(() => {
+			this.set_column_filters(mapped, { refresh: true });
+		}, 350);
 	}
 
 	build_analyze_action_html(row) {
@@ -4491,8 +4621,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			return this._$grid_prefs_controls;
 		}
 		const $prefs = $('<div class="ae-grid-toolbar-prefs"></div>');
+		// Page size lives only in the bottom pagination toolbar (single source of truth).
 		$prefs.append(
-			this.build_page_size_control(),
 			this.build_number_format_control(),
 			$('<button type="button" class="btn btn-default btn-xs ae-grid-toolbar-btn ae-grid-toolbar-btn--reset-prefs">')
 				.text(__("Reset Grid Preferences"))
@@ -4945,19 +5075,32 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		return !!(this.metadata && this.metadata.currency_analysis_enabled);
 	}
 
-	sync_dates_from_fy() {
-		const fy = this.fy_field.get_value();
-		if (!fy) {
-			return;
+	sync_dates_from_fy(opts = {}) {
+		/** Resolve From/To from Fiscal Year masters. Never use today as FY end. */
+		if (this._dates_user_override && opts.reason !== "fiscal_year_change" && opts.force !== true) {
+			return Promise.resolve(false);
 		}
-		frappe.db.get_value("Fiscal Year", fy, ["year_start_date", "year_end_date"]).then((r) => {
-			if (!r.message) {
-				return;
+		const fy = this.fy_field?.get_value?.() || this.document_scope.fiscal_year;
+		if (!fy) {
+			return Promise.resolve(false);
+		}
+		this._syncing_fy_dates = true;
+		return frappe.db.get_value("Fiscal Year", fy, ["year_start_date", "year_end_date"]).then((r) => {
+			this._syncing_fy_dates = false;
+			if (!r.message?.year_start_date || !r.message?.year_end_date) {
+				return false;
 			}
-			this.from_date_field.set_value(r.message.year_start_date);
-			this.to_date_field.set_value(r.message.year_end_date);
-			this.document_scope.from_date = r.message.year_start_date;
-			this.document_scope.to_date = r.message.year_end_date;
+			const start = r.message.year_start_date;
+			const end = r.message.year_end_date;
+			this.from_date_field?.set_value(start);
+			this.to_date_field?.set_value(end);
+			this.document_scope.from_date = start;
+			this.document_scope.to_date = end;
+			this._dates_user_override = false;
+			return true;
+		}).catch(() => {
+			this._syncing_fy_dates = false;
+			return false;
 		});
 	}
 
@@ -4988,6 +5131,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				voucher_scope: { ...(projected.analysis_context.voucher_scope || {}) },
 				item_group_scope: { ...(this.analysis_context.item_group_scope || {}) },
 				item_scope: { ...(this.analysis_context.item_scope || {}) },
+				column_filters: { ...(this.analysis_context.column_filters || {}) },
+				page: this.analysis_context.page,
+				page_size: this.analysis_context.page_size,
+				sort_field: this.analysis_context.sort_field,
+				sort_order: this.analysis_context.sort_order,
 			},
 			...(this.prepared_mode ? { prepared_mode: this.prepared_mode } : {}),
 			execution_id: this._ensure_ae_execution_id(),
@@ -5685,6 +5833,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	get_voucher_preferred_column_ids() {
+		// Financial block must stay: Debit → Credit → Running Balance → Remarks.
 		return [
 			"posting_date",
 			"voucher_type",
@@ -5693,11 +5842,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			"account_name",
 			"debit",
 			"credit",
+			"running_balance",
+			"remarks",
 			"account_currency",
-			"description",
 			"party_name",
 			"cost_center",
 		];
+	}
+
+	get_voucher_balance_column_block() {
+		return ["debit", "credit", "running_balance", "remarks"];
 	}
 
 	get_voucher_optional_column_ids() {
@@ -5708,9 +5862,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			"against_account",
 			"party_type",
 			"party",
-			"running_debit_balance",
-			"running_credit_balance",
-			"remarks",
+			"description",
 			"debit_in_account_currency",
 			"credit_in_account_currency",
 			"finance_book",
@@ -6153,7 +6305,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_gl_detail_view(columns);
 			return { ok: true };
 		}
-		if (!this.rows.length) {
+		const has_column_filters = Object.keys(this.analysis_context.column_filters || {}).length > 0;
+		if (!this.rows.length && !has_column_filters) {
 			this.destroy_summary_datatable();
 			if (this._is_stale_grid_render(render_generation)) {
 				return { ok: false, reason: "stale" };
@@ -6161,6 +6314,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_grid_empty_state(this.get_grid_empty_reason());
 			return { ok: true, empty: true };
 		}
+		// Keep DataTable headers + column filter inputs visible when filters yield zero rows.
 		if (this.is_datatable_summary_enabled()) {
 			try {
 				const result = await this.render_datatable_summary_grid(columns, render_generation);
@@ -8059,6 +8213,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			identity_display_title: null,
 			identity_identifier: null,
 		};
+		this.analysis_context.column_filters = {};
 		this.reset_analysis(false);
 		this._new_ae_execution_id("reset_all");
 		this.prepared_mode = null;
@@ -8431,34 +8586,172 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 	}
 
+	_format_plain_int(value) {
+		/** Plain digit text — never frappe.format Int (returns HTML wrappers). */
+		const number = cint(value);
+		try {
+			return number.toLocaleString(frappe.boot?.lang || undefined);
+		} catch (error) {
+			return String(number);
+		}
+	}
+
 	render_pagination() {
 		this.$pagination.empty();
-		const { page, total_rows, has_next } = this.pagination;
-		this.$pagination.append($("<span>").text(`${__("Page")} ${page} — ${total_rows} ${__("rows")}`));
-		if (page > 1) {
-			this.$pagination.append(
-				$('<button class="btn btn-default btn-sm ml-2">')
-					.text(__("Previous"))
-					.on("click", () => {
-						this.clear_grid_selection();
-						this.analysis_context.page = page - 1;
-						this.schedule_workspace_url_update({ push: false });
-						this.refresh_summary();
+		const page = cint(this.pagination?.page || this.analysis_context.page || 1);
+		const page_size = cint(this.pagination?.page_size || this.analysis_context.page_size || 50);
+		const total_rows = cint(this.pagination?.total_rows || 0);
+		const total_pages =
+			total_rows === 0
+				? 1
+				: cint(this.pagination?.total_pages) ||
+					(page_size > 0 ? Math.max(1, Math.ceil(total_rows / page_size) || 1) : 1);
+		const has_previous = page > 1 && total_rows > 0;
+		const has_next = total_rows > 0 && (!!(this.pagination?.has_next) || page < total_pages);
+
+		const go = (target) => {
+			let next = cint(target);
+			if (!next || next < 1) next = 1;
+			if (total_pages && next > total_pages) next = total_pages;
+			if (next === page) return;
+			this.clear_grid_selection();
+			this.analysis_context.page = next;
+			this.schedule_workspace_url_update({ push: false });
+			this.refresh_summary();
+		};
+
+		const $bar = $(
+			'<div class="ae-pagination-bar" data-ae-pagination="1" role="navigation" aria-label="' +
+				frappe.utils.escape_html(__("Pagination")) +
+				'"></div>'
+		);
+		const btn = (label, disabled, handler, title, test_id) =>
+			$('<button type="button" class="btn btn-default btn-sm ae-page-btn">')
+				.text(label)
+				.attr("title", title || label)
+				.attr("data-ae-page-action", test_id || label)
+				.prop("disabled", !!disabled)
+				.on("click", handler);
+
+		$bar.append(btn(__("First"), !has_previous, () => go(1), __("First page"), "first"));
+		$bar.append(btn(__("Previous"), !has_previous, () => go(page - 1), __("Previous page"), "previous"));
+		const $pageWrap = $('<span class="ae-page-indicator" data-ae-page-indicator="1"></span>');
+		$pageWrap.append(document.createTextNode(`${__("Page")} `));
+		const $input = $('<input type="number" class="ae-page-input form-control input-xs" min="1">')
+			.val(page)
+			.attr("aria-label", __("Page number"))
+			.attr("data-ae-page-input", "1")
+			.on("keydown", (event) => {
+				if (event.key === "Enter") {
+					event.preventDefault();
+					go($input.val());
+				}
+			})
+			.on("change", () => go($input.val()));
+		$pageWrap.append($input);
+		$pageWrap.append(
+			document.createTextNode(` ${__("of")} ${this._format_plain_int(total_pages)}`)
+		);
+		const $rows = $(
+			'<span class="ae-page-total-rows" data-ae-total-rows="' +
+				frappe.utils.escape_html(String(total_rows)) +
+				'"></span>'
+		).text(` — ${this._format_plain_int(total_rows)} ${__("rows")}`);
+		$pageWrap.append($rows);
+		$bar.append($pageWrap);
+		$bar.append(btn(__("Next"), !has_next, () => go(page + 1), __("Next page"), "next"));
+		$bar.append(btn(__("Last"), !has_next, () => go(total_pages), __("Last page"), "last"));
+		const $pageSize = this.build_page_size_control();
+		$pageSize.attr("data-ae-page-size", "1");
+		$bar.append($pageSize);
+		this.render_column_filter_chips($bar);
+		this.$pagination.append($bar);
+	}
+
+	render_column_filter_chips($bar) {
+		const filters = this.analysis_context.column_filters || {};
+		const keys = Object.keys(filters);
+		if (!keys.length) {
+			return;
+		}
+		const $chips = $('<div class="ae-column-filter-chips" data-ae-column-filter-chips="1"></div>');
+		keys.forEach((field) => {
+			const value = filters[field];
+			const $chip = $(
+				'<span class="ae-column-filter-chip" data-ae-column-filter-chip="' +
+					frappe.utils.escape_html(field) +
+					'"></span>'
+			);
+			$chip.append(
+				$("<span class='ae-column-filter-chip-label'></span>").text(`${__(field)}: ${value}`)
+			);
+			$chip.append(
+				$('<button type="button" class="ae-column-filter-chip-clear" aria-label="' +
+					frappe.utils.escape_html(__("Clear {0} filter", [__(field)])) +
+					'">×</button>')
+					.attr("data-ae-clear-column-filter", field)
+					.on("click", (event) => {
+						event.preventDefault();
+						event.stopPropagation();
+						this.clear_single_column_filter(field);
 					})
 			);
+			$chips.append($chip);
+		});
+		$bar.append($chips);
+	}
+
+	clear_single_column_filter(field, { refresh = true } = {}) {
+		const next = { ...(this.analysis_context.column_filters || {}) };
+		delete next[field];
+		// Also drop aliases for Party Name.
+		if (field === "display_title") {
+			delete next.party_name;
 		}
-		if (has_next) {
-			this.$pagination.append(
-				$('<button class="btn btn-default btn-sm ml-2">')
-					.text(__("Next"))
-					.on("click", () => {
-						this.clear_grid_selection();
-						this.analysis_context.page = page + 1;
-						this.schedule_workspace_url_update({ push: false });
-						this.refresh_summary();
-					})
-			);
+		if (field === "party_name") {
+			delete next.display_title;
 		}
+		this.set_column_filters(next, { refresh });
+	}
+
+	set_column_filters(filters, { refresh = true } = {}) {
+		const next = {};
+		Object.entries(filters || {}).forEach(([key, value]) => {
+			const field = String(key || "").trim();
+			const text = value == null ? "" : String(value).trim();
+			if (!field || field.startsWith("__")) return;
+			let mapped = field;
+			if (mapped === "running_debit_balance" || mapped === "running_credit_balance") {
+				mapped = "running_balance";
+			}
+			if (text) next[mapped] = text;
+		});
+		this.analysis_context.column_filters = next;
+		this.analysis_context.page = 1;
+		this._sync_store_context?.({ emit: true });
+		if (refresh) {
+			this.refresh_summary({ new_execution: true, reason: "column_filters" });
+		}
+	}
+
+	clear_column_filters({ refresh = true } = {}) {
+		this.analysis_context.column_filters = {};
+		if (refresh) {
+			this.analysis_context.page = 1;
+			this.refresh_summary({ new_execution: true, reason: "column_filters_cleared" });
+		}
+	}
+
+	_migrate_legacy_running_balance_preferences(hidden_ids = []) {
+		const next = [];
+		(hidden_ids || []).forEach((id) => {
+			if (id === "running_debit_balance" || id === "running_credit_balance") {
+				if (!next.includes("running_balance")) next.push("running_balance");
+				return;
+			}
+			next.push(id);
+		});
+		return next;
 	}
 };
 

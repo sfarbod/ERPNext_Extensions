@@ -367,6 +367,10 @@ def build_analysis_context(raw: dict, defaults: dict) -> AnalysisContext:
 	if level_sequence is not None:
 		level_sequence = cint(level_sequence) or None
 
+	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
+		normalize_column_filters,
+	)
+
 	return AnalysisContext(
 		view_axis=view_axis,
 		detail_mode=detail_mode,
@@ -384,6 +388,7 @@ def build_analysis_context(raw: dict, defaults: dict) -> AnalysisContext:
 			sort_field=(raw.get("sort_field") or _default_sort_field(view_axis, detail_mode)),
 			sort_order=(raw.get("sort_order") or "asc").lower(),
 		),
+		column_filters=normalize_column_filters(raw.get("column_filters")),
 	)
 
 

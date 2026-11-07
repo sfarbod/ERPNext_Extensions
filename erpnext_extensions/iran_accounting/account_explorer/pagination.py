@@ -112,6 +112,10 @@ def sort_rows(rows: list[dict], spec: AccountExplorerQuerySpec, sortable_fields)
 
 
 def paginate_summary_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> dict:
+	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
+		apply_column_filters_to_rows,
+	)
+
 	for row in rows:
 		finalize_measures(row)
 
@@ -120,6 +124,8 @@ def paginate_summary_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> d
 
 	# v4.6.2: empty classification is excluded before aggregation/totals/pagination.
 	rows = exclude_empty_classification_rows(rows)
+	# Column header filters apply to the full result set before the page slice.
+	rows = apply_column_filters_to_rows(rows, getattr(spec, "column_filters", None))
 	totals = sum_measure_rows(rows)
 
 	total_rows = len(rows)
@@ -127,6 +133,7 @@ def paginate_summary_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> d
 	page_size = spec.pagination.page_size
 	offset = (page - 1) * page_size
 	page_rows = rows[offset : offset + page_size]
+	total_pages = max(1, (total_rows + page_size - 1) // page_size) if page_size else 1
 
 	return {
 		"rows": page_rows,
@@ -135,7 +142,9 @@ def paginate_summary_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> d
 			"page": page,
 			"page_size": page_size,
 			"total_rows": total_rows,
+			"total_pages": total_pages,
 			"has_next": offset + page_size < total_rows,
+			"has_previous": page > 1,
 		},
 	}
 
@@ -156,7 +165,12 @@ def paginate_stock_summary_rows(
 	if spec.hide_zero_rows:
 		rows = [row for row in rows if row_has_stock_activity(row)]
 
+	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
+		apply_column_filters_to_rows,
+	)
+
 	rows = exclude_empty_classification_rows(rows)
+	rows = apply_column_filters_to_rows(rows, getattr(spec, "column_filters", None))
 	totals = sum_stock_measure_rows(rows, include_qty=include_qty)
 
 	total_rows = len(rows)
@@ -164,6 +178,7 @@ def paginate_stock_summary_rows(
 	page_size = spec.pagination.page_size
 	offset = (page - 1) * page_size
 	page_rows = rows[offset : offset + page_size]
+	total_pages = max(1, (total_rows + page_size - 1) // page_size) if page_size else 1
 
 	return {
 		"rows": page_rows,
@@ -172,6 +187,8 @@ def paginate_stock_summary_rows(
 			"page": page,
 			"page_size": page_size,
 			"total_rows": total_rows,
+			"total_pages": total_pages,
 			"has_next": offset + page_size < total_rows,
+			"has_previous": page > 1,
 		},
 	}

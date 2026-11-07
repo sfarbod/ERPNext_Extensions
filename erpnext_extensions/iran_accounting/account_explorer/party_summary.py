@@ -39,6 +39,13 @@ def _needs_full_party_enrichment(spec: AccountExplorerQuerySpec) -> bool:
 	scope = spec.party_scope
 	if scope.party_name_query or scope.identifier_query or scope.unified_identity:
 		return True
+	# Column filters on enriched Party Name / identifier must run after enrichment
+	# and before the page slice so totals and pages stay correct.
+	column_filters = getattr(spec, "column_filters", None) or {}
+	if column_filters.keys() & (
+		_SORT_FIELDS_REQUIRING_FULL_ENRICHMENT | {"party_name", "display_title", "party_identifier"}
+	):
+		return True
 	return field in _SORT_FIELDS_REQUIRING_FULL_ENRICHMENT
 
 

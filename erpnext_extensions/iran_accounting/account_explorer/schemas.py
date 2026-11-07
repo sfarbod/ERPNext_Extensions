@@ -139,6 +139,8 @@ class AnalysisContext:
 	item_group_scope: ItemGroupScope = field(default_factory=ItemGroupScope)
 	item_scope: ItemScope = field(default_factory=ItemScope)
 	pagination: PaginationState = field(default_factory=PaginationState)
+	# Header column filters: {fieldname: query_string}. Applied server-side before page slice.
+	column_filters: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -232,6 +234,10 @@ class AccountExplorerQuerySpec:
 	@property
 	def pagination(self) -> PaginationState:
 		return self.analysis.pagination
+
+	@property
+	def column_filters(self) -> dict[str, str]:
+		return self.analysis.column_filters or {}
 
 	def requires_bounded_dates(self) -> bool:
 		return bool(self.company and self.from_date and self.to_date)
