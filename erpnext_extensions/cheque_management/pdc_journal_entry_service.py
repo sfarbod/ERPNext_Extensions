@@ -252,16 +252,10 @@ def create_and_submit_journal_entry_from_payload(
 		je.submit()
 
 		pdc.reload()
-		pdc.append(
-			"journal_references",
-			{
-				"journal_entry": je.name,
-				"purpose": purpose,
-				"pdc_transition_key": transition_key,
-				"posting_date": posting_date,
-				"amount": amount,
-			},
+		from erpnext_extensions.cheque_management.pdc_journal_reference_guard import (
+			authorize_journal_reference_creation,
 		)
+
 		# Task 5: Advance-mode recognition accounting uses the same transition idempotency key but must
 		# also flip the instrument recognition flag so Task 3 open-advance starts reporting gross/open.
 		if int(payload.get("set_recognition_je_posted") or 0):
@@ -278,7 +272,21 @@ def create_and_submit_journal_entry_from_payload(
 			prev_flag = None
 		try:
 			frappe.flags.skip_pdc_allocation_capacity_validation_for_pdc = pdc.name
-			pdc.save(ignore_permissions=True)
+			with authorize_journal_reference_creation(
+				pdc.name,
+				transition_keys=[transition_key] if transition_key else None,
+			):
+				pdc.append(
+					"journal_references",
+					{
+						"journal_entry": je.name,
+						"purpose": purpose,
+						"pdc_transition_key": transition_key,
+						"posting_date": posting_date,
+						"amount": amount,
+					},
+				)
+				pdc.save(ignore_permissions=True)
 		finally:
 			try:
 				frappe.flags.skip_pdc_allocation_capacity_validation_for_pdc = prev_flag

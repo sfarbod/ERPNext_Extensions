@@ -210,19 +210,24 @@ def append_pdc_settlement_journal_reference(pdc, repayment, je_name: str) -> Non
 	if any((r.pdc_transition_key or "") == key for r in (pdc.journal_references or [])):
 		return
 
-	pdc.append(
-		"journal_references",
-		{
-			"journal_entry": je_name,
-			"purpose": PURPOSE_DEBT_PURCHASE_SETTLEMENT,
-			"amount": flt(pdc.cheque_amount),
-			"pdc_transition_key": key,
-			"posting_date": repayment.posting_date,
-		},
+	from erpnext_extensions.cheque_management.pdc_journal_reference_guard import (
+		authorize_journal_reference_creation,
 	)
+
 	pdc.flags.ignore_validate_update_after_submit = True
 	pdc.flags.skip_pdc_accounting_orchestration = True
-	pdc.save(ignore_permissions=True)
+	with authorize_journal_reference_creation(pdc.name, transition_keys=[key]):
+		pdc.append(
+			"journal_references",
+			{
+				"journal_entry": je_name,
+				"purpose": PURPOSE_DEBT_PURCHASE_SETTLEMENT,
+				"amount": flt(pdc.cheque_amount),
+				"pdc_transition_key": key,
+				"posting_date": repayment.posting_date,
+			},
+		)
+		pdc.save(ignore_permissions=True)
 
 
 def remove_pdc_settlement_journal_reference(
@@ -255,12 +260,27 @@ def remove_pdc_settlement_journal_reference(
 	if not to_remove:
 		return
 
-	for r in to_remove:
-		pdc.remove(r)
-	pdc.flags.ignore_validate_update_after_submit = True
-	pdc.flags.skip_pdc_accounting_orchestration = True
-	pdc.flags.ignore_links = True
-	pdc.save(ignore_permissions=True)
+	from erpnext_extensions.cheque_management.pdc_journal_reference_guard import (
+		authorize_journal_reference_removal,
+	)
+
+	row_names = [r.name for r in to_remove if getattr(r, "name", None)]
+	transition_keys = [
+		(r.pdc_transition_key or "").strip()
+		for r in to_remove
+		if (getattr(r, "pdc_transition_key", None) or "").strip()
+	]
+	with authorize_journal_reference_removal(
+		pdc.name,
+		rows=row_names,
+		transition_keys=transition_keys,
+	):
+		for r in to_remove:
+			pdc.remove(r)
+		pdc.flags.ignore_validate_update_after_submit = True
+		pdc.flags.skip_pdc_accounting_orchestration = True
+		pdc.flags.ignore_links = True
+		pdc.save(ignore_permissions=True)
 
 
 def apply_pdc_debt_purchase_settled(pdc, repayment, je_name: str) -> None:

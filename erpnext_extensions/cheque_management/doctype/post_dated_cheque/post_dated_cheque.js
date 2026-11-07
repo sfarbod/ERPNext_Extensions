@@ -331,6 +331,7 @@ frappe.ui.form.on("Post Dated Cheque", {
 		pdc_schedule_cheque_leaf_ui_enforcement(frm);
 		pdc_normalize_prefilled_allocations(frm);
 		pdc_sync_allocation_summary_client(frm);
+		pdc_lock_journal_references_grid(frm);
 		frm._pdc_last_cheque_direction = frm.doc.cheque_direction;
 		hide_standard_cancel_for_pdc(frm);
 		pdc_add_workflow_rollback_button(frm);
@@ -1560,6 +1561,42 @@ function pdc_add_delete_imported_pdc_button(frm) {
 		return;
 	}
 	frappe.require("/assets/erpnext_extensions/js/cheque_opening_import_delete_pdc.js", run);
+}
+
+/**
+ * Journal References are system-managed accounting identity rows.
+ * Block Desk add/delete/edit; rollback removes rows only via trusted server paths.
+ */
+function pdc_lock_journal_references_grid(frm) {
+	if (!frm || !frm.fields_dict || !frm.fields_dict.journal_references) {
+		return;
+	}
+	const field = frm.fields_dict.journal_references;
+	if (field.df) {
+		field.df.cannot_add_rows = 1;
+		field.df.cannot_delete_rows = 1;
+		field.df.read_only = 0; // keep grid visible; row fields are read_only
+	}
+	const grid = field.grid;
+	if (!grid) {
+		return;
+	}
+	grid.cannot_add_rows = true;
+	grid.cannot_delete_rows = true;
+	if (typeof grid.update_add_row_button === "function") {
+		grid.update_add_row_button();
+	}
+	if (typeof grid.toggle_reqd === "function") {
+		// no-op placeholder — keep API surface stable across Desk versions
+	}
+	["journal_entry", "purpose", "pdc_transition_key", "posting_date", "amount"].forEach((fn) => {
+		if (grid.update_docfield_property) {
+			grid.update_docfield_property(fn, "read_only", 1);
+		}
+	});
+	if (typeof grid.refresh === "function") {
+		grid.refresh();
+	}
 }
 
 function pdc_add_workflow_rollback_button(frm) {

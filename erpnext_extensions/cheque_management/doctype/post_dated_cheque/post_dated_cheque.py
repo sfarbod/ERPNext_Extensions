@@ -2071,6 +2071,9 @@ class PostDatedCheque(Document):
 	def validate(self):
 		"""Validate PDC data and enforce immutability after submit."""
 		validate_post_dated_cheque_allocation_mode_immutability(self)
+		from erpnext_extensions.cheque_management.pdc_journal_reference_guard import (
+			validate_journal_references_immutable,
+		)
 		from erpnext_extensions.cheque_management.pdc_lifecycle_events import (
 			validate_lifecycle_events_immutable,
 		)
@@ -2080,6 +2083,7 @@ class PostDatedCheque(Document):
 
 		validate_workflow_rollback_logs_immutable(self)
 		validate_lifecycle_events_immutable(self)
+		validate_journal_references_immutable(self)
 		self._normalize_cheque_purpose()
 		self._validate_cheque_direction_mutability()
 		self._validate_payable_bank_account_mutability()
@@ -4167,6 +4171,8 @@ class PostDatedCheque(Document):
 			je.flags.ignore_permissions = True
 			je.save()
 			je.submit()
+			# Legacy helper only appends; a later PDC save requires
+			# authorize_journal_reference_creation (prefer pdc_journal_entry_service).
 			self.append(
 				"journal_references",
 				{
@@ -4223,6 +4229,8 @@ class PostDatedCheque(Document):
 			je.flags.ignore_permissions = True
 			je.save()
 			je.submit()
+			# Legacy helper only appends; a later PDC save requires
+			# authorize_journal_reference_creation (prefer pdc_journal_entry_service).
 			self.append(
 				"journal_references",
 				{
