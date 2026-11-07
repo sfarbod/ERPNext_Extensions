@@ -90,6 +90,21 @@ Also re-run:
 | `test_se_ledger_amount_authority_v573` | 8/8 |
 | `test_sabe_case_d_after_align_v574` | 2/2 |
 
+### Production deployment guidance
+
+1. Push `develop` (or the release tag) containing commit
+   `d59c96b` / subsequent finalize commits for v5.7.8.
+2. On Production: `bench --site <prod> update --pull` (or install the
+   released app revision) so source reports `__version__ == "5.7.8"`.
+3. Restart workers / bench so monkey-patches reload. No schema migration is
+   required for this fix.
+4. Do **not** force-submit, amend, or SQL-patch existing Stock Entries.
+5. Re-try normal submit for blocked draft transfers (e.g. Production copies of
+   `PO-JOB12112` / `MAT-STE-2026-43659` if still draft). Validator remains
+   strict — success means conservation holds, not a bypass.
+6. Do **not** auto-resume HRC-00009 / HRC-00010. Prefer a **new** campaign if
+   sequential rebuild work continues after this release.
+
 ### Version
 
 `erpnext_extensions` → **5.7.8**
