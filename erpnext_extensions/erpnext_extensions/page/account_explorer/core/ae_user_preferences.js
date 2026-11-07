@@ -1,6 +1,6 @@
 frappe.provide("erpnext_extensions.account_explorer.core");
 
-const AE_GRID_PREFS_SCHEMA_VERSION = 2;
+const AE_GRID_PREFS_SCHEMA_VERSION = 3;
 const AE_USER_SETTINGS_DOCTYPE = "Account Explorer";
 const AE_USER_SETTINGS_GRID_KEY = "Grid";
 const AE_GRID_PREFS_DEBOUNCE_MS = 600;
@@ -265,6 +265,20 @@ function normalize_grid_preferences(payload, metadata = {}, reconcile_context = 
 				}
 			});
 		}
+	}
+	// v2→v3: reset voucher column_order so Debit→Credit→Running Balance→Remarks is default.
+	if (source_version < 3) {
+		const voucher = normalized.axes.voucher;
+		if (voucher) {
+			voucher.column_order = [];
+			const hidden = new Set(voucher.hidden_columns || []);
+			// remarks is now preferred; description is optional.
+			hidden.delete("remarks");
+			hidden.add("description");
+			voucher.hidden_columns = [...hidden];
+		}
+	}
+	if (source_version < AE_GRID_PREFS_SCHEMA_VERSION) {
 		normalized.schema_version = AE_GRID_PREFS_SCHEMA_VERSION;
 	}
 	return normalized;

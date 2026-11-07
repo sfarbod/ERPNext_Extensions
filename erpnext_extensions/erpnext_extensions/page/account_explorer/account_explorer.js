@@ -4134,7 +4134,43 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				ordered.push(col.id);
 			}
 		});
+		if (
+			this.analysis_context.view_axis === "voucher" &&
+			this.analysis_context.detail_mode === "summary"
+		) {
+			return this._enforce_voucher_balance_column_order(ordered);
+		}
 		return ordered;
+	}
+
+	_enforce_voucher_balance_column_order(ordered = []) {
+		/** Keep Debit → Credit → Running Balance → Remarks as one contiguous block. */
+		const block = this.get_voucher_balance_column_block();
+		const block_set = new Set([...block, "description"]);
+		const present_block = [];
+		block.forEach((id) => {
+			if (ordered.includes(id) && !present_block.includes(id)) {
+				present_block.push(id);
+			}
+		});
+		// Prefer remarks; fall back to description only when remarks is absent.
+		if (!present_block.includes("remarks") && ordered.includes("description")) {
+			present_block.push("description");
+		}
+		if (present_block.length < 2) {
+			return ordered;
+		}
+		const rest = ordered.filter((id) => !block_set.has(id));
+		let insert_at = rest.indexOf("account_name");
+		if (insert_at < 0) {
+			insert_at = rest.indexOf("account_code");
+		}
+		if (insert_at < 0) {
+			insert_at = rest.length;
+		} else {
+			insert_at += 1;
+		}
+		return [...rest.slice(0, insert_at), ...present_block, ...rest.slice(insert_at)];
 	}
 
 	build_datatable_column_state(visible_columns) {
@@ -5797,6 +5833,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	get_voucher_preferred_column_ids() {
+		// Financial block must stay: Debit → Credit → Running Balance → Remarks.
 		return [
 			"posting_date",
 			"voucher_type",
@@ -5806,11 +5843,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			"debit",
 			"credit",
 			"running_balance",
+			"remarks",
 			"account_currency",
-			"description",
 			"party_name",
 			"cost_center",
 		];
+	}
+
+	get_voucher_balance_column_block() {
+		return ["debit", "credit", "running_balance", "remarks"];
 	}
 
 	get_voucher_optional_column_ids() {
@@ -5821,7 +5862,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			"against_account",
 			"party_type",
 			"party",
-			"remarks",
+			"description",
 			"debit_in_account_currency",
 			"credit_in_account_currency",
 			"finance_book",

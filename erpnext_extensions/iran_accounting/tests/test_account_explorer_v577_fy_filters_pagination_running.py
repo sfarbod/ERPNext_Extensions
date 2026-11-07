@@ -323,6 +323,89 @@ class TestPaginationMetaV577(unittest.TestCase):
 			self.assertGreaterEqual(pag["total_pages"], 2)
 
 
+class TestVoucherColumnOrderV577(unittest.TestCase):
+	@classmethod
+	def setUpClass(cls):
+		frappe.set_user("Administrator")
+
+	def test_voucher_api_columns_debit_credit_running_remarks(self):
+		from erpnext_extensions.iran_accounting.account_explorer.api import VOUCHER_COLUMNS
+
+		ids = [col["id"] for col in VOUCHER_COLUMNS]
+		self.assertNotIn("running_debit_balance", ids)
+		self.assertNotIn("running_credit_balance", ids)
+		debit_i = ids.index("debit")
+		credit_i = ids.index("credit")
+		running_i = ids.index("running_balance")
+		remarks_i = ids.index("remarks")
+		self.assertEqual(credit_i, debit_i + 1)
+		self.assertEqual(running_i, credit_i + 1)
+		self.assertEqual(remarks_i, running_i + 1)
+
+	def test_voucher_export_columns_balance_before_remarks(self):
+		from erpnext_extensions.iran_accounting.account_explorer.export import (
+			get_export_columns,
+		)
+
+		spec = AccountExplorerQuerySpec_from_client(_voucher_payload())
+		cols = get_export_columns(spec)
+		ids = [col["fieldname"] for col in cols]
+		debit_i = ids.index("debit")
+		credit_i = ids.index("credit")
+		running_i = ids.index("running_balance_display")
+		remarks_i = ids.index("remarks")
+		self.assertEqual(credit_i, debit_i + 1)
+		self.assertEqual(running_i, credit_i + 1)
+		self.assertEqual(remarks_i, running_i + 1)
+
+	def test_running_balance_unchanged_by_column_metadata(self):
+		"""Column reordering must not alter running_balance values."""
+		account = frappe.db.get_value(
+			"Account",
+			{"company": COMPANY, "account_number": "111625", "is_group": 0},
+			"name",
+		)
+		if not account:
+			self.skipTest("sample account missing")
+		payload = _voucher_payload(
+			page_size=10,
+			account_scope={
+				"mode": "account",
+				"selected_account": account,
+				"tree_root_account": account,
+			},
+		)
+		payload["document_scope"]["to_date"] = "2026-03-25"
+		data = get_voucher_summary(payload)
+		ids = [col["id"] for col in data["columns"]]
+		self.assertEqual(ids[ids.index("debit") : ids.index("remarks") + 1], [
+			"debit",
+			"credit",
+			"running_balance",
+			"remarks",
+		])
+		expected = {
+			r.name: flt(r.running_net)
+			for r in frappe.db.sql(
+				"""
+				select name, sum(debit - credit) over (
+					partition by account
+					order by posting_date asc, creation asc, name asc
+					rows unbounded preceding
+				) as running_net
+				from `tabGL Entry`
+				where company=%s and is_cancelled=0 and account=%s
+				  and posting_date between %s and %s
+				  and voucher_type is not null and voucher_no is not null and voucher_no != ''
+				""",
+				(COMPANY, account, "2026-03-21", "2026-03-25"),
+				as_dict=True,
+			)
+		}
+		for row in data["rows"]:
+			self.assertAlmostEqual(flt(row["running_balance"]), expected[row["gl_entry"]], places=2)
+
+
 class TestPartyNameColumnFilterV577(unittest.TestCase):
 	@classmethod
 	def setUpClass(cls):

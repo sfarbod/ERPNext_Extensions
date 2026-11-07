@@ -81,6 +81,12 @@ Case A / Case B GL–SLE semantics:
      column filters are active; force full enrichment when `display_title` /
      `party_name` column filters are present; chip + individual clear.
 
+3. **Voucher column order**
+   - Default / enforced visible block:
+     `Debit → Credit → Running Balance → Remarks`
+   - Grid preferences schema bumped to v3 so saved voucher column order resets to
+     this default; calculation and export values are unchanged.
+
 ### Deploy note
 
 No schema migration required. Clear browser cache / hard-reload Desk so Account Explorer
