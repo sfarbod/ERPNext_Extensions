@@ -146,6 +146,85 @@ def _outward_leg_stock_value_difference(sle) -> float | None:
 	)
 
 
+def reassert_transfer_inward_conservation_sle(sle, *, engine=None) -> bool:
+	"""Restore transfer destination SLE from the outward leg after SABE qty×rate.
+
+	``sync_irr_sle_from_stock_entry_row`` already conserves Material Transfer /
+	Material Transfer for Manufacture inward movements to the source SLE. Later
+	SABE integer alignment stamps ``qty × ROUND_HALF_UP(rate)`` onto the
+	destination SLE and breaks transfer net-zero (PO-JOB12112 +1 IRR,
+	MAT-STE-2026-43659 −281 IRR). Re-apply conservation idempotently.
+	"""
+	if sle is None:
+		return False
+	company = sle.get("company") if hasattr(sle, "get") else getattr(sle, "company", None)
+	if not company or not is_irr_company(company):
+		return False
+	actual_qty = flt(
+		sle.get("actual_qty") if hasattr(sle, "get") else getattr(sle, "actual_qty", 0)
+	)
+	if actual_qty <= 0:
+		return False
+	voucher_type = sle.get("voucher_type") if hasattr(sle, "get") else getattr(sle, "voucher_type", None)
+	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
+	detail_no = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	if voucher_type != "Stock Entry" or not voucher_no or not detail_no:
+		return False
+	if cint(sle.get("is_cancelled") if hasattr(sle, "get") else getattr(sle, "is_cancelled", 0)):
+		return False
+	purpose = frappe.db.get_value("Stock Entry", voucher_no, "purpose")
+	if str(purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
+		return False
+	if str(purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+	row = frappe.db.get_value(
+		"Stock Entry Detail",
+		detail_no,
+		[
+			"qty",
+			"transfer_qty",
+			"basic_rate",
+			"basic_amount",
+			"additional_cost",
+			"landed_cost_voucher_amount",
+			"valuation_rate",
+			"amount",
+			"allow_zero_valuation_rate",
+			"set_basic_rate_manually",
+			"s_warehouse",
+			"t_warehouse",
+			"parent",
+		],
+		as_dict=True,
+	)
+	if not row:
+		return False
+	ccy = get_company_currency(company)
+	prev = flt(
+		sle.get("stock_value_difference")
+		if hasattr(sle, "get")
+		else getattr(sle, "stock_value_difference", 0)
+	)
+	applied = conserve_transfer_inward_from_outward_sle(sle, row, purpose, ccy)
+	if not applied:
+		return False
+	changed = abs(
+		flt(
+			sle.get("stock_value_difference")
+			if hasattr(sle, "get")
+			else getattr(sle, "stock_value_difference", 0)
+		)
+		- prev
+	) > 0.5
+	if changed and engine is not None and getattr(engine, "wh_data", None) is not None:
+		engine.wh_data.stock_value = flt(sle.stock_value)
+		engine.wh_data.valuation_rate = flt(sle.valuation_rate)
+		engine.wh_data.prev_stock_value = flt(sle.stock_value)
+	return changed or applied
+
+
 def conserve_transfer_inward_from_outward_sle(sle, row, purpose: str | None, ccy: str) -> bool:
 	"""Keep Material Transfer destination movement equal to the source SLE amount.
 
