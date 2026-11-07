@@ -1410,6 +1410,13 @@ def _patch_stock_ledger_engine():
 					_apply_case_d_after_sabe_align(
 						sle, engine=self, ccy=_get_ccy_case_d(company)
 					)
+					# Transfer inward: SABE qty×rate must not break outward conservation
+					# (PO-JOB12112 +1 / MAT-STE-2026-43659 −281).
+					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						reassert_transfer_inward_conservation_sle,
+					)
+
+					reassert_transfer_inward_conservation_sle(sle, engine=self)
 					if assert_sle_valuation_integrity_after_sync(sle, engine=self) is False:
 						# Vanilla already wrote; restore pre-RIV economics so target
 						# RIV does not create new I1 on unrelated FG cascades.
@@ -1510,6 +1517,11 @@ def _patch_stock_ledger_engine():
 					_apply_case_d_after_sabe_align(
 						sle, engine=self, ccy=_get_ccy_case_d_hot(company)
 					)
+					from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+						reassert_transfer_inward_conservation_sle as _reassert_xfer_hot,
+					)
+
+					_reassert_xfer_hot(sle, engine=self)
 					persist_processed_sle_if_possible(sle)
 			except Exception:
 				pass

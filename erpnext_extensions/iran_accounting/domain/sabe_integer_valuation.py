@@ -306,9 +306,12 @@ def apply_integer_sabe_policy_to_sle(
 
 	# Manufacture/Repack: SED.amount is inventory authority. qty×rate drift is an
 	# intentional residual / additional_cost composition — not SABE A2.
+	# Transfer inward: destination SLE must equal outward magnitude — not SABE A2.
 	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
 		DOCUMENT_AMOUNT_AUTHORITY_PURPOSES,
+		NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES,
 		reassert_document_amount_authority_sle,
+		reassert_transfer_inward_conservation_sle,
 	)
 
 	voucher_no = sle.get("voucher_no") if hasattr(sle, "get") else getattr(sle, "voucher_no", None)
@@ -320,10 +323,33 @@ def apply_integer_sabe_policy_to_sle(
 		else None
 	)
 	document_amount_authority = str(purpose or "") in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES
+	detail_no_early = (
+		sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
+	)
+	transfer_row = (
+		frappe.db.get_value(
+			"Stock Entry Detail",
+			detail_no_early,
+			["s_warehouse", "t_warehouse", "set_basic_rate_manually"],
+			as_dict=True,
+		)
+		if detail_no_early
+		else None
+	)
+	transfer_inward_conservation = bool(
+		actual_qty > 0
+		and str(purpose or "") in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES
+		and not document_amount_authority
+		and transfer_row
+		and transfer_row.get("s_warehouse")
+		and transfer_row.get("t_warehouse")
+		and not cint(transfer_row.get("set_basic_rate_manually"))
+	)
 
 	# Queue localization difference once per SLE (sum of SABE row diffs).
-	# Skip A2 when document amount owns the SLE (residual is Class A / addl cost).
-	if abs(total_diff) >= 0.5 and not document_amount_authority:
+	# Skip A2 when document amount owns the SLE (residual is Class A / addl cost)
+	# or transfer inward conservation owns destination movement.
+	if abs(total_diff) >= 0.5 and not document_amount_authority and not transfer_inward_conservation:
 		detail_no = (
 			sle.get("voucher_detail_no") if hasattr(sle, "get") else getattr(sle, "voucher_detail_no", None)
 		)
@@ -353,11 +379,14 @@ def apply_integer_sabe_policy_to_sle(
 			"bundle": bundle,
 			"changed": len(changed),
 			"total_new_svd": total_new_svd,
-			"localization_difference": 0.0 if document_amount_authority else total_diff,
+			"localization_difference": (
+				0.0 if (document_amount_authority or transfer_inward_conservation) else total_diff
+			),
 			"sle_adjusted": False,
 			"consume_to_zero": consume_to_zero,
 			"align_sle": False,
 			"document_amount_authority": document_amount_authority,
+			"transfer_inward_conservation": transfer_inward_conservation,
 		}
 
 	if consume_to_zero:
@@ -366,12 +395,36 @@ def apply_integer_sabe_policy_to_sle(
 			"bundle": bundle,
 			"changed": len(changed),
 			"total_new_svd": total_new_svd,
-			"localization_difference": 0.0 if document_amount_authority else total_diff,
+			"localization_difference": (
+				0.0 if (document_amount_authority or transfer_inward_conservation) else total_diff
+			),
 			"sle_adjusted": False,
 			"consume_to_zero": True,
 			"align_sle": True,
 			"document_amount_authority": document_amount_authority,
+			"transfer_inward_conservation": transfer_inward_conservation,
 		}
+
+	if transfer_inward_conservation:
+		# Keep outward-leg magnitude on destination SLE (PO-JOB12112 / 43659).
+		conserved = reassert_transfer_inward_conservation_sle(sle, engine=engine)
+		if conserved:
+			if engine is not None and getattr(engine, "wh_data", None) is not None:
+				engine.wh_data.stock_value = flt(sle.stock_value)
+				engine.wh_data.valuation_rate = flt(sle.valuation_rate)
+				engine.wh_data.prev_stock_value = flt(sle.stock_value)
+			return {
+				"bundle": bundle,
+				"changed": len(changed),
+				"total_new_svd": flt(sle.stock_value_difference),
+				"localization_difference": 0.0,
+				"sle_adjusted": True,
+				"consume_to_zero": False,
+				"align_sle": True,
+				"document_amount_authority": False,
+				"transfer_inward_conservation": True,
+			}
+		# Outward leg unavailable — fall through to SABE qty×rate align.
 
 	if document_amount_authority:
 		# Keep SED.amount on SLE; do not stamp qty×integer_rate (43598/43604/43606).
