@@ -207,8 +207,7 @@ class TestRunningBalanceV5635(unittest.TestCase):
 				"""
 				select
 					name,
-					case when running_net > 0 then running_net else 0 end as running_debit_balance,
-					case when running_net < 0 then -running_net else 0 end as running_credit_balance
+					running_net as running_balance
 				from (
 					select
 						name,
@@ -231,12 +230,9 @@ class TestRunningBalanceV5635(unittest.TestCase):
 		for row in rows:
 			exp = expected.get(row["gl_entry"])
 			self.assertIsNotNone(exp, row["gl_entry"])
-			self.assertAlmostEqual(
-				flt(row["running_debit_balance"]), flt(exp.running_debit_balance), places=2
-			)
-			self.assertAlmostEqual(
-				flt(row["running_credit_balance"]), flt(exp.running_credit_balance), places=2
-			)
+			self.assertAlmostEqual(flt(row["running_balance"]), flt(exp.running_balance), places=2)
+			self.assertNotIn("running_debit_balance", row)
+			self.assertNotIn("running_credit_balance", row)
 
 	def test_running_balance_stable_across_pages(self):
 		payload = _payload(
@@ -260,11 +256,8 @@ class TestRunningBalanceV5635(unittest.TestCase):
 		payload["analysis_context"]["page"] = 1
 		page1_again = get_voucher_summary(payload)
 		self.assertEqual(
-			[(r["gl_entry"], r["running_debit_balance"], r["running_credit_balance"]) for r in page1["rows"]],
-			[
-				(r["gl_entry"], r["running_debit_balance"], r["running_credit_balance"])
-				for r in page1_again["rows"]
-			],
+			[(r["gl_entry"], r["running_balance"]) for r in page1["rows"]],
+			[(r["gl_entry"], r["running_balance"]) for r in page1_again["rows"]],
 		)
 
 

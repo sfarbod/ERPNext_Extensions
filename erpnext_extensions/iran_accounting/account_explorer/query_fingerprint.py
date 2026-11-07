@@ -111,6 +111,7 @@ def canonical_query_dict(spec: AccountExplorerQuerySpec) -> dict:
 		"item_scope": {
 			"selected_item": getattr(an.item_scope, "selected_item", None),
 		},
+		"column_filters": _stable(getattr(an, "column_filters", None) or {}),
 		"presentation_currency": spec.presentation_currency,
 	}
 

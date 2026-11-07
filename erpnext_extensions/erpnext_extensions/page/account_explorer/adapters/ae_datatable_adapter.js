@@ -373,6 +373,8 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		this._bind_resize_observer();
 		this._bind_column_resize_listener();
 		this._apply_sticky_first_column();
+		this._bind_server_column_filters(options);
+		this._restore_column_filter_inputs(options.initial_column_filters || {});
 		this._sync_loading_state();
 		await this._finalize_mount(generation);
 		if (this._is_stale_mount(generation)) {
@@ -529,6 +531,41 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		};
 	}
 
+	_bind_server_column_filters(options = {}) {
+		if (!options.inline_filters || !options.on_server_column_filters || !this._datatable) {
+			return;
+		}
+		const column_manager = this._datatable.columnmanager;
+		if (!column_manager) {
+			return;
+		}
+		// Replace client-only page filter with server-side Account Explorer filters.
+		column_manager.applyFilter = (filters) => {
+			options.on_server_column_filters(filters || {});
+		};
+		if (typeof column_manager.toggleFilter === "function") {
+			column_manager.toggleFilter(true);
+		}
+	}
+
+	_restore_column_filter_inputs(filters_by_id = {}) {
+		if (!this._datatable || !this._host || !filters_by_id || !Object.keys(filters_by_id).length) {
+			return;
+		}
+		const columns = this._column_defs || [];
+		const offset = this._options?.checkbox_column === false ? 0 : 1;
+		columns.forEach((col, index) => {
+			const value = filters_by_id[col.id];
+			if (value == null || value === "") {
+				return;
+			}
+			const input = this._host.querySelector(`.dt-cell--col-${index + offset} .dt-filter`);
+			if (input) {
+				input.value = value;
+			}
+		});
+	}
+
 	_format_text_cell(display, options = {}) {
 		const text = display ?? "";
 		const escaped = frappe.utils.escape_html(String(text));
@@ -542,6 +579,14 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		const source_row = this._resolve_source_row(row);
 		if (column.id === "__ae_actions") {
 			return options.render_actions_html?.(source_row) || "";
+		}
+		if (source_col?.id === "running_balance" || source_col?.id === "running_balance_display") {
+			const display =
+				options.format_running_balance?.(value, source_row) ||
+				source_row?.running_balance_display ||
+				value ||
+				"";
+			return this._format_text_cell(display);
 		}
 		if (source_col?.fieldtype === "Currency") {
 			const formatted = options.format_amount?.(value, source_row, source_col) || {

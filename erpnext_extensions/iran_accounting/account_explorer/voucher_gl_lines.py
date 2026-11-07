@@ -49,6 +49,7 @@ def build_voucher_gl_line_summary(spec: AccountExplorerQuerySpec) -> dict:
 
 	rows, totals, total_rows = _paged_gl_lines(spec, dimensions, limit=page_size, offset=offset)
 	_attach_inventory_attribution(spec, rows)
+	total_pages = max(1, (total_rows + page_size - 1) // page_size) if page_size else 1
 
 	return {
 		"rows": rows,
@@ -57,7 +58,9 @@ def build_voucher_gl_line_summary(spec: AccountExplorerQuerySpec) -> dict:
 			"page": page,
 			"page_size": page_size,
 			"total_rows": total_rows,
+			"total_pages": total_pages,
 			"has_next": offset + page_size < total_rows,
+			"has_previous": page > 1,
 		},
 		"dimensions": [
 			{
@@ -84,8 +87,8 @@ VOUCHER_EXPORT_ROW_FIELDS = (
 	"account_name",
 	"debit",
 	"credit",
-	"running_debit_balance",
-	"running_credit_balance",
+	"running_balance",
+	"running_balance_display",
 	"account_currency",
 	"remarks",
 	"party_type",
@@ -118,12 +121,25 @@ def _running_partition_sql(spec: AccountExplorerQuerySpec, *, alias: str = "gle_
 
 
 def _split_running_net(running_net) -> tuple[float, float]:
+	"""Legacy helper kept for tests that still assert split presentation."""
 	net = flt(running_net)
 	if net > 0:
 		return net, 0.0
 	if net < 0:
 		return 0.0, abs(net)
 	return 0.0, 0.0
+
+
+def _running_balance_fields(running_net) -> dict:
+	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
+		format_running_balance_display,
+	)
+
+	net = flt(running_net)
+	return {
+		"running_balance": net,
+		"running_balance_display": format_running_balance_display(net),
+	}
 
 
 def _opening_seed_sql(spec: AccountExplorerQuerySpec, gle, dimensions: list[dict]) -> str | None:
@@ -298,7 +314,19 @@ def _paged_gl_lines(
 	else:
 		opening_join = "left join (select null as account, 0 as opening_net) opening on 1=0"
 
-	if cached is not None:
+	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
+		normalize_column_filters,
+		post_filter_voucher_rows,
+		running_balance_sql_predicate,
+	)
+
+	rb_filter = normalize_column_filters(getattr(spec, "column_filters", None) or {}).get(
+		"running_balance"
+	)
+	rb_predicate = running_balance_sql_predicate(rb_filter) if rb_filter else None
+	rb_where = f"where {rb_predicate}" if rb_predicate else ""
+
+	if cached is not None and not rb_predicate:
 		totals, total_rows = cached
 		if total_rows == 0:
 			return [], totals, 0
@@ -306,12 +334,17 @@ def _paged_gl_lines(
 			f"""
 			with gle_lines as (
 				{inner_sql}
-			){opening_cte}
-			select
-				gle_lines.*,
-				{running_select}
-			from gle_lines
-			{opening_join}
+			){opening_cte},
+			balanced as (
+				select
+					gle_lines.*,
+					{running_select}
+				from gle_lines
+				{opening_join}
+			)
+			select *
+			from balanced
+			{rb_where}
 			order by {order_sql}
 			limit {cint(limit)} offset {cint(offset)}
 			""",
@@ -319,28 +352,37 @@ def _paged_gl_lines(
 		)
 		page_rows = [_row_dict(row, dimensions) for row in rows]
 		enrich_rows_with_party_names(page_rows)
-		return page_rows, totals, total_rows
+		return post_filter_voucher_rows(page_rows, spec), totals, total_rows
 
 	rows = frappe.db.sql(
 		f"""
 		with gle_lines as (
 			{inner_sql}
-		){opening_cte}
+		){opening_cte},
+		balanced as (
+			select
+				gle_lines.*,
+				{running_select}
+			from gle_lines
+			{opening_join}
+		)
 		select
-			gle_lines.*,
+			balanced.*,
 			count(*) over() as _total_rows,
-			coalesce(sum(gle_lines.debit) over(), 0) as _total_debit,
-			coalesce(sum(gle_lines.credit) over(), 0) as _total_credit,
-			{running_select}
-		from gle_lines
-		{opening_join}
+			coalesce(sum(balanced.debit) over(), 0) as _total_debit,
+			coalesce(sum(balanced.credit) over(), 0) as _total_credit
+		from balanced
+		{rb_where}
 		order by {order_sql}
 		limit {cint(limit)} offset {cint(offset)}
 		""",
 		as_dict=True,
 	)
 	if not rows:
-		totals, total_rows = _gl_line_totals(spec)
+		if rb_predicate:
+			totals, total_rows = _empty_voucher_totals(), 0
+		else:
+			totals, total_rows = _gl_line_totals(spec)
 		_store_cached_voucher_totals(spec, totals, total_rows)
 		return [], totals, total_rows
 
@@ -348,7 +390,7 @@ def _paged_gl_lines(
 	_store_cached_voucher_totals(spec, totals, total_rows)
 	page_rows = [_row_dict(row, dimensions) for row in rows]
 	enrich_rows_with_party_names(page_rows)
-	return page_rows, totals, total_rows
+	return post_filter_voucher_rows(page_rows, spec), totals, total_rows
 
 
 def _get_cached_voucher_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int] | None:
@@ -383,15 +425,18 @@ def _gl_line_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int]:
 		return cached
 
 	gle = frappe.qb.DocType("GL Entry")
+	acc = frappe.qb.DocType("Account")
 	query = (
 		frappe.qb.from_(gle)
+		.left_join(acc)
+		.on(gle.account == acc.name)
 		.select(
 			gle.name.as_("gl_entry"),
 			gle.debit,
 			gle.credit,
 		)
 	)
-	query = _apply_voucher_line_filters(query, gle, spec)
+	query = _apply_voucher_line_filters(query, gle, spec, acc=acc)
 	query = query.force_index("company")
 	inner_sql = query.get_sql()
 	row = frappe.db.sql(
@@ -414,7 +459,11 @@ def _gl_line_totals(spec: AccountExplorerQuerySpec) -> tuple[dict, int]:
 	return totals, total_rows
 
 
-def _apply_voucher_line_filters(query, gle, spec: AccountExplorerQuerySpec):
+def _apply_voucher_line_filters(query, gle, spec: AccountExplorerQuerySpec, acc=None):
+	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
+		apply_column_filters_to_gle_query,
+	)
+
 	query = apply_scoped_gle_filters(query, gle, spec)
 	query = (
 		query.where(gle.voucher_type.isnotnull())
@@ -426,6 +475,8 @@ def _apply_voucher_line_filters(query, gle, spec: AccountExplorerQuerySpec):
 	query = apply_opening_entry_filters(query, gle, spec)
 	if spec.hide_zero_rows:
 		query = query.where((gle.debit != 0) | (gle.credit != 0))
+	if acc is not None:
+		query = apply_column_filters_to_gle_query(query, gle, acc, spec)
 	return query
 
 
@@ -478,7 +529,7 @@ def _base_line_query(spec: AccountExplorerQuerySpec, gle, acc, dimensions: list[
 		.on(gle.account == acc.name)
 		.select(*select_fields)
 	)
-	query = _apply_voucher_line_filters(query, gle, spec)
+	query = _apply_voucher_line_filters(query, gle, spec, acc=acc)
 	query = query.force_index("company")
 	return query
 
@@ -491,7 +542,11 @@ def _order_by_sql(spec: AccountExplorerQuerySpec) -> str:
 	# Window query aliases drop table prefixes from qb select aliases.
 	primary = primary.replace("gle.", "").replace("acc.", "")
 	direction = "desc" if (spec.pagination.sort_order or "asc").lower() == "desc" else "asc"
-	return f"{primary} {direction}, voucher_type asc, voucher_no asc, gl_entry asc"
+	# When sorting by posting_date, match the running-balance window tie-breakers
+	# (creation, gl_entry) so visual Debit/Credit accumulation stays consistent.
+	if requested == "posting_date":
+		return f"posting_date {direction}, creation {direction}, gl_entry {direction}"
+	return f"{primary} {direction}, posting_date asc, creation asc, gl_entry asc"
 
 
 def _row_dict(row, dimensions: list[dict]) -> dict:
@@ -499,7 +554,7 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 	party = row.get("party") or ""
 	debit = flt(row.get("debit"))
 	credit = flt(row.get("credit"))
-	running_debit, running_credit = _split_running_net(row.get("running_net"))
+	running_fields = _running_balance_fields(row.get("running_net"))
 	account_code = cstr(row.get("account_code") or "")
 	entry = {
 		"row_key": f"glentry:{row.get('gl_entry')}",
@@ -517,8 +572,7 @@ def _row_dict(row, dimensions: list[dict]) -> dict:
 		"party_name": "",  # Batched after page materialization.
 		"debit": debit,
 		"credit": credit,
-		"running_debit_balance": running_debit,
-		"running_credit_balance": running_credit,
+		**running_fields,
 		"account_currency": row.get("account_currency") or "",
 		"currency": row.get("account_currency") or "",
 		"debit_in_account_currency": flt(row.get("debit_in_account_currency")),
@@ -626,7 +680,7 @@ def _export_batch(
 		key = _partition_key(spec, row)
 		running_net = flt(running_state.get(key)) + flt(row.get("debit")) - flt(row.get("credit"))
 		running_state[key] = running_net
-		running_debit, running_credit = _split_running_net(running_net)
+		running_fields = _running_balance_fields(running_net)
 		out.append(
 			{
 				"gl_entry": row.get("gl_entry") or row.get("name"),
@@ -638,8 +692,7 @@ def _export_batch(
 				"account_name": row.get("account_name"),
 				"debit": row.get("debit"),
 				"credit": row.get("credit"),
-				"running_debit_balance": running_debit,
-				"running_credit_balance": running_credit,
+				**running_fields,
 				"account_currency": row.get("account_currency"),
 				"remarks": row.get("remarks"),
 				"party_type": row.get("party_type") or "",

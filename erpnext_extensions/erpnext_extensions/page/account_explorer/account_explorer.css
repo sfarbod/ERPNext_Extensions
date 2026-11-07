@@ -1639,6 +1639,33 @@ html[dir="rtl"] .account-explorer-page .ae-grid-toolbar-meta {
 	padding: 4px 2px;
 }
 
+.account-explorer-page .ae-pagination-bar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+	width: 100%;
+}
+
+.account-explorer-page .ae-page-indicator {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin: 0 4px;
+	font-size: var(--text-sm, 12px);
+}
+
+.account-explorer-page .ae-page-input {
+	width: 64px;
+	display: inline-block;
+	height: 26px;
+	padding: 2px 6px;
+}
+
+.account-explorer-page .ae-page-btn {
+	min-width: auto;
+}
+
 .account-explorer-page .ae-warning-banner {
 	padding: 5px 7px;
 	border-radius: var(--border-radius);
