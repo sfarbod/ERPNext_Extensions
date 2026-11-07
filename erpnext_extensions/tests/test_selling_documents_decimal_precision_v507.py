@@ -14,7 +14,13 @@ from erpnext_extensions import selling_documents_decimal_precision_v507 as mod
 
 class TestSellingDocumentsDecimalPrecisionV507(unittest.TestCase):
 	def test_allowlist_field_count(self):
-		self.assertEqual(len(mod.selling_field_targets()), 127)
+		# 127 (v5.0.7)
+		# + custom_gross_total, custom_total_discount, custom_gross_amount (v5.7.9 overflow)
+		# + mapped_additional_discount_amount ×3 + SI Item asset_* ×2 (ERPNext field drift)
+		self.assertEqual(len(mod.selling_field_targets()), 135)
+		self.assertIn("custom_gross_total", mod.SELLING_AMOUNT_FIELDS_BY_DOCTYPE["Sales Invoice"])
+		self.assertIn("custom_total_discount", mod.SELLING_AMOUNT_FIELDS_BY_DOCTYPE["Sales Invoice"])
+		self.assertIn("custom_gross_amount", mod.SELLING_AMOUNT_FIELDS_BY_DOCTYPE["Sales Invoice Item"])
 
 	def test_root_doctypes(self):
 		self.assertEqual(mod.SELLING_ROOT_DOCTYPES, ("Sales Order", "Delivery Note", "Sales Invoice"))

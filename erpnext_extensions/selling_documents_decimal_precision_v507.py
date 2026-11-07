@@ -70,6 +70,7 @@ SELLING_AMOUNT_FIELDS_BY_DOCTYPE: dict[str, tuple[str, ...]] = {
 		"company_total_stock",
 		"discount_amount",
 		"distributed_discount_amount",
+		"mapped_additional_discount_amount",
 		"net_amount",
 		"rate_with_margin",
 	),
@@ -97,7 +98,10 @@ SELLING_AMOUNT_FIELDS_BY_DOCTYPE: dict[str, tuple[str, ...]] = {
 		"base_total_taxes_and_charges",
 		"base_write_off_amount",
 		"change_amount",
+		# v5.7.9: Discount Calculation client script totals (were DECIMAL(21,9))
+		"custom_gross_total",
 		"custom_sales_growth_discount",
+		"custom_total_discount",
 		"custom_total_foc_amount",
 		"custom_total_raw_discount_amount",
 		"discount_amount",
@@ -118,16 +122,21 @@ SELLING_AMOUNT_FIELDS_BY_DOCTYPE: dict[str, tuple[str, ...]] = {
 	"Sales Invoice Advance": ("advance_amount", "allocated_amount", "exchange_gain_loss"),
 	"Sales Invoice Item": (
 		"amount",
+		"asset_gross_value",
+		"asset_value_after_depreciation",
 		"base_amount",
 		"base_net_amount",
 		"base_rate_with_margin",
 		"company_total_stock",
 		"custom_additional_discount_share",
 		"custom_base_amount_for_payment",
+		# v5.7.9: per-row gross from price_list_rate × qty (was DECIMAL(21,9))
+		"custom_gross_amount",
 		"custom_net_amount_for_payment",
 		"custom_raw_discount_amount",
 		"discount_amount",
 		"distributed_discount_amount",
+		"mapped_additional_discount_amount",
 		"net_amount",
 		"rate_with_margin",
 	),
@@ -163,6 +172,7 @@ SELLING_AMOUNT_FIELDS_BY_DOCTYPE: dict[str, tuple[str, ...]] = {
 		"discount_amount",
 		"distributed_discount_amount",
 		"gross_profit",
+		"mapped_additional_discount_amount",
 		"net_amount",
 		"rate_with_margin",
 	),
@@ -228,6 +238,7 @@ EXCLUDED_RATE_PERCENT_FIELDS_BY_DOCTYPE: dict[str, tuple[str, ...]] = {
 		"projected_qty",
 		"qty",
 		"rate",
+		"received_qty",
 		"requested_qty",
 	),
 	"Payment Schedule": ("discount", "invoice_portion"),
@@ -668,3 +679,117 @@ def audit_report_rows() -> list[dict[str, Any]]:
 				}
 			)
 	return rows
+
+
+# Fields added in v5.7.9 after production SI overflow from Delivery Note.
+V579_CRITICAL_SALES_INVOICE_FIELDS: tuple[str, ...] = (
+	"custom_gross_total",
+	"custom_total_discount",
+)
+V579_CRITICAL_SALES_INVOICE_ITEM_FIELDS: tuple[str, ...] = ("custom_gross_amount",)
+
+
+def ensure_custom_field_length(doctype: str, fieldname: str, target_length: int = TARGET_LENGTH) -> str:
+	"""Keep tabCustom Field.length aligned with Property Setter / SQL DECIMAL(30,9)."""
+	name = frappe.db.get_value("Custom Field", {"dt": doctype, "fieldname": fieldname}, "name")
+	if not name:
+		return "SKIP_MISSING_CUSTOM_FIELD"
+	current = cint(frappe.db.get_value("Custom Field", name, "length"))
+	if current >= cint(target_length):
+		return SKIP_ALREADY_CORRECT
+	frappe.db.set_value("Custom Field", name, "length", cint(target_length), update_modified=False)
+	return "UPDATE_CUSTOM_FIELD_LENGTH"
+
+
+def get_selling_precision_status() -> dict[str, Any]:
+	correct: list[dict[str, Any]] = []
+	incorrect: list[dict[str, Any]] = []
+	missing: list[dict[str, Any]] = []
+	for target in selling_field_targets():
+		row = {
+			"doctype": target.doctype,
+			"table": target.table,
+			"field": target.fieldname,
+			"expected": f"decimal({TARGET_PRECISION},{TARGET_SCALE})",
+		}
+		if not frappe.db.exists("DocType", target.doctype):
+			row["status"] = "missing_doctype"
+			missing.append(row)
+			continue
+		meta = frappe.get_meta(target.doctype, cached=False)
+		if not meta.get_field(target.fieldname):
+			row["status"] = "optional_absent"
+			missing.append(row)
+			continue
+		info = read_column_schema(target.table, target.fieldname)
+		if not info:
+			row["status"] = "missing_column"
+			missing.append(row)
+			continue
+		row["actual"] = info.get("COLUMN_TYPE")
+		action = decide_decimal_action(info)
+		if action in {SKIP_ALREADY_CORRECT, SKIP_ALREADY_WIDER}:
+			row["status"] = "ok"
+			correct.append(row)
+		else:
+			row["status"] = "mismatch"
+			row["action"] = action
+			incorrect.append(row)
+	return {
+		"version_layer": "5.7.9",
+		"registry": "selling_documents_decimal_precision_v507.SELLING_AMOUNT_FIELDS_BY_DOCTYPE",
+		"total_registered": len(list(selling_field_targets())),
+		"correct": len(correct),
+		"incorrect": len(incorrect),
+		"missing": len(missing),
+		"incorrect_targets": incorrect,
+		"missing_targets": missing,
+		"critical_sales_invoice": {
+			field: (read_column_schema("tabSales Invoice", field) or {}).get("COLUMN_TYPE")
+			for field in V579_CRITICAL_SALES_INVOICE_FIELDS
+		},
+		"critical_sales_invoice_item": {
+			field: (read_column_schema("tabSales Invoice Item", field) or {}).get("COLUMN_TYPE")
+			for field in V579_CRITICAL_SALES_INVOICE_ITEM_FIELDS
+		},
+	}
+
+
+def repair_selling_documents_decimal_schema(*, run_completeness_guard: bool = False) -> dict[str, Any]:
+	"""Idempotent metadata + SQL heal for the selling DECIMAL(30,9) registry."""
+	logger = frappe.logger("erpnext_extensions.selling_documents_decimal_precision_v507")
+	logger.info("Starting selling documents DECIMAL(30,9) repair")
+	before = get_selling_precision_status()
+
+	# Align Custom Field.length for the v5.7.9 critical custom monetary columns.
+	for doctype, fields in (
+		("Sales Invoice", V579_CRITICAL_SALES_INVOICE_FIELDS),
+		("Sales Invoice Item", V579_CRITICAL_SALES_INVOICE_ITEM_FIELDS),
+	):
+		for fieldname in fields:
+			ensure_custom_field_length(doctype, fieldname)
+
+	metadata_results = verify_and_set_metadata(logger)
+	schema_results = apply_decimal_schema_targets(logger)
+	repaired = [
+		f"{row['table']}.{row['field']}"
+		for row in schema_results
+		if row.get("action") == ALTER_TO_DECIMAL_30_9 and row.get("status") == "ok"
+	]
+	errors = [row for row in metadata_results + schema_results if row.get("status") == "error"]
+	if errors:
+		raise RuntimeError(
+			"Selling documents DECIMAL(30,9) repair encountered errors:\n"
+			+ "\n".join(f"{row.get('doctype') or row.get('table')}.{row.get('field')}" for row in errors)
+		)
+	assert_schema_targets(logger)
+	if run_completeness_guard:
+		assert_field_classification_completeness()
+	after = get_selling_precision_status()
+	logger.info(
+		"Completed selling repair: repaired=%s incorrect_before=%s incorrect_after=%s",
+		len(repaired),
+		before["incorrect"],
+		after["incorrect"],
+	)
+	return {"repaired": repaired, "before": before, "after": after}
