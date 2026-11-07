@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import cint, get_link_to_form, now_datetime, today
+from frappe.utils import cint, get_link_to_form, getdate, now_datetime, today
 
 from erpnext_extensions.asset_usage_depreciation.constants import (
 	ALLOC_ISSUED,
@@ -483,6 +483,37 @@ def create_asset_movement(doc, *, auto_submit: int = 0, ignore_permissions: bool
 	return am
 
 
+def material_request_dates_from_asset_request(doc, ar_item=None) -> tuple:
+	"""Resolve MR transaction_date and item schedule_date from an Asset Request.
+
+	ERPNext ``BuyingController.validate_schedule_date`` rejects item
+	``schedule_date`` (Required By) before header ``transaction_date``.
+
+	Previously MR used ``transaction_date=today()`` while inheriting the Asset
+	Request ``required_date``. When Request Purchase ran after the AR required
+	date (common), validation failed even though AR Required Date was after AR
+	Transaction Date (e.g. Jalali 1405-08-05 / 1405-08-06 → 2026-10-27 / 2026-10-28).
+
+	Policy:
+	- MR ``transaction_date`` = Asset Request ``transaction_date`` (fallback today).
+	- Item ``schedule_date`` = item ``required_date`` or header ``required_date``
+	  (fallback transaction_date).
+	- If schedule would precede transaction_date, clamp to transaction_date
+	  (does not weaken ERPNext's rule; only avoids inventing an invalid pair).
+	"""
+	txn = getdate(doc.transaction_date) if doc.get("transaction_date") else getdate(today())
+	required = None
+	if ar_item is not None and ar_item.get("required_date"):
+		required = getdate(ar_item.required_date)
+	if required is None and doc.get("required_date"):
+		required = getdate(doc.required_date)
+	if required is None:
+		required = txn
+	if required < txn:
+		required = txn
+	return txn, required
+
+
 def create_material_request(doc, *, auto_submit: int = 0, ignore_permissions: bool = True):
 	"""Create one Purchase Material Request from purchase allocations (fulfilled item)."""
 	pending = [
@@ -506,6 +537,7 @@ def create_material_request(doc, *, auto_submit: int = 0, ignore_permissions: bo
 	item_by_name = {row.name: row for row in (doc.get("items") or [])}
 	by_key: dict[tuple, list] = {}
 	dims_by_key: dict[tuple, dict] = {}
+	ar_item_by_key: dict[tuple, object] = {}
 	for alloc in pending:
 		purchase_item = alloc.fulfilled_purchase_item or alloc.fulfilled_item_code
 		ar_item = item_by_name.get(alloc.asset_request_item)
@@ -513,29 +545,34 @@ def create_material_request(doc, *, auto_submit: int = 0, ignore_permissions: bo
 		key = (purchase_item, dimension_fingerprint(dims))
 		by_key.setdefault(key, []).append(alloc)
 		dims_by_key.setdefault(key, dims)
+		ar_item_by_key.setdefault(key, ar_item)
+
+	header_txn, _ = material_request_dates_from_asset_request(doc)
 
 	mr = frappe.new_doc("Material Request")
 	mr.material_request_type = "Purchase"
 	mr.company = doc.company
-	mr.transaction_date = today()
-	mr.schedule_date = doc.required_date or today()
+	mr.transaction_date = header_txn
 	if hasattr(mr, "custom_asset_request"):
 		mr.custom_asset_request = doc.name
 	if hasattr(mr, "custom_created_from_asset_request"):
 		mr.custom_created_from_asset_request = 1
 
+	item_schedule_dates = []
 	for key, allocs in by_key.items():
 		item_code = key[0]
 		item = frappe.db.get_value(
 			"Item", item_code, ["item_name", "description", "stock_uom", "item_group"], as_dict=True
 		) or {}
+		_txn, schedule_date = material_request_dates_from_asset_request(doc, ar_item_by_key.get(key))
+		item_schedule_dates.append(schedule_date)
 		row = mr.append(
 			"items",
 			{
 				"item_code": item_code,
 				"item_name": item.get("item_name"),
 				"description": item.get("description"),
-				"schedule_date": doc.required_date or today(),
+				"schedule_date": schedule_date,
 				"qty": len(allocs),
 				"uom": item.get("stock_uom"),
 				"stock_uom": item.get("stock_uom"),
@@ -546,6 +583,9 @@ def create_material_request(doc, *, auto_submit: int = 0, ignore_permissions: bo
 		apply_dimensions_to_target(row, dims_by_key[key])
 		if hasattr(row, "custom_asset_request_item"):
 			row.custom_asset_request_item = allocs[0].asset_request_item
+
+	# Header Required By = earliest item schedule (same as BuyingController).
+	mr.schedule_date = min(item_schedule_dates) if item_schedule_dates else header_txn
 
 	_persist_generated_doc(mr, ignore_permissions=ignore_permissions, auto_submit=auto_submit)
 
