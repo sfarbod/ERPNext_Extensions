@@ -113,7 +113,25 @@ def journal_entry_impact_snapshot(je_name: str) -> dict[str, Any]:
 
 
 def rollback_journal_reference_row(row_name: str | None) -> None:
-	if row_name and frappe.db.exists("PDC Journal Reference", row_name):
+	if not row_name or not frappe.db.exists("PDC Journal Reference", row_name):
+		return
+	from erpnext_extensions.cheque_management.pdc_journal_reference_guard import (
+		authorize_journal_reference_removal,
+	)
+
+	meta = frappe.db.get_value(
+		"PDC Journal Reference",
+		row_name,
+		["parent", "pdc_transition_key"],
+		as_dict=True,
+	)
+	pdc_name = (meta.parent if meta else "") or ""
+	tkey = (meta.pdc_transition_key if meta else "") or ""
+	with authorize_journal_reference_removal(
+		pdc_name,
+		rows=[row_name],
+		transition_keys=[tkey] if tkey else None,
+	):
 		frappe.delete_doc("PDC Journal Reference", row_name, force=1, ignore_permissions=True)
 
 

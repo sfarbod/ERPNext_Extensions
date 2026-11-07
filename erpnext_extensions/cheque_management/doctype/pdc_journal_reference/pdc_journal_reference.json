@@ -28,16 +28,19 @@
    "label": "Journal Entry",
    "options": "Journal Entry",
    "allow_on_submit": 1,
-   "reqd": 1
+   "read_only": 1,
+   "reqd": 1,
+   "description": "System-managed. Set only by PDC accounting transitions / Facility Debt Purchase settlement."
   },
   {
    "fieldname": "purpose",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Purpose",
-   "description": "Canonical tags for JE intent (§9.1). Map transitions in code to the first eight options. Last two values are legacy-only for old rows; new rows should not use them.",
+   "description": "Canonical tags for JE intent (§9.1). System-managed; map transitions in code. Last two values are legacy-only for old rows; new rows should not use them.",
    "options": "Receive\nUnder Collection\nCollected\nReturned\nPayable Issue\nPayable Clear\nEndorsement\nCancel\nBounce\nReplacement\nDebt Purchase Assignment\nDebt Purchase Settlement\nReturn from Bank",
    "allow_on_submit": 1,
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -53,14 +56,16 @@
    "fieldtype": "Date",
    "in_list_view": 1,
    "label": "Posting Date",
-   "allow_on_submit": 1
+   "allow_on_submit": 1,
+   "read_only": 1
   },
   {
    "fieldname": "amount",
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount",
-   "allow_on_submit": 1
+   "allow_on_submit": 1,
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
