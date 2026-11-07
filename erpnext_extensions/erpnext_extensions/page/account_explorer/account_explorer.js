@@ -4440,11 +4440,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			column_widths: { ...(this.grid_column_widths || {}) },
 			on_server_sort: (column_id, column) => this.handle_datatable_server_sort(column_id, column),
 			on_server_column_filters: (filters) => this.handle_datatable_column_filters(filters),
+			on_clear_column_filter: (field) => this.clear_single_column_filter(field),
 			on_selection_change: (checked_rows) => this.handle_datatable_selection_change(checked_rows),
 			on_column_removed: () => this.handle_datatable_column_state_changed(),
 			on_column_switched: () => this.handle_datatable_column_state_changed(),
 			on_column_resized: () => this.handle_datatable_column_state_changed(),
-			empty_message: __("No rows match the current scope."),
+			empty_message: Object.keys(this.analysis_context.column_filters || {}).length
+				? __("No rows match the current column filters.")
+				: __("No rows match the current scope."),
 			initial_column_filters: { ...(this.analysis_context.column_filters || {}) },
 		};
 	}
@@ -4464,6 +4467,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 	handle_datatable_column_filters(filters_by_col_index) {
 		const columns = this.last_summary_columns || this.columns || [];
+		const visible = this.get_summary_visible_columns
+			? this.get_summary_visible_columns(columns)
+			: columns;
 		// DataTable checkbox column occupies colIndex 0 when enabled.
 		const offset = 1;
 		const mapped = {};
@@ -4472,11 +4478,16 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			if (idx < 0) {
 				return;
 			}
-			const col = columns[idx];
+			const col = visible[idx] || columns[idx];
 			if (!col?.id || String(col.id).startsWith("__")) {
 				return;
 			}
-			mapped[col.id] = value;
+			let field = col.id;
+			// Party axis "Party Name" column id is display_title.
+			if (field === "party_name" && this.analysis_context.view_axis === "party") {
+				field = "display_title";
+			}
+			mapped[field] = value;
 		});
 		clearTimeout(this._column_filter_timer);
 		this._column_filter_timer = setTimeout(() => {
@@ -4574,8 +4585,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			return this._$grid_prefs_controls;
 		}
 		const $prefs = $('<div class="ae-grid-toolbar-prefs"></div>');
+		// Page size lives only in the bottom pagination toolbar (single source of truth).
 		$prefs.append(
-			this.build_page_size_control(),
 			this.build_number_format_control(),
 			$('<button type="button" class="btn btn-default btn-xs ae-grid-toolbar-btn ae-grid-toolbar-btn--reset-prefs">')
 				.text(__("Reset Grid Preferences"))
@@ -6253,7 +6264,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_gl_detail_view(columns);
 			return { ok: true };
 		}
-		if (!this.rows.length) {
+		const has_column_filters = Object.keys(this.analysis_context.column_filters || {}).length > 0;
+		if (!this.rows.length && !has_column_filters) {
 			this.destroy_summary_datatable();
 			if (this._is_stale_grid_render(render_generation)) {
 				return { ok: false, reason: "stale" };
@@ -6261,6 +6273,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_grid_empty_state(this.get_grid_empty_reason());
 			return { ok: true, empty: true };
 		}
+		// Keep DataTable headers + column filter inputs visible when filters yield zero rows.
 		if (this.is_datatable_summary_enabled()) {
 			try {
 				const result = await this.render_datatable_summary_grid(columns, render_generation);
@@ -8532,16 +8545,28 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 	}
 
+	_format_plain_int(value) {
+		/** Plain digit text — never frappe.format Int (returns HTML wrappers). */
+		const number = cint(value);
+		try {
+			return number.toLocaleString(frappe.boot?.lang || undefined);
+		} catch (error) {
+			return String(number);
+		}
+	}
+
 	render_pagination() {
 		this.$pagination.empty();
 		const page = cint(this.pagination?.page || this.analysis_context.page || 1);
 		const page_size = cint(this.pagination?.page_size || this.analysis_context.page_size || 50);
 		const total_rows = cint(this.pagination?.total_rows || 0);
 		const total_pages =
-			cint(this.pagination?.total_pages) ||
-			(page_size > 0 ? Math.max(1, Math.ceil(total_rows / page_size) || 1) : 1);
-		const has_previous = page > 1;
-		const has_next = !!(this.pagination?.has_next) || page < total_pages;
+			total_rows === 0
+				? 1
+				: cint(this.pagination?.total_pages) ||
+					(page_size > 0 ? Math.max(1, Math.ceil(total_rows / page_size) || 1) : 1);
+		const has_previous = page > 1 && total_rows > 0;
+		const has_next = total_rows > 0 && (!!(this.pagination?.has_next) || page < total_pages);
 
 		const go = (target) => {
 			let next = cint(target);
@@ -8554,22 +8579,27 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.refresh_summary();
 		};
 
-		const $bar = $('<div class="ae-pagination-bar" role="navigation" aria-label="' +
-			frappe.utils.escape_html(__("Pagination")) + '"></div>');
-		const btn = (label, disabled, handler, title) =>
+		const $bar = $(
+			'<div class="ae-pagination-bar" data-ae-pagination="1" role="navigation" aria-label="' +
+				frappe.utils.escape_html(__("Pagination")) +
+				'"></div>'
+		);
+		const btn = (label, disabled, handler, title, test_id) =>
 			$('<button type="button" class="btn btn-default btn-sm ae-page-btn">')
 				.text(label)
 				.attr("title", title || label)
+				.attr("data-ae-page-action", test_id || label)
 				.prop("disabled", !!disabled)
 				.on("click", handler);
 
-		$bar.append(btn(__("First"), !has_previous, () => go(1), __("First page")));
-		$bar.append(btn(__("Previous"), !has_previous, () => go(page - 1), __("Previous page")));
-		const $pageWrap = $('<span class="ae-page-indicator"></span>');
+		$bar.append(btn(__("First"), !has_previous, () => go(1), __("First page"), "first"));
+		$bar.append(btn(__("Previous"), !has_previous, () => go(page - 1), __("Previous page"), "previous"));
+		const $pageWrap = $('<span class="ae-page-indicator" data-ae-page-indicator="1"></span>');
 		$pageWrap.append(document.createTextNode(`${__("Page")} `));
 		const $input = $('<input type="number" class="ae-page-input form-control input-xs" min="1">')
 			.val(page)
 			.attr("aria-label", __("Page number"))
+			.attr("data-ae-page-input", "1")
 			.on("keydown", (event) => {
 				if (event.key === "Enter") {
 					event.preventDefault();
@@ -8579,20 +8609,68 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			.on("change", () => go($input.val()));
 		$pageWrap.append($input);
 		$pageWrap.append(
-			document.createTextNode(
-				` ${__("of")} ${frappe.format(total_pages, { fieldtype: "Int" })} — ${frappe.format(
-					total_rows,
-					{ fieldtype: "Int" }
-				)} ${__("rows")}`
-			)
+			document.createTextNode(` ${__("of")} ${this._format_plain_int(total_pages)}`)
 		);
+		const $rows = $(
+			'<span class="ae-page-total-rows" data-ae-total-rows="' +
+				frappe.utils.escape_html(String(total_rows)) +
+				'"></span>'
+		).text(` — ${this._format_plain_int(total_rows)} ${__("rows")}`);
+		$pageWrap.append($rows);
 		$bar.append($pageWrap);
-		$bar.append(btn(__("Next"), !has_next, () => go(page + 1), __("Next page")));
-		$bar.append(btn(__("Last"), !has_next, () => go(total_pages), __("Last page")));
-		if (typeof this.build_page_size_control === "function") {
-			$bar.append(this.build_page_size_control());
-		}
+		$bar.append(btn(__("Next"), !has_next, () => go(page + 1), __("Next page"), "next"));
+		$bar.append(btn(__("Last"), !has_next, () => go(total_pages), __("Last page"), "last"));
+		const $pageSize = this.build_page_size_control();
+		$pageSize.attr("data-ae-page-size", "1");
+		$bar.append($pageSize);
+		this.render_column_filter_chips($bar);
 		this.$pagination.append($bar);
+	}
+
+	render_column_filter_chips($bar) {
+		const filters = this.analysis_context.column_filters || {};
+		const keys = Object.keys(filters);
+		if (!keys.length) {
+			return;
+		}
+		const $chips = $('<div class="ae-column-filter-chips" data-ae-column-filter-chips="1"></div>');
+		keys.forEach((field) => {
+			const value = filters[field];
+			const $chip = $(
+				'<span class="ae-column-filter-chip" data-ae-column-filter-chip="' +
+					frappe.utils.escape_html(field) +
+					'"></span>'
+			);
+			$chip.append(
+				$("<span class='ae-column-filter-chip-label'></span>").text(`${__(field)}: ${value}`)
+			);
+			$chip.append(
+				$('<button type="button" class="ae-column-filter-chip-clear" aria-label="' +
+					frappe.utils.escape_html(__("Clear {0} filter", [__(field)])) +
+					'">×</button>')
+					.attr("data-ae-clear-column-filter", field)
+					.on("click", (event) => {
+						event.preventDefault();
+						event.stopPropagation();
+						this.clear_single_column_filter(field);
+					})
+			);
+			$chips.append($chip);
+		});
+		$bar.append($chips);
+	}
+
+	clear_single_column_filter(field, { refresh = true } = {}) {
+		const next = { ...(this.analysis_context.column_filters || {}) };
+		delete next[field];
+		// Also drop aliases for Party Name.
+		if (field === "display_title") {
+			delete next.party_name;
+		}
+		if (field === "party_name") {
+			delete next.display_title;
+		}
+		this.set_column_filters(next, { refresh });
 	}
 
 	set_column_filters(filters, { refresh = true } = {}) {

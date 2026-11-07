@@ -323,6 +323,40 @@ class TestPaginationMetaV577(unittest.TestCase):
 			self.assertGreaterEqual(pag["total_pages"], 2)
 
 
+class TestPartyNameColumnFilterV577(unittest.TestCase):
+	@classmethod
+	def setUpClass(cls):
+		frappe.set_user("Administrator")
+
+	def test_party_name_column_filter_uses_enriched_title(self):
+		from erpnext_extensions.iran_accounting.account_explorer.api import get_party_summary
+
+		payload = {
+			"document_scope": dict(FY1405),
+			"analysis_context": {
+				"view_axis": "party",
+				"detail_mode": "summary",
+				"page": 1,
+				"page_size": 50,
+				"sort_field": "display_title",
+				"sort_order": "asc",
+				"party_scope": {},
+				"account_scope": {},
+				"column_filters": {"display_title": "نانو"},
+			},
+		}
+		payload["document_scope"]["to_date"] = "2026-03-25"
+		data = get_party_summary(payload)
+		self.assertGreaterEqual(cint_safe(data["pagination"]["total_rows"]), 1)
+		for row in data["rows"]:
+			self.assertIn("نانو", cstr(row.get("display_title")))
+
+	def test_party_name_alias_normalizes_to_display_title(self):
+		out = normalize_column_filters({"party_name": "نانو"})
+		self.assertEqual(out.get("display_title"), "نانو")
+		self.assertNotIn("party_name", out)
+
+
 def cint_safe(value):
 	try:
 		return int(value or 0)

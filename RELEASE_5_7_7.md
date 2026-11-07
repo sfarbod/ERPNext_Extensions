@@ -63,6 +63,24 @@ Case A / Case B GL–SLE semantics:
 
 `erpnext_extensions.__version__` → **5.7.7**
 
+### Corrective UI fixes (same unreleased 5.7.7)
+
+1. **Duplicate / malformed pagination**
+   - Root cause: page-size control was rendered both in the grid toolbar prefs and in
+     the bottom pagination bar; page/row counts used `frappe.format(..., Int)` which
+     injects HTML wrappers, then inserted via `createTextNode` (raw markup visible).
+   - Fix: single `[data-ae-pagination]` toolbar only; plain integer formatting;
+     page size removed from grid toolbar prefs.
+
+2. **Party Name column filter**
+   - Root cause: DataTable `update()`/`refresh()` rebuilt filter inputs without
+     restoring values; empty filtered results destroyed the grid (and filters);
+     Party Name (`display_title`) column filters ran **before** party enrichment,
+     so Persian name searches matched nothing useful / lost UI state.
+   - Fix: restore + clear (×) on every mount/update; keep empty DataTable when
+     column filters are active; force full enrichment when `display_title` /
+     `party_name` column filters are present; chip + individual clear.
+
 ### Deploy note
 
 No schema migration required. Clear browser cache / hard-reload Desk so Account Explorer

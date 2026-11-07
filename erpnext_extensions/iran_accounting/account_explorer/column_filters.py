@@ -53,6 +53,9 @@ def normalize_column_filters(raw) -> dict[str, str]:
 		# Migrate legacy running balance filter keys.
 		if field in {"running_debit_balance", "running_credit_balance"}:
 			field = "running_balance"
+		# Party Name column on the Parties axis is ``display_title``.
+		if field == "party_name":
+			field = "display_title"
 		text = cstr(value).strip()
 		if text:
 			out[field] = text
