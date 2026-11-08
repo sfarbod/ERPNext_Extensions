@@ -308,6 +308,55 @@ def collapse_sa_entries_to_single_residual(doc, gl_map: list | None) -> list:
 	return others
 
 
+def drop_net_zero_merged_gl_rows(doc, gl_map: list | None) -> list:
+	"""Drop rows where debit equals credit after ``process_gl_map`` merge.
+
+	Same-account Repack (batch↔batch or item↔item) posts inventory debit and
+	credit that Core merges onto one GL dict. ``make_gl_entries`` then throws
+	``Incorrect number of General Ledger Entries found`` when ``len(gl_map)==1``.
+
+	A truly net-zero merged row (debit == credit on that already-merged key) is
+	economically a no-op and must become an empty map — not a single-row map.
+	One-sided residuals (Manufacture SA, unequal Repack nets) are preserved.
+	Does not invent clearing / bridge accounts. Does not alter Department.
+	"""
+	if not gl_map:
+		return gl_map or []
+
+	ccy = get_company_currency(doc.company) if getattr(doc, "company", None) else None
+	kept: list = []
+	for entry in gl_map:
+		debit = float(round_currency(flt(entry.get("debit")), ccy) if ccy else flt(entry.get("debit")))
+		credit = float(
+			round_currency(flt(entry.get("credit")), ccy) if ccy else flt(entry.get("credit"))
+		)
+		# Empty / cancelled merge key — drop.
+		if abs(debit) < 0.5 and abs(credit) < 0.5:
+			continue
+		# Merged same-account cancel (debit == credit) — drop; do not leave len==1.
+		if abs(debit - credit) < 0.5:
+			continue
+		kept.append(entry)
+	return kept
+
+
+def finalize_normalized_manufacture_gl_map(doc, gl_map: list | None) -> list:
+	"""Collapse SA residual then drop net-zero merged rows (safe for make_gl_entries)."""
+	collapsed = collapse_sa_entries_to_single_residual(doc, gl_map or [])
+	return drop_net_zero_merged_gl_rows(doc, collapsed)
+
+
+def assert_gl_map_safe_for_make_gl_entries(gl_map: list | None) -> None:
+	"""Core ``make_gl_entries`` accepts empty or len>1 only — never a single row."""
+	n = len(gl_map or [])
+	if n == 1:
+		frappe.throw(
+			_(
+				"Incorrect number of General Ledger Entries found. You might have selected a wrong Account in the transaction."
+			)
+		)
+
+
 def build_normalized_manufacture_gl_entries(doc, inventory_account_map=None) -> list:
 	"""Source-correct Manufacture GL: inventory + OH credits + one SA residual."""
 	from erpnext.accounts.general_ledger import process_gl_map
@@ -367,7 +416,7 @@ def build_normalized_manufacture_gl_entries(doc, inventory_account_map=None) -> 
 	gl_map = process_gl_map(
 		gl_list, from_repost=bool(frappe.flags.get("through_repost_item_valuation"))
 	)
-	return collapse_sa_entries_to_single_residual(doc, gl_map)
+	return finalize_normalized_manufacture_gl_map(doc, gl_map)
 
 
 def build_manufacture_gl_entries(doc, inventory_account_map=None, *, original_get_gl_entries=None) -> list:
