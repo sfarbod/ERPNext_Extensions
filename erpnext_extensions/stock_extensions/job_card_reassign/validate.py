@@ -21,18 +21,57 @@ def _msg(code: str, message: str, extra: dict | None = None) -> dict:
 	return row
 
 
+def _actual_sfg_producers(selected_job_cards: list[str], finished_good_by_jc: dict[str, str]) -> dict[str, str]:
+	"""Return selected JC → finished_good only when a submitted Manufacture SE produced that FG.
+
+	A Job Card that merely declares ``finished_good`` (e.g. Open/draft with manufactured_qty=0)
+	must not be treated as the producer of warehouse stock consumed by other Job Cards.
+	"""
+	if not selected_job_cards or not finished_good_by_jc:
+		return {}
+	placeholders = ", ".join(["%s"] * len(selected_job_cards))
+	rows = frappe.db.sql(
+		f"""
+		SELECT se.job_card, sed.item_code
+		FROM `tabStock Entry` se
+		INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+		WHERE se.docstatus = 1
+			AND se.purpose = 'Manufacture'
+			AND IFNULL(se.job_card, '') IN ({placeholders})
+			AND IFNULL(sed.t_warehouse, '') != ''
+			AND IFNULL(sed.s_warehouse, '') = ''
+		GROUP BY se.job_card, sed.item_code
+		""",
+		tuple(selected_job_cards),
+		as_dict=True,
+	)
+	produced: dict[str, str] = {}
+	for row in rows:
+		expected = finished_good_by_jc.get(row.job_card)
+		if expected and row.item_code == expected:
+			produced[row.job_card] = row.item_code
+	return produced
+
+
 def collect_sfg_consumption_blockers(
 	source_work_order: str,
 	selected_job_cards: list[str],
 	job_cards: list[dict],
 ) -> list[dict]:
-	"""Block when an unselected source JC already consumed a selected JC's SFG."""
+	"""Block when an unselected source JC already consumed a selected JC's produced SFG.
+
+	Only Job Cards that have actually manufactured their finished good (submitted Manufacture
+	Stock Entry) are treated as producers. Declaring the same finished_good item on an
+	unstarted Job Card does not create a move dependency with historical consumers of that
+	item produced by a different Job Card on the same Work Order.
+	"""
 	selected = set(selected_job_cards)
-	sfg_by_jc = {
+	declared_fg = {
 		j["name"]: j.get("finished_good")
 		for j in job_cards
 		if j["name"] in selected and j.get("finished_good") and cint(j.get("track_semi_finished_goods"))
 	}
+	sfg_by_jc = _actual_sfg_producers(selected_job_cards, declared_fg)
 	sfg_items = {fg for fg in sfg_by_jc.values() if fg}
 	if not sfg_items:
 		return []
