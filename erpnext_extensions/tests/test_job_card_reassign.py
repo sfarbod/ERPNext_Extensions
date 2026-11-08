@@ -206,6 +206,75 @@ class TestApiGuard(unittest.TestCase):
 				api.get_job_cards("WO-A")
 
 
+class TestSfgConsumptionBlockers(unittest.TestCase):
+	def test_declared_finished_good_without_manufacture_is_not_a_dependency(self):
+		"""Open/draft JCs that only declare finished_good must not block on historical consumers."""
+		from erpnext_extensions.stock_extensions.job_card_reassign import validate
+
+		selected_docs = [
+			{
+				"name": "JC-OPEN",
+				"finished_good": "SFG-1",
+				"track_semi_finished_goods": 1,
+				"docstatus": 0,
+				"manufactured_qty": 0,
+			}
+		]
+		all_docs = selected_docs + [
+			{
+				"name": "JC-DOWNSTREAM",
+				"finished_good": "SFG-2",
+				"track_semi_finished_goods": 1,
+				"docstatus": 1,
+				"manufactured_qty": 10,
+			}
+		]
+		with mock.patch.object(
+			validate,
+			"_actual_sfg_producers",
+			return_value={},
+		):
+			blockers = validate.collect_sfg_consumption_blockers("WO-A", ["JC-OPEN"], all_docs)
+		self.assertEqual(blockers, [])
+
+	def test_actual_manufacture_still_blocks_unselected_consumers(self):
+		from types import SimpleNamespace
+
+		from erpnext_extensions.stock_extensions.job_card_reassign import validate
+
+		selected_docs = [
+			{
+				"name": "JC-PROD",
+				"finished_good": "SFG-1",
+				"track_semi_finished_goods": 1,
+				"docstatus": 1,
+				"manufactured_qty": 50,
+			}
+		]
+		all_docs = selected_docs + [
+			{
+				"name": "JC-DOWNSTREAM",
+				"finished_good": "SFG-2",
+				"track_semi_finished_goods": 1,
+				"docstatus": 1,
+				"manufactured_qty": 10,
+			}
+		]
+		dummy_frappe = mock.Mock()
+		dummy_frappe.get_all.return_value = [
+			SimpleNamespace(parent="JC-DOWNSTREAM", item_code="SFG-1")
+		]
+		dummy_frappe.db.sql.return_value = []
+		with mock.patch.object(
+			validate,
+			"_actual_sfg_producers",
+			return_value={"JC-PROD": "SFG-1"},
+		), mock.patch.object(validate, "frappe", dummy_frappe):
+			blockers = validate.collect_sfg_consumption_blockers("WO-A", ["JC-PROD"], all_docs)
+		self.assertTrue(any(b["code"] == "sfg_item_on_unselected_jc" for b in blockers))
+		self.assertEqual(blockers[0]["job_card"], "JC-DOWNSTREAM")
+
+
 class TestCompatibility(unittest.TestCase):
 	def _wo(self, name, **kw):
 		row = {
@@ -436,7 +505,9 @@ class TestCompatibility(unittest.TestCase):
 
 		with mock.patch.object(engine, "_require_system_manager"), mock.patch.object(
 			engine, "load_work_order", side_effect=lambda name: source if name == "WO-A" else target
-		), mock.patch.object(engine, "load_job_cards", return_value=[jc]), mock.patch(
+		), mock.patch.object(engine, "load_job_cards", return_value=[jc]), mock.patch.object(
+			engine, "list_source_job_cards", return_value=[jc]
+		), mock.patch(
 			"erpnext_extensions.stock_extensions.job_card_reassign.engine.classify_scope",
 			return_value=classified,
 		), mock.patch.object(engine, "remaining_job_card_count", return_value=0), mock.patch.object(

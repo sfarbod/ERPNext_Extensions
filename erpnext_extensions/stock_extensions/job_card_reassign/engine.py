@@ -339,6 +339,13 @@ def build_preview(source_work_order: str, target_work_order: str, job_cards: lis
 	source = load_work_order(source_work_order)
 	target = load_work_order(target_work_order)
 	jc_docs = load_job_cards(selected)
+	# Full source scope is required so SFG dependency checks can see unselected Job Cards.
+	source_job_cards = list_source_job_cards(source_work_order)
+	by_selected = {j["name"]: j for j in jc_docs}
+	validation_job_cards = [by_selected.get(j["name"], j) for j in source_job_cards]
+	for jc in jc_docs:
+		if jc["name"] not in {j["name"] for j in validation_job_cards}:
+			validation_job_cards.append(jc)
 	classified = classify_scope(source_work_order, selected)
 	source_ops = source_operations_index(source)
 	mappings = {
@@ -348,7 +355,7 @@ def build_preview(source_work_order: str, target_work_order: str, job_cards: lis
 	blockers, warnings = evaluate_compatibility(
 		source=source,
 		target=target,
-		job_cards=jc_docs,
+		job_cards=validation_job_cards,
 		selected=selected,
 		classified=classified,
 		mappings=mappings,
