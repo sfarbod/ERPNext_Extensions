@@ -258,6 +258,8 @@ def create_exact_voucher_campaign(
 	vouchers: list[dict | tuple] | None = None,
 	scope_label: str = "exact-vouchers",
 	remarks: str | None = None,
+	identities_allowlist: list[dict | tuple] | None = None,
+	expected_checksum: str | None = None,
 ) -> dict[str, Any]:
 	"""Create a Ready campaign whose Manifest is **exactly** the listed vouchers.
 
@@ -265,6 +267,10 @@ def create_exact_voucher_campaign(
 	vouchers that touch the same Item/Warehouse identities. Use for the
 	approved six reject-only Manufacture documents (and similar operator-scoped
 	lists). Still stamps ``SCOPED_HRC_TEST:`` so allowlist helpers recognize it.
+
+	Optional ``identities_allowlist`` must be a non-empty subset of identities
+	discovered on the seed vouchers (rejects out-of-scope pairs). Optional
+	``expected_checksum`` must equal the computed manifest checksum.
 	"""
 	if not company:
 		company = frappe.db.get_single_value("Global Defaults", "default_company")
@@ -298,7 +304,36 @@ def create_exact_voucher_campaign(
 				"creation": meta.creation,
 			}
 		)
-	idents = expand_identities_from_vouchers(normalized)
+	discovered = expand_identities_from_vouchers(normalized)
+	if identities_allowlist is not None:
+		raw_pairs: list[tuple[str, str]] = []
+		for row in identities_allowlist or []:
+			if isinstance(row, dict):
+				item, wh = row.get("item_code"), row.get("warehouse")
+			else:
+				item, wh = row[0], row[1]
+			if item and wh:
+				raw_pairs.append((str(item), str(wh)))
+		if not raw_pairs:
+			frappe.throw("identities_allowlist must be non-empty when provided")
+		seen: set[tuple[str, str]] = set()
+		dupes: list[tuple[str, str]] = []
+		for p in raw_pairs:
+			if p in seen:
+				dupes.append(p)
+			seen.add(p)
+		if dupes:
+			frappe.throw(f"duplicate identities in allowlist: {dupes[:5]}")
+		discovered_set = set(discovered)
+		out_of_scope = [p for p in raw_pairs if p not in discovered_set]
+		if out_of_scope:
+			frappe.throw(
+				"identities_allowlist contains out-of-scope pairs not present on seed "
+				f"vouchers: {out_of_scope[:8]}"
+			)
+		idents = list(dict.fromkeys(raw_pairs))
+	else:
+		idents = discovered
 	rows.sort(
 		key=lambda r: (
 			str(r.get("posting_date") or ""),
@@ -312,14 +347,22 @@ def create_exact_voucher_campaign(
 		r["ordinal"] = i
 
 	checksum = manifest_checksum(rows)
+	if expected_checksum is not None and str(expected_checksum).strip():
+		if str(expected_checksum).strip().lower() != str(checksum).lower():
+			frappe.throw(
+				"expected_checksum mismatch: "
+				f"client={expected_checksum!r} computed={checksum!r}"
+			)
 	scope_payload = {
 		"label": scope_label,
 		"exact_vouchers_only": True,
 		"seed_vouchers": [{"voucher_type": a, "voucher_no": b} for a, b in normalized],
 		"identities": [{"item_code": i, "warehouse": w} for i, w in idents],
+		"discovered_identities": [{"item_code": i, "warehouse": w} for i, w in discovered],
 		"posting_boundary_from": None,
 		"identity_count": len(idents),
 		"manifest_total": len(rows),
+		"created_by_user": frappe.session.user,
 	}
 	base = remarks.strip() if remarks else scope_label
 	if SCOPED_REMARK_PREFIX not in base:
