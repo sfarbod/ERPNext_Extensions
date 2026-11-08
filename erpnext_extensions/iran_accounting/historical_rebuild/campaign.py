@@ -1257,6 +1257,8 @@ def create_exact_vouchers(
 	vouchers: list | None = None,
 	scope_label: str = "exact-vouchers",
 	remarks: str | None = None,
+	identities_allowlist: list | None = None,
+	expected_checksum: str | None = None,
 ) -> dict:
 	"""Create a Ready campaign Manifest with **exactly** the listed vouchers.
 
@@ -1274,6 +1276,8 @@ def create_exact_vouchers(
 		vouchers=vouchers,
 		scope_label=scope_label,
 		remarks=remarks,
+		identities_allowlist=identities_allowlist,
+		expected_checksum=expected_checksum,
 	)
 
 
