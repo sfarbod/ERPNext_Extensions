@@ -387,14 +387,25 @@ def resolve_original_stock_entry_get_gl_entries():
 def iran_stock_entry_get_gl_entries(
 	self, inventory_account_map=None, default_expense_account=None, default_cost_center=None
 ):
-	"""ERPNext-first SE GL: balanced transfer branch OR original StockEntry.get_gl_entries.
+	"""ERPNext-first SE GL: balanced transfer, normalized Manufacture, or Core.
 
-	Original core path owns SLE inventory GL, Additional Cost GL, and LCV GL.
+	Manufacture / Repack on IRR companies use normalized GL generation
+	(``manufacture_expense_account.build_normalized_manufacture_gl_entries``):
+	inventory SLE legs + Additional Cost credits + a single Stock Adjustment
+	residual. Stock Adjustment is never a manufacturing clearing account.
 	"""
 	_ = default_expense_account, default_cost_center
 	precision = self.get_debit_field_precision()
 	if _should_force_balanced_transfer_gl(self, precision):
 		return build_iran_balanced_transfer_gl(self, inventory_account_map)
+
+	from erpnext_extensions.iran_accounting.domain.manufacture_expense_account import (
+		build_normalized_manufacture_gl_entries,
+		uses_normalized_manufacture_gl,
+	)
+
+	if uses_normalized_manufacture_gl(self):
+		return build_normalized_manufacture_gl_entries(self, inventory_account_map)
 
 	original = resolve_original_stock_entry_get_gl_entries()
 	# Core StockEntry.get_gl_entries(self, inventory_account_map) only.
