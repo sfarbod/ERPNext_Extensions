@@ -533,17 +533,39 @@ def preflight_campaign(*, campaign: str) -> dict[str, Any]:
 		order_by="ordinal asc",
 		limit_page_length=0,
 	)
-	rows = [
-		{
-			"doctype": i.voucher_type,
-			"name": i.voucher_no,
-			"posting_date": i.posting_date,
-			"posting_time": i.posting_time,
-			"creation": i.creation_ts,
-			"company": doc.company,
-		}
-		for i in items
-	]
+	# Recompute checksum from live voucher meta (same inputs as create/discover).
+	# Campaign Item.creation_ts may drop microsecond precision and would falsely
+	# trip manifest_checksum_mismatch (HRC-00011 / v5.7.10 Production preflight).
+	rows = []
+	for i in items:
+		meta = frappe.db.get_value(
+			i.voucher_type,
+			i.voucher_no,
+			["company", "posting_date", "posting_time", "creation"],
+			as_dict=True,
+		)
+		if not meta:
+			reasons.append(f"voucher_missing_for_checksum:{i.voucher_type}/{i.voucher_no}")
+			continue
+		rows.append(
+			{
+				"doctype": i.voucher_type,
+				"name": i.voucher_no,
+				"posting_date": meta.posting_date,
+				"posting_time": getattr(meta, "posting_time", None),
+				"creation": meta.creation,
+				"company": meta.company or doc.company,
+			}
+		)
+	rows.sort(
+		key=lambda r: (
+			str(r.get("posting_date") or ""),
+			str(r.get("posting_time") or ""),
+			str(r.get("creation") or ""),
+			str(r.get("doctype") or ""),
+			str(r.get("name") or ""),
+		)
+	)
 	computed = manifest_checksum(rows) if rows else ""
 	stored = (doc.manifest_checksum or "").strip()
 	if not stored:
