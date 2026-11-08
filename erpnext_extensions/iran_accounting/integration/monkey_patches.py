@@ -465,6 +465,15 @@ def _patch_stock_controller():
 					)
 
 					gl_entries = aggregate_adjustment_gl_entries(self, gl_entries)
+					# Manufacture / Repack: Stock Adjustment must be residual-only —
+					# collapse any post-processor SA debit+credit pairs to one net row.
+					from erpnext_extensions.iran_accounting.domain.manufacture_expense_account import (
+						collapse_sa_entries_to_single_residual,
+						uses_normalized_manufacture_gl,
+					)
+
+					if uses_normalized_manufacture_gl(self):
+						gl_entries = collapse_sa_entries_to_single_residual(self, gl_entries)
 
 				skip_round_off = None
 				if self.doctype == "Stock Entry":

@@ -24,6 +24,23 @@ FACTOR_FIELD = {
 
 def get_custom_fields() -> dict:
 	return {
+		"Company": [
+			{
+				"fieldname": "custom_iran_manufacturing_expense_account",
+				"label": "Iran Manufacturing Expense Account",
+				"fieldtype": "Link",
+				"options": "Account",
+				"insert_after": "stock_adjustment_account",
+				"description": (
+					"Diagnostic / unused for GL posting. Manufacture and Repack GL "
+					"does not route expense legs through this field. Stock Adjustment "
+					"(Company stock_adjustment_account / 621301) posts only the genuine "
+					"net residual; this Company field is retained for reporting and "
+					"compatibility and must not be treated as a clearing account."
+				),
+				"module": MODULE,
+			},
+		],
 		"Stock Entry": [
 			{
 				"fieldname": "custom_manufacturing_costing_contract_version",
