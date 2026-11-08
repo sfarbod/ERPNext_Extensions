@@ -36,6 +36,7 @@ from erpnext_extensions.iran_accounting.historical_stock.permissions import (
 API_VERSION = "1.0.0"
 MAX_VOUCHERS = 200
 MAX_IDENTITIES = 2000
+ACTIVE_RIV_STATUSES = ("Queued", "In Progress")
 ALLOWED_VOUCHER_TYPES = frozenset(
 	{
 		"Stock Entry",
@@ -47,6 +48,61 @@ ALLOWED_VOUCHER_TYPES = frozenset(
 		"Sales Invoice",
 	}
 )
+
+
+def collect_identity_riv_overlaps(allow: list[tuple[str, str]] | None) -> list[dict[str, Any]]:
+	"""Return Queued/In Progress RIVs that share a campaign identity.
+
+	Creation must never call this as a blocker. Execution start must.
+	Unrelated site-wide RIVs are intentionally ignored.
+	"""
+	overlap: list[dict[str, Any]] = []
+	seen: set[str] = set()
+	for item, wh in allow or []:
+		rows = frappe.get_all(
+			"Repost Item Valuation",
+			filters={
+				"item_code": item,
+				"warehouse": wh,
+				"docstatus": 1,
+				"status": ("in", list(ACTIVE_RIV_STATUSES)),
+			},
+			fields=["name", "status", "item_code", "warehouse", "posting_date", "modified"],
+			order_by="modified desc",
+			limit_page_length=20,
+		)
+		for r in rows:
+			riv_name = r.get("name")
+			if not riv_name or riv_name in seen:
+				continue
+			seen.add(riv_name)
+			overlap.append(
+				{
+					"riv": riv_name,
+					"name": riv_name,
+					"status": r.get("status"),
+					"item_code": r.get("item_code") or item,
+					"warehouse": r.get("warehouse") or wh,
+					"posting_date": r.get("posting_date"),
+					"modified": r.get("modified"),
+					"identity": {"item_code": item, "warehouse": wh},
+				}
+			)
+	return overlap
+
+
+def assert_execution_riv_ready(campaign: str) -> dict[str, Any]:
+	"""Fresh live identity-overlap RIV gate for campaign start (not creation)."""
+	allow = load_scoped_allowlist(campaign) if campaign else []
+	overlap = collect_identity_riv_overlaps(allow)
+	return {
+		"ok": not overlap,
+		"blocked": bool(overlap),
+		"identity_riv_overlap": overlap,
+		"reason": "identity_riv_overlap" if overlap else None,
+		"campaign": campaign,
+		"allowlist_count": len(allow or []),
+	}
 
 
 def _parse_jsonish(value):
@@ -579,14 +635,14 @@ def preflight_campaign(*, campaign: str) -> dict[str, Any]:
 		if cint(ds) != 1:
 			reasons.append(f"voucher_not_submitted:{i.voucher_type}/{i.voucher_no}")
 
+	# Informational only — site-wide Queued/In Progress RIV must NOT block execution.
+	# Serialization is enforced by exact identity overlap below.
 	active_riv = cint(
 		frappe.db.count(
 			"Repost Item Valuation",
 			{"docstatus": 1, "status": ("in", ["Queued", "In Progress"])},
 		)
 	)
-	if active_riv:
-		reasons.append(f"active_queued_riv_count:{active_riv}")
 
 	other_running = frappe.get_all(
 		CAMPAIGN_DOCTYPE,
@@ -605,21 +661,8 @@ def preflight_campaign(*, campaign: str) -> dict[str, Any]:
 	if lock:
 		reasons.append(f"executor_lock_held:{lock}")
 
-	# overlap: allowlisted identities currently in active RIV
-	overlap = []
-	if allow:
-		for item, wh in allow:
-			hit = frappe.db.exists(
-				"Repost Item Valuation",
-				{
-					"item_code": item,
-					"warehouse": wh,
-					"docstatus": 1,
-					"status": ("in", ["Queued", "In Progress"]),
-				},
-			)
-			if hit:
-				overlap.append({"item_code": item, "warehouse": wh, "riv": hit})
+	# Execution gate: only overlapping campaign identities block start.
+	overlap = collect_identity_riv_overlaps(allow)
 	if overlap:
 		reasons.append("identity_riv_overlap")
 
@@ -663,6 +706,8 @@ def start_sequential_campaign(
 			"blocked": True,
 			"reason": "preflight_failed",
 			"preflight": pre,
+			"campaign_status": frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "status"),
+			"identity_riv_overlap": pre.get("identity_riv_overlap") or [],
 		}
 	stored = (frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "manifest_checksum") or "").strip()
 	if stored.lower() != str(expected_checksum).strip().lower():
@@ -695,6 +740,22 @@ def start_sequential_campaign(
 			"session_id": existing.get("session_id"),
 			"status": "Running",
 			"message": "sequential session already running",
+		}
+
+	# Fresh live re-check immediately before opening a sequential session (race window).
+	riv_gate = assert_execution_riv_ready(campaign)
+	if riv_gate.get("blocked"):
+		return {
+			"ok": False,
+			"blocked": True,
+			"reason": "identity_riv_overlap",
+			"campaign": campaign,
+			"campaign_status": frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "status"),
+			"identity_riv_overlap": riv_gate.get("identity_riv_overlap") or [],
+			"message": (
+				"Campaign remains Ready/unstarted. Retry start after overlapping "
+				"Queued/In Progress RIVs clear; RIVs were not cancelled or bypassed."
+			),
 		}
 
 	sess = start_sequential_session(campaign)
