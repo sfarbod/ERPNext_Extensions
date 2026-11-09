@@ -105,6 +105,30 @@ def _sle_rate_from_row(row, ccy: str) -> float:
 	return 0.0
 
 
+def enforce_irr_sle_unit_rates_integer(sle, ccy: str) -> None:
+	"""Fail-safe: IRR SLE unit rates must be ROUND_HALF_UP integers.
+
+	Preserves ``stock_value_difference`` (amount authority). Used to catch
+	SVD/qty float stamps (PO-JOB shape) after other sync branches.
+	"""
+	if not ccy:
+		return
+	aq = flt(sle.actual_qty) if hasattr(sle, "actual_qty") else flt(sle.get("actual_qty"))
+	ir = flt(sle.incoming_rate) if hasattr(sle, "incoming_rate") else flt(sle.get("incoming_rate"))
+	orate = flt(sle.outgoing_rate) if hasattr(sle, "outgoing_rate") else flt(sle.get("outgoing_rate"))
+	vr = flt(sle.valuation_rate) if hasattr(sle, "valuation_rate") else flt(sle.get("valuation_rate"))
+	if aq > 0 and ir:
+		sle.incoming_rate = float(round_monetary_rate(ir, ccy))
+	if aq < 0 and orate:
+		sle.outgoing_rate = float(round_monetary_rate(orate, ccy))
+	if vr:
+		sle.valuation_rate = float(round_monetary_rate(vr, ccy))
+	elif aq > 0:
+		sle.valuation_rate = float(round_monetary_rate(ir or 0, ccy))
+	elif aq < 0:
+		sle.valuation_rate = float(round_monetary_rate(orate or 0, ccy))
+
+
 def should_preserve_native_outgoing_valuation(sle, row, purpose: str | None) -> bool:
 	"""True when vanilla SLE movement must not be replaced by SED.amount."""
 	if str(purpose or "") not in NATIVE_OUTGOING_STOCK_VALUATION_PURPOSES:
@@ -876,12 +900,14 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 	if should_preserve_native_outgoing_valuation(sle, row, purpose):
 		_preserve_native_outgoing_and_align_sed(sle, row, ccy)
 		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
+		enforce_irr_sle_unit_rates_integer(sle, ccy)
 		return
 
 	# Transfer inward: Core recalculate_amounts may have inflated SED via
 	# integer rate×qty; restore amount from the outward SLE movement.
 	if conserve_transfer_inward_from_outward_sle(sle, row, purpose, ccy):
 		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
+		enforce_irr_sle_unit_rates_integer(sle, ccy)
 		return
 
 	try:
@@ -898,7 +924,12 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 				sle.outgoing_rate
 				if abs(flt(sle.outgoing_rate)) > 1e-6
 				else (
-					abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+					float(
+						round_monetary_rate(
+							abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty)),
+							ccy,
+						)
+					)
 					if abs(flt(sle.actual_qty)) > 1e-9 and abs(flt(sle.stock_value_difference)) > 1e-6
 					else 0
 				)
@@ -906,10 +937,17 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 			purpose=purpose,
 		):
 			if abs(flt(sle.outgoing_rate)) <= 1e-6 and abs(flt(sle.actual_qty)) > 1e-9:
-				sle.outgoing_rate = abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty))
+				# 5.7.18: never persist SVD/qty float as IRR outgoing_rate.
+				sle.outgoing_rate = float(
+					round_monetary_rate(
+						abs(flt(sle.stock_value_difference)) / abs(flt(sle.actual_qty)),
+						ccy,
+					)
+				)
 			enforce_zero_qty_terminal_stock_value(sle)
 			reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
 			_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
+			enforce_irr_sle_unit_rates_integer(sle, ccy)
 			return
 		movement = round_currency(
 			signed_movement_from_row_amount(
@@ -936,6 +974,7 @@ def sync_irr_sle_from_stock_entry_row(sle) -> None:
 		)
 		reconstruct_nonnegative_remaining_layer(sle, ccy=ccy, row=row)
 		_repair_empty_warehouse_valuation_continuity(sle, row=row, ccy=ccy, purpose=purpose)
+		enforce_irr_sle_unit_rates_integer(sle, ccy)
 	except ValuationIntegrityError as exc:
 		engine = getattr(frappe.local, "iran_riv_update_entries_after", None)
 		if engine is None:

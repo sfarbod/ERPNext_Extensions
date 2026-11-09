@@ -1,16 +1,17 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""5.5.28 / 5.6.25: historical Purchase Receipt UVR float valuation_rate.
+"""5.5.28 / 5.7.18: historical Purchase Receipt UVR float valuation_rate.
 
-Through 5.5.28 these shapes became Class A (integerize VR, absorb residual).
-v5.6.25 amount-preserving acquisition keeps fractional VR when qty×VR reconstructs
-auth; classification then **skips** (no invented residual / no GRNI partner).
-True non-integer mismatches stay Class B.
+Fractional UVR floats that reconstruct acquisition auth become Class A
+integer VR with Stock Adjustment residual (5.7.18). True non-integer
+mismatches stay Class B. v5.6.25/5.7.18 amount-preserving skip removed.
 """
 
 from __future__ import annotations
 
 import unittest
 from unittest import mock
+
+from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 	STATUS_BYPASS,
@@ -54,7 +55,8 @@ class TestLegacyUvrFloatDetection(unittest.TestCase):
 
 
 class TestClassifyLegacyUvrFloat(unittest.TestCase):
-	def test_00780_row1_amount_preserving_skip(self):
+	def test_00780_row1_integerizes_class_a(self):
+		# 5.7.18: economically reconstructing float → Class A integer VR (no skip).
 		out = classify_amount_rate_residual(
 			qty=15.0,
 			authoritative_amount=488767096.0,
@@ -63,12 +65,11 @@ class TestClassifyLegacyUvrFloat(unittest.TestCase):
 			item_code="16800200",
 			idx=1,
 		)
-		self.assertEqual(out["class"], "skip")
-		self.assertEqual(out["reason"], "amount_preserving_fractional_vr_zero_residual")
-		self.assertEqual(out["residual"], 0)
+		self.assertEqual(out["class"], "A")
 		self.assertEqual(out["legacy_uvr_float_valuation_rate"], 32584473.066666666)
+		self.assertEqual(flt(out["expected_valuation_rate"]), 32584473)
 
-	def test_00780_row2_amount_preserving_skip(self):
+	def test_00780_row2_integerizes_class_a(self):
 		out = classify_amount_rate_residual(
 			qty=6.0,
 			authoritative_amount=557769509.0,
@@ -77,10 +78,10 @@ class TestClassifyLegacyUvrFloat(unittest.TestCase):
 			item_code="16800203",
 			idx=2,
 		)
-		self.assertEqual(out["class"], "skip")
-		self.assertEqual(out["residual"], 0)
+		self.assertEqual(out["class"], "A")
+		self.assertEqual(flt(out["expected_valuation_rate"]), flt(int(out["expected_valuation_rate"])))
 
-	def test_00707_lcv_large_qty_amount_preserving_skip(self):
+	def test_00707_lcv_large_qty_integerizes_class_a(self):
 		out = classify_amount_rate_residual(
 			qty=135000.0,
 			authoritative_amount=12104137419.0,
@@ -89,9 +90,8 @@ class TestClassifyLegacyUvrFloat(unittest.TestCase):
 			item_code="13100018",
 			idx=1,
 		)
-		self.assertEqual(out["class"], "skip")
-		self.assertEqual(out["reason"], "amount_preserving_fractional_vr_zero_residual")
-		self.assertEqual(out["residual"], 0)
+		self.assertEqual(out["class"], "A")
+		self.assertEqual(flt(out["expected_valuation_rate"]), flt(int(out["expected_valuation_rate"])))
 
 	def test_true_mismatch_stays_class_b(self):
 		out = classify_amount_rate_residual(
@@ -142,6 +142,8 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 		defaults.update(kw)
 		row = mock.Mock(**defaults)
 		row.get = lambda k, d=None: getattr(row, k, d)
+		# Real DocType rows return int precision; MagicMock precision breaks Core get_stock_qty.
+		row.precision = lambda *_a, **_k: 6
 		return row
 
 	def _doc(self, items, stock_codes=None):
@@ -160,7 +162,7 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 		return doc
 
 	def test_pr_00780_shape_all_float_rows_class_a(self):
-		"""IRR multi-row: float VR = base_net/qty; integer rows skip."""
+		"""IRR multi-row: float VR = base_net/qty → Class A integerize; integer row skips."""
 		rows = [
 			self._row(
 				item_code="16800200",
@@ -207,11 +209,13 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 		):
 			a, b = classify_document_residuals(doc)
 		self.assertEqual(b, [])
-		# Amount-preserving: reconstructing float VRs skip (no Class A residual).
-		self.assertEqual(a, [])
+		self.assertEqual(len(a), 2)
+		for row in a:
+			self.assertEqual(row["class"], "A")
+			self.assertEqual(flt(row["expected_valuation_rate"]), flt(int(row["expected_valuation_rate"])))
 
-	def test_pr_00707_shape_lcv_amount_preserving_bypass(self):
-		"""EUR receipt + LCV: auth = base_net + LCV; DECIMAL(30,9) float VR → skip."""
+	def test_pr_00707_shape_lcv_integerizes_class_a(self):
+		"""EUR receipt + LCV: auth = base_net + LCV; float VR → Class A integer residual."""
 		row = self._row(
 			item_code="13100018",
 			idx=1,
@@ -254,10 +258,10 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 			),
 		):
 			a, b = classify_document_residuals(doc)
-			decision = evaluate_irr_rate_rounding_residual(doc)
 		self.assertEqual(b, [])
-		self.assertEqual(a, [])
-		self.assertEqual(decision.status, STATUS_BYPASS)
+		self.assertEqual(len(a), 1)
+		self.assertEqual(a[0]["class"], "A")
+		self.assertEqual(flt(a[0]["expected_valuation_rate"]), flt(int(a[0]["expected_valuation_rate"])))
 
 
 if __name__ == "__main__":

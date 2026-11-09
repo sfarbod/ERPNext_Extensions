@@ -1,0 +1,1024 @@
+{
+  "MAT-STE-2026-29903": {
+    "name": "MAT-STE-2026-29903",
+    "purpose": "Repack",
+    "stock_entry_type": "Repack",
+    "posting_date": "2026-06-13",
+    "docstatus": 1,
+    "company": "اسپاد فارمد دارو",
+    "total_outgoing_value": 1087591494.88,
+    "total_incoming_value": 1087591494.88,
+    "value_difference": 0.0,
+    "additional_costs": 0,
+    "items": [
+      {
+        "name": "9hg8t721e1",
+        "item_code": "30200048",
+        "qty": 659.0,
+        "transfer_qty": 659.0,
+        "s_warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "t_warehouse": null,
+        "basic_rate": 1650366.456570562,
+        "basic_amount": 1087591494.88,
+        "valuation_rate": 1650366.456570562,
+        "amount": 1087591494.88,
+        "is_finished_item": 0,
+        "is_scrap_item": 0,
+        "set_basic_rate_manually": 0,
+        "allow_zero_valuation_rate": 0
+      },
+      {
+        "name": "9hgib1q0vk",
+        "item_code": "30200048",
+        "qty": 659.0,
+        "transfer_qty": 659.0,
+        "s_warehouse": null,
+        "t_warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "basic_rate": 1650366.456570562,
+        "basic_amount": 1087591494.88,
+        "valuation_rate": 1650366.456570562,
+        "amount": 1087591494.88,
+        "is_finished_item": 1,
+        "is_scrap_item": 0,
+        "set_basic_rate_manually": 0,
+        "allow_zero_valuation_rate": 0
+      }
+    ],
+    "sle": [
+      {
+        "name": "MAT-SLE-2026-209708",
+        "item_code": "30200048",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "actual_qty": -659.0,
+        "incoming_rate": 0.0,
+        "outgoing_rate": 1399938.0,
+        "valuation_rate": 1646639.26633849,
+        "stock_value_difference": -1087591494.88,
+        "qty_after_transaction": 2610.0
+      },
+      {
+        "name": "MAT-SLE-2026-209709",
+        "item_code": "30200048",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "actual_qty": 659.0,
+        "incoming_rate": 1650366.456570562,
+        "outgoing_rate": 0.0,
+        "valuation_rate": 1647390.633227287,
+        "stock_value_difference": 1087591494.88,
+        "qty_after_transaction": 3269.0
+      }
+    ],
+    "gl_db": [],
+    "live_get_gl_entries": [],
+    "warehouse_accounts": {
+      "انبار Quarantine محصول نیمه ساخته اسپاد": "111605 - موجودی نیمه ساخته - E"
+    },
+    "verdict": "EXPECTED_SAME_ACCOUNT_REPACK_NET_ZERO",
+    "zero_gl_expected": true,
+    "cohort_b_note": "Eligible for Class A fractional incoming_rate remediation only; do not invent GL.",
+    "iran_wrapped_gl_count": 0,
+    "live_active_gl_count": 0
+  },
+  "unexpected_mtfm": {
+    "MAT-STE-2026-29942": {
+      "purpose": "Material Transfer for Manufacture",
+      "doc_values": {
+        "total_incoming_value": 0,
+        "total_outgoing_value": 0,
+        "value_difference": 0
+      },
+      "force_balanced_transfer_gl": true,
+      "live_active_gl_count": 0,
+      "iran_wrapped_gl_count": 0,
+      "iran_wrapped_gl": [],
+      "balanced_builder_gl_count": 0,
+      "core_gl_count": 2,
+      "core_gl": [
+        {
+          "account": "621301 - تعدیلات موجودی کالا - E",
+          "debit": 0.0,
+          "credit": 947744691.0
+        },
+        {
+          "account": "111701 - کالای درجریان ساخت - E",
+          "debit": 947744691.0,
+          "credit": 0.0
+        }
+      ],
+      "sle": [
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 164.0,
+          "stock_value_difference": 245545228.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 153.0,
+          "stock_value_difference": 229075731.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 120.0,
+          "stock_value_difference": 179667240.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 109.0,
+          "stock_value_difference": 163197743.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 87.0,
+          "stock_value_difference": 130258749.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -164.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -153.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -120.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -109.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -87.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        }
+      ],
+      "classification": "UNEXPECTED_ZERO_DOC_VALUE_TRANSFER_SLE_VALUED_NO_GL",
+      "mechanism": "SED rates 0 → header in=out=value_diff=0 → _should_force_balanced_transfer_gl True → build_iran_balanced_transfer_gl returns [] while core StockEntry.get_gl_entries would post Dr WIP / Cr Stock Adjustment from valued destination SLE. Live GL table empty."
+    },
+    "MAT-STE-2026-29943": {
+      "purpose": "Material Transfer for Manufacture",
+      "doc_values": {
+        "total_incoming_value": 0,
+        "total_outgoing_value": 0,
+        "value_difference": 0
+      },
+      "force_balanced_transfer_gl": true,
+      "live_active_gl_count": 0,
+      "iran_wrapped_gl_count": 0,
+      "iran_wrapped_gl": [],
+      "balanced_builder_gl_count": 0,
+      "core_gl_count": 2,
+      "core_gl": [
+        {
+          "account": "621301 - تعدیلات موجودی کالا - E",
+          "debit": 0.0,
+          "credit": 139242111.0
+        },
+        {
+          "account": "111701 - کالای درجریان ساخت - E",
+          "debit": 139242111.0,
+          "credit": 0.0
+        }
+      ],
+      "sle": [
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 24.0,
+          "stock_value_difference": 35933448.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 22.0,
+          "stock_value_difference": 32938994.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 18.0,
+          "stock_value_difference": 26950086.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 16.0,
+          "stock_value_difference": 23955632.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 13.0,
+          "stock_value_difference": 19463951.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -24.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -22.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -18.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -16.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -13.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        }
+      ],
+      "classification": "UNEXPECTED_ZERO_DOC_VALUE_TRANSFER_SLE_VALUED_NO_GL",
+      "mechanism": "SED rates 0 → header in=out=value_diff=0 → _should_force_balanced_transfer_gl True → build_iran_balanced_transfer_gl returns [] while core StockEntry.get_gl_entries would post Dr WIP / Cr Stock Adjustment from valued destination SLE. Live GL table empty."
+    },
+    "MAT-STE-2026-29944": {
+      "purpose": "Material Transfer for Manufacture",
+      "doc_values": {
+        "total_incoming_value": 0,
+        "total_outgoing_value": 0,
+        "value_difference": 0
+      },
+      "force_balanced_transfer_gl": true,
+      "live_active_gl_count": 0,
+      "iran_wrapped_gl_count": 0,
+      "iran_wrapped_gl": [],
+      "balanced_builder_gl_count": 0,
+      "core_gl_count": 2,
+      "core_gl": [
+        {
+          "account": "621301 - تعدیلات موجودی کالا - E",
+          "debit": 0.0,
+          "credit": 68872442.0
+        },
+        {
+          "account": "111701 - کالای درجریان ساخت - E",
+          "debit": 68872442.0,
+          "credit": 0.0
+        }
+      ],
+      "sle": [
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 12.0,
+          "stock_value_difference": 17966724.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 11.0,
+          "stock_value_difference": 16469497.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 9.0,
+          "stock_value_difference": 13475043.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 8.0,
+          "stock_value_difference": 11977816.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": 6.0,
+          "stock_value_difference": 8983362.0,
+          "incoming_rate": 1497227.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -12.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -11.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -9.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -8.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        },
+        {
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -6.0,
+          "stock_value_difference": 0.0,
+          "incoming_rate": 0.0,
+          "item_code": "13100023"
+        }
+      ],
+      "classification": "UNEXPECTED_ZERO_DOC_VALUE_TRANSFER_SLE_VALUED_NO_GL",
+      "mechanism": "SED rates 0 → header in=out=value_diff=0 → _should_force_balanced_transfer_gl True → build_iran_balanced_transfer_gl returns [] while core StockEntry.get_gl_entries would post Dr WIP / Cr Stock Adjustment from valued destination SLE. Live GL table empty."
+    }
+  },
+  "paired_account_transfers": [
+    {
+      "name": "MAT-STE-2026-40174",
+      "purpose": "Material Transfer",
+      "stock_entry_type": "Material Transfer",
+      "posting_date": "2026-09-29",
+      "docstatus": 1,
+      "company": "اسپاد فارمد دارو",
+      "total_outgoing_value": 10198314600.0,
+      "total_incoming_value": 10198314600.0,
+      "value_difference": 0.0,
+      "additional_costs": 0,
+      "items": [
+        {
+          "name": "8ru8o9tkuu",
+          "item_code": "18000007",
+          "qty": 200.0,
+          "transfer_qty": 200.0,
+          "s_warehouse": "انبار Quarantine مواد اولیه اسپاد",
+          "t_warehouse": "انبار approved مواد اولیه اسپاد",
+          "basic_rate": 26132178.0,
+          "basic_amount": 5226435600.0,
+          "valuation_rate": 26132178.0,
+          "amount": 5226435600.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "8ruso3emgc",
+          "item_code": "17000005",
+          "qty": 7.5,
+          "transfer_qty": 7.5,
+          "s_warehouse": "انبار Quarantine مواد اولیه اسپاد",
+          "t_warehouse": "انبار approved مواد اولیه اسپاد",
+          "basic_rate": 36467200.0,
+          "basic_amount": 273504000.0,
+          "valuation_rate": 36467200.0,
+          "amount": 273504000.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "8ruujufb7r",
+          "item_code": "13100023",
+          "qty": 5600.0,
+          "transfer_qty": 5600.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی اولیه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "basic_rate": 660000.0,
+          "basic_amount": 3696000000.0,
+          "valuation_rate": 660000.0,
+          "amount": 3696000000.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "8rug6pl162",
+          "item_code": "13100134",
+          "qty": 6750.0,
+          "transfer_qty": 6750.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی اولیه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "basic_rate": 148500.0,
+          "basic_amount": 1002375000.0,
+          "valuation_rate": 148500.0,
+          "amount": 1002375000.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        }
+      ],
+      "sle": [
+        {
+          "name": "MAT-SLE-2026-300496",
+          "item_code": "18000007",
+          "warehouse": "انبار Quarantine مواد اولیه اسپاد",
+          "actual_qty": -200.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 26132178.0,
+          "valuation_rate": 26132178.0,
+          "stock_value_difference": -5226435600.0,
+          "qty_after_transaction": 4300.0
+        },
+        {
+          "name": "MAT-SLE-2026-300497",
+          "item_code": "17000005",
+          "warehouse": "انبار Quarantine مواد اولیه اسپاد",
+          "actual_qty": -7.5,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 36467200.0,
+          "valuation_rate": 36467200.0,
+          "stock_value_difference": -273504000.0,
+          "qty_after_transaction": 854.984
+        },
+        {
+          "name": "MAT-SLE-2026-300498",
+          "item_code": "13100023",
+          "warehouse": "انبار Quarantine اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -5600.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 660000.0,
+          "valuation_rate": 1431852.0,
+          "stock_value_difference": -3696000000.0,
+          "qty_after_transaction": 58500.0
+        },
+        {
+          "name": "MAT-SLE-2026-300499",
+          "item_code": "13100134",
+          "warehouse": "انبار Quarantine اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -6750.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 148500.0,
+          "valuation_rate": 148500.0,
+          "stock_value_difference": -1002375000.0,
+          "qty_after_transaction": 22162.0
+        },
+        {
+          "name": "MAT-SLE-2026-300500",
+          "item_code": "18000007",
+          "warehouse": "انبار approved مواد اولیه اسپاد",
+          "actual_qty": 200.0,
+          "incoming_rate": 26132178.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 26132178.0,
+          "stock_value_difference": 5226435600.0,
+          "qty_after_transaction": 565.86
+        },
+        {
+          "name": "MAT-SLE-2026-300501",
+          "item_code": "17000005",
+          "warehouse": "انبار approved مواد اولیه اسپاد",
+          "actual_qty": 7.5,
+          "incoming_rate": 36467200.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 36467200.0,
+          "stock_value_difference": 273504000.0,
+          "qty_after_transaction": 8.14
+        },
+        {
+          "name": "MAT-SLE-2026-300502",
+          "item_code": "13100023",
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": 5600.0,
+          "incoming_rate": 660000.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 660000.0,
+          "stock_value_difference": 3696000000.0,
+          "qty_after_transaction": 22680.0
+        },
+        {
+          "name": "MAT-SLE-2026-300503",
+          "item_code": "13100134",
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": 6750.0,
+          "incoming_rate": 148500.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 148500.0,
+          "stock_value_difference": 1002375000.0,
+          "qty_after_transaction": 28920.0
+        }
+      ],
+      "gl_db": [],
+      "live_get_gl_entries": [],
+      "warehouse_accounts": {
+        "انبار Quarantine مواد اولیه اسپاد": "111601 - موجودی مواد اولیه - E",
+        "انبار approved مواد اولیه اسپاد": "111601 - موجودی مواد اولیه - E",
+        "انبار Quarantine اقلام بسته بندی اولیه اسپاد": "111620 - موجودی لوازم بسته بندی - E",
+        "انبار approved اقلام بسته بندی اولیه اسپاد": "111620 - موجودی لوازم بسته بندی - E"
+      }
+    },
+    {
+      "name": "MAT-STE-2026-40891",
+      "purpose": "Material Transfer",
+      "stock_entry_type": "Material Transfer",
+      "posting_date": "2026-10-06",
+      "docstatus": 1,
+      "company": "اسپاد فارمد دارو",
+      "total_outgoing_value": 23421700000.0,
+      "total_incoming_value": 23421700000.0,
+      "value_difference": 0.0,
+      "additional_costs": 0,
+      "items": [
+        {
+          "name": "sham13e8p7",
+          "item_code": "18000005",
+          "qty": 190.0,
+          "transfer_qty": 190.0,
+          "s_warehouse": "انبار Quarantine مواد اولیه اسپاد",
+          "t_warehouse": "انبار approved مواد اولیه اسپاد",
+          "basic_rate": 26730000.0,
+          "basic_amount": 5078700000.0,
+          "valuation_rate": 26730000.0,
+          "amount": 5078700000.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "sha72qii5t",
+          "item_code": "13100024",
+          "qty": 107900.0,
+          "transfer_qty": 107900.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی اولیه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "basic_rate": 170000.0,
+          "basic_amount": 18343000000.0,
+          "valuation_rate": 170000.0,
+          "amount": 18343000000.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        }
+      ],
+      "sle": [
+        {
+          "name": "MAT-SLE-2026-307681",
+          "item_code": "18000005",
+          "warehouse": "انبار Quarantine مواد اولیه اسپاد",
+          "actual_qty": -190.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 26730000.0,
+          "valuation_rate": 26730000.0,
+          "stock_value_difference": -5078700000.0,
+          "qty_after_transaction": 3700.0
+        },
+        {
+          "name": "MAT-SLE-2026-307682",
+          "item_code": "13100024",
+          "warehouse": "انبار Quarantine اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": -107900.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 170000.0,
+          "valuation_rate": 170000.0,
+          "stock_value_difference": -18343000000.0,
+          "qty_after_transaction": 0.0
+        },
+        {
+          "name": "MAT-SLE-2026-307683",
+          "item_code": "18000005",
+          "warehouse": "انبار approved مواد اولیه اسپاد",
+          "actual_qty": 190.0,
+          "incoming_rate": 26730000.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 26730000.0,
+          "stock_value_difference": 5078700000.0,
+          "qty_after_transaction": 312.26
+        },
+        {
+          "name": "MAT-SLE-2026-307684",
+          "item_code": "13100024",
+          "warehouse": "انبار approved اقلام بسته بندی اولیه اسپاد",
+          "actual_qty": 107900.0,
+          "incoming_rate": 170000.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 170000.0,
+          "stock_value_difference": 18343000000.0,
+          "qty_after_transaction": 107900.0
+        }
+      ],
+      "gl_db": [],
+      "live_get_gl_entries": [],
+      "warehouse_accounts": {
+        "انبار Quarantine مواد اولیه اسپاد": "111601 - موجودی مواد اولیه - E",
+        "انبار approved مواد اولیه اسپاد": "111601 - موجودی مواد اولیه - E",
+        "انبار Quarantine اقلام بسته بندی اولیه اسپاد": "111620 - موجودی لوازم بسته بندی - E",
+        "انبار approved اقلام بسته بندی اولیه اسپاد": "111620 - موجودی لوازم بسته بندی - E"
+      }
+    }
+  ],
+  "samples": {
+    "transfer": {
+      "name": "MAT-STE-2026-25789",
+      "purpose": "Material Transfer",
+      "stock_entry_type": "Material Transfer",
+      "posting_date": "2026-04-05",
+      "docstatus": 1,
+      "company": "اسپاد فارمد دارو",
+      "total_outgoing_value": 3569632638.0,
+      "total_incoming_value": 3569632638.0,
+      "value_difference": 0.0,
+      "additional_costs": 0,
+      "items": [
+        {
+          "name": "p106cev9ni",
+          "item_code": "13200462",
+          "qty": 74550.0,
+          "transfer_qty": 74550.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "basic_rate": 8151.0,
+          "basic_amount": 607657050.0,
+          "valuation_rate": 8151.0,
+          "amount": 607657050.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "p1069rmv88",
+          "item_code": "13200462",
+          "qty": 235200.0,
+          "transfer_qty": 235200.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "basic_rate": 8151.0,
+          "basic_amount": 1917115200.0,
+          "valuation_rate": 8151.0,
+          "amount": 1917115200.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "p10jhci630",
+          "item_code": "13200462",
+          "qty": 49900.0,
+          "transfer_qty": 49900.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "basic_rate": 8151.0,
+          "basic_amount": 406734900.0,
+          "valuation_rate": 8151.0,
+          "amount": 406734900.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "p10h77kor6",
+          "item_code": "13200462",
+          "qty": 78288.0,
+          "transfer_qty": 78288.0,
+          "s_warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "t_warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "basic_rate": 8151.0,
+          "basic_amount": 638125488.0,
+          "valuation_rate": 8151.0,
+          "amount": 638125488.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        }
+      ],
+      "sle": [
+        {
+          "name": "MAT-SLE-2026-178918",
+          "item_code": "13200462",
+          "warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": -74550.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 8151.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": -607657050.0,
+          "qty_after_transaction": 460198.0
+        },
+        {
+          "name": "MAT-SLE-2026-178919",
+          "item_code": "13200462",
+          "warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": -235200.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 8151.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": -1917115200.0,
+          "qty_after_transaction": 224998.0
+        },
+        {
+          "name": "MAT-SLE-2026-178920",
+          "item_code": "13200462",
+          "warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": -49900.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 8151.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": -406734900.0,
+          "qty_after_transaction": 175098.0
+        },
+        {
+          "name": "MAT-SLE-2026-178921",
+          "item_code": "13200462",
+          "warehouse": "انبار Quarantine اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": -78288.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 8151.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": -638125488.0,
+          "qty_after_transaction": 96810.0
+        },
+        {
+          "name": "MAT-SLE-2026-178922",
+          "item_code": "13200462",
+          "warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": 74550.0,
+          "incoming_rate": 8151.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": 607657050.0,
+          "qty_after_transaction": 601261.0
+        },
+        {
+          "name": "MAT-SLE-2026-178923",
+          "item_code": "13200462",
+          "warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": 235200.0,
+          "incoming_rate": 8151.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": 1917115200.0,
+          "qty_after_transaction": 836461.0
+        },
+        {
+          "name": "MAT-SLE-2026-178924",
+          "item_code": "13200462",
+          "warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": 49900.0,
+          "incoming_rate": 8151.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": 406734900.0,
+          "qty_after_transaction": 886361.0
+        },
+        {
+          "name": "MAT-SLE-2026-178925",
+          "item_code": "13200462",
+          "warehouse": "انبار approved اقلام بسته بندی ثانویه اسپاد",
+          "actual_qty": 78288.0,
+          "incoming_rate": 8151.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 8151.0,
+          "stock_value_difference": 638125488.0,
+          "qty_after_transaction": 964649.0
+        }
+      ],
+      "gl_db": [],
+      "live_get_gl_entries": [],
+      "warehouse_accounts": {
+        "انبار approved اقلام بسته بندی ثانویه اسپاد": "111620 - موجودی لوازم بسته بندی - E",
+        "انبار Quarantine اقلام بسته بندی ثانویه اسپاد": "111620 - موجودی لوازم بسته بندی - E"
+      }
+    },
+    "manufacture": {
+      "name": "MAT-STE-2026-27699",
+      "purpose": "Manufacture",
+      "stock_entry_type": "Manufacture",
+      "posting_date": "2026-05-12",
+      "docstatus": 1,
+      "company": "اسپاد فارمد دارو",
+      "total_outgoing_value": 0.0,
+      "total_incoming_value": 0.0,
+      "value_difference": 0.0,
+      "additional_costs": 0,
+      "items": [
+        {
+          "name": "e1kln20117",
+          "item_code": "30200048",
+          "qty": 60.0,
+          "transfer_qty": 60.0,
+          "s_warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "t_warehouse": null,
+          "basic_rate": 0.0,
+          "basic_amount": 0.0,
+          "valuation_rate": 0.0,
+          "amount": 0.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "e1kcjdaj8i",
+          "item_code": "30300054",
+          "qty": 60.0,
+          "transfer_qty": 60.0,
+          "s_warehouse": null,
+          "t_warehouse": "انبار نمونه های پایداری اسپاد",
+          "basic_rate": 0.0,
+          "basic_amount": 0.0,
+          "valuation_rate": 0.0,
+          "amount": 0.0,
+          "is_finished_item": 1,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        }
+      ],
+      "sle": [
+        {
+          "name": "MAT-SLE-2026-193598",
+          "item_code": "30200048",
+          "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+          "actual_qty": -60.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 1399938.0,
+          "valuation_rate": 0.0,
+          "stock_value_difference": 0.0,
+          "qty_after_transaction": 0.0
+        },
+        {
+          "name": "MAT-SLE-2026-193599",
+          "item_code": "30300054",
+          "warehouse": "انبار نمونه های پایداری اسپاد",
+          "actual_qty": 60.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 0.0,
+          "valuation_rate": 0.0,
+          "stock_value_difference": 0.0,
+          "qty_after_transaction": 60.0
+        }
+      ],
+      "gl_db": [],
+      "live_get_gl_entries": [],
+      "warehouse_accounts": {
+        "انبار پایکار خط تولید اسپاد فارمد": "111701 - کالای درجریان ساخت - E",
+        "انبار نمونه های پایداری اسپاد": "111610 - موجودی مشترک مواد،بسته بندی و ... - E"
+      }
+    },
+    "issue": {
+      "name": "MAT-STE-2026-39311",
+      "purpose": "Material Issue",
+      "stock_entry_type": "Material Issue",
+      "posting_date": "2026-05-04",
+      "docstatus": 1,
+      "company": "اسپاد فارمد دارو",
+      "total_outgoing_value": 0.0,
+      "total_incoming_value": 0.0,
+      "value_difference": 0.0,
+      "additional_costs": 0,
+      "items": [
+        {
+          "name": "ccsv21vi5m",
+          "item_code": "30100018",
+          "qty": 15.0,
+          "transfer_qty": 15.0,
+          "s_warehouse": "انبار Reject محصولات نیمه ساخته",
+          "t_warehouse": null,
+          "basic_rate": 0.0,
+          "basic_amount": 0.0,
+          "valuation_rate": 0.0,
+          "amount": 0.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "ccsd2schoi",
+          "item_code": "30100018",
+          "qty": 2.0,
+          "transfer_qty": 2.0,
+          "s_warehouse": "انبار Reject محصولات نیمه ساخته",
+          "t_warehouse": null,
+          "basic_rate": 0.0,
+          "basic_amount": 0.0,
+          "valuation_rate": 0.0,
+          "amount": 0.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        },
+        {
+          "name": "ccstm9g20q",
+          "item_code": "30100018",
+          "qty": 2.0,
+          "transfer_qty": 2.0,
+          "s_warehouse": "انبار Reject محصولات نیمه ساخته",
+          "t_warehouse": null,
+          "basic_rate": 0.0,
+          "basic_amount": 0.0,
+          "valuation_rate": 0.0,
+          "amount": 0.0,
+          "is_finished_item": 0,
+          "is_scrap_item": 0,
+          "set_basic_rate_manually": 0,
+          "allow_zero_valuation_rate": 0
+        }
+      ],
+      "sle": [
+        {
+          "name": "MAT-SLE-2026-298143",
+          "item_code": "30100018",
+          "warehouse": "انبار Reject محصولات نیمه ساخته",
+          "actual_qty": -15.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 1399384.0,
+          "valuation_rate": 0.0,
+          "stock_value_difference": 0.0,
+          "qty_after_transaction": 94.0
+        },
+        {
+          "name": "MAT-SLE-2026-298144",
+          "item_code": "30100018",
+          "warehouse": "انبار Reject محصولات نیمه ساخته",
+          "actual_qty": -2.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 1399384.0,
+          "valuation_rate": 0.0,
+          "stock_value_difference": 0.0,
+          "qty_after_transaction": 92.0
+        },
+        {
+          "name": "MAT-SLE-2026-298145",
+          "item_code": "30100018",
+          "warehouse": "انبار Reject محصولات نیمه ساخته",
+          "actual_qty": -2.0,
+          "incoming_rate": 0.0,
+          "outgoing_rate": 1399384.0,
+          "valuation_rate": 0.0,
+          "stock_value_difference": 0.0,
+          "qty_after_transaction": 90.0
+        }
+      ],
+      "gl_db": [],
+      "live_get_gl_entries": [],
+      "warehouse_accounts": {
+        "انبار Reject محصولات نیمه ساخته": "111605 - موجودی نیمه ساخته - E"
+      }
+    }
+  },
+  "cohort_b_contains_29903": true,
+  "investigation_meta": {
+    "mode": "read_only",
+    "site": "development.localhost",
+    "version": "5.7.18",
+    "report": "ZERO_GL_STE_INVESTIGATION_DEV.md",
+    "patches_installed_for_replay": true
+  }
+}

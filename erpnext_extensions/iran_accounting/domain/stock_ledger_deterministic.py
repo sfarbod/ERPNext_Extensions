@@ -9,7 +9,9 @@ from frappe.utils import cint, flt
 from erpnext_extensions.iran_accounting.domain.currency import (
 	get_company_currency,
 	is_irr_company,
+	is_irr_currency,
 	round_currency,
+	round_monetary_rate,
 	round_row_amount_financial,
 )
 from erpnext_extensions.iran_accounting.domain.ledger_rounding import (
@@ -125,11 +127,15 @@ def authoritative_acquisition_incoming_rate(sle_doc_or_dict, currency: str | Non
 	# Zero is the pending-invoice / zero-source contract, not an acquisition rate.
 	if rate <= 0:
 		return None
-	# Document VR is authoritative for SLE incoming_rate:
-	# - Domestic LCV: may be fractional amount-preserving (auth/qty).
-	# - FX: must be integer IRR (ROUND_HALF_UP); gap vs commercial base → SA.
-	# Do not rewrite FX integer VR to a fractional auth/qty here.
-	_ = currency
+	# 5.7.18: document VR is authoritative but must be integer under IRR.
+	# Align writes integer rates; coerce here as a fail-safe for historical rows.
+	ccy = currency
+	if not ccy:
+		company = _get_entry_value(sle_doc_or_dict, "company")
+		if company and is_irr_company(company):
+			ccy = get_company_currency(company) or "IRR"
+	if ccy and is_irr_currency(ccy):
+		return float(round_monetary_rate(rate, ccy))
 	return rate
 
 

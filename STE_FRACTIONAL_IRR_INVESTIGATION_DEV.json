@@ -1,0 +1,709 @@
+{
+  "site": "development.localhost",
+  "app_version": "5.7.18",
+  "read_only": true,
+  "no_mutations": true,
+  "counts": {
+    "total_frac_sle": 512,
+    "vouchers": 387,
+    "by_type": {
+      "Manufacture": {
+        "sle": 343,
+        "vouchers": 251,
+        "identities": 42
+      },
+      "Material Transfer": {
+        "sle": 70,
+        "vouchers": 37,
+        "identities": 17
+      },
+      "Material Transfer for Manufacture": {
+        "sle": 96,
+        "vouchers": 96,
+        "identities": 18
+      },
+      "Repack": {
+        "sle": 3,
+        "vouchers": 3,
+        "identities": 2
+      }
+    },
+    "vouchers_with_fractional_SED_valuation_rate": 384,
+    "vouchers_frac_SLE_but_integer_SED": 3
+  },
+  "examples": {
+    "Manufacture": {
+      "voucher": "MAT-STE-2026-29578",
+      "consumption": [
+        {
+          "item": "30300052",
+          "qty": -716.0,
+          "outgoing_rate": 3118453.0,
+          "svd": -2434592678.85,
+          "rate_integer": true
+        }
+      ],
+      "finished_current": [
+        {
+          "item": "20100096",
+          "qty": 300.0,
+          "incoming_rate": 6800538.209066666,
+          "svd": 2040161462.72,
+          "expected_integer_ir": 6800538.0,
+          "qty_x_int": 2040161400.0,
+          "class_a_residual_svd_minus_qty_int": 62.72000002861023
+        },
+        {
+          "item": "20100096",
+          "qty": 58.0,
+          "incoming_rate": 6800538.209137931,
+          "svd": 394431216.1300001,
+          "expected_integer_ir": 6800538.0,
+          "qty_x_int": 394431204.0,
+          "class_a_residual_svd_minus_qty_int": 12.130000114440918
+        }
+      ],
+      "mechanism": "FG incoming_rate = absorbed_outgoing_pool / fg_qty (float). Consumption outgoing_rate already integer. SED valuation_rate persists same float."
+    },
+    "Manufacture_packaging_scrap_return": {
+      "voucher": "MAT-STE-2026-24872-2",
+      "item": "13200144",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "current_ir": 88567.984102564,
+      "qty": 117.0,
+      "svd": 10362454.139999986,
+      "expected_integer_ir": 88568.0,
+      "qty_x_int": 10362456.0,
+      "class_a_residual": -1.8600000143051147,
+      "mechanism": "Secondary packaging / reject return row (not is_finished_item) priced as amount/qty float into scrap/reject WH; consumption legs integer."
+    },
+    "Material_Transfer_for_Manufacture": {
+      "voucher": "MAT-STE-2026-25752",
+      "sed_basic_rate": 1572909.524667562,
+      "sed_amount": 4684124564.46,
+      "qty": 2978,
+      "source_sle_outgoing_rate_integer": 1572911.0,
+      "source_sle_svd": -4684124564.46,
+      "dest_sle_incoming_rate_frac": 1572909.524667562,
+      "dest_sle_svd": 4684124564.46,
+      "expected_integer_ir": 1572910.0,
+      "note": "Value conserved across transfer; representational outgoing_rate integerized but SVD and dest incoming_rate keep amount/qty float from SED.",
+      "qty_x_expected_int": 4684125980.0,
+      "class_a_residual_vs_conserved_svd": -1415.539999961853
+    },
+    "Material_Transfer": {
+      "voucher": "MAT-STE-2026-27631",
+      "item": "30300052",
+      "qty": 315,
+      "current_ir": 1457323.646888889,
+      "svd": 459056948.77,
+      "source_outgoing_rate_int": 1306979.0,
+      "expected_integer_ir": 1457324.0,
+      "class_a_residual": -111.23000001907349,
+      "mechanism": "Same conservation pattern as MTfM; dest rate from SED amount/qty."
+    },
+    "Repack": {
+      "voucher": "MAT-STE-2026-29903",
+      "item": "30200048",
+      "qty": 659,
+      "current_ir": 1650366.456570562,
+      "svd": 1087591494.88,
+      "expected_integer_ir": 1650366.0,
+      "class_a_residual": 300.8800001144409,
+      "source_outgoing_rate_int": 1399938.0,
+      "mechanism": "Repack FG absorbs outgoing value / qty as float rate (same as manufacture absorb)."
+    }
+  },
+  "align_simulation_in_memory_only": {
+    "Manufacture_FG": {
+      "before_frac_count": 3,
+      "after_frac_count": 0,
+      "after_all_rates_integer": true,
+      "incoming_after": [
+        {
+          "item": "30300052",
+          "fg": 0,
+          "qty": 716.0,
+          "basic": 3400269.0,
+          "vr": 3400269.0,
+          "amt": 2434592604.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 3400269.0
+        },
+        {
+          "item": "20100096",
+          "fg": 1,
+          "qty": 300.0,
+          "basic": 6800538.0,
+          "vr": 6800538.0,
+          "amt": 2040161400.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 6800538.0
+        },
+        {
+          "item": "20100096",
+          "fg": 1,
+          "qty": 58.0,
+          "basic": 6800538.0,
+          "vr": 6800538.0,
+          "amt": 394431204.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 6800538.0
+        }
+      ],
+      "before_frac": [
+        {
+          "item": "30300052",
+          "fg": 0,
+          "scrap": 0,
+          "s": "انبار پایکار خط تولید اسپاد فارمد",
+          "t": null,
+          "qty": 716.0,
+          "basic": 3400269.104539106,
+          "vr": 3400269.104539106,
+          "amt": 2434592678.85,
+          "vr_frac": true
+        },
+        {
+          "item": "20100096",
+          "fg": 1,
+          "scrap": 0,
+          "s": null,
+          "t": "انبار Quarantine محصول نهایی اسپاد",
+          "qty": 300.0,
+          "basic": 6800538.209078212,
+          "vr": 6800538.209078212,
+          "amt": 2040161462.72,
+          "vr_frac": true
+        },
+        {
+          "item": "20100096",
+          "fg": 1,
+          "scrap": 0,
+          "s": null,
+          "t": "انبار Retain Sample محصول نهایی اسپاد",
+          "qty": 58.0,
+          "basic": 6800538.209078212,
+          "vr": 6800538.209078212,
+          "amt": 394431216.13,
+          "vr_frac": true
+        }
+      ],
+      "after_frac": []
+    },
+    "Manufacture_packaging_byproduct": {
+      "before_frac_count": 2,
+      "after_frac_count": 0,
+      "after_all_rates_integer": true,
+      "incoming_after": [
+        {
+          "item": "13200036",
+          "fg": 0,
+          "qty": 40.0,
+          "basic": 118839.0,
+          "vr": 118839.0,
+          "amt": 4753560.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 118839.0
+        },
+        {
+          "item": "13200264",
+          "fg": 0,
+          "qty": 157.0,
+          "basic": 1163039.0,
+          "vr": 1163039.0,
+          "amt": 182597123.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 1163039.0
+        },
+        {
+          "item": "13200244",
+          "fg": 0,
+          "qty": 504.0,
+          "basic": 165064.0,
+          "vr": 165064.0,
+          "amt": 83192256.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 165064.0
+        },
+        {
+          "item": "13200066",
+          "fg": 0,
+          "qty": 2521.0,
+          "basic": 14658.0,
+          "vr": 14658.0,
+          "amt": 36952818.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 14658.0
+        },
+        {
+          "item": "13200383",
+          "fg": 0,
+          "qty": 2708.0,
+          "basic": 70070.0,
+          "vr": 70070.0,
+          "amt": 189749560.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 70070.0
+        },
+        {
+          "item": "13200187",
+          "fg": 0,
+          "qty": 534.0,
+          "basic": 198546.0,
+          "vr": 198546.0,
+          "amt": 106023564.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 198546.0
+        },
+        {
+          "item": "13200017",
+          "fg": 0,
+          "qty": 2515.0,
+          "basic": 7869.0,
+          "vr": 7869.0,
+          "amt": 19790535.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 7869.0
+        },
+        {
+          "item": "13200040",
+          "fg": 0,
+          "qty": 2513.0,
+          "basic": 32201.0,
+          "vr": 32201.0,
+          "amt": 80921113.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 32201.0
+        },
+        {
+          "item": "13200144",
+          "fg": 0,
+          "qty": 2630.0,
+          "basic": 132676.0,
+          "vr": 132676.0,
+          "amt": 348937880.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 132676.0
+        },
+        {
+          "item": "13200002",
+          "fg": 0,
+          "qty": 2514.0,
+          "basic": 223759.0,
+          "vr": 223759.0,
+          "amt": 562530126.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 223759.0
+        },
+        {
+          "item": "13200049",
+          "fg": 0,
+          "qty": 40.0,
+          "basic": 769728.0,
+          "vr": 769728.0,
+          "amt": 30789120.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 769728.0
+        },
+        {
+          "item": "13200544",
+          "fg": 0,
+          "qty": 2513.0,
+          "basic": 20502.0,
+          "vr": 20502.0,
+          "amt": 51521526.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 20502.0
+        },
+        {
+          "item": "13200196",
+          "fg": 0,
+          "qty": 41.0,
+          "basic": 64587.0,
+          "vr": 64587.0,
+          "amt": 2648067.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 64587.0
+        },
+        {
+          "item": "13200023",
+          "fg": 0,
+          "qty": 1000.0,
+          "basic": 3505.0,
+          "vr": 3505.0,
+          "amt": 3505000.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 3505.0
+        },
+        {
+          "item": "13200317",
+          "fg": 0,
+          "qty": 199.0,
+          "basic": 2613.0,
+          "vr": 2613.0,
+          "amt": 519987.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 2613.0
+        },
+        {
+          "item": "30300015",
+          "fg": 0,
+          "qty": 2519.0,
+          "basic": 16686.0,
+          "vr": 16686.0,
+          "amt": 42032034.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 16686.0
+        },
+        {
+          "item": "13200029",
+          "fg": 0,
+          "qty": 2513.0,
+          "basic": 39297.0,
+          "vr": 39297.0,
+          "amt": 98753361.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 39297.0
+        },
+        {
+          "item": "20100064",
+          "fg": 1,
+          "qty": 1256.0,
+          "basic": 1806850.0,
+          "vr": 1806850.0,
+          "amt": 2269403600.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 1806850.0
+        },
+        {
+          "item": "13200383",
+          "fg": 0,
+          "qty": 194.0,
+          "basic": 0.0,
+          "vr": 0.0,
+          "amt": 0.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 0.0
+        },
+        {
+          "item": "13200144",
+          "fg": 0,
+          "qty": 117.0,
+          "basic": 88568.0,
+          "vr": 88568.0,
+          "amt": 10362456.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 88568.0
+        },
+        {
+          "item": "13200187",
+          "fg": 0,
+          "qty": 11.0,
+          "basic": 198546.0,
+          "vr": 198546.0,
+          "amt": 2184006.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 198546.0
+        },
+        {
+          "item": "13200017",
+          "fg": 0,
+          "qty": 2.0,
+          "basic": 0.0,
+          "vr": 0.0,
+          "amt": 0.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 0.0
+        },
+        {
+          "item": "13200066",
+          "fg": 0,
+          "qty": 8.0,
+          "basic": 0.0,
+          "vr": 0.0,
+          "amt": 0.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 0.0
+        },
+        {
+          "item": "13200023",
+          "fg": 0,
+          "qty": 100.0,
+          "basic": 0.0,
+          "vr": 0.0,
+          "amt": 0.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 0.0
+        },
+        {
+          "item": "13200244",
+          "fg": 0,
+          "qty": 753.0,
+          "basic": 375999.0,
+          "vr": 375999.0,
+          "amt": 283127247.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 375999.0
+        },
+        {
+          "item": "13200187",
+          "fg": 0,
+          "qty": 734.0,
+          "basic": 198546.0,
+          "vr": 198546.0,
+          "amt": 145732764.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 198546.0
+        },
+        {
+          "item": "13200023",
+          "fg": 0,
+          "qty": 2246.0,
+          "basic": 3505.0,
+          "vr": 3505.0,
+          "amt": 7872230.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 3505.0
+        },
+        {
+          "item": "30300015",
+          "fg": 0,
+          "qty": 6.0,
+          "basic": 0.0,
+          "vr": 0.0,
+          "amt": 0.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 0.0
+        },
+        {
+          "item": "30500006",
+          "fg": 0,
+          "qty": 1.0,
+          "basic": 0.0,
+          "vr": 0.0,
+          "amt": 0.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 0.0
+        }
+      ],
+      "before_frac": [
+        {
+          "item": "20100064",
+          "fg": 1,
+          "scrap": 0,
+          "s": null,
+          "t": "انبار Quarantine محصول نهایی اسپاد",
+          "qty": 1256.0,
+          "basic": 1806849.849410828,
+          "vr": 1806849.849410828,
+          "amt": 2269403410.86,
+          "vr_frac": true
+        },
+        {
+          "item": "13200144",
+          "fg": 0,
+          "scrap": 0,
+          "s": null,
+          "t": "انبار ضایعات اقلام اسپاد",
+          "qty": 117.0,
+          "basic": 88567.984123805,
+          "vr": 88567.984123805,
+          "amt": 10362454.14,
+          "vr_frac": true
+        }
+      ],
+      "after_frac": []
+    },
+    "MTfM": {
+      "before_frac_count": 1,
+      "after_frac_count": 0,
+      "after_all_rates_integer": true,
+      "incoming_after": [
+        {
+          "item": "30100012",
+          "fg": 0,
+          "qty": 2978.0,
+          "basic": 1572910.0,
+          "vr": 1572910.0,
+          "amt": 4684125980.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 1572910.0
+        }
+      ],
+      "before_frac": [
+        {
+          "item": "30100012",
+          "fg": 0,
+          "scrap": 0,
+          "s": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "t": "انبار پایکار خط تولید اسپاد فارمد",
+          "qty": 2978.0,
+          "basic": 1572909.524667562,
+          "vr": 1572909.524667562,
+          "amt": 4684124564.46,
+          "vr_frac": true
+        }
+      ],
+      "after_frac": []
+    },
+    "Material_Transfer": {
+      "before_frac_count": 1,
+      "after_frac_count": 0,
+      "after_all_rates_integer": true,
+      "incoming_after": [
+        {
+          "item": "30300052",
+          "fg": 0,
+          "qty": 315.0,
+          "basic": 1457324.0,
+          "vr": 1457324.0,
+          "amt": 459057060.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 1457324.0
+        }
+      ],
+      "before_frac": [
+        {
+          "item": "30300052",
+          "fg": 0,
+          "scrap": 0,
+          "s": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "t": "انبار نمونه های پایداری اسپاد",
+          "qty": 315.0,
+          "basic": 1457323.646888889,
+          "vr": 1457323.646888889,
+          "amt": 459056948.77,
+          "vr_frac": true
+        }
+      ],
+      "after_frac": []
+    },
+    "Repack": {
+      "before_frac_count": 2,
+      "after_frac_count": 0,
+      "after_all_rates_integer": true,
+      "incoming_after": [
+        {
+          "item": "30200048",
+          "fg": 0,
+          "qty": 659.0,
+          "basic": 1650366.0,
+          "vr": 1650366.0,
+          "amt": 1087591194.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 1650366.0
+        },
+        {
+          "item": "30200048",
+          "fg": 1,
+          "qty": 659.0,
+          "basic": 1650366.0,
+          "vr": 1650366.0,
+          "amt": 1087591194.0,
+          "vr_frac": false,
+          "basic_frac": false,
+          "residual_amt_minus_qty_vr": 0.0,
+          "expected_int_vr": 1650366.0
+        }
+      ],
+      "before_frac": [
+        {
+          "item": "30200048",
+          "fg": 0,
+          "scrap": 0,
+          "s": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "t": null,
+          "qty": 659.0,
+          "basic": 1650366.456570562,
+          "vr": 1650366.456570562,
+          "amt": 1087591494.88,
+          "vr_frac": true
+        },
+        {
+          "item": "30200048",
+          "fg": 1,
+          "scrap": 0,
+          "s": null,
+          "t": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 659.0,
+          "basic": 1650366.456570562,
+          "vr": 1650366.456570562,
+          "amt": 1087591494.88,
+          "vr_frac": true
+        }
+      ],
+      "after_frac": []
+    }
+  }
+}

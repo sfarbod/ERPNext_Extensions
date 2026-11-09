@@ -1,0 +1,36 @@
+{
+  "suite": "erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718",
+  "app_version": "5.7.18",
+  "erpnext_version": "16.53.0",
+  "frappe_version": "16.54.0",
+  "generated_at": "2026-11-09 21:49:25.395189",
+  "tests_run": 20,
+  "failures": 0,
+  "errors": 0,
+  "success": true,
+  "output": "test_case_a_no_asset_handled_by_caller_flag (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestAssetImpactDecisions.test_case_a_no_asset_handled_by_caller_flag) ... ok\ntest_case_b_draft (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestAssetImpactDecisions.test_case_b_draft) ... ok\ntest_case_c_submitted_changed_no_posted (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestAssetImpactDecisions.test_case_c_submitted_changed_no_posted) ... ok\ntest_case_d_submitted_unchanged (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestAssetImpactDecisions.test_case_d_submitted_unchanged) ... ok\ntest_case_e_submitted_changed_with_posted (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestAssetImpactDecisions.test_case_e_submitted_changed_with_posted) ... ok\ntest_expected_acquisition_formula (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestAssetImpactDecisions.test_expected_acquisition_formula) ... ok\ntest_adjust_fa_debit_and_grni_net_balance (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_adjust_fa_debit_and_grni_net_balance)\nSimulate core raw map then adjust FA debit — debit/credit equality. ... ok\ntest_core_debit_excludes_amt_diff (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_core_debit_excludes_amt_diff) ... ok\ntest_corrected_debit_includes_amt_diff_once (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_corrected_debit_includes_amt_diff_once) ... ok\ntest_denylist_contains_finance_je (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_denylist_contains_finance_je) ... ok\ntest_negative_pi_difference_concrete_case (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_negative_pi_difference_concrete_case) ... ok\ntest_no_duplicate_adjustment_on_second_pass (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_no_duplicate_adjustment_on_second_pass) ... ok\ntest_patch_install_idempotent (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_patch_install_idempotent) ... ok\ntest_positive_pi_difference (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_positive_pi_difference) ... ok\ntest_setting_disabled_skips_adjust (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_setting_disabled_skips_adjust) ... ok\ntest_stock_item_not_adjusted (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_stock_item_not_adjusted) ... ok\ntest_tax_plus_lcv_plus_amt_diff (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_tax_plus_lcv_plus_amt_diff) ... ok\ntest_zero_difference_noop (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestFaPrGlAmountDifferenceHelpers.test_zero_difference_noop) ... ok\ntest_integer_vr_from_amount_still_works (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestIrrIntegerVrUnaffected.test_integer_vr_from_amount_still_works) ... ok\ntest_non_irr_round_monetary_unchanged_path (erpnext_extensions.iran_accounting.tests.test_fa_pr_gl_amount_difference_v5718.TestIrrIntegerVrUnaffected.test_non_irr_round_monetary_unchanged_path) ... ok\n\n----------------------------------------------------------------------\nRan 20 tests in 0.001s\n\nOK\n",
+  "live_gl_mat_pre_2026_00747": {
+    "purchase_receipt": "MAT-PRE-2026-00747",
+    "expense_account": "121006 - اثاثیه ومنصوبات - E",
+    "amount_difference": -64500000.0,
+    "entries": [
+      {
+        "account": "121006 - اثاثیه ومنصوبات - E",
+        "debit": 1225500000.0,
+        "credit": 0.0
+      },
+      {
+        "account": "211230 - معلق خرید دارایی ثابت - E",
+        "debit": 0.0,
+        "credit": 1225500000.0
+      }
+    ],
+    "total_debit": 1225500000.0,
+    "total_credit": 1225500000.0,
+    "balanced": true
+  },
+  "denylist": [
+    "ACC-JV-1405-169046"
+  ],
+  "mutated_documents": false
+}

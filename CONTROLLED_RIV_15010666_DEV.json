@@ -1,0 +1,239 @@
+{
+  "site": "development.localhost",
+  "not_production": true,
+  "app_version": "5.7.18",
+  "identity": {
+    "item": "15010666",
+    "warehouse": "انبار ملزومات مصرفی اسپاد"
+  },
+  "riv": {
+    "riv": "o02fpku0mh",
+    "status": "Completed",
+    "error_log": ""
+  },
+  "before": {
+    "fractional_sle": [
+      {
+        "voucher_type": "Purchase Receipt",
+        "voucher_no": "MAT-PRE-2026-02094",
+        "incoming_rate": 3181363.333333334,
+        "outgoing_rate": 0.0,
+        "actual_qty": 3.0,
+        "stock_value_difference": 9544090.0,
+        "posting_date": "2026-10-20"
+      },
+      {
+        "voucher_type": "Purchase Receipt",
+        "voucher_no": "MAT-PRE-2026-02093",
+        "incoming_rate": 3181363.454545455,
+        "outgoing_rate": 0.0,
+        "actual_qty": 11.0,
+        "stock_value_difference": 34994998.0,
+        "posting_date": "2026-10-22"
+      },
+      {
+        "voucher_type": "Purchase Receipt",
+        "voucher_no": "MAT-PRE-2026-02188",
+        "incoming_rate": 3181363.7,
+        "outgoing_rate": 0.0,
+        "actual_qty": 20.0,
+        "stock_value_difference": 63627274.0,
+        "posting_date": "2026-11-01"
+      }
+    ],
+    "count": 3
+  },
+  "after": {
+    "fractional_sle": [],
+    "count": 0,
+    "target_pr_sle": [
+      {
+        "voucher_type": "Purchase Receipt",
+        "voucher_no": "MAT-PRE-2026-02094",
+        "incoming_rate": 3181363.0,
+        "outgoing_rate": 0.0,
+        "actual_qty": 3.0,
+        "stock_value_difference": 9544089.0,
+        "posting_date": "2026-10-20"
+      },
+      {
+        "voucher_type": "Purchase Receipt",
+        "voucher_no": "MAT-PRE-2026-02093",
+        "incoming_rate": 3181363.0,
+        "outgoing_rate": 0.0,
+        "actual_qty": 11.0,
+        "stock_value_difference": 34994993.0,
+        "posting_date": "2026-10-22"
+      },
+      {
+        "voucher_type": "Purchase Receipt",
+        "voucher_no": "MAT-PRE-2026-02188",
+        "incoming_rate": 3181364.0,
+        "outgoing_rate": 0.0,
+        "actual_qty": 20.0,
+        "stock_value_difference": 63627280.0,
+        "posting_date": "2026-11-01"
+      }
+    ],
+    "gl": [
+      {
+        "pr": "MAT-PRE-2026-02094",
+        "balanced": true,
+        "debit": 9544090.0,
+        "credit": 9544090.0,
+        "accounts": [
+          {
+            "account": "111604 - موجودی مواد و ملزومات مصرفی - E",
+            "d": 9544089.0,
+            "c": 0.0
+          },
+          {
+            "account": "211004 - معلق خرید - E",
+            "d": 0.0,
+            "c": 9544090.0
+          },
+          {
+            "account": "621301 - تعدیلات موجودی کالا - E",
+            "d": 1.0,
+            "c": 0.0
+          }
+        ]
+      },
+      {
+        "pr": "MAT-PRE-2026-02093",
+        "balanced": true,
+        "debit": 79534086.0,
+        "credit": 79534086.0,
+        "accounts": [
+          {
+            "account": "111604 - موجودی مواد و ملزومات مصرفی - E",
+            "d": 79534081.0,
+            "c": 0.0
+          },
+          {
+            "account": "211004 - معلق خرید - E",
+            "d": 0.0,
+            "c": 79534086.0
+          },
+          {
+            "account": "621301 - تعدیلات موجودی کالا - E",
+            "d": 5.0,
+            "c": 0.0
+          }
+        ]
+      },
+      {
+        "pr": "MAT-PRE-2026-02188",
+        "balanced": true,
+        "debit": 192703638.0,
+        "credit": 192703638.0,
+        "accounts": [
+          {
+            "account": "111604 - موجودی مواد و ملزومات مصرفی - E",
+            "d": 192703638.0,
+            "c": 0.0
+          },
+          {
+            "account": "211004 - معلق خرید - E",
+            "d": 0.0,
+            "c": 192703632.0
+          },
+          {
+            "account": "621301 - تعدیلات موجودی کالا - E",
+            "d": 0.0,
+            "c": 6.0
+          }
+        ]
+      }
+    ],
+    "bin": {
+      "actual_qty": 0.0,
+      "stock_value": 0.0,
+      "valuation_rate": 3181364.0
+    }
+  },
+  "doc_vr": [
+    {
+      "pr": "MAT-PRE-2026-00652",
+      "qty": 15.0,
+      "amount": 37500000.0,
+      "valuation_rate": 2500000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-00514",
+      "qty": 80.0,
+      "amount": 440000000.0,
+      "valuation_rate": 5500000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-00490",
+      "qty": 50.0,
+      "amount": 275000000.0,
+      "valuation_rate": 5500000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-00477",
+      "qty": 60.0,
+      "amount": 330000000.0,
+      "valuation_rate": 5500000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-01842",
+      "qty": 2.0,
+      "amount": 10800000.0,
+      "valuation_rate": 5400000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-01655",
+      "qty": 2.0,
+      "amount": 10800000.0,
+      "valuation_rate": 5400000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-01938",
+      "qty": 20.0,
+      "amount": 118000000.0,
+      "valuation_rate": 5900000.0,
+      "amount_difference_with_purchase_invoice": 0.0
+    },
+    {
+      "pr": "MAT-PRE-2026-02094",
+      "qty": 3.0,
+      "amount": 19088181.0,
+      "valuation_rate": 3181363.0,
+      "amount_difference_with_purchase_invoice": -6362728.0
+    },
+    {
+      "pr": "MAT-PRE-2026-02093",
+      "qty": 11.0,
+      "amount": 69989997.0,
+      "valuation_rate": 3181363.0,
+      "amount_difference_with_purchase_invoice": 4199401.0
+    },
+    {
+      "pr": "MAT-PRE-2026-02188",
+      "qty": 20.0,
+      "amount": 127254540.0,
+      "valuation_rate": 3181364.0,
+      "amount_difference_with_purchase_invoice": 4.0
+    }
+  ],
+  "ste_fractional_for_item": [],
+  "fractional_cleared_on_identity_wh": true,
+  "class_a_stock_adjustment_evidence": {
+    "MAT-PRE-2026-02094": {
+      "sle_svd": 9544089.0,
+      "inventory_gl_debit": 9544089.0,
+      "grni_credit": 9544090.0,
+      "stock_adjustment_621301_debit": 1.0,
+      "gl_balanced": true,
+      "note": "Class A residual posted to Stock Adjustment; not Round Off; no manual JE"
+    }
+  }
+}
