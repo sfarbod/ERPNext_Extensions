@@ -25,13 +25,19 @@ def after_migrate() -> None:
 	from erpnext_extensions.purchasing_decimal_precision_v524 import (
 		repair_purchasing_decimal_schema,
 	)
+	from erpnext_extensions.facility_management.facility_precision import (
+		repair_facility_decimal_schema,
+	)
 
 	selling = repair_selling_documents_decimal_schema(run_completeness_guard=False)
 	stock = repair_stock_repost_decimal_schema(run_completeness_guard=False)
 	purchasing = repair_purchasing_decimal_schema(run_completeness_guard=False)
+	facility = repair_facility_decimal_schema()
 	logger.info(
-		"Decimal precision after_migrate done: selling_repaired=%s stock_repaired=%s purchasing_repaired=%s",
+		"Decimal precision after_migrate done: selling_repaired=%s stock_repaired=%s "
+		"purchasing_repaired=%s facility_repaired=%s",
 		len(selling.get("repaired") or []),
 		len(stock.get("repaired") or []),
 		len(purchasing.get("repaired") or []),
+		len(facility.get("repaired") or []),
 	)
