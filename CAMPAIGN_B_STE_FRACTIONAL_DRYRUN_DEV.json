@@ -1,0 +1,2512 @@
+{
+  "api_version": "financial-correction-campaign-v1",
+  "cohort": "B_ste_fractional_irr",
+  "dry_run": true,
+  "mutated": false,
+  "company": "اسپاد فارمد دارو",
+  "confirm_token_for_future_execute": "EXECUTE_STE_FRACTIONAL_COHORT",
+  "generated_at": "2026-11-09 20:55:02.196649",
+  "journal_denylist": {
+    "denylist": [
+      {
+        "name": "ACC-JV-1405-169046",
+        "docstatus": 1,
+        "modified": "2026-10-19 14:35:53.838699",
+        "modified_by": "motamedifar.m@espadpharmedco.com",
+        "total_debit": 18215880000.0,
+        "exists": true,
+        "protected": true,
+        "campaign_action": "NEVER_TOUCH"
+      }
+    ],
+    "policy": "Finance-owned; excluded at every campaign entry point"
+  },
+  "source": "STE_FRACTIONAL_IRR_INVESTIGATION_DEV (+ live frac SLE query fallback)",
+  "counts": {
+    "frac_sle_rows": 512,
+    "vouchers": 387,
+    "identities": 73,
+    "by_type": {
+      "Manufacture": 251,
+      "Material Transfer": 37,
+      "Material Transfer for Manufacture": 96,
+      "Repack": 3
+    }
+  },
+  "identities": [
+    {
+      "item_code": "13200023",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-35587-1",
+        "MAT-STE-2026-35589-1",
+        "MAT-STE-2026-35712-1",
+        "MAT-STE-2026-35717-1",
+        "MAT-STE-2026-35835-1",
+        "MAT-STE-2026-35938-1",
+        "MAT-STE-2026-35940-1",
+        "MAT-STE-2026-35941-1",
+        "MAT-STE-2026-36025-1",
+        "MAT-STE-2026-36027-1",
+        "MAT-STE-2026-39101-1",
+        "MAT-STE-2026-40673",
+        "MAT-STE-2026-40937",
+        "MAT-STE-2026-40982",
+        "MAT-STE-2026-41074",
+        "MAT-STE-2026-41122",
+        "MAT-STE-2026-41132",
+        "MAT-STE-2026-41134",
+        "MAT-STE-2026-41147",
+        "MAT-STE-2026-41149",
+        "MAT-STE-2026-41196",
+        "MAT-STE-2026-41224",
+        "MAT-STE-2026-41254",
+        "MAT-STE-2026-43597"
+      ],
+      "frac_sle_count": 24,
+      "earliest_posting_date": "2026-08-16",
+      "fingerprint": "05689e31259488301cab60b480b7e8492c75387699ea5d7441f77929f2b1903e",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200023",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-08-16",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200049",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-42637"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-09-26",
+      "fingerprint": "f51d941d6bdb70d8a02b6e2682bff0b13d571a30a5915eb7e76ad35143138337",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200049",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-09-26",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200066",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-31386-1",
+        "MAT-STE-2026-31387-1",
+        "MAT-STE-2026-31564-1",
+        "MAT-STE-2026-31767-1",
+        "MAT-STE-2026-31768-1",
+        "MAT-STE-2026-31870-1",
+        "MAT-STE-2026-31954-1",
+        "MAT-STE-2026-32030-1",
+        "MAT-STE-2026-32031-1",
+        "MAT-STE-2026-32215-1",
+        "MAT-STE-2026-32218-1",
+        "MAT-STE-2026-32222-1",
+        "MAT-STE-2026-32233-1",
+        "MAT-STE-2026-32368-1",
+        "MAT-STE-2026-32371-1",
+        "MAT-STE-2026-32372-1",
+        "MAT-STE-2026-32910-1",
+        "MAT-STE-2026-32912-1",
+        "MAT-STE-2026-33009-1",
+        "MAT-STE-2026-33010-1",
+        "MAT-STE-2026-33012-1",
+        "MAT-STE-2026-33015-1",
+        "MAT-STE-2026-33091-1",
+        "MAT-STE-2026-33092-1",
+        "MAT-STE-2026-33096-1",
+        "MAT-STE-2026-33187-1",
+        "MAT-STE-2026-33330-1",
+        "MAT-STE-2026-33331-1",
+        "MAT-STE-2026-33332-1",
+        "MAT-STE-2026-33472-1",
+        "MAT-STE-2026-33473-1",
+        "MAT-STE-2026-33474-1",
+        "MAT-STE-2026-33475-1",
+        "MAT-STE-2026-33608-1",
+        "MAT-STE-2026-33610-1",
+        "MAT-STE-2026-33614-1",
+        "MAT-STE-2026-33617-1",
+        "MAT-STE-2026-33725-1",
+        "MAT-STE-2026-34068-1",
+        "MAT-STE-2026-34069-1",
+        "MAT-STE-2026-34217-1",
+        "MAT-STE-2026-34343-1",
+        "MAT-STE-2026-34543-1",
+        "MAT-STE-2026-34548-1",
+        "MAT-STE-2026-35056-1",
+        "MAT-STE-2026-35063-1",
+        "MAT-STE-2026-35064-1",
+        "MAT-STE-2026-35260-1",
+        "MAT-STE-2026-35267-1",
+        "MAT-STE-2026-35268-1",
+        "MAT-STE-2026-35334-1",
+        "MAT-STE-2026-35335-1",
+        "MAT-STE-2026-35461-1",
+        "MAT-STE-2026-35708-1",
+        "MAT-STE-2026-38866-1",
+        "MAT-STE-2026-38887-1",
+        "MAT-STE-2026-38905-1",
+        "MAT-STE-2026-38906-1",
+        "MAT-STE-2026-38908-1",
+        "MAT-STE-2026-38923-1",
+        "MAT-STE-2026-38952-1",
+        "MAT-STE-2026-40673",
+        "MAT-STE-2026-40716",
+        "MAT-STE-2026-40735",
+        "MAT-STE-2026-40752",
+        "MAT-STE-2026-40880",
+        "MAT-STE-2026-40972-1",
+        "MAT-STE-2026-41074",
+        "MAT-STE-2026-41110",
+        "MAT-STE-2026-41122",
+        "MAT-STE-2026-41132",
+        "MAT-STE-2026-41134",
+        "MAT-STE-2026-41147",
+        "MAT-STE-2026-41187",
+        "MAT-STE-2026-42949",
+        "MAT-STE-2026-43012",
+        "MAT-STE-2026-43327",
+        "MAT-STE-2026-43330",
+        "MAT-STE-2026-43338"
+      ],
+      "frac_sle_count": 79,
+      "earliest_posting_date": "2026-07-01",
+      "fingerprint": "0ab804d483605ca0a4f1857fc1f8d86fbba1f42194042984ed1cd09ece0aac63",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200066",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-07-01",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200091",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-25735"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-09-08",
+      "fingerprint": "ca5f4576e1508eef2d06931cc49e66f66bea946f420197189240e721c468c573",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200091",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-09-08",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200144",
+      "warehouse": "انبار Reject اقلام بسته بندی ثانویه اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-35063-1",
+        "MAT-STE-2026-35064-1",
+        "MAT-STE-2026-35717-1",
+        "MAT-STE-2026-35940-1",
+        "MAT-STE-2026-35945-1",
+        "MAT-STE-2026-36025-1",
+        "MAT-STE-2026-39101-1",
+        "MAT-STE-2026-40937",
+        "MAT-STE-2026-41110",
+        "MAT-STE-2026-41111",
+        "MAT-STE-2026-41122",
+        "MAT-STE-2026-41128",
+        "MAT-STE-2026-41132",
+        "MAT-STE-2026-41134",
+        "MAT-STE-2026-41147",
+        "MAT-STE-2026-41196"
+      ],
+      "frac_sle_count": 16,
+      "earliest_posting_date": "2026-08-10",
+      "fingerprint": "459bd6feda55ee2d470c7cc2fe8a1a658c36e8ddcdef88fa5a6896530b41e9c4",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200144",
+        "warehouse": "انبار Reject اقلام بسته بندی ثانویه اسپاد",
+        "posting_date": "2026-08-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200144",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-24872-2",
+        "MAT-STE-2026-24883-1",
+        "MAT-STE-2026-24941",
+        "MAT-STE-2026-24955",
+        "MAT-STE-2026-25030",
+        "MAT-STE-2026-35056-1",
+        "MAT-STE-2026-35063-1",
+        "MAT-STE-2026-35064-1",
+        "MAT-STE-2026-35267-1",
+        "MAT-STE-2026-35268-1",
+        "MAT-STE-2026-35335-1",
+        "MAT-STE-2026-35940-1",
+        "MAT-STE-2026-35941-1",
+        "MAT-STE-2026-35945-1",
+        "MAT-STE-2026-36025-1",
+        "MAT-STE-2026-36027-1",
+        "MAT-STE-2026-36174-1",
+        "MAT-STE-2026-36825-1",
+        "MAT-STE-2026-36826",
+        "MAT-STE-2026-36897",
+        "MAT-STE-2026-36928",
+        "MAT-STE-2026-36933",
+        "MAT-STE-2026-37031",
+        "MAT-STE-2026-37077",
+        "MAT-STE-2026-37321",
+        "MAT-STE-2026-37760",
+        "MAT-STE-2026-38887-1",
+        "MAT-STE-2026-39101-1",
+        "MAT-STE-2026-39173",
+        "MAT-STE-2026-39522",
+        "MAT-STE-2026-40257",
+        "MAT-STE-2026-40260",
+        "MAT-STE-2026-40273",
+        "MAT-STE-2026-40303",
+        "MAT-STE-2026-40326",
+        "MAT-STE-2026-40567",
+        "MAT-STE-2026-40573",
+        "MAT-STE-2026-40604",
+        "MAT-STE-2026-40666",
+        "MAT-STE-2026-40681",
+        "MAT-STE-2026-40735",
+        "MAT-STE-2026-40740",
+        "MAT-STE-2026-40796",
+        "MAT-STE-2026-40902",
+        "MAT-STE-2026-40903",
+        "MAT-STE-2026-40916",
+        "MAT-STE-2026-40958",
+        "MAT-STE-2026-40983",
+        "MAT-STE-2026-41074",
+        "MAT-STE-2026-41110",
+        "MAT-STE-2026-41115",
+        "MAT-STE-2026-41122",
+        "MAT-STE-2026-41128",
+        "MAT-STE-2026-41132",
+        "MAT-STE-2026-41134",
+        "MAT-STE-2026-41147",
+        "MAT-STE-2026-41149",
+        "MAT-STE-2026-41221",
+        "MAT-STE-2026-41254",
+        "MAT-STE-2026-41679",
+        "MAT-STE-2026-41907",
+        "MAT-STE-2026-42016",
+        "MAT-STE-2026-42067",
+        "MAT-STE-2026-42070",
+        "MAT-STE-2026-42071",
+        "MAT-STE-2026-42127",
+        "MAT-STE-2026-42138",
+        "MAT-STE-2026-42600",
+        "MAT-STE-2026-42637",
+        "MAT-STE-2026-42782",
+        "MAT-STE-2026-43312",
+        "MAT-STE-2026-43512-1",
+        "MAT-STE-2026-43523",
+        "MAT-STE-2026-43533",
+        "MAT-STE-2026-43536",
+        "MAT-STE-2026-43546",
+        "MAT-STE-2026-43579",
+        "MAT-STE-2026-43597",
+        "MAT-STE-2026-43604",
+        "MAT-STE-2026-43606"
+      ],
+      "frac_sle_count": 80,
+      "earliest_posting_date": "2026-08-10",
+      "fingerprint": "c42e606789be215e4416cbb977a98041d9445eefd9ab442c6176239582ff2c9c",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200144",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-08-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200383",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-24879",
+        "MAT-STE-2026-34343-1",
+        "MAT-STE-2026-34543-1",
+        "MAT-STE-2026-38887-1",
+        "MAT-STE-2026-38906-1",
+        "MAT-STE-2026-38908-1",
+        "MAT-STE-2026-39101-1",
+        "MAT-STE-2026-40567",
+        "MAT-STE-2026-40573",
+        "MAT-STE-2026-40604",
+        "MAT-STE-2026-40752",
+        "MAT-STE-2026-41074",
+        "MAT-STE-2026-41132",
+        "MAT-STE-2026-41134",
+        "MAT-STE-2026-41147",
+        "MAT-STE-2026-41679",
+        "MAT-STE-2026-42600",
+        "MAT-STE-2026-43597"
+      ],
+      "frac_sle_count": 18,
+      "earliest_posting_date": "2026-07-22",
+      "fingerprint": "7c1423396f81452d594408822d2b9e7b3c9cd55dc511c05310716a081f10d731",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200383",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-07-22",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "13200397",
+      "warehouse": "انبار ضایعات اقلام اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29981-1",
+        "MAT-STE-2026-32213-1",
+        "MAT-STE-2026-36677",
+        "MAT-STE-2026-36688",
+        "MAT-STE-2026-36715",
+        "MAT-STE-2026-36718"
+      ],
+      "frac_sle_count": 6,
+      "earliest_posting_date": "2026-06-13",
+      "fingerprint": "bbd6b726921fcb38a55dfcfa30cac0295326ce282da894d66c7e4c5182c06f98",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "13200397",
+        "warehouse": "انبار ضایعات اقلام اسپاد",
+        "posting_date": "2026-06-13",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100008",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30066-1",
+        "MAT-STE-2026-30203-1",
+        "MAT-STE-2026-36825-1",
+        "MAT-STE-2026-36826",
+        "MAT-STE-2026-36928",
+        "MAT-STE-2026-40902"
+      ],
+      "frac_sle_count": 6,
+      "earliest_posting_date": "2026-06-14",
+      "fingerprint": "df4ea67676fbecc7dd955f10dea650f5a85fb795da86bfb392b4c3c49f50c376",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100008",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-06-14",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100008",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture",
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30066-1",
+        "MAT-STE-2026-30203-1",
+        "MAT-STE-2026-36908"
+      ],
+      "frac_sle_count": 4,
+      "earliest_posting_date": "2026-06-14",
+      "fingerprint": "d12c4893be715940c79e681d566116f49589ee188149e4009706c15192f3e816",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100008",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-06-14",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100008",
+      "warehouse": "انبار approved محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30256",
+        "MAT-STE-2026-36909",
+        "MAT-STE-2026-36910",
+        "MAT-STE-2026-37789",
+        "MAT-STE-2026-40883",
+        "MAT-STE-2026-41684",
+        "MAT-STE-2026-41701",
+        "MAT-STE-2026-43339"
+      ],
+      "frac_sle_count": 10,
+      "earliest_posting_date": "2026-06-16",
+      "fingerprint": "272fec4268f9b148ef101811c91749337654aae1a18eefa808cc4b08069e7bc1",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100008",
+        "warehouse": "انبار approved محصول نهایی اسپاد",
+        "posting_date": "2026-06-16",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100008",
+      "warehouse": "انبار آماده فروش -میلان پارس",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30291",
+        "MAT-STE-2026-36911",
+        "MAT-STE-2026-41685"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-06-16",
+      "fingerprint": "f261855fa9085478c1319b412112ead56316089d9f06cd20c5af524a9d84d5fc",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100008",
+        "warehouse": "انبار آماده فروش -میلان پارس",
+        "posting_date": "2026-06-16",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100009",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-32031-1",
+        "MAT-STE-2026-40880"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-07",
+      "fingerprint": "7ceb5728c366b542d997e65aa416aafe528617672a517524e54a6349c8b97c81",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100009",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-07-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100009",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-32031-1",
+        "MAT-STE-2026-40880"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-07",
+      "fingerprint": "1bf6658aed92e6f2403e0e8ca2a33a6413d9238cb029064094f081ff66c2f220",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100009",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-07-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100009",
+      "warehouse": "انبار approved محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-40881",
+        "MAT-STE-2026-40883",
+        "MAT-STE-2026-43328"
+      ],
+      "frac_sle_count": 4,
+      "earliest_posting_date": "2026-07-15",
+      "fingerprint": "e4b02b57aa07fa2b2e38cfe87374dad91ddfd373175e364351c7fe7aa4aba80d",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100009",
+        "warehouse": "انبار approved محصول نهایی اسپاد",
+        "posting_date": "2026-07-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100009",
+      "warehouse": "انبار آماده فروش -میلان پارس",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-40882"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-15",
+      "fingerprint": "0d278d403b17e0d5e283b1124d8520a6efee18ed69a9023cb8cae1cf29024e25",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100009",
+        "warehouse": "انبار آماده فروش -میلان پارس",
+        "posting_date": "2026-07-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100015",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-32030-1",
+        "MAT-STE-2026-32221"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-11",
+      "fingerprint": "16ad6d18b30ef703b3fea853dfd0fab0dd0aa5e8bcdb24f6521da22ba50d3f89",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100015",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-07-11",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100015",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-32030-1",
+        "MAT-STE-2026-32221"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-11",
+      "fingerprint": "98b83146a1275dd78f40f25fb51f6347c881b27ebe8bcaefd8fbee93c237df5d",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100015",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-07-11",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100015",
+      "warehouse": "انبار approved محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-37601",
+        "MAT-STE-2026-40881",
+        "MAT-STE-2026-40883"
+      ],
+      "frac_sle_count": 4,
+      "earliest_posting_date": "2026-07-15",
+      "fingerprint": "d827b0ab0a196bee72e3863fba6e77c4d01c493d568ac1b320def2c48f2c198d",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100015",
+        "warehouse": "انبار approved محصول نهایی اسپاد",
+        "posting_date": "2026-07-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100015",
+      "warehouse": "انبار آماده فروش -میلان پارس",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-37602",
+        "MAT-STE-2026-40882",
+        "MAT-STE-2026-41974-1"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-07-15",
+      "fingerprint": "336d9760d43840792d072a65ddbb476a80861194950900126ba217b03a67ef04",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100015",
+        "warehouse": "انبار آماده فروش -میلان پارس",
+        "posting_date": "2026-07-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100057",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30202-1",
+        "MAT-STE-2026-35056-1",
+        "MAT-STE-2026-35063-1",
+        "MAT-STE-2026-35064-1",
+        "MAT-STE-2026-41381",
+        "MAT-STE-2026-42637"
+      ],
+      "frac_sle_count": 6,
+      "earliest_posting_date": "2026-06-15",
+      "fingerprint": "03f06df3ff882399f295faeff658a45aca2c3f57675ba563ade08e936207e703",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100057",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-06-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100057",
+      "warehouse": "انبار Reject محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-32533"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-15",
+      "fingerprint": "8d163a42ccc66d6799bd7a6b2d09ce50e50cd2f8fd2c86af2a9cc5708a54e954",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100057",
+        "warehouse": "انبار Reject محصول نهایی اسپاد",
+        "posting_date": "2026-07-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100057",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture",
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30202-1",
+        "MAT-STE-2026-35056-1",
+        "MAT-STE-2026-35063-1",
+        "MAT-STE-2026-35064-1",
+        "MAT-STE-2026-41468",
+        "MAT-STE-2026-42795"
+      ],
+      "frac_sle_count": 6,
+      "earliest_posting_date": "2026-06-15",
+      "fingerprint": "07606bae876ae66f3aa7ea52eb47cc5cc723fbc3ae397acd351d8a75b1b14919",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100057",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-06-15",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100057",
+      "warehouse": "انبار approved محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30259",
+        "MAT-STE-2026-35099",
+        "MAT-STE-2026-37873",
+        "MAT-STE-2026-41368",
+        "MAT-STE-2026-41604",
+        "MAT-STE-2026-42407",
+        "MAT-STE-2026-42736"
+      ],
+      "frac_sle_count": 11,
+      "earliest_posting_date": "2026-06-16",
+      "fingerprint": "6a60003d02bf69a9df40c601786250ad30cf8585fe9e9aaadb6b0ddd6cd0173c",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100057",
+        "warehouse": "انبار approved محصول نهایی اسپاد",
+        "posting_date": "2026-06-16",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100057",
+      "warehouse": "انبار آماده فروش -میلان پارس",
+      "stock_entry_types": [
+        "Material Transfer",
+        "Repack"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-30291",
+        "MAT-STE-2026-35100",
+        "MAT-STE-2026-37874",
+        "MAT-STE-2026-41372",
+        "MAT-STE-2026-41374",
+        "MAT-STE-2026-42738",
+        "MAT-STE-2026-43507",
+        "MAT-STE-2026-43539"
+      ],
+      "frac_sle_count": 14,
+      "earliest_posting_date": "2026-06-16",
+      "fingerprint": "aee2052da269acc827b37c7ab0ef7dae59834315f765416e793e46933539f7a4",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100057",
+        "warehouse": "انبار آماده فروش -میلان پارس",
+        "posting_date": "2026-06-16",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100094",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29742"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-06-10",
+      "fingerprint": "4f151d528f5a82dcf4396060ed0099780b7ea0ec60948d98911c01c6832ea8c4",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100094",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-06-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100094",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29742"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-06-10",
+      "fingerprint": "df60dbada3add8366c847878ad47f53f46e1ec88d9d10a332a6738e70b1c582b",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100094",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-06-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100094",
+      "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-41402"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-07-07",
+      "fingerprint": "ef99a7ae2bcd45276b1d2b6a9560a0a7b4e9fc13431610ed8042c59fc8e276fa",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100094",
+        "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+        "posting_date": "2026-07-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100095",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29579",
+        "MAT-STE-2026-29580"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-06-08",
+      "fingerprint": "cb23810464d6b112109c48291906d3571ec4434e173a11109c77f69fd1be3515",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100095",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-06-08",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100095",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-31264"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-06-30",
+      "fingerprint": "5a50ed74491129e3e2cbb362b68b59710b6045d4dfb3f329e75ede0606e9b617",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100095",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-06-30",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100095",
+      "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-41402"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-07-07",
+      "fingerprint": "d99c1b64a7ff7127d60f37dd81a9b111e163710fb02f51ddf2fc54b3195c97a3",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100095",
+        "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+        "posting_date": "2026-07-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100096",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29578"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-06-08",
+      "fingerprint": "86e1075517cd9d505347c59a8e6a189b4bc812b002af40436c38e99028442e16",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100096",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-06-08",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100096",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29578"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-06-08",
+      "fingerprint": "68bf4826c20a8ecb4dc3d1dcb54f806142bb86884b600980d14f1d2ceeac1cc7",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100096",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-06-08",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100096",
+      "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-41402"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-07-07",
+      "fingerprint": "6063daef0f7b92b02aec0668d7e2f18bcf8265108de7e8aeab43a814e23b439b",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100096",
+        "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+        "posting_date": "2026-07-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100169",
+      "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29628",
+        "MAT-STE-2026-29741"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-06-09",
+      "fingerprint": "8051d4a885688e224fdc66a95a0cdb60729d6b3c747ee4e3931a5f87c13142b2",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100169",
+        "warehouse": "انبار Quarantine محصول نهایی اسپاد",
+        "posting_date": "2026-06-09",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100169",
+      "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29628",
+        "MAT-STE-2026-29741"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-06-09",
+      "fingerprint": "b51c706fcf8ac0b42a21b4fd6095d3757cefa22aa5ea9588f73651fbc9e86e06",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100169",
+        "warehouse": "انبار Retain Sample محصول نهایی اسپاد",
+        "posting_date": "2026-06-09",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "20100169",
+      "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-41369-1"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-07-11",
+      "fingerprint": "fa55bb850b1f6f56c650fac5c4c2bcee8a30ad6fc09d8a6283df25d8921f05f6",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "20100169",
+        "warehouse": "انبار approved محصول صادراتی نهایی اسپاد - E",
+        "posting_date": "2026-07-11",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100012",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-25412",
+        "MAT-STE-2026-25413",
+        "MAT-STE-2026-25427",
+        "MAT-STE-2026-25428",
+        "MAT-STE-2026-27857",
+        "MAT-STE-2026-27858",
+        "MAT-STE-2026-27859",
+        "MAT-STE-2026-43394"
+      ],
+      "frac_sle_count": 8,
+      "earliest_posting_date": "2026-05-09",
+      "fingerprint": "8e78c50eb75cc10a7ef4e2e0c2b874a1c1373b874d4028504b55cc6b0ba2e914",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100012",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-09",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100012",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-25752",
+        "MAT-STE-2026-27863",
+        "MAT-STE-2026-27864",
+        "MAT-STE-2026-27867",
+        "MAT-STE-2026-36646",
+        "MAT-STE-2026-36683",
+        "MAT-STE-2026-36684-1"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-05-11",
+      "fingerprint": "ca377803c5f72e07c238c573b6b968f734c50e81969f8f9eb34e5cfa3fd8b457",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100012",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-11",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100013",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27654",
+        "MAT-STE-2026-27655"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-05-06",
+      "fingerprint": "d8e62733e7b70d52d2df3ad734fa06fdd5edf2191dc246806caa1a5cc38211e4",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100013",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-06",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100013",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27672",
+        "MAT-STE-2026-27678"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-05-10",
+      "fingerprint": "f81ac07b4033f90172d62912423791a1ca97fffabe75c99ba70024e2e34f9993",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100013",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100014",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27619",
+        "MAT-STE-2026-27620",
+        "MAT-STE-2026-27621",
+        "MAT-STE-2026-41490",
+        "MAT-STE-2026-41493"
+      ],
+      "frac_sle_count": 5,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "2dc0ed20def4c477832d7d91598956ef22ca88b1b20815229465226f5a740dbe",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100014",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100014",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27627",
+        "MAT-STE-2026-27632",
+        "MAT-STE-2026-27633",
+        "MAT-STE-2026-41738",
+        "MAT-STE-2026-41739-1"
+      ],
+      "frac_sle_count": 5,
+      "earliest_posting_date": "2026-05-05",
+      "fingerprint": "88c2b4f1f5cdc4156fb3c00f7f4135538a74acdce29050132547fa2768c3ed19",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100014",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-05",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100018",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27609",
+        "MAT-STE-2026-27611",
+        "MAT-STE-2026-27617",
+        "MAT-STE-2026-34337",
+        "MAT-STE-2026-34338",
+        "MAT-STE-2026-34339",
+        "MAT-STE-2026-41787"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "2cf6bd0ea8cf757b6dd8922772d42a7304de671a851af7ff1aa09c7669f9160c",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100018",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100018",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27610",
+        "MAT-STE-2026-27612",
+        "MAT-STE-2026-27647",
+        "MAT-STE-2026-34539",
+        "MAT-STE-2026-34770",
+        "MAT-STE-2026-34854",
+        "MAT-STE-2026-41829"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "587254534e9c3f57c07fe363322c17a713522f83db87f509004794c11b17371d",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100018",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100019",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27605-1",
+        "MAT-STE-2026-34315-1"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "9db15e7f9aa4e2316f9eeeb55cac1a021e4b664a9bd79e16192f6a0a7ed4d658",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100019",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100019",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27606",
+        "MAT-STE-2026-27607",
+        "MAT-STE-2026-27608",
+        "MAT-STE-2026-34316",
+        "MAT-STE-2026-34317",
+        "MAT-STE-2026-34318",
+        "PO-JOB12572"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "ac5c7d2c668bce80ef8fd369df770f338e11a8c1cc4625adca423c89401bfca9",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100019",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100060",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27853"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-05-09",
+      "fingerprint": "61bb7e7926fb14861d1532ce7eb8af15efeb167906dcb96919026dfc80931d89",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100060",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-09",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100060",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27854",
+        "MAT-STE-2026-27855",
+        "MAT-STE-2026-27856",
+        "PO-JOB07515",
+        "PO-JOB12371"
+      ],
+      "frac_sle_count": 5,
+      "earliest_posting_date": "2026-05-09",
+      "fingerprint": "d7c80ebba76c840d2245b9350bc84dd458b0202b6bcf16c5fd6949df081b4829",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100060",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-09",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100061",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27613-1"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "cd5f70d721a5b0b33d1903f1d915c65e196334c9ebc18e2aa13d676bad238d3c",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100061",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100061",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27614",
+        "MAT-STE-2026-27615",
+        "MAT-STE-2026-27616"
+      ],
+      "frac_sle_count": 3,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "5cfcbf58d10fd5bb37f859eb4420d95c26f71127dd699b0f89a94226acd8f3a4",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100061",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100062",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27649-1"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-05-06",
+      "fingerprint": "6258ee85bf79ddfee5a9305a69f7421847f01566d8db848737b77925446053e1",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100062",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-06",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100062",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27650",
+        "MAT-STE-2026-27651"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-05-06",
+      "fingerprint": "ff5b73b970494d438f0ac49f97ce17c2908c02dc2db18f3359c267c5a50a556e",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100062",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-06",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30100309",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27645-1"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-05-06",
+      "fingerprint": "8faeed571259e706d8e78b66e54489e27c5f37ff721b7facc95bb1f25f7ba52c",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30100309",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-06",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200014",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27618",
+        "MAT-STE-2026-27638",
+        "MAT-STE-2026-27653",
+        "MAT-STE-2026-34547",
+        "MAT-STE-2026-34771",
+        "MAT-STE-2026-34855",
+        "MAT-STE-2026-41841",
+        "MAT-STE-2026-41848"
+      ],
+      "frac_sle_count": 8,
+      "earliest_posting_date": "2026-05-04",
+      "fingerprint": "e56f24e8be4e7918debd645759ad4d48ad6ada2d5f99bdde83de56a77a10d597",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200014",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-04",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200014",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27698",
+        "MAT-STE-2026-29326",
+        "MAT-STE-2026-29471",
+        "MAT-STE-2026-29483",
+        "MAT-STE-2026-29808",
+        "MAT-STE-2026-34769",
+        "MAT-STE-2026-34772",
+        "MAT-STE-2026-34856",
+        "MAT-STE-2026-41927",
+        "MAT-STE-2026-41928"
+      ],
+      "frac_sle_count": 10,
+      "earliest_posting_date": "2026-05-12",
+      "fingerprint": "18c18aa65305db9c9fbd1732f4c0d31283ea6f116fa5586160e78a0df280d7e6",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200014",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-12",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200046",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture",
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27865",
+        "MAT-STE-2026-27868",
+        "MAT-STE-2026-27870",
+        "MAT-STE-2026-31167",
+        "MAT-STE-2026-31169",
+        "MAT-STE-2026-31171",
+        "MAT-STE-2026-36655",
+        "MAT-STE-2026-36672",
+        "MAT-STE-2026-36697",
+        "MAT-STE-2026-36702"
+      ],
+      "frac_sle_count": 10,
+      "earliest_posting_date": "2026-05-11",
+      "fingerprint": "d9ad03dc62d9f26f762edeb58fd6f799bb61913a0c94bfa0068b196d78181a8d",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200046",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-11",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200046",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27869",
+        "MAT-STE-2026-29472",
+        "MAT-STE-2026-29484",
+        "MAT-STE-2026-29917",
+        "MAT-STE-2026-36664",
+        "MAT-STE-2026-36673",
+        "MAT-STE-2026-36705",
+        "MAT-STE-2026-36706"
+      ],
+      "frac_sle_count": 8,
+      "earliest_posting_date": "2026-05-12",
+      "fingerprint": "e7ed537c73399eaa555c06348a27aaf3b4975a53911c8712cccb913dddf8e61b",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200046",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-12",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200047",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27628",
+        "MAT-STE-2026-27639",
+        "MAT-STE-2026-27652",
+        "MAT-STE-2026-41773",
+        "MAT-STE-2026-41774",
+        "MAT-STE-2026-42856",
+        "MAT-STE-2026-42857"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-05-05",
+      "fingerprint": "90c63729cbd2e9a8d7eb0a55980f046235362970c4e215207d90a1dc4881816e",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200047",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-05",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200047",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27629",
+        "MAT-STE-2026-29327",
+        "MAT-STE-2026-29333",
+        "MAT-STE-2026-30051",
+        "MAT-STE-2026-41792",
+        "MAT-STE-2026-41793",
+        "MAT-STE-2026-42954",
+        "PO-JOB12259"
+      ],
+      "frac_sle_count": 8,
+      "earliest_posting_date": "2026-05-05",
+      "fingerprint": "1bc95821e1ac74ae1fbc7c3047a952c5e0a321dac1fb187551ef4f180e3466c6",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200047",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-05-05",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200048",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture",
+        "Repack"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27682",
+        "MAT-STE-2026-27693",
+        "MAT-STE-2026-29903"
+      ],
+      "frac_sle_count": 3,
+      "earliest_posting_date": "2026-05-10",
+      "fingerprint": "7d30d4cf19dc78d9b49e9a6f6a1831a20f76373367bf7e50373038173e3279a4",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200048",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30200048",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29322",
+        "MAT-STE-2026-29957",
+        "MAT-STE-2026-29958",
+        "MAT-STE-2026-29959"
+      ],
+      "frac_sle_count": 4,
+      "earliest_posting_date": "2026-06-06",
+      "fingerprint": "c0683d5af592fd88f9a80bdb0e359aa2a7e2c56f8548d80a8bed384d80157ba1",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30200048",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-06-06",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300012",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29488",
+        "MAT-STE-2026-29489",
+        "MAT-STE-2026-29749-1",
+        "MAT-STE-2026-29834-1",
+        "MAT-STE-2026-34782",
+        "MAT-STE-2026-34784-1",
+        "MAT-STE-2026-34912-1",
+        "MAT-STE-2026-42215",
+        "MAT-STE-2026-42218"
+      ],
+      "frac_sle_count": 9,
+      "earliest_posting_date": "2026-06-07",
+      "fingerprint": "8f4e9e4bb67cbcaa2fd591c995af21932e04d4973a6a87bc87b107ec8f06e792",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300012",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-06-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300012",
+      "warehouse": "انبار نمونه های پایداری اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27700",
+        "MAT-STE-2026-34783-1"
+      ],
+      "frac_sle_count": 2,
+      "earliest_posting_date": "2026-05-12",
+      "fingerprint": "f773c1b21bc75d9b3aa96bb079102ffa3d47c9f0bee654c993c5c8d0e6b9d187",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300012",
+        "warehouse": "انبار نمونه های پایداری اسپاد",
+        "posting_date": "2026-05-12",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300012",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29618",
+        "MAT-STE-2026-29724",
+        "MAT-STE-2026-30188",
+        "MAT-STE-2026-30197",
+        "MAT-STE-2026-35023",
+        "MAT-STE-2026-35048",
+        "MAT-STE-2026-35049",
+        "MAT-STE-2026-42242",
+        "MAT-STE-2026-42244"
+      ],
+      "frac_sle_count": 9,
+      "earliest_posting_date": "2026-06-09",
+      "fingerprint": "e0db1d8daca09003fac9c7c5400fa163598d057ddd34c69d58b68af9cf5b88cf",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300012",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-06-09",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300051",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture",
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29490",
+        "MAT-STE-2026-29833-1",
+        "MAT-STE-2026-29981-1",
+        "MAT-STE-2026-31166",
+        "MAT-STE-2026-31168",
+        "MAT-STE-2026-31170",
+        "MAT-STE-2026-32213-1",
+        "MAT-STE-2026-36677",
+        "MAT-STE-2026-36688",
+        "MAT-STE-2026-36715",
+        "MAT-STE-2026-36718"
+      ],
+      "frac_sle_count": 11,
+      "earliest_posting_date": "2026-06-07",
+      "fingerprint": "64d8e94e20f472272d964994d79e5cdab2e7ad7a2f961f06d8cf21a26ecd3a61",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300051",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-06-07",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300051",
+      "warehouse": "انبار نمونه های پایداری اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27871"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-05-12",
+      "fingerprint": "5d751934b9480341ce055993827a1d8f413aeaad5f85d661bdb74c31c72423f8",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300051",
+        "warehouse": "انبار نمونه های پایداری اسپاد",
+        "posting_date": "2026-05-12",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300051",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29726",
+        "MAT-STE-2026-30044",
+        "MAT-STE-2026-30190",
+        "MAT-STE-2026-36741-2",
+        "MAT-STE-2026-36742-1",
+        "MAT-STE-2026-36868",
+        "PO-JOB10178"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-06-10",
+      "fingerprint": "d467aee7caf9e86cbbd297588bbb9e76ab5283a6434d0f8e6babe9bcbf11bceb",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300051",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-06-10",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300052",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27630",
+        "MAT-STE-2026-29347",
+        "MAT-STE-2026-30062-1",
+        "MAT-STE-2026-30063-1",
+        "MAT-STE-2026-32214-1",
+        "MAT-STE-2026-42028",
+        "MAT-STE-2026-42029"
+      ],
+      "frac_sle_count": 7,
+      "earliest_posting_date": "2026-05-05",
+      "fingerprint": "53e2c48ba143fb35676f9c654b363ef6721d09cd6e6c02fe60ea9b8c86c2c522",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300052",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-05-05",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300052",
+      "warehouse": "انبار نمونه های پایداری اسپاد",
+      "stock_entry_types": [
+        "Material Transfer"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-27631"
+      ],
+      "frac_sle_count": 1,
+      "earliest_posting_date": "2026-05-05",
+      "fingerprint": "acccc2f6325cf441990ae5029fc2c627a268cc3563c8494c3ebe46ab894aaed7",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300052",
+        "warehouse": "انبار نمونه های پایداری اسپاد",
+        "posting_date": "2026-05-05",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300052",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29565",
+        "MAT-STE-2026-32009",
+        "MAT-STE-2026-32166"
+      ],
+      "frac_sle_count": 3,
+      "earliest_posting_date": "2026-06-08",
+      "fingerprint": "d8eca445da4df5133f8277499fd3b7cd1c3d746381624d885c252e0b3505ebfe",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300052",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-06-08",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300054",
+      "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+      "stock_entry_types": [
+        "Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29344",
+        "MAT-STE-2026-29978-1",
+        "MAT-STE-2026-30065-1"
+      ],
+      "frac_sle_count": 3,
+      "earliest_posting_date": "2026-06-06",
+      "fingerprint": "6d6b0e0aaabd7219c6ff0834f5b0b1ba28203dfd102c794bc3b10f9c6e8a3f32",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300054",
+        "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+        "posting_date": "2026-06-06",
+        "allow_negative_stock": 1
+      }
+    },
+    {
+      "item_code": "30300054",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "stock_entry_types": [
+        "Material Transfer for Manufacture"
+      ],
+      "vouchers": [
+        "MAT-STE-2026-29566",
+        "MAT-STE-2026-31760",
+        "MAT-STE-2026-31859"
+      ],
+      "frac_sle_count": 3,
+      "earliest_posting_date": "2026-06-08",
+      "fingerprint": "875e7c6d5a63b24960c850b3af0454b1ba2952b9bf2c018fa8b251ce7eb91e53",
+      "controlled_riv": {
+        "based_on": "Item and Warehouse",
+        "item_code": "30300054",
+        "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+        "posting_date": "2026-06-08",
+        "allow_negative_stock": 1
+      }
+    }
+  ],
+  "repack_missing_gl_gate": {
+    "voucher": "MAT-STE-2026-29903",
+    "gl_row_count": 0,
+    "gl": [],
+    "assessment": "Missing GL — must be investigated before claiming SLE/GL reconciliation; do not silently accept"
+  },
+  "code_fixes_prepared": [
+    "historical_stock/manufacture_native.py — integer write_sle_rate / SED rates",
+    "historical_stock/manufacture_scrap_fg.py — integer scrap/FG SLE rates",
+    "domain/stock_entry_sync.py — SVD/qty via round_monetary_rate + enforce_irr_sle_unit_rates_integer"
+  ],
+  "execution_order": [
+    "1. Review dry-run manifest + code fixes + unit tests",
+    "2. Controlled test: one identity per category (see investigation §6)",
+    "3. Per identity Item+Warehouse RIV (not company-wide)",
+    "4. Gates: integer SED VR, integer SLE IR, SVD/GL recon, Class A residual explicit",
+    "5. Investigate MAT-STE-2026-29903 missing GL before accepting Repack cohort",
+    "6. Never touch ACC-JV-1405-169046"
+  ],
+  "rejected_outside_cohort": true,
+  "voucher_sample": [
+    {
+      "voucher_no": "MAT-STE-2026-27605-1",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-278731",
+          "item_code": "30100019",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 6893.0,
+          "incoming_rate": 1421580.884955752,
+          "expected_integer_incoming_rate": 1421581.0,
+          "svd": 9798957040.0,
+          "class_a_residual_vs_int": -793.0,
+          "sed_valuation_rate": 1421580.884955752,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27609",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-193324",
+          "item_code": "30100018",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 835.0,
+          "incoming_rate": 1520325.425473054,
+          "expected_integer_incoming_rate": 1520325.0,
+          "svd": 1269471730.27,
+          "class_a_residual_vs_int": 355.2699999809265,
+          "sed_valuation_rate": 1520325.425473054,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27611",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-193329",
+          "item_code": "30100018",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 2978.0,
+          "incoming_rate": 1432082.825678307,
+          "expected_integer_incoming_rate": 1432083.0,
+          "svd": 4264742654.87,
+          "class_a_residual_vs_int": -519.1300001144409,
+          "sed_valuation_rate": 1432082.825678308,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27613-1",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-278779",
+          "item_code": "30100061",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 5457.0,
+          "incoming_rate": 1304712.046545721,
+          "expected_integer_incoming_rate": 1304712.0,
+          "svd": 7119813638.0,
+          "class_a_residual_vs_int": 254.0,
+          "sed_valuation_rate": 1304712.046545721,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27617",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-193346",
+          "item_code": "30100018",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 2971.0,
+          "incoming_rate": 1435456.968986873,
+          "expected_integer_incoming_rate": 1435457.0,
+          "svd": 4264742654.86,
+          "class_a_residual_vs_int": -92.1399998664856,
+          "sed_valuation_rate": 1435456.968986873,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27618",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-193349",
+          "item_code": "30200014",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 800.0,
+          "incoming_rate": 1586839.662837501,
+          "expected_integer_incoming_rate": 1586840.0,
+          "svd": 1269471730.27,
+          "class_a_residual_vs_int": -269.7300000190735,
+          "sed_valuation_rate": 1586839.6628375,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27619",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-193352",
+          "item_code": "30100014",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 1805.0,
+          "incoming_rate": 1348804.808227147,
+          "expected_integer_incoming_rate": 1348805.0,
+          "svd": 2434592678.85,
+          "class_a_residual_vs_int": -346.15000009536743,
+          "sed_valuation_rate": 1348804.808227147,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    },
+    {
+      "voucher_no": "MAT-STE-2026-27620",
+      "stock_entry_type": "Manufacture",
+      "frac_sle_rows": [
+        {
+          "sle": "MAT-SLE-2026-193355",
+          "item_code": "30100014",
+          "warehouse": "انبار Quarantine محصول نیمه ساخته اسپاد",
+          "qty": 2970.0,
+          "incoming_rate": 1317890.956107744,
+          "expected_integer_incoming_rate": 1317891.0,
+          "svd": 3914136139.64,
+          "class_a_residual_vs_int": -130.3600001335144,
+          "sed_valuation_rate": 1317890.956107744,
+          "sed_vr_fractional": true
+        }
+      ],
+      "execution_status": "PENDING — dry_run only; RIV not authorized",
+      "riv_plan": {
+        "based_on": "Item and Warehouse",
+        "note": "One identity RIV from earliest date covering this voucher's item@WH; not company-wide"
+      }
+    }
+  ],
+  "voucher_names": [
+    "MAT-STE-2026-27605-1",
+    "MAT-STE-2026-27609",
+    "MAT-STE-2026-27611",
+    "MAT-STE-2026-27613-1",
+    "MAT-STE-2026-27617",
+    "MAT-STE-2026-27618",
+    "MAT-STE-2026-27619",
+    "MAT-STE-2026-27620",
+    "MAT-STE-2026-27621",
+    "MAT-STE-2026-27628",
+    "MAT-STE-2026-27630",
+    "MAT-STE-2026-27638",
+    "MAT-STE-2026-27639",
+    "MAT-STE-2026-27645-1",
+    "MAT-STE-2026-27649-1",
+    "MAT-STE-2026-27652",
+    "MAT-STE-2026-27653",
+    "MAT-STE-2026-27654",
+    "MAT-STE-2026-27655",
+    "MAT-STE-2026-27853",
+    "MAT-STE-2026-27857",
+    "MAT-STE-2026-27858",
+    "MAT-STE-2026-27859",
+    "MAT-STE-2026-27682",
+    "MAT-STE-2026-27693",
+    "MAT-STE-2026-27865",
+    "MAT-STE-2026-27700",
+    "MAT-STE-2026-27868",
+    "MAT-STE-2026-27870",
+    "MAT-STE-2026-27871",
+    "MAT-STE-2026-29344",
+    "MAT-STE-2026-29347",
+    "MAT-STE-2026-29488",
+    "MAT-STE-2026-29489",
+    "MAT-STE-2026-29490",
+    "MAT-STE-2026-29578",
+    "MAT-STE-2026-29579",
+    "MAT-STE-2026-29580",
+    "MAT-STE-2026-29628",
+    "MAT-STE-2026-29741",
+    "MAT-STE-2026-29742",
+    "MAT-STE-2026-29749-1",
+    "MAT-STE-2026-29833-1",
+    "MAT-STE-2026-29834-1",
+    "MAT-STE-2026-29978-1",
+    "MAT-STE-2026-29981-1",
+    "MAT-STE-2026-30062-1",
+    "MAT-STE-2026-30063-1",
+    "MAT-STE-2026-30065-1",
+    "MAT-STE-2026-30066-1",
+    "MAT-STE-2026-30202-1",
+    "MAT-STE-2026-30203-1",
+    "MAT-STE-2026-41381",
+    "MAT-STE-2026-31386-1",
+    "MAT-STE-2026-31387-1",
+    "MAT-STE-2026-31564-1",
+    "MAT-STE-2026-31767-1",
+    "MAT-STE-2026-31768-1",
+    "MAT-STE-2026-40716",
+    "MAT-STE-2026-40880",
+    "MAT-STE-2026-31870-1",
+    "MAT-STE-2026-31954-1",
+    "MAT-STE-2026-32030-1",
+    "MAT-STE-2026-32031-1",
+    "MAT-STE-2026-32213-1",
+    "MAT-STE-2026-32214-1",
+    "MAT-STE-2026-32215-1",
+    "MAT-STE-2026-32218-1",
+    "MAT-STE-2026-32221",
+    "MAT-STE-2026-32222-1",
+    "MAT-STE-2026-32233-1",
+    "MAT-STE-2026-32368-1",
+    "MAT-STE-2026-32371-1",
+    "MAT-STE-2026-32372-1",
+    "MAT-STE-2026-32910-1",
+    "MAT-STE-2026-32912-1",
+    "MAT-STE-2026-33009-1",
+    "MAT-STE-2026-33010-1",
+    "MAT-STE-2026-33012-1",
+    "MAT-STE-2026-33015-1",
+    "MAT-STE-2026-33091-1",
+    "MAT-STE-2026-33092-1",
+    "MAT-STE-2026-33096-1",
+    "MAT-STE-2026-33187-1",
+    "MAT-STE-2026-38866-1",
+    "MAT-STE-2026-40752",
+    "MAT-STE-2026-33330-1",
+    "MAT-STE-2026-33331-1",
+    "MAT-STE-2026-33332-1",
+    "MAT-STE-2026-33472-1",
+    "MAT-STE-2026-33473-1",
+    "MAT-STE-2026-33474-1",
+    "MAT-STE-2026-33475-1",
+    "MAT-STE-2026-33608-1",
+    "MAT-STE-2026-33610-1",
+    "MAT-STE-2026-33614-1",
+    "MAT-STE-2026-33617-1",
+    "MAT-STE-2026-33725-1",
+    "MAT-STE-2026-34068-1",
+    "MAT-STE-2026-34069-1",
+    "MAT-STE-2026-34217-1",
+    "MAT-STE-2026-34315-1",
+    "MAT-STE-2026-34337",
+    "MAT-STE-2026-34338",
+    "MAT-STE-2026-34339",
+    "MAT-STE-2026-34343-1",
+    "MAT-STE-2026-34543-1",
+    "MAT-STE-2026-34547",
+    "MAT-STE-2026-34548-1",
+    "MAT-STE-2026-38908-1",
+    "MAT-STE-2026-38905-1",
+    "MAT-STE-2026-38906-1",
+    "MAT-STE-2026-34771",
+    "MAT-STE-2026-34782",
+    "MAT-STE-2026-34783-1",
+    "MAT-STE-2026-34784-1",
+    "MAT-STE-2026-38923-1",
+    "MAT-STE-2026-34855",
+    "MAT-STE-2026-34912-1",
+    "MAT-STE-2026-38952-1",
+    "MAT-STE-2026-40972-1",
+    "MAT-STE-2026-41187",
+    "MAT-STE-2026-43338",
+    "MAT-STE-2026-35056-1",
+    "MAT-STE-2026-35063-1",
+    "MAT-STE-2026-35064-1",
+    "MAT-STE-2026-43327",
+    "MAT-STE-2026-35260-1",
+    "MAT-STE-2026-35267-1",
+    "MAT-STE-2026-35268-1",
+    "MAT-STE-2026-35334-1",
+    "MAT-STE-2026-35335-1",
+    "MAT-STE-2026-41110",
+    "MAT-STE-2026-35461-1",
+    "MAT-STE-2026-35587-1",
+    "MAT-STE-2026-35589-1",
+    "MAT-STE-2026-40937",
+    "MAT-STE-2026-41128",
+    "MAT-STE-2026-41134",
+    "MAT-STE-2026-35708-1",
+    "MAT-STE-2026-35712-1",
+    "MAT-STE-2026-35717-1",
+    "MAT-STE-2026-41149",
+    "MAT-STE-2026-35835-1",
+    "MAT-STE-2026-41074",
+    "MAT-STE-2026-41147",
+    "MAT-STE-2026-35938-1",
+    "MAT-STE-2026-35940-1",
+    "MAT-STE-2026-35941-1",
+    "MAT-STE-2026-35945-1",
+    "MAT-STE-2026-36025-1",
+    "MAT-STE-2026-36027-1",
+    "MAT-STE-2026-36174-1",
+    "MAT-STE-2026-38887-1",
+    "MAT-STE-2026-39101-1",
+    "MAT-STE-2026-41111",
+    "MAT-STE-2026-41122",
+    "MAT-STE-2026-41132",
+    "MAT-STE-2026-41196",
+    "MAT-STE-2026-41254",
+    "MAT-STE-2026-24872-2",
+    "MAT-STE-2026-24883-1",
+    "MAT-STE-2026-24941",
+    "MAT-STE-2026-43312",
+    "MAT-STE-2026-24955",
+    "MAT-STE-2026-24879",
+    "MAT-STE-2026-25030",
+    "MAT-STE-2026-40958",
+    "MAT-STE-2026-43533",
+    "MAT-STE-2026-43597",
+    "MAT-STE-2026-43606",
+    "MAT-STE-2026-40796",
+    "MAT-STE-2026-41115",
+    "MAT-STE-2026-42016",
+    "MAT-STE-2026-43546",
+    "MAT-STE-2026-43579",
+    "MAT-STE-2026-42949",
+    "MAT-STE-2026-43536",
+    "MAT-STE-2026-43012",
+    "MAT-STE-2026-25412",
+    "MAT-STE-2026-25413",
+    "MAT-STE-2026-25427",
+    "MAT-STE-2026-25428",
+    "MAT-STE-2026-42067",
+    "MAT-STE-2026-42070",
+    "MAT-STE-2026-43330",
+    "MAT-STE-2026-25735",
+    "MAT-STE-2026-36655",
+    "MAT-STE-2026-36672",
+    "MAT-STE-2026-37760",
+    "MAT-STE-2026-36677",
+    "MAT-STE-2026-36688",
+    "MAT-STE-2026-40273",
+    "MAT-STE-2026-41490",
+    "MAT-STE-2026-41493",
+    "MAT-STE-2026-36697",
+    "MAT-STE-2026-36702",
+    "MAT-STE-2026-36715",
+    "MAT-STE-2026-36718",
+    "MAT-STE-2026-40303",
+    "MAT-STE-2026-40983",
+    "MAT-STE-2026-41787",
+    "MAT-STE-2026-42138",
+    "MAT-STE-2026-43512-1",
+    "MAT-STE-2026-36825-1",
+    "MAT-STE-2026-41221",
+    "MAT-STE-2026-41907",
+    "MAT-STE-2026-43523",
+    "MAT-STE-2026-36826",
+    "MAT-STE-2026-36928",
+    "MAT-STE-2026-40326",
+    "MAT-STE-2026-43604",
+    "MAT-STE-2026-36897",
+    "MAT-STE-2026-37031",
+    "MAT-STE-2026-40902",
+    "MAT-STE-2026-40903",
+    "MAT-STE-2026-41773",
+    "MAT-STE-2026-41774",
+    "MAT-STE-2026-41841",
+    "MAT-STE-2026-41848",
+    "MAT-STE-2026-42215",
+    "MAT-STE-2026-42218",
+    "MAT-STE-2026-36933",
+    "MAT-STE-2026-37077",
+    "MAT-STE-2026-37321",
+    "MAT-STE-2026-40257",
+    "MAT-STE-2026-40260",
+    "MAT-STE-2026-40673",
+    "MAT-STE-2026-41224",
+    "MAT-STE-2026-42127",
+    "MAT-STE-2026-42637",
+    "MAT-STE-2026-40916",
+    "MAT-STE-2026-40982",
+    "MAT-STE-2026-39173",
+    "MAT-STE-2026-39522",
+    "MAT-STE-2026-42028",
+    "MAT-STE-2026-40573",
+    "MAT-STE-2026-40567",
+    "MAT-STE-2026-41679",
+    "MAT-STE-2026-40666",
+    "MAT-STE-2026-40735",
+    "MAT-STE-2026-40604",
+    "MAT-STE-2026-40740",
+    "MAT-STE-2026-40681",
+    "MAT-STE-2026-42071",
+    "MAT-STE-2026-42600",
+    "MAT-STE-2026-42782",
+    "MAT-STE-2026-42029",
+    "MAT-STE-2026-42856",
+    "MAT-STE-2026-42857",
+    "MAT-STE-2026-43394",
+    "MAT-STE-2026-27631",
+    "MAT-STE-2026-41468",
+    "MAT-STE-2026-30256",
+    "MAT-STE-2026-30259",
+    "MAT-STE-2026-30291",
+    "MAT-STE-2026-41368",
+    "MAT-STE-2026-41372",
+    "MAT-STE-2026-31264",
+    "MAT-STE-2026-41402",
+    "MAT-STE-2026-41369-1",
+    "MAT-STE-2026-32533",
+    "MAT-STE-2026-40881",
+    "MAT-STE-2026-40882",
+    "MAT-STE-2026-40883",
+    "MAT-STE-2026-35099",
+    "MAT-STE-2026-35100",
+    "MAT-STE-2026-41374",
+    "MAT-STE-2026-42407",
+    "MAT-STE-2026-36908",
+    "MAT-STE-2026-36909",
+    "MAT-STE-2026-36910",
+    "MAT-STE-2026-36911",
+    "MAT-STE-2026-41684",
+    "MAT-STE-2026-41685",
+    "MAT-STE-2026-37601",
+    "MAT-STE-2026-37602",
+    "MAT-STE-2026-37789",
+    "MAT-STE-2026-42795",
+    "MAT-STE-2026-37873",
+    "MAT-STE-2026-37874",
+    "MAT-STE-2026-41604",
+    "MAT-STE-2026-42736",
+    "MAT-STE-2026-41701",
+    "MAT-STE-2026-42738",
+    "MAT-STE-2026-41974-1",
+    "MAT-STE-2026-43328",
+    "MAT-STE-2026-43339",
+    "MAT-STE-2026-27606",
+    "MAT-STE-2026-27607",
+    "MAT-STE-2026-27608",
+    "MAT-STE-2026-27610",
+    "MAT-STE-2026-27612",
+    "MAT-STE-2026-27614",
+    "MAT-STE-2026-27615",
+    "MAT-STE-2026-27616",
+    "MAT-STE-2026-27627",
+    "MAT-STE-2026-27629",
+    "MAT-STE-2026-27632",
+    "MAT-STE-2026-27633",
+    "MAT-STE-2026-27647",
+    "MAT-STE-2026-27650",
+    "MAT-STE-2026-27651",
+    "MAT-STE-2026-27854",
+    "MAT-STE-2026-27855",
+    "MAT-STE-2026-27856",
+    "MAT-STE-2026-27672",
+    "MAT-STE-2026-27678",
+    "MAT-STE-2026-27863",
+    "MAT-STE-2026-27864",
+    "MAT-STE-2026-27698",
+    "MAT-STE-2026-27867",
+    "MAT-STE-2026-27869",
+    "MAT-STE-2026-29322",
+    "MAT-STE-2026-29326",
+    "MAT-STE-2026-29327",
+    "MAT-STE-2026-29333",
+    "MAT-STE-2026-29471",
+    "MAT-STE-2026-29472",
+    "MAT-STE-2026-29483",
+    "MAT-STE-2026-29484",
+    "MAT-STE-2026-29565",
+    "MAT-STE-2026-29566",
+    "MAT-STE-2026-29618",
+    "MAT-STE-2026-29724",
+    "MAT-STE-2026-29726",
+    "MAT-STE-2026-29808",
+    "MAT-STE-2026-29917",
+    "MAT-STE-2026-29957",
+    "MAT-STE-2026-29958",
+    "MAT-STE-2026-29959",
+    "MAT-STE-2026-30044",
+    "MAT-STE-2026-30051",
+    "MAT-STE-2026-30188",
+    "MAT-STE-2026-30190",
+    "MAT-STE-2026-30197",
+    "MAT-STE-2026-31166",
+    "MAT-STE-2026-31167",
+    "MAT-STE-2026-31168",
+    "MAT-STE-2026-31169",
+    "MAT-STE-2026-31170",
+    "MAT-STE-2026-31171",
+    "MAT-STE-2026-31760",
+    "MAT-STE-2026-31859",
+    "MAT-STE-2026-32009",
+    "MAT-STE-2026-32166",
+    "MAT-STE-2026-34316",
+    "MAT-STE-2026-34317",
+    "MAT-STE-2026-34318",
+    "MAT-STE-2026-34539",
+    "MAT-STE-2026-34769",
+    "MAT-STE-2026-34770",
+    "MAT-STE-2026-34772",
+    "MAT-STE-2026-34854",
+    "MAT-STE-2026-34856",
+    "MAT-STE-2026-35023",
+    "MAT-STE-2026-35048",
+    "MAT-STE-2026-35049",
+    "PO-JOB07515",
+    "MAT-STE-2026-25752",
+    "MAT-STE-2026-36646",
+    "MAT-STE-2026-36664",
+    "MAT-STE-2026-36673",
+    "MAT-STE-2026-36683",
+    "MAT-STE-2026-36684-1",
+    "MAT-STE-2026-36705",
+    "MAT-STE-2026-36706",
+    "MAT-STE-2026-36741-2",
+    "MAT-STE-2026-36742-1",
+    "MAT-STE-2026-36868",
+    "MAT-STE-2026-41738",
+    "MAT-STE-2026-41739-1",
+    "PO-JOB10178",
+    "MAT-STE-2026-41829",
+    "MAT-STE-2026-41927",
+    "MAT-STE-2026-41928",
+    "MAT-STE-2026-42242",
+    "MAT-STE-2026-42244",
+    "MAT-STE-2026-41793",
+    "MAT-STE-2026-41792",
+    "PO-JOB12572",
+    "MAT-STE-2026-42954",
+    "PO-JOB12259",
+    "PO-JOB12371",
+    "MAT-STE-2026-29903",
+    "MAT-STE-2026-43507",
+    "MAT-STE-2026-43539"
+  ]
+}

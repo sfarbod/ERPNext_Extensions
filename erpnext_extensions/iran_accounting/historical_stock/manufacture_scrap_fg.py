@@ -147,7 +147,27 @@ def analyze_manufacture_scrap_fg(voucher: str) -> dict[str, Any]:
 			svd = abs(flt(sle.stock_value_difference))
 			orate = abs(flt(sle.outgoing_rate))
 			qty = abs(flt(d.qty))
-			rate = orate if orate > RATE_EPS else (svd / qty if qty > QTY_EPS else 0.0)
+			if orate > RATE_EPS:
+				rate = orate
+			elif qty > QTY_EPS:
+				# Under IRR, SVD/qty must be integer ROUND_HALF_UP (never raw float).
+				from erpnext_extensions.iran_accounting.domain.currency import (
+					get_company_currency,
+					integer_valuation_rate_from_amount,
+					is_irr_company,
+				)
+
+				company = se.company
+				if company and is_irr_company(company):
+					rate = float(
+						integer_valuation_rate_from_amount(
+							svd, qty, get_company_currency(company) or "IRR"
+						)
+					)
+				else:
+					rate = svd / qty
+			else:
+				rate = 0.0
 			consumed += svd
 			zero_poison = qty > QTY_EPS and svd <= VALUE_EPS and orate <= RATE_EPS and not cint(d.allow_zero)
 			if zero_poison:
@@ -482,10 +502,27 @@ def repair_manufacture_scrap_fg(voucher: str, *, dry_run: bool = True) -> dict:
 				as_dict=True,
 			)
 		}
+		from erpnext_extensions.iran_accounting.domain.currency import (
+			get_company_currency,
+			integer_valuation_rate_from_amount,
+			is_irr_company,
+			round_currency,
+			round_monetary_rate,
+			round_row_amount,
+		)
+
+		company = frappe.db.get_value("Stock Entry", voucher, "company")
+		ccy = get_company_currency(company) or "IRR"
+		irr = bool(company and is_irr_company(company))
+
 		for p in scrap_writes:
 			rate = abs(flt(p["expected_rate"]))
 			qty = abs(flt(p["qty"]))
-			amt = rate * qty
+			if irr:
+				rate = float(round_monetary_rate(rate, ccy))
+				amt = float(round_row_amount(qty, rate, ccy))
+			else:
+				amt = rate * qty
 			frappe.db.set_value(
 				"Stock Entry Detail",
 				p["detail"],
@@ -515,14 +552,26 @@ def repair_manufacture_scrap_fg(voucher: str, *, dry_run: bool = True) -> dict:
 		fg_rate = abs(flt(fg["expected_rate"]))
 		fg_qty = abs(flt(fg["qty"]))
 		fg_add = abs(flt(fg.get("additional_cost") or 0))
-		fg_basic = fg_rate * fg_qty
-		fg_amount = fg_basic + fg_add
+		if irr:
+			fg_rate = float(round_monetary_rate(fg_rate, ccy))
+			fg_add = float(round_currency(fg_add, ccy))
+			fg_basic = float(round_row_amount(fg_qty, fg_rate, ccy))
+			fg_amount = float(round_currency(fg_basic + fg_add, ccy))
+			sle_rate = (
+				float(integer_valuation_rate_from_amount(fg_amount, fg_qty, ccy))
+				if fg_qty > QTY_EPS
+				else fg_rate
+			)
+		else:
+			fg_basic = fg_rate * fg_qty
+			fg_amount = fg_basic + fg_add
+			sle_rate = fg_amount / fg_qty if fg_qty > QTY_EPS else fg_rate
 		frappe.db.set_value(
 			"Stock Entry Detail",
 			fg["detail"],
 			{
 				"basic_rate": fg_rate,
-				"valuation_rate": fg_rate,
+				"valuation_rate": sle_rate if irr else fg_rate,
 				"basic_amount": fg_basic,
 				"amount": fg_amount,
 			},
@@ -530,7 +579,6 @@ def repair_manufacture_scrap_fg(voucher: str, *, dry_run: bool = True) -> dict:
 		)
 		writes += 1
 		if fg.get("sle"):
-			sle_rate = fg_amount / fg_qty if fg_qty > QTY_EPS else fg_rate
 			frappe.db.set_value(
 				"Stock Ledger Entry",
 				fg["sle"],

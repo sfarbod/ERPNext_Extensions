@@ -589,8 +589,37 @@ def repair_manufacture_valuation(voucher: str, *, dry_run: bool = True) -> dict:
 		if ev.get("se_matches_residual") and abs(flt(fg["current_basic_rate"])) > RATE_EPS
 		else expected
 	)
-	write_sle_amount = abs(write_basic) * abs(qty) + abs(fg_additional)
-	write_sle_rate = write_sle_amount / abs(qty) if abs(qty) > QTY_EPS else write_basic
+	company = frappe.db.get_value("Stock Entry", voucher, "company")
+	from erpnext_extensions.iran_accounting.domain.currency import (
+		get_company_currency,
+		integer_valuation_rate_from_amount,
+		is_irr_company,
+		round_currency,
+		round_monetary_rate,
+		round_row_amount,
+	)
+
+	ccy = get_company_currency(company) or "IRR"
+	# 5.7.18: IRR unit rates must be integer ROUND_HALF_UP; amount stays authoritative.
+	orig_basic = abs(write_basic)
+	orig_amount = abs(orig_basic) * abs(qty) + abs(fg_additional)
+	if company and is_irr_company(company):
+		write_sle_amount = float(round_currency(orig_amount, ccy))
+		write_basic = float(round_monetary_rate(orig_basic, ccy))
+		write_sle_rate = (
+			float(integer_valuation_rate_from_amount(write_sle_amount, abs(qty), ccy))
+			if abs(qty) > QTY_EPS
+			else write_basic
+		)
+		write_basic_amount = float(round_row_amount(abs(qty), write_basic, ccy))
+	else:
+		write_basic = orig_basic
+		write_sle_amount = orig_amount
+		write_sle_rate = (
+			write_sle_amount / abs(qty) if abs(qty) > QTY_EPS else write_basic
+		)
+		write_basic_amount = abs(write_basic) * abs(qty)
+	class_a_residual = float(write_sle_amount) - float(write_sle_rate) * abs(qty)
 	se_write = not bool(ev.get("se_matches_residual"))
 	preview = {
 		"voucher": voucher,
@@ -602,6 +631,7 @@ def repair_manufacture_valuation(voucher: str, *, dry_run: bool = True) -> dict:
 		"write_basic_rate": write_basic,
 		"write_sle_rate": write_sle_rate,
 		"write_sle_amount": write_sle_amount,
+		"class_a_residual": class_a_residual,
 		"voucher_detail": fg["voucher_detail"],
 		"sle": fg.get("sle"),
 		"se_write": se_write,
@@ -616,8 +646,8 @@ def repair_manufacture_valuation(voucher: str, *, dry_run: bool = True) -> dict:
 			fg["voucher_detail"],
 			{
 				"basic_rate": abs(write_basic),
-				"valuation_rate": abs(write_basic),
-				"basic_amount": abs(write_basic) * abs(qty),
+				"valuation_rate": abs(write_sle_rate),
+				"basic_amount": write_basic_amount,
 				# Keep document amount = basic + additional (ERPNext shape).
 				"amount": write_sle_amount,
 			},
@@ -744,7 +774,23 @@ def _scrap_value_from_same_voucher_consume(d, sources: list[dict]) -> float | No
 	src_svd = abs(flt(peer.get("sle_svd") or 0))
 	src_rate = abs(flt(peer.get("sle_outgoing") or 0))
 	if src_rate <= RATE_EPS and src_qty > QTY_EPS and src_svd > VALUE_EPS:
-		src_rate = src_svd / src_qty
+		# Derive consume rate from SVD/qty; under IRR force integer ROUND_HALF_UP.
+		from erpnext_extensions.iran_accounting.domain.currency import (
+			get_company_currency,
+			integer_valuation_rate_from_amount,
+			is_irr_company,
+		)
+
+		parent = frappe.db.get_value("Stock Entry Detail", d.name, "parent")
+		company = frappe.db.get_value("Stock Entry", parent, "company") if parent else None
+		if company and is_irr_company(company):
+			src_rate = float(
+				integer_valuation_rate_from_amount(
+					src_svd, src_qty, get_company_currency(company) or "IRR"
+				)
+			)
+		else:
+			src_rate = src_svd / src_qty
 	if src_rate <= RATE_EPS:
 		return None
 	se_rate = abs(flt(d.basic_rate))

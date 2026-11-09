@@ -1,0 +1,777 @@
+{
+  "generated_at": "2026-11-09 22:16:31.112305",
+  "app_version": "5.7.18",
+  "site": "development.localhost",
+  "mutated": false,
+  "denylist_je": "ACC-JV-1405-169046",
+  "companies": [
+    "اسپاد فارمد دارو"
+  ],
+  "document_volumes": {
+    "Purchase Receipt": 1512,
+    "Purchase Invoice": 1425,
+    "Delivery Note": 260,
+    "Sales Invoice": 193,
+    "Stock Entry": 16006,
+    "Landed Cost Voucher": 2,
+    "Stock Reconciliation": 32,
+    "Asset": 3974,
+    "Subcontracting Receipt": 77,
+    "Repost Item Valuation": 776,
+    "SLE active": 122211,
+    "GL active": 102348,
+    "PI update_stock=1": 0,
+    "SI update_stock=1": 24
+  },
+  "stock_entry_by_purpose": [
+    {
+      "purpose": "Material Transfer for Manufacture",
+      "c": 6800
+    },
+    {
+      "purpose": "Material Issue",
+      "c": 3992
+    },
+    {
+      "purpose": "Manufacture",
+      "c": 3093
+    },
+    {
+      "purpose": "Material Transfer",
+      "c": 1246
+    },
+    {
+      "purpose": "Material Receipt",
+      "c": 426
+    },
+    {
+      "purpose": "Repack",
+      "c": 349
+    },
+    {
+      "purpose": "Send to Subcontractor",
+      "c": 100
+    }
+  ],
+  "fractional_sle_by_voucher_type": [
+    {
+      "voucher_type": "Stock Entry",
+      "frac_in": 512.0,
+      "frac_out": 0.0,
+      "frac_vr": 1590.0,
+      "total_sle": 109219
+    },
+    {
+      "voucher_type": "Delivery Note",
+      "frac_in": 0.0,
+      "frac_out": 1.0,
+      "frac_vr": 52.0,
+      "total_sle": 2505
+    },
+    {
+      "voucher_type": "Purchase Receipt",
+      "frac_in": 0.0,
+      "frac_out": 0.0,
+      "frac_vr": 2.0,
+      "total_sle": 2490
+    },
+    {
+      "voucher_type": "Sales Invoice",
+      "frac_in": 0.0,
+      "frac_out": 0.0,
+      "frac_vr": 30.0,
+      "total_sle": 313
+    },
+    {
+      "voucher_type": "Stock Reconciliation",
+      "frac_in": 0.0,
+      "frac_out": 0.0,
+      "frac_vr": 0.0,
+      "total_sle": 7530
+    },
+    {
+      "voucher_type": "Subcontracting Receipt",
+      "frac_in": 0.0,
+      "frac_out": 0.0,
+      "frac_vr": 0.0,
+      "total_sle": 154
+    }
+  ],
+  "fractional_sle_rate_total": 513,
+  "ste_fractional_incoming": {
+    "vouchers": 387,
+    "sles": 512
+  },
+  "ste_frac_incoming_by_purpose": [
+    {
+      "purpose": "Manufacture",
+      "vouchers": 251,
+      "sles": 343
+    },
+    {
+      "purpose": "Material Transfer for Manufacture",
+      "vouchers": 96,
+      "sles": 96
+    },
+    {
+      "purpose": "Material Transfer",
+      "vouchers": 37,
+      "sles": 70
+    },
+    {
+      "purpose": "Repack",
+      "vouchers": 3,
+      "sles": 3
+    }
+  ],
+  "sed_fractional_valuation_rate": 1122,
+  "pri_fractional_valuation_rate": 0,
+  "dni_fractional_incoming_hint": 1,
+  "sle_negative_qty_or_value": 4,
+  "sle_zero_incoming_positive_qty": 581,
+  "riv_status_counts": [
+    {
+      "status": "Completed",
+      "c": 768
+    },
+    {
+      "status": "Failed",
+      "c": 3
+    },
+    {
+      "status": "Queued",
+      "c": 3
+    },
+    {
+      "status": "In Progress",
+      "c": 1
+    },
+    {
+      "status": "Skipped",
+      "c": 1
+    }
+  ],
+  "pr_nonzero_amt_diff": {
+    "vouchers": 92,
+    "rows": 143
+  },
+  "pr_amt_diff_fixed_asset_rows": 2,
+  "pr_amt_diff_stock_rows": 141,
+  "land_accounts": [
+    "121000 - زمین - E"
+  ],
+  "asset_pr_still_on_land_expense": 0,
+  "pr_gl_land_debit_vouchers": 0,
+  "unbalanced_gl_by_voucher_type": [],
+  "pii_vs_pri_rate_mismatch_rows": 72,
+  "lcv_linked_prs": 2,
+  "ste_submitted_zero_gl": 1387,
+  "ste_zero_gl_by_purpose": [
+    {
+      "purpose": "Material Transfer",
+      "c": 932
+    },
+    {
+      "purpose": "Repack",
+      "c": 345
+    },
+    {
+      "purpose": "Manufacture",
+      "c": 35
+    },
+    {
+      "purpose": "Material Issue",
+      "c": 28
+    },
+    {
+      "purpose": "Material Transfer for Manufacture",
+      "c": 28
+    },
+    {
+      "purpose": "Material Receipt",
+      "c": 19
+    }
+  ],
+  "cohort_a_status": [
+    {
+      "pr": "MAT-PRE-2026-01907",
+      "target_num": "121013",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-00953",
+      "target_num": "121013",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-01311",
+      "target_num": "121006",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-00747",
+      "target_num": "121006",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-01413",
+      "target_num": "121003",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-00880",
+      "target_num": "121006",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-01241",
+      "target_num": "121003",
+      "land_debit": 0.0,
+      "land_cleared": true
+    },
+    {
+      "pr": "MAT-PRE-2026-01266",
+      "target_num": "121006",
+      "land_debit": 0.0,
+      "land_cleared": true
+    }
+  ],
+  "cohort_b_prior_dryrun": {
+    "frac_sle": null,
+    "keys": [
+      "api_version",
+      "cohort",
+      "dry_run",
+      "mutated",
+      "company",
+      "confirm_token_for_future_execute",
+      "generated_at",
+      "journal_denylist",
+      "source",
+      "counts",
+      "identities",
+      "repack_missing_gl_gate",
+      "code_fixes_prepared",
+      "execution_order",
+      "rejected_outside_cohort",
+      "voucher_sample",
+      "voucher_names"
+    ],
+    "blocked": null,
+    "voucher_count": null,
+    "success_count": null
+  },
+  "acc_jv": {
+    "docstatus": 1,
+    "modified": "2026-10-19 14:35:53.838699",
+    "total_debit": 18215880000.0
+  },
+  "extension_inventory_hooks": {
+    "Stock Entry": [
+      "before_validate",
+      "validate",
+      "before_submit",
+      "on_submit",
+      "before_cancel",
+      "on_cancel",
+      "on_update_after_submit"
+    ],
+    "Purchase Receipt": [
+      "validate",
+      "on_submit"
+    ],
+    "Delivery Note": [
+      "validate"
+    ],
+    "Purchase Invoice": [
+      "validate",
+      "before_submit",
+      "on_submit",
+      "before_cancel",
+      "on_cancel"
+    ],
+    "Sales Invoice": [
+      "validate",
+      "before_submit",
+      "on_submit",
+      "on_cancel"
+    ],
+    "Landed Cost Voucher": [
+      "on_submit"
+    ],
+    "Stock Reconciliation": [
+      "validate",
+      "before_submit",
+      "on_submit"
+    ],
+    "Repost Item Valuation": [
+      "validate",
+      "on_change",
+      "on_update",
+      "on_update_after_submit"
+    ],
+    "SLE": [
+      "validate",
+      "before_insert",
+      "after_insert"
+    ],
+    "GL Entry": [
+      "validate",
+      "before_insert",
+      "after_insert",
+      "on_update",
+      "on_trash"
+    ]
+  },
+  "campaign_modules": [
+    "financial_correction_campaign (Cohort A Asset PR / Cohort B STE frac)",
+    "asset_purchase_receipt_correction",
+    "historical_rebuild / HRC",
+    "riv_campaign (Item+WH RIV generation)",
+    "job_card_stock_rebuild",
+    "historical_stock/wrong_rate_campaign",
+    "domain/riv_sabe_integer_campaign",
+    "domain/manufacture_gl_reclass_campaign",
+    "asset_usage_depreciation/depr_reset_rebuild_campaign"
+  ],
+  "open_or_failed_rivs": [
+    {
+      "name": "cbhpqc3uau",
+      "voucher_type": "Purchase Receipt",
+      "voucher_no": "MAT-PRE-2026-00747",
+      "status": "Failed",
+      "err": "Debit and Credit not equal for Purchase Receipt #MAT-PRE-2026-00747. Difference is 64500000.0.<br><br><b>Traceback:</b> <br>Traceback (most recent call last):\n  File \"apps/erpnext/erpnext/stock/doctyp",
+      "repost_only_accounting_ledgers": 1
+    },
+    {
+      "name": "olt2ejc428",
+      "voucher_type": "Purchase Receipt",
+      "voucher_no": "MAT-PRE-2026-00707",
+      "status": "Failed",
+      "err": "Debit and Credit not equal for Stock Entry #MAT-STE-2026-34068-1. Difference is 1.0.<br><br><b>Traceback:</b> <br>Traceback (most recent call last):\n  File \"apps/erpnext/erpnext/stock/doctype/repost_i",
+      "repost_only_accounting_ledgers": 0
+    },
+    {
+      "name": "3n03gvl5qi",
+      "voucher_type": null,
+      "voucher_no": null,
+      "status": "Queued",
+      "err": null,
+      "repost_only_accounting_ledgers": 0
+    },
+    {
+      "name": "0qtcpgnvr6",
+      "voucher_type": null,
+      "voucher_no": null,
+      "status": "Queued",
+      "err": null,
+      "repost_only_accounting_ledgers": 0
+    },
+    {
+      "name": "2q21tjati8",
+      "voucher_type": null,
+      "voucher_no": null,
+      "status": "Queued",
+      "err": null,
+      "repost_only_accounting_ledgers": 0
+    },
+    {
+      "name": "2q2uavmgae",
+      "voucher_type": null,
+      "voucher_no": null,
+      "status": "In Progress",
+      "err": null,
+      "repost_only_accounting_ledgers": 0
+    },
+    {
+      "name": "8tt4rqd11g",
+      "voucher_type": null,
+      "voucher_no": null,
+      "status": "Failed",
+      "err": "IRR rate-rounding residual rejected: valuation inconsistency (Class B). Round Off Account and Stock Adjustment Account must not absorb this gap.\nVoucher: Purchase Receipt MAT-PRE-2026-02045\nRow 2 item",
+      "repost_only_accounting_ledgers": 0
+    }
+  ],
+  "negative_sle_samples": [
+    {
+      "name": "MAT-SLE-2026-234131",
+      "voucher_type": "Stock Entry",
+      "voucher_no": "MAT-STE-2026-33192",
+      "item_code": "13200144",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "qty_after_transaction": -3150.0,
+      "stock_value": 116632915.0,
+      "posting_date": "2026-07-22"
+    },
+    {
+      "name": "MAT-SLE-2026-305811",
+      "voucher_type": "Stock Entry",
+      "voucher_no": "MAT-STE-2026-40752",
+      "item_code": "13200144",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "qty_after_transaction": -458.0,
+      "stock_value": 259760895.0,
+      "posting_date": "2026-07-22"
+    },
+    {
+      "name": "MAT-SLE-2026-305812",
+      "voucher_type": "Stock Entry",
+      "voucher_no": "MAT-STE-2026-40752",
+      "item_code": "13200144",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "qty_after_transaction": -530.0,
+      "stock_value": 259760895.0,
+      "posting_date": "2026-07-22"
+    },
+    {
+      "name": "MAT-SLE-2026-305813",
+      "voucher_type": "Stock Entry",
+      "voucher_no": "MAT-STE-2026-40752",
+      "item_code": "13200144",
+      "warehouse": "انبار پایکار خط تولید اسپاد فارمد",
+      "qty_after_transaction": -1391.0,
+      "stock_value": 212725326.0,
+      "posting_date": "2026-07-22"
+    }
+  ],
+  "ste_zero_gl_risk_purposes": {
+    "Manufacture": 35,
+    "Repack": 345,
+    "Material Issue": 28,
+    "Material Receipt": 19
+  },
+  "cohort_b_blocker_29903": {
+    "exists": true,
+    "gl_rows": 0,
+    "meta": {
+      "purpose": "Repack",
+      "docstatus": 1,
+      "company": "اسپاد فارمد دارو"
+    }
+  },
+  "iran_accounting_test_files": [
+    "test_acceptance.py",
+    "test_account_explorer_accounting_index.py",
+    "test_account_explorer_accounts.py",
+    "test_account_explorer_analysis_filters.py",
+    "test_account_explorer_analytical_filter_parity.py",
+    "test_account_explorer_analyze_nestedset_v5635.py",
+    "test_account_explorer_architecture_foundation.py",
+    "test_account_explorer_axis_permissions.py",
+    "test_account_explorer_breadcrumb_navigation.py",
+    "test_account_explorer_cancelled.py",
+    "test_account_explorer_commercial_item_v5621.py",
+    "test_account_explorer_construction_replay.py",
+    "test_account_explorer_cross_tab_numeric.py",
+    "test_account_explorer_cube_navigation.py",
+    "test_account_explorer_currency_discovery_v5621.py",
+    "test_account_explorer_currency_summary.py",
+    "test_account_explorer_datatable_adapter.py",
+    "test_account_explorer_datatable_ux.py",
+    "test_account_explorer_date_display.py",
+    "test_account_explorer_diagnostics.py",
+    "test_account_explorer_dimension_summary.py",
+    "test_account_explorer_dimension_types.py",
+    "test_account_explorer_document_scope.py",
+    "test_account_explorer_document_scope_ui.py",
+    "test_account_explorer_engine_selector.py",
+    "test_account_explorer_export.py",
+    "test_account_explorer_filters_reset_running_v5635.py",
+    "test_account_explorer_fixtures.py",
+    "test_account_explorer_fy_isolation.py",
+    "test_account_explorer_gle_filters.py",
+    "test_account_explorer_hand_numeric_recon.py",
+    "test_account_explorer_hierarchy_filter_presentation.py",
+    "test_account_explorer_initial_render.py",
+    "test_account_explorer_inventory_account_attribution.py",
+    "test_account_explorer_inventory_account_scope.py",
+    "test_account_explorer_inventory_axes.py",
+    "test_account_explorer_inventory_cross_axis.py",
+    "test_account_explorer_inventory_forensic_contract.py",
+    "test_account_explorer_item_13100057.py",
+    "test_account_explorer_leaf_measures_cache.py",
+    "test_account_explorer_measures.py",
+    "test_account_explorer_multiselect_filters.py",
+    "test_account_explorer_navigator_metadata.py",
+    "test_account_explorer_opening_balance.py",
+    "test_account_explorer_party_batch_enrichment.py",
+    "test_account_explorer_party_display_v5621.py",
+    "test_account_explorer_party_identity_analysis_v5621.py",
+    "test_account_explorer_party_identity_persistence_v5621.py",
+    "test_account_explorer_party_identity_v5621.py",
+    "test_account_explorer_party_resolver.py",
+    "test_account_explorer_party_summary.py",
+    "test_account_explorer_performance_benchmark.py",
+    "test_account_explorer_permissions.py",
+    "test_account_explorer_prepared_result.py",
+    "test_account_explorer_query_spec.py",
+    "test_account_explorer_queue_policy.py",
+    "test_account_explorer_revision_concurrency.py",
+    "test_account_explorer_saved_views.py",
+    "test_account_explorer_selection_export.py",
+    "test_account_explorer_shared_inventory_account.py",
+    "test_account_explorer_stock_gl_parity.py",
+    "test_account_explorer_stock_measures.py",
+    "test_account_explorer_stock_opening.py",
+    "test_account_explorer_synthetic_rows.py",
+    "test_account_explorer_unified_party_suggestions.py",
+    "test_account_explorer_unified_party_summary.py",
+    "test_account_explorer_user_preferences.py",
+    "test_account_explorer_v577_fy_filters_pagination_running.py",
+    "test_account_explorer_voucher_cancelled.py",
+    "test_account_explorer_voucher_export_compat_v5621.py",
+    "test_account_explorer_voucher_gl.py",
+    "test_account_explorer_voucher_gl_lines.py",
+    "test_account_explorer_voucher_navigation.py",
+    "test_account_explorer_voucher_parity.py",
+    "test_account_explorer_voucher_scoped_gl.py",
+    "test_account_explorer_voucher_summary.py",
+    "test_account_explorer_voucher_summary_party_e2e.py",
+    "test_account_explorer_workspace_url.py",
+    "test_acquisition_incoming_rate_v5526.py",
+    "test_allow_zero_not_patient_zero_v5320.py",
+    "test_asset_pr_correction_v5720.py",
+    "test_assisted_recovery_v5218.py",
+    "test_bulk_repost_stock_reconciliation.py",
+    "test_bulk_scrap_zero_v5343.py",
+    "test_campaign_framework_v5215.py",
+    "test_case_a_40942_i3_absorb_guard_v561.py",
+    "test_case_a_40942_wh_data_reseed_v561.py",
+    "test_case_d_30100023_negative_sv_v561.py",
+    "test_case_e_30100298_valuation_continuity_v568.py",
+    "test_case_f_27800_product_reject_v569.py",
+    "test_co_product_residual_align_v5518.py",
+    "test_component_scrap_issued_rate.py",
+    "test_dashboard_consistency_v5214.py",
+    "test_dashboard_grid_contract_v5218.py",
+    "test_db_concurrency_retry_v5347.py",
+    "test_delivery_note_cogs_from_sle.py",
+    "test_diagnostics.py",
+    "test_difference_amount_exact_match.py",
+    "test_e1_gl_scope.py",
+    "test_e1_scoped_period_index.py",
+    "test_e2e_buying_selling.py",
+    "test_e2e_stock_vouchers.py",
+    "test_empty_classification_exclusion.py",
+    "test_empty_classification_presentation.py",
+    "test_equal_rate_byproduct_v5336.py",
+    "test_external_pz_clear_v5218.py",
+    "test_fa_pr_gl_amount_difference_v5718.py",
+    "test_failed_riv_stage1_v530.py",
+    "test_failed_riv_v5218.py",
+    "test_final_audit_383.py",
+    "test_full_rebuild_noskip_v561.py",
+    "test_fx_pi_pattern_a_precision_loss_guard.py",
+    "test_fx_pr_rate_first_residual_v5625.py",
+    "test_fx_purchase_invoice_pattern_a.py",
+    "test_gl_cost_center_allocation_irr.py",
+    "test_gl_planner_unbalanced_v5218.py",
+    "test_gl_root_v5218.py",
+    "test_gl_zero_value_filter_v574.py",
+    "test_golden_comparison_capitalization.py",
+    "test_historical_fractional_sabe_repair_v5611.py",
+    "test_historical_rebuild_campaign_v5547.py",
+    "test_historical_rebuild_phase2_complete_v5547.py",
+    "test_historical_rebuild_rest_api_v5710.py",
+    "test_historical_repair_blockers_v530.py",
+    "test_historical_repair_dashboard_v530.py",
+    "test_historical_repair_v530.py",
+    "test_historical_residual_v5551.py",
+    "test_historical_stock.py",
+    "test_historical_stock_integration.py",
+    "test_historical_valuation_rebuild_v561.py",
+    "test_hrc_campaign_progress_sync_v5617.py",
+    "test_hrc_component_scrap_riv_v5547.py",
+    "test_hrc_coverage_time_normalize_v568.py",
+    "test_hrc_create_vs_riv_execution_gate_v5713.py",
+    "test_i1_apply_hardening_v5222.py",
+    "test_i1_repair_v5220.py",
+    "test_i4_earliest_pz_v5216.py",
+    "test_i4_leftover_repair_v5213.py",
+    "test_i4_material_transfer_lifecycle.py",
+    "test_i4_precision_dust_v5323.py",
+    "test_i4_zero_qty_terminal_residual.py",
+    "test_import_integrity.py",
+    "test_import_stability.py",
+    "test_integer_vr_enforcement_v5719.py",
+    "test_invoice_distributed_discount_align.py",
+    "test_iran_accounting_rounding.py",
+    "test_irr_gl_precision_align.py",
+    "test_irr_rate_first_rounding.py",
+    "test_irr_residual_classification.py",
+    "test_irr_rounding_residual.py",
+    "test_irr_se_quantum_round_off_v538.py",
+    "test_irr_se_stock_adj_quantum_v5313.py",
+    "test_job_card_stock_rebuild_v541.py",
+    "test_kpi_buckets_v5218.py",
+    "test_ledger_contract_composition.py",
+    "test_leftover_ma_riv_eligibility_v5524.py",
+    "test_legitimate_zero_issue_v5322.py",
+    "test_manual_reason_v530.py",
+    "test_manufacture_expense_account_v5712.py",
+    "test_manufacture_fg_pool_residual_v5525.py",
+    "test_manufacture_fractional_batch_tva_v5548.py",
+    "test_manufacture_irr_residual_v5334.py",
+    "test_manufacture_native_historical_v5339.py",
+    "test_manufacture_native_v537.py",
+    "test_manufacture_output_contract_v5519.py",
+    "test_manufacture_replay_leftover_v530.py",
+    "test_manufacture_residual_submit_v5330.py",
+    "test_manufacture_rounding.py",
+    "test_manufacture_scrap_fg_v5324.py",
+    "test_manufacture_valuation_v533_integrity.py",
+    "test_mariadb_1020_concurrency_v569.py",
+    "test_material_transfer_same_stock_account.py",
+    "test_mfg_neg_addl_component_scrap_v571.py",
+    "test_mtfm_false_pz_unlock_v5318.py",
+    "test_multi_move_svd_v5218.py",
+    "test_multi_row_transfer_prev_lookup_v561.py",
+    "test_native_outgoing_sle_sync_v5540.py",
+    "test_native_transfer_gl_sync_v5546.py",
+    "test_negative_stock_healing.py",
+    "test_next_downtime_campaign_v5328.py",
+    "test_opening_entry_policy.py",
+    "test_opening_policy_axis_matrix.py",
+    "test_opening_policy_golden_fixtures.py",
+    "test_opening_policy_pcv_acb_integration.py",
+    "test_opening_policy_production_integration.py",
+    "test_opening_policy_query_counts.py",
+    "test_opening_sr_avg_rate.py",
+    "test_opening_sr_difference_amount.py",
+    "test_out_of_scope_doc_authority_soft_skip_v561.py",
+    "test_patient_zero_as_of_v530.py",
+    "test_pending_purchase_invoice_valuation_v5345.py",
+    "test_phase3_toolgap_analyzers_v5340.py",
+    "test_physical_two_slice.py",
+    "test_physical_two_slice_pick_list_pool_v5716.py",
+    "test_po_dry_apply_preflight_v530.py",
+    "test_posting_order_unlock_v5218.py",
+    "test_pr_billing_refresh_api.py",
+    "test_pr_discount_pi_valuation_backport_59476.py",
+    "test_pr_lcv_amount_preserving_vr_v5625.py",
+    "test_pr_legacy_uvr_float_v5528.py",
+    "test_pr_pi_compat_control_flow_v5625.py",
+    "test_pr_transfer_provenance_v5319.py",
+    "test_pr_uvr_ulp_drift_v5718.py",
+    "test_prevention_v5544.py",
+    "test_process_sle_persistence.py",
+    "test_product_reject_bridge_v5337.py",
+    "test_product_reject_residual_align_v557.py",
+    "test_production_hardening_376.py",
+    "test_purchase_invoice_distributed_discount_gl.py",
+    "test_purchase_valuation_detection_v5625.py",
+    "test_purchase_valuation_repair_v5625.py",
+    "test_qty_rate_rounding.py",
+    "test_reject_only_riv_sle_v571.py",
+    "test_reject_only_zero_mfg_v570.py",
+    "test_release_gate_consistency_v5218.py",
+    "test_repack_net_zero_gl_v5715.py",
+    "test_repair_pipeline_v535.py",
+    "test_repair_target_isolation_v5218.py",
+    "test_reports_print_repost.py",
+    "test_repost_accounting_ledger_compat.py",
+    "test_repost_determinism.py",
+    "test_repost_preserves_capitalization.py",
+    "test_resolve_company_v5218.py",
+    "test_riv_campaign_v5529.py",
+    "test_riv_execute_guard_v5523.py",
+    "test_riv_file_recovery_v5549.py",
+    "test_riv_manufacture_gl_rounding_v572.py",
+    "test_riv_pm1_gl_residual_v5527.py",
+    "test_riv_propagated_rate_v5524.py",
+    "test_riv_rate_first_preserve.py",
+    "test_riv_sabe_integer_campaign_v571.py",
+    "test_riv_valuation_integrity.py",
+    "test_riv_valuation_scope.py",
+    "test_sabe_a2_net_stock_adjustment_v576.py",
+    "test_sabe_case_d_after_align_v574.py",
+    "test_sabe_integer_riv_api_v573.py",
+    "test_sabe_integer_valuation_v570.py",
+    "test_same_item_output_family_v5526.py",
+    "test_scan_all_job_v5218.py",
+    "test_scoped_campaign_v569.py",
+    "test_scrap_absorbed_costing.py",
+    "test_se_ledger_amount_authority_v573.py",
+    "test_secondary_type_se_sync_v5531.py",
+    "test_sequential_campaign_status_v561.py",
+    "test_sequential_pause_resume_v572.py",
+    "test_sequential_rebuild_v561.py",
+    "test_sequential_riv_1020_retry_v569.py",
+    "test_sequential_riv_ownership_v5628.py",
+    "test_sequential_riv_queue_wait_v5614.py",
+    "test_sequential_riv_retry_v5612.py",
+    "test_shortage_opening_state_v530.py",
+    "test_simple_historical_repair_v535.py",
+    "test_sle_gl_drift_v5228.py",
+    "test_source_linked_return_fractional_qty.py",
+    "test_sr_clean_slate_regression.py",
+    "test_sr_csv_hard_validation.py",
+    "test_sr_gl_and_avg_rate_determinism.py",
+    "test_sr_gl_consistency.py",
+    "test_sr_header_hard_patch.py",
+    "test_stage_co_rate_authoritative_sa_v5543.py",
+    "test_stage_equivalent_byproduct_bridge_v5335.py",
+    "test_stage_output_equivalent_costing.py",
+    "test_stage_secondary_r2_ledger_v5543.py",
+    "test_ste_integer_rate_hardening_v5718.py",
+    "test_stock_adjustment_gl_aggregate_v575.py",
+    "test_stock_entry_capitalization_amount.py",
+    "test_stock_entry_gl_delegation.py",
+    "test_stock_entry_transfer_gl.py",
+    "test_stock_ledger_reconciliation_balance.py",
+    "test_stock_ledger_report_opening_sr.py",
+    "test_stock_posting_order.py",
+    "test_stock_posting_order_integration.py",
+    "test_stock_reconciliation_cancel.py",
+    "test_stock_reconciliation_difference_amount.py",
+    "test_stock_reconciliation_opening.py",
+    "test_stock_reconciliation_qty_rate.py",
+    "test_stock_reconciliation_release_suite.py",
+    "test_stock_reconciliation_row_amount.py",
+    "test_stock_sle_gl_consistency.py",
+    "test_strict_irr_sle_db.py",
+    "test_transfer_convergence_v530.py",
+    "test_transfer_inward_conservation_after_sabe_v578.py",
+    "test_transfer_inward_conservation_v5625.py",
+    "test_transfer_valuation_v530.py",
+    "test_ui_routing_v5218.py",
+    "test_unified_accounting_party.py",
+    "test_unlock_manufacture_manual_rates.py",
+    "test_uvr_regional_guard.py",
+    "test_voucher_gl_amount_display.py",
+    "test_voucher_gl_business_dataset.py",
+    "test_voucher_gl_business_dataset_render_e2e.py",
+    "test_voucher_gl_cover.py",
+    "test_voucher_gl_defaults_hierarchy_fixture.py",
+    "test_voucher_gl_hierarchy_scale.py",
+    "test_voucher_gl_print.py",
+    "test_voucher_gl_print_hierarchy.py",
+    "test_voucher_gl_print_hierarchy_render_e2e.py",
+    "test_voucher_gl_print_language.py",
+    "test_voucher_gl_print_render_e2e.py",
+    "test_voucher_gl_print_ux_final.py",
+    "test_warehouse_campaign_v5218.py",
+    "test_warehouse_engine_v5217.py",
+    "test_warehouse_global_solver_v5218.py",
+    "test_worker_riv_orchestration_v5344.py",
+    "test_wrong_rate_engine_v5218.py",
+    "test_wrong_rate_svd_preserve_v5218.py",
+    "test_zero_fg_stage_allocation_v5543.py",
+    "test_zero_qty_stock_value_v5550.py",
+    "test_zero_rate_purpose_first_v530.py",
+    "test_zero_valuation_provenance_v534.py"
+  ],
+  "iran_accounting_test_file_count": 310,
+  "asset_vs_pri_vr_cost_mismatch_count": 37,
+  "buying_settings": {
+    "set_landed_cost_based_on_purchase_invoice_rate": 1,
+    "maintain_same_rate": 0
+  },
+  "production_scope": "NOT ACCESSED — this audit is Development-only (development.localhost)"
+}
