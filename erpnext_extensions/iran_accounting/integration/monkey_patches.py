@@ -46,6 +46,8 @@ def apply_monkey_patches():
 	_patch_stock_entry_jc_component_return()
 	# Idempotent: ERPNext #59476 compat — PR Additional Discount × PI landed cost.
 	_patch_pr_pi_landed_cost_compat()
+	# Idempotent: FA PR GL debit includes amount_difference_with_purchase_invoice.
+	_patch_fa_pr_gl_amount_difference()
 	# Idempotent: Core get_reposting_data must not JSONDecodeError on empty/shared files.
 	_patch_reposting_data_json_safety()
 	# RIV bootstrap: do NOT wrap execute_reposting_entry with a nested function.
@@ -153,6 +155,15 @@ def _patch_pr_pi_landed_cost_compat():
 	)
 
 	install_pr_pi_landed_cost_compat_patch()
+
+
+def _patch_fa_pr_gl_amount_difference():
+	"""FA PR GL: include PI amount_difference on asset debit (ERPNext 16.53 gap)."""
+	from erpnext_extensions.iran_accounting.integration.fa_pr_gl_amount_difference import (
+		install_fa_pr_gl_amount_difference_patch,
+	)
+
+	install_fa_pr_gl_amount_difference_patch()
 
 
 def _patch_buying_regional_valuation_rate():

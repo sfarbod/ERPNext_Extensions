@@ -107,7 +107,7 @@ def _path_derived_bound(qty) -> float:
 def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate, currency: str) -> bool:
 	"""True when VR is the historical UVR float ``amount / stock_qty`` (pre-Iran integerization).
 
-	Exact reconstruction only (no ULP / quantum tolerance — v5.7.19):
+	Exact reconstruction only (no ULP / quantum tolerance — 5.7.18 integer policy):
 
 	1. Rate is non-integer under the IRR monetary-rate contract.
 	2. ``ROUND_HALF_UP(rate)`` equals ``integer_valuation_rate_from_amount(auth, qty)``.
@@ -216,11 +216,11 @@ def classify_amount_rate_residual(
 	rounded_rate = flt(round_monetary_rate(rate_f, currency))
 	legacy_uvr_float = False
 	if rounded_rate != rate_f:
-		# v5.7.19: fractional VR is never acceptable under IRR. When the float
+		# 5.7.18: fractional VR is never acceptable under IRR. When the float
 		# economically reconstructs acquisition auth (|auth − qty×VR| ≤ 0.51) or
 		# matches historical UVR auth÷qty persistence, coerce to integer VR and
 		# emit Class A residual (Stock Adjustment). Do **not** skip / keep the
-		# fractional rate (removes v5.6.25 amount-preserving skip and v5.7.18 ULP).
+		# fractional rate (removes v5.6.25 amount-preserving skip and ULP draft).
 		raw_gap = flt(auth) - flt(qty) * flt(rate_f) if auth else None
 		economically_reconstructing = auth and raw_gap is not None and abs(raw_gap) <= 0.51
 		if auth and (
@@ -309,23 +309,42 @@ def purchase_receipt_valuation_stock_qty(row) -> float:
 		_core_get_stock_qty = None
 
 	def _stock_qty(qty) -> float:
-		if _core_get_stock_qty is not None and hasattr(row, "precision"):
-			try:
-				return flt(_core_get_stock_qty(row, qty))
-			except Exception:
-				pass
 		conversion_factor = flt(
 			row.get("conversion_factor") if hasattr(row, "get") else getattr(row, "conversion_factor", None)
 		)
 		if not conversion_factor:
 			conversion_factor = 1.0
-		precision = 6
-		if hasattr(row, "precision"):
+		raw = flt(qty) * conversion_factor
+
+		# Prefer Core when row.precision returns a real int (DocType rows).
+		# Skip Core when:
+		# - precision is a MagicMock / non-numeric (unit stubs), or
+		# - Core rounds a non-zero qty to 0 (no System Settings in bare unittest).
+		if _core_get_stock_qty is not None and callable(getattr(row, "precision", None)):
 			try:
-				precision = row.precision("stock_qty")
+				prec = row.precision("stock_qty")
+				if isinstance(prec, bool) or not isinstance(prec, (int, float)):
+					raise TypeError("non-numeric stock_qty precision")
+				core_val = flt(_core_get_stock_qty(row, qty))
+				if core_val or not raw:
+					return core_val
 			except Exception:
 				pass
-		return flt(flt(qty) * conversion_factor, precision)
+
+		precision = 6
+		if callable(getattr(row, "precision", None)):
+			try:
+				prec = row.precision("stock_qty")
+				if isinstance(prec, int) or (isinstance(prec, float) and not isinstance(prec, bool)):
+					precision = int(prec)
+			except Exception:
+				pass
+		# Bare unittest without System Settings: flt(x, precision) can return 0
+		# for a non-zero raw value — keep the unrounded product in that case.
+		rounded = flt(raw, precision)
+		if rounded or not raw:
+			return rounded
+		return float(raw)
 
 	qty_val = row.get("qty") if hasattr(row, "get") else getattr(row, "qty", None)
 	qty_in_stock_uom = _stock_qty(qty_val)

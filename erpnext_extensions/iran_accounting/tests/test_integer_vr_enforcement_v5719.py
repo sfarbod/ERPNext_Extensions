@@ -1,7 +1,8 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""v5.7.19 — Mandatory integer valuation_rate; Class A residual for PI-discount floats.
+"""5.7.18 — Mandatory integer valuation_rate; Class A residual for PI-discount floats.
 
-Replaces v5.7.18 ULP skip: fractional VR must never persist under IRR.
+Suite filename retains ``v5719`` historically. Replaces the earlier ULP-skip draft:
+fractional VR must never persist under IRR.
 """
 
 from __future__ import annotations

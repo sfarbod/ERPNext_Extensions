@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
 from frappe.utils import flt
@@ -49,7 +50,7 @@ def _pr_row(**kwargs):
 
 class TestAmountPreservingValuationRate(unittest.TestCase):
 	def test_lcv_1500_on_800_integerizes_vr(self):
-		"""v5.7.19: LCV rows get integer VR; residual vs auth is Class A SA."""
+		"""5.7.18: LCV rows get integer VR; residual vs auth is Class A SA."""
 		row = _pr_row()
 		doc = SimpleNamespace(
 			doctype="Purchase Receipt",
@@ -192,7 +193,7 @@ class TestAmountPreservingValuationRate(unittest.TestCase):
 
 class TestAuthoritativeAcquisitionIntegerRate(unittest.TestCase):
 	def test_lcv_document_rate_integerized_on_sle(self):
-		"""v5.7.19: SLE acquisition path integerizes document VR under IRR."""
+		"""5.7.18: SLE acquisition path integerizes document VR under IRR."""
 		from erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic import (
 			authoritative_acquisition_incoming_rate,
 			align_authoritative_acquisition_movement,
@@ -226,19 +227,15 @@ class TestAuthoritativeAcquisitionIntegerRate(unittest.TestCase):
 				return {field: row.get(field) for field in fieldname}
 			return row.get(fieldname)
 
+		import erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic as sld
+
+		# Patch the module-bound frappe.db proxy without requiring a live site.
+		fake_db = mock.Mock()
+		fake_db.get_value.side_effect = _get_value
 		with (
-			patch(
-				"erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic.is_irr_company",
-				return_value=True,
-			),
-			patch(
-				"erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic.get_company_currency",
-				return_value="IRR",
-			),
-			patch(
-				"erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic.frappe.db.get_value",
-				side_effect=_get_value,
-			),
+			patch.object(sld, "is_irr_company", return_value=True),
+			patch.object(sld, "get_company_currency", return_value="IRR"),
+			patch.object(sld.frappe, "db", fake_db),
 		):
 			rate = authoritative_acquisition_incoming_rate(sle, "IRR")
 			self.assertEqual(rate, 1_000_002)

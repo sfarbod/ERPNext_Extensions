@@ -1,5 +1,5 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""v5.7.18 ULP skip superseded by v5.7.19 integer VR enforcement.
+"""5.7.18 — ULP skip draft superseded by integer VR enforcement.
 
 Kept as a thin redirect so historical suite discovery still resolves; assertions
 live in ``test_integer_vr_enforcement_v5719``.

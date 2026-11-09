@@ -765,13 +765,20 @@ def _is_fx_purchase_doc(doc) -> bool:
 
 
 def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
-	"""Set Purchase Receipt / PI-stock ``valuation_rate`` for IRR companies.
+	"""Set Purchase Receipt / PI-stock ``valuation_rate`` for IRR companies only.
 
-	Mandatory integer IRR unit rates for **all** acquisition shapes (FX, domestic,
-	LCV, PI amount_difference, header discount). Inventory posts ``qty × integer
-	VR``; the gap vs acquisition auth is Class A Stock Adjustment residual
-	(v5.7.19 — replaces v5.6.25 fractional amount-preserving VR and v5.7.18 ULP
-	skip). Never persist a fractional valuation_rate under IRR.
+	Integerization applies to the **company-currency (IRR) valuation rate**, not to
+	foreign-currency commercial rates. On an IRR company, FX purchase rows still
+	keep transaction-currency ``rate`` precision via ``round_monetary_rate(..., tx)``;
+	only ``valuation_rate`` / ``base_*`` (company currency) are forced to integer.
+	Non-IRR companies are skipped entirely by ``align_purchase_receipt_item_amounts``.
+
+	Covers domestic, FX-translated-to-IRR, LCV, PI amount_difference, and header
+	discount acquisitions. Inventory posts ``qty × integer VR``; the gap vs
+	acquisition auth is Class A Stock Adjustment residual (5.7.18 local integer
+	VR policy — replaces v5.6.25 fractional amount-preserving VR and the earlier
+	ULP-skip draft). Never persist a fractional company-currency valuation_rate
+	under IRR.
 	"""
 	from erpnext_extensions.iran_accounting.domain.irr_residual_classification import (
 		purchase_receipt_stock_valuation_amount,

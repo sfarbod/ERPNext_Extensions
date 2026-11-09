@@ -127,7 +127,7 @@ def authoritative_acquisition_incoming_rate(sle_doc_or_dict, currency: str | Non
 	# Zero is the pending-invoice / zero-source contract, not an acquisition rate.
 	if rate <= 0:
 		return None
-	# v5.7.19: document VR is authoritative but must be integer under IRR.
+	# 5.7.18: document VR is authoritative but must be integer under IRR.
 	# Align writes integer rates; coerce here as a fail-safe for historical rows.
 	ccy = currency
 	if not ccy:

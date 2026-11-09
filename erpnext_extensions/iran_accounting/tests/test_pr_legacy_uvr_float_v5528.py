@@ -1,8 +1,8 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""5.5.28 / 5.7.19: historical Purchase Receipt UVR float valuation_rate.
+"""5.5.28 / 5.7.18: historical Purchase Receipt UVR float valuation_rate.
 
 Fractional UVR floats that reconstruct acquisition auth become Class A
-integer VR with Stock Adjustment residual (v5.7.19). True non-integer
+integer VR with Stock Adjustment residual (5.7.18). True non-integer
 mismatches stay Class B. v5.6.25/5.7.18 amount-preserving skip removed.
 """
 
@@ -56,7 +56,7 @@ class TestLegacyUvrFloatDetection(unittest.TestCase):
 
 class TestClassifyLegacyUvrFloat(unittest.TestCase):
 	def test_00780_row1_integerizes_class_a(self):
-		# v5.7.19: economically reconstructing float → Class A integer VR (no skip).
+		# 5.7.18: economically reconstructing float → Class A integer VR (no skip).
 		out = classify_amount_rate_residual(
 			qty=15.0,
 			authoritative_amount=488767096.0,
@@ -142,6 +142,8 @@ class TestDocumentResidualsBothShapes(unittest.TestCase):
 		defaults.update(kw)
 		row = mock.Mock(**defaults)
 		row.get = lambda k, d=None: getattr(row, k, d)
+		# Real DocType rows return int precision; MagicMock precision breaks Core get_stock_qty.
+		row.precision = lambda *_a, **_k: 6
 		return row
 
 	def _doc(self, items, stock_codes=None):

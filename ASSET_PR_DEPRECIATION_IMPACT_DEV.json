@@ -1,0 +1,1624 @@
+{
+  "generated_at": "2026-11-09 21:49:56.465071",
+  "mutated": false,
+  "app_version": "5.7.18",
+  "impacts": {
+    "MAT-PRE-2026-01907": {
+      "purchase_receipt": "MAT-PRE-2026-01907",
+      "fa_item_count": 1,
+      "pr_base_net_total": 6630000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 6630000.0,
+      "expected_pi_aligned_acquisition_total": 6630000.0,
+      "linked_asset_count": 1,
+      "assets": [
+        {
+          "asset": "4026",
+          "docstatus": 1,
+          "status": "Submitted",
+          "item_code": "14000064",
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01907",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "46armtf0s1",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 6630000.0,
+          "net_purchase_amount": 6630000.0,
+          "available_for_use_date": "2026-10-28",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": "مالی",
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 36,
+              "depreciation_start_date": "2026-11-21",
+              "expected_value_after_useful_life": 1.0,
+              "value_after_depreciation": 6630000.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-15264",
+              "docstatus": 0,
+              "status": "Draft",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            },
+            {
+              "name": "ACC-ADS-2026-15288",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": "مالی",
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [],
+          "posted_depreciation_count": 0,
+          "posted_depreciation_amount": 0,
+          "accumulated_depreciation_estimate": 0.0,
+          "net_book_value": 0.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 6630000.0,
+            "corrected_acquisition_cost": 6630000.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": false,
+      "mutated": false
+    },
+    "MAT-PRE-2026-00953": {
+      "purchase_receipt": "MAT-PRE-2026-00953",
+      "fa_item_count": 9,
+      "pr_base_net_total": 6247000000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 6247000000.0,
+      "expected_pi_aligned_acquisition_total": 6247000000.0,
+      "linked_asset_count": 3,
+      "assets": [
+        {
+          "asset": "3670",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200093",
+          "asset_category": "تجهیزات کامپیوتری 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-00953",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "npfokhgvhr",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 1500000000.0,
+          "net_purchase_amount": 1500000000.0,
+          "available_for_use_date": "2026-05-23",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 1374315444.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12872",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12872",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 24644031.0,
+              "journal_entry": "ACC-JV-1405-165240",
+              "accumulated_depreciation_amount": 24644031.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12872",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 25465498.0,
+              "journal_entry": "ACC-JV-1405-165241",
+              "accumulated_depreciation_amount": 50109529.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12872",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 25465498.0,
+              "journal_entry": "ACC-JV-1405-165242",
+              "accumulated_depreciation_amount": 75575027.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12872",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 25465498.0,
+              "journal_entry": "ACC-JV-1405-165243",
+              "accumulated_depreciation_amount": 101040525.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12872",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 24644031.0,
+              "journal_entry": "ACC-JV-1405-169242",
+              "accumulated_depreciation_amount": 125684556.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 125684556.0,
+          "accumulated_depreciation_estimate": 125684556.0,
+          "net_book_value": 1374315444.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 1500000000.0,
+            "corrected_acquisition_cost": 1500000000.0
+          }
+        },
+        {
+          "asset": "3699",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200047",
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-00953",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 9500000.0,
+          "net_purchase_amount": 9500000.0,
+          "available_for_use_date": "2026-07-29",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 36,
+              "depreciation_start_date": "2026-08-22",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 8759408.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12856",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12856",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 212814.0,
+              "journal_entry": "ACC-JV-1405-165246",
+              "accumulated_depreciation_amount": 212814.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12856",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 263889.0,
+              "journal_entry": "ACC-JV-1405-165247",
+              "accumulated_depreciation_amount": 476703.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12856",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 263889.0,
+              "journal_entry": "ACC-JV-1405-169244",
+              "accumulated_depreciation_amount": 740592.0
+            }
+          ],
+          "posted_depreciation_count": 3,
+          "posted_depreciation_amount": 740592.0,
+          "accumulated_depreciation_estimate": 740592.0,
+          "net_book_value": 8759408.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 9500000.0,
+            "corrected_acquisition_cost": 9500000.0
+          }
+        },
+        {
+          "asset": "3703",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200047",
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-00953",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 9500000.0,
+          "net_purchase_amount": 9500000.0,
+          "available_for_use_date": "2026-07-29",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 36,
+              "depreciation_start_date": "2026-08-22",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 8759408.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12826",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12826",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 212814.0,
+              "journal_entry": "ACC-JV-1405-165244",
+              "accumulated_depreciation_amount": 212814.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12826",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 263889.0,
+              "journal_entry": "ACC-JV-1405-165245",
+              "accumulated_depreciation_amount": 476703.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12826",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 263889.0,
+              "journal_entry": "ACC-JV-1405-169243",
+              "accumulated_depreciation_amount": 740592.0
+            }
+          ],
+          "posted_depreciation_count": 3,
+          "posted_depreciation_amount": 740592.0,
+          "accumulated_depreciation_estimate": 740592.0,
+          "net_book_value": 8759408.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 9500000.0,
+            "corrected_acquisition_cost": 9500000.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": false,
+      "mutated": false
+    },
+    "MAT-PRE-2026-01311": {
+      "purchase_receipt": "MAT-PRE-2026-01311",
+      "fa_item_count": 1,
+      "pr_base_net_total": 1290000000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 1290000000.0,
+      "expected_pi_aligned_acquisition_total": 1290000000.0,
+      "linked_asset_count": 10,
+      "assets": [
+        {
+          "asset": "3736",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "vp9ittm7ta",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113489623.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12858",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12858",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 805367.0,
+              "journal_entry": "ACC-JV-1405-148140",
+              "accumulated_depreciation_amount": 805367.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12858",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2080531.0,
+              "journal_entry": "ACC-JV-1405-148141",
+              "accumulated_depreciation_amount": 2885898.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12858",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2080531.0,
+              "journal_entry": "ACC-JV-1405-148142",
+              "accumulated_depreciation_amount": 4966429.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12858",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2080531.0,
+              "journal_entry": "ACC-JV-1405-148143",
+              "accumulated_depreciation_amount": 7046960.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12858",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2013417.0,
+              "journal_entry": "ACC-JV-1405-169212",
+              "accumulated_depreciation_amount": 9060377.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 9060377.0,
+          "accumulated_depreciation_estimate": 9060377.0,
+          "net_book_value": 113489623.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 9060377.0
+          }
+        },
+        {
+          "asset": "3737",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12760",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12760",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148144",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12760",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148145",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12760",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148146",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12760",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148147",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12760",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169213",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3738",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12739",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12739",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148148",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12739",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148149",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12739",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148150",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12739",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148151",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12739",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169214",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3739",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12761",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12761",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148152",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12761",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148153",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12761",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148154",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12761",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148155",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12761",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169215",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3740",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12762",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12762",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148156",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12762",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148157",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12762",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148158",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12762",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148159",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12762",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169216",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3741",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12763",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12763",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148160",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12763",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148161",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12763",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148162",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12763",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148163",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12763",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169217",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3742",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12764",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12764",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148164",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12764",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148165",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12764",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148166",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12764",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148167",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12764",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169218",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3743",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12765",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12765",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148168",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12765",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148169",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12765",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148170",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12765",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148171",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12765",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169219",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3744",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12766",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12766",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148172",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12766",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148173",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12766",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148174",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12766",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148175",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12766",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169220",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        },
+        {
+          "asset": "3745",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200235",
+          "asset_category": "اثاثه  و منصوبات 5 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01311",
+          "purchase_invoice": null,
+          "purchase_receipt_item": null,
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 122550000.0,
+          "net_purchase_amount": 122550000.0,
+          "available_for_use_date": "2026-06-10",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 60,
+              "depreciation_start_date": "2026-06-21",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 113589355.0,
+              "daily_prorata_based": 0
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12767",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12767",
+              "schedule_date": "2026-06-21",
+              "depreciation_amount": 790645.0,
+              "journal_entry": "ACC-JV-1405-148176",
+              "accumulated_depreciation_amount": 790645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12767",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148177",
+              "accumulated_depreciation_amount": 2833145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12767",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148178",
+              "accumulated_depreciation_amount": 4875645.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12767",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-148179",
+              "accumulated_depreciation_amount": 6918145.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12767",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2042500.0,
+              "journal_entry": "ACC-JV-1405-169221",
+              "accumulated_depreciation_amount": 8960645.0
+            }
+          ],
+          "posted_depreciation_count": 5,
+          "posted_depreciation_amount": 8960645.0,
+          "accumulated_depreciation_estimate": 8960645.0,
+          "net_book_value": 113589355.0,
+          "decision": {
+            "case": "E_submitted_cost_changed_with_posted_depr",
+            "rebuild_required": true,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset cost differs from PI-aligned amount and posted depreciation exists. Do not auto-cancel/reverse historical Depreciation Entries or their GL. Requires separate Finance-approved future-only adjustment design; core reset_depreciation_schedule / reschedule_depreciation is NOT safe to run blindly.",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": true,
+            "current_acquisition_cost": 122550000.0,
+            "corrected_acquisition_cost": 129000000.0,
+            "posted_depreciation_entries": 5,
+            "posted_depreciation_amount": 8960645.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": true,
+      "mutated": false
+    },
+    "MAT-PRE-2026-00747": {
+      "purchase_receipt": "MAT-PRE-2026-00747",
+      "fa_item_count": 1,
+      "pr_base_net_total": 1290000000.0,
+      "amount_difference_total": -64500000.0,
+      "valuation_rate_amount_total": 1225500000.0,
+      "expected_pi_aligned_acquisition_total": 1225500000.0,
+      "linked_asset_count": 0,
+      "assets": [],
+      "case_a_no_linked_asset": true,
+      "any_rebuild_required": false,
+      "mutated": false
+    },
+    "MAT-PRE-2026-01413": {
+      "purchase_receipt": "MAT-PRE-2026-01413",
+      "fa_item_count": 1,
+      "pr_base_net_total": 11781250000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 11781250000.0,
+      "expected_pi_aligned_acquisition_total": 11781250000.0,
+      "linked_asset_count": 1,
+      "assets": [
+        {
+          "asset": "3750",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14100511",
+          "asset_category": "ماشین آلات و تجهیزات 10 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01413",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "njc5nqamb9",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 11781250000.0,
+          "net_purchase_amount": 11781250000.0,
+          "available_for_use_date": "2026-06-30",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 120,
+              "depreciation_start_date": "2026-07-22",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 11410263212.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12832",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12832",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 74197358.0,
+              "journal_entry": "ACC-JV-1405-148299",
+              "accumulated_depreciation_amount": 74197358.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12832",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 100005134.0,
+              "journal_entry": "ACC-JV-1405-148300",
+              "accumulated_depreciation_amount": 174202492.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12832",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 100005134.0,
+              "journal_entry": "ACC-JV-1405-148301",
+              "accumulated_depreciation_amount": 274207626.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12832",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 96779162.0,
+              "journal_entry": "ACC-JV-1405-169277",
+              "accumulated_depreciation_amount": 370986788.0
+            }
+          ],
+          "posted_depreciation_count": 4,
+          "posted_depreciation_amount": 370986788.0,
+          "accumulated_depreciation_estimate": 370986788.0,
+          "net_book_value": 11410263212.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 11781250000.0,
+            "corrected_acquisition_cost": 11781250000.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": false,
+      "mutated": false
+    },
+    "MAT-PRE-2026-00880": {
+      "purchase_receipt": "MAT-PRE-2026-00880",
+      "fa_item_count": 1,
+      "pr_base_net_total": 158000000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 158000000.0,
+      "expected_pi_aligned_acquisition_total": 158000000.0,
+      "linked_asset_count": 1,
+      "assets": [
+        {
+          "asset": "3766",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14200239",
+          "asset_category": "اثاثه  و منصوبات 6ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-00880",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "ne9j1pi0r3",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 158000000.0,
+          "net_purchase_amount": 158000000.0,
+          "available_for_use_date": "2026-07-15",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 72,
+              "depreciation_start_date": "2026-07-22",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 150788680.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12823",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12823",
+              "schedule_date": "2026-07-22",
+              "depreciation_amount": 576906.0,
+              "journal_entry": "ACC-JV-1405-148234",
+              "accumulated_depreciation_amount": 576906.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12823",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 2235509.0,
+              "journal_entry": "ACC-JV-1405-148235",
+              "accumulated_depreciation_amount": 2812415.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12823",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 2235509.0,
+              "journal_entry": "ACC-JV-1405-148236",
+              "accumulated_depreciation_amount": 5047924.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12823",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 2163396.0,
+              "journal_entry": "ACC-JV-1405-169246",
+              "accumulated_depreciation_amount": 7211320.0
+            }
+          ],
+          "posted_depreciation_count": 4,
+          "posted_depreciation_amount": 7211320.0,
+          "accumulated_depreciation_estimate": 7211320.0,
+          "net_book_value": 150788680.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 158000000.0,
+            "corrected_acquisition_cost": 158000000.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": false,
+      "mutated": false
+    },
+    "MAT-PRE-2026-01241": {
+      "purchase_receipt": "MAT-PRE-2026-01241",
+      "fa_item_count": 1,
+      "pr_base_net_total": 1030000000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 1030000000.0,
+      "expected_pi_aligned_acquisition_total": 1030000000.0,
+      "linked_asset_count": 1,
+      "assets": [
+        {
+          "asset": "3833",
+          "docstatus": 1,
+          "status": "Submitted",
+          "item_code": "14100083",
+          "asset_category": "ماشین آلات و تجهیزات 8 ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01241",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "3fjtp6a9qc",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 1030000000.0,
+          "net_purchase_amount": 1030000000.0,
+          "available_for_use_date": "2026-07-30",
+          "asset_quantity": 1,
+          "calculate_depreciation": 0,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 96,
+              "depreciation_start_date": "2026-09-09",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 0.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12262",
+              "docstatus": 0,
+              "status": "Draft",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [],
+          "posted_depreciation_count": 0,
+          "posted_depreciation_amount": 0,
+          "accumulated_depreciation_estimate": 0.0,
+          "net_book_value": 1030000000.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 1030000000.0,
+            "corrected_acquisition_cost": 1030000000.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": false,
+      "mutated": false
+    },
+    "MAT-PRE-2026-01266": {
+      "purchase_receipt": "MAT-PRE-2026-01266",
+      "fa_item_count": 1,
+      "pr_base_net_total": 1160000000.0,
+      "amount_difference_total": 0.0,
+      "valuation_rate_amount_total": 1160000000.0,
+      "expected_pi_aligned_acquisition_total": 1160000000.0,
+      "linked_asset_count": 1,
+      "assets": [
+        {
+          "asset": "3838",
+          "docstatus": 1,
+          "status": "Partially Depreciated",
+          "item_code": "14100509",
+          "asset_category": "اثاثه  و منصوبات 6ساله مستقیم",
+          "purchase_receipt": "MAT-PRE-2026-01266",
+          "purchase_invoice": null,
+          "purchase_receipt_item": "50vlav4r1m",
+          "gross_purchase_amount": 0.0,
+          "purchase_amount": 1160000000.0,
+          "net_purchase_amount": 1160000000.0,
+          "available_for_use_date": "2026-08-02",
+          "asset_quantity": 1,
+          "calculate_depreciation": 1,
+          "finance_books": [
+            {
+              "finance_book": null,
+              "depreciation_method": "Straight Line",
+              "frequency_of_depreciation": 1,
+              "total_number_of_depreciations": 72,
+              "depreciation_start_date": "2026-08-22",
+              "expected_value_after_useful_life": 0.0,
+              "value_after_depreciation": 1116586034.0,
+              "daily_prorata_based": 1
+            }
+          ],
+          "schedules": [
+            {
+              "name": "ACC-ADS-2026-12811",
+              "docstatus": 1,
+              "status": "Active",
+              "finance_book": null,
+              "opening_accumulated_depreciation": 0.0
+            }
+          ],
+          "posted_depreciation_rows": [
+            {
+              "schedule": "ACC-ADS-2026-12811",
+              "schedule_date": "2026-08-22",
+              "depreciation_amount": 11118211.0,
+              "journal_entry": "ACC-JV-1405-148180",
+              "accumulated_depreciation_amount": 11118211.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12811",
+              "schedule_date": "2026-09-22",
+              "depreciation_amount": 16412597.0,
+              "journal_entry": "ACC-JV-1405-148181",
+              "accumulated_depreciation_amount": 27530808.0
+            },
+            {
+              "schedule": "ACC-ADS-2026-12811",
+              "schedule_date": "2026-10-22",
+              "depreciation_amount": 15883158.0,
+              "journal_entry": "ACC-JV-1405-169222",
+              "accumulated_depreciation_amount": 43413966.0
+            }
+          ],
+          "posted_depreciation_count": 3,
+          "posted_depreciation_amount": 43413966.0,
+          "accumulated_depreciation_estimate": 43413966.0,
+          "net_book_value": 1116586034.0,
+          "decision": {
+            "case": "D_submitted_cost_unchanged",
+            "rebuild_required": false,
+            "update_draft_purchase_amount_recommended": false,
+            "reason": "Submitted Asset acquisition cost already matches PI-aligned expectation",
+            "safe_standard_rebuild": false,
+            "historical_depr_preserve": true,
+            "cost_changed": false,
+            "current_acquisition_cost": 1160000000.0,
+            "corrected_acquisition_cost": 1160000000.0
+          }
+        }
+      ],
+      "case_a_no_linked_asset": false,
+      "any_rebuild_required": false,
+      "mutated": false
+    }
+  },
+  "acc_jv_1405_169046": {
+    "modified": "2026-10-19 14:35:53.838699",
+    "total_debit": 18215880000.0,
+    "docstatus": 1
+  }
+}
