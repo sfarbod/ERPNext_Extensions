@@ -59,6 +59,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount",
+   "length": 30,
    "options": "currency",
    "read_only": 1
   },
