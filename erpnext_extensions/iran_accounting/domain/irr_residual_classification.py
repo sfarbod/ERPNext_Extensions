@@ -107,18 +107,17 @@ def _path_derived_bound(qty) -> float:
 def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate, currency: str) -> bool:
 	"""True when VR is the historical UVR float ``amount / stock_qty`` (pre-Iran integerization).
 
-	Reconstruction gates (fail-closed on true price mismatches):
+	Exact reconstruction only (no ULP / quantum tolerance — v5.7.19):
 
 	1. Rate is non-integer under the IRR monetary-rate contract.
 	2. ``ROUND_HALF_UP(rate)`` equals ``integer_valuation_rate_from_amount(auth, qty)``.
 	3. Rate equals one of:
 	   - ``flt(auth / qty)`` (ERPNext UVR float division), or
 	   - ``(auth / qty)`` quantized to DECIMAL(30,9) via ROUND_HALF_UP / ROUND_DOWN /
-	     ROUND_HALF_EVEN (MariaDB persistence of the same rational), or
-	   - the same reconstructions within ±1 DECIMAL(30,9) quantum / IEEE ULP
-	     (HRC-00014: stored VR 1e-9 off exact auth÷qty while qty×VR ≈ auth).
+	     ROUND_HALF_EVEN (MariaDB persistence of the same rational).
 
-	Economically amount-authoritative: the float is storage shape, not a second price.
+	Callers that must integerize economically reconstructing floats (``|auth−qty×VR|≤0.51``)
+	do so in ``classify_amount_rate_residual`` as Class A — never by keeping a fractional VR.
 	"""
 	if valuation_rate in (None, "") or authoritative_amount in (None, ""):
 		return False
@@ -137,8 +136,7 @@ def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate
 		return False
 
 	# Path 1: IEEE float reconstruction used by BuyingController.update_valuation_rate
-	ieee = flt(auth_f / qty_f)
-	if rate_f == ieee:
+	if rate_f == flt(auth_f / qty_f):
 		return True
 
 	# Path 2: DECIMAL(30,9) persistence of the exact rational amount/qty
@@ -151,18 +149,8 @@ def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate
 		return False
 
 	for mode in (ROUND_HALF_UP, ROUND_DOWN, ROUND_HALF_EVEN):
-		q = quot.quantize(_PR_VALUATION_RATE_QUANTUM, rounding=mode)
-		if q == d_rate:
+		if quot.quantize(_PR_VALUATION_RATE_QUANTUM, rounding=mode) == d_rate:
 			return True
-		# Path 2b: ±1 DECIMAL(30,9) quantum persistence drift (HRC-00014).
-		# e.g. auth/qty → …043 vs stored …044 while qty×VR still equals auth.
-		if abs(d_rate - q) <= _PR_VALUATION_RATE_QUANTUM:
-			return True
-
-	# Path 3: IEEE one-ULP drift vs flt(auth/qty) (same Class B false-positive class).
-	ulp = max(1e-9 * max(abs(ieee), 1.0), 1e-9)
-	if abs(rate_f - ieee) <= ulp:
-		return True
 	return False
 
 
@@ -228,26 +216,17 @@ def classify_amount_rate_residual(
 	rounded_rate = flt(round_monetary_rate(rate_f, currency))
 	legacy_uvr_float = False
 	if rounded_rate != rate_f:
-		# v5.6.25 amount-preserving PR/LCV: when the document float VR reconstructs
-		# the acquisition total (qty × VR ≈ auth), SLE posts that total via the
-		# unrounded incoming_rate. Do **not** coerce to integer VR / invent Class A
-		# residual — rate-first residual math (round rate then × qty) would invent
-		# a false gap and contaminate purchase GRNI via partner reclass.
-		if auth and is_legacy_uvr_float_valuation_rate(auth, qty, rate_f, currency):
-			raw_gap = flt(auth) - flt(qty) * flt(rate_f)
-			if abs(raw_gap) <= 0.51:
-				return {
-					**diag,
-					"class": "skip",
-					"reason": "amount_preserving_fractional_vr_zero_residual",
-					"residual": 0,
-					"round_off_debit": 0,
-					"rate_derived_amount": auth,
-					"expected_valuation_rate": rate_f,
-					"expected_amount": auth,
-					"legacy_uvr_float_valuation_rate": rate_f,
-				}
-			# Non-reconstructing float: keep historical Class A integerization path.
+		# v5.7.19: fractional VR is never acceptable under IRR. When the float
+		# economically reconstructs acquisition auth (|auth − qty×VR| ≤ 0.51) or
+		# matches historical UVR auth÷qty persistence, coerce to integer VR and
+		# emit Class A residual (Stock Adjustment). Do **not** skip / keep the
+		# fractional rate (removes v5.6.25 amount-preserving skip and v5.7.18 ULP).
+		raw_gap = flt(auth) - flt(qty) * flt(rate_f) if auth else None
+		economically_reconstructing = auth and raw_gap is not None and abs(raw_gap) <= 0.51
+		if auth and (
+			economically_reconstructing
+			or is_legacy_uvr_float_valuation_rate(auth, qty, rate_f, currency)
+		):
 			legacy_uvr_float = True
 			diag["legacy_uvr_float_valuation_rate"] = rate_f
 			rate_f = flt(integer_valuation_rate_from_amount(auth, qty, currency))

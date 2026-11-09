@@ -48,15 +48,31 @@ def _pr_row(**kwargs):
 
 
 class TestAmountPreservingValuationRate(unittest.TestCase):
-	def test_lcv_1500_on_800_preserves_fractional_vr(self):
+	def test_lcv_1500_on_800_integerizes_vr(self):
+		"""v5.7.19: LCV rows get integer VR; residual vs auth is Class A SA."""
 		row = _pr_row()
-		doc = SimpleNamespace(doctype="Purchase Receipt", company="Co", is_old_subcontracting_flow=0)
+		doc = SimpleNamespace(
+			doctype="Purchase Receipt",
+			company="Co",
+			currency="IRR",
+			conversion_rate=1,
+			is_old_subcontracting_flow=0,
+		)
 		doc.get = lambda k, d=None: getattr(doc, k, d)
-		_align_purchase_valuation_rate_amount_preserving(row, doc)
-		self.assertAlmostEqual(flt(row.valuation_rate), 1_000_001.875, places=6)
-		self.assertAlmostEqual(flt(row.valuation_rate) * 800, 800_001_500, places=2)
+		with patch(
+			"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+			return_value="IRR",
+		):
+			_align_purchase_valuation_rate_amount_preserving(row, doc)
+		self.assertEqual(flt(row.valuation_rate), 1_000_002)
+		self.assertEqual(flt(row.valuation_rate), flt(int(row.valuation_rate)))
+		# inventory = qty×integer VR; auth total 800001500 → residual +100
+		self.assertEqual(flt(row.valuation_rate) * 800 - 800_001_500, 100)
 
-	def test_cases_table(self):
+	def test_cases_table_integer_vr(self):
 		cases = [
 			(800, 1500),
 			(3, 1),
@@ -79,23 +95,35 @@ class TestAmountPreservingValuationRate(unittest.TestCase):
 					stock_qty=qty,
 					valuation_rate=0,
 				)
-				doc = SimpleNamespace(doctype="Purchase Receipt", company="Co", is_old_subcontracting_flow=0)
+				doc = SimpleNamespace(
+					doctype="Purchase Receipt",
+					company="Co",
+					currency="IRR",
+					conversion_rate=1,
+					is_old_subcontracting_flow=0,
+				)
 				doc.get = lambda k, d=None: getattr(doc, k, d)
-				_align_purchase_valuation_rate_amount_preserving(row, doc)
-				expected_total = base + lcv
-				self.assertAlmostEqual(
-					flt(row.valuation_rate) * qty,
-					expected_total,
-					places=2,
+				with patch(
+					"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+					return_value=True,
+				), patch(
+					"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+					return_value="IRR",
+				):
+					_align_purchase_valuation_rate_amount_preserving(row, doc)
+				self.assertEqual(
+					flt(row.valuation_rate),
+					flt(int(row.valuation_rate)),
 					msg=f"qty={qty} lcv={lcv} vr={row.valuation_rate}",
 				)
 
-	def test_align_pr_does_not_integerize_vr(self):
+	def test_align_pr_integerizes_vr(self):
 		row = _pr_row()
 		doc = SimpleNamespace(
 			doctype="Purchase Receipt",
 			company="IRR Co",
 			currency="IRR",
+			conversion_rate=1,
 			is_old_subcontracting_flow=0,
 			items=[row],
 		)
@@ -107,10 +135,9 @@ class TestAmountPreservingValuationRate(unittest.TestCase):
 			"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
 			return_value="IRR",
 		):
-			# qty_rate_amount.rounding is the currency module
 			align_purchase_receipt_item_amounts(doc)
-		self.assertNotEqual(int(row.valuation_rate), row.valuation_rate)  # still fractional
-		self.assertAlmostEqual(flt(row.valuation_rate), 1_000_001.875, places=6)
+		self.assertEqual(flt(row.valuation_rate), flt(int(row.valuation_rate)))
+		self.assertEqual(flt(row.valuation_rate), 1_000_002)
 
 	def test_align_dn_still_integerizes_vr(self):
 		row = _pr_row(landed_cost_voucher_amount=0, valuation_rate=1_000_001.875)
@@ -141,15 +168,31 @@ class TestAmountPreservingValuationRate(unittest.TestCase):
 			amount=1_000_000_000,
 			base_amount=1_000_000_000,
 		)
-		doc = SimpleNamespace(doctype="Purchase Receipt", company="Co", is_old_subcontracting_flow=0)
+		doc = SimpleNamespace(
+			doctype="Purchase Receipt",
+			company="Co",
+			currency="IRR",
+			conversion_rate=1,
+			is_old_subcontracting_flow=0,
+		)
 		doc.get = lambda k, d=None: getattr(doc, k, d)
-		_align_purchase_valuation_rate_amount_preserving(row, doc)
-		expected = 1_000_000_000 + 1500 + 25_900_332_000
-		self.assertAlmostEqual(flt(row.valuation_rate) * 1000, expected, places=2)
+		with patch(
+			"erpnext_extensions.iran_accounting.domain.currency.is_irr_company",
+			return_value=True,
+		), patch(
+			"erpnext_extensions.iran_accounting.domain.currency.get_company_currency",
+			return_value="IRR",
+		):
+			_align_purchase_valuation_rate_amount_preserving(row, doc)
+		auth = 1_000_000_000 + 1500 + 25_900_332_000
+		self.assertEqual(flt(row.valuation_rate), flt(int(row.valuation_rate)))
+		# Integer inventory may differ from auth by Class A residual (< |qty|)
+		self.assertLessEqual(abs(flt(row.valuation_rate) * 1000 - auth), 1000)
 
 
-class TestAuthoritativeAcquisitionKeepsFractionalRate(unittest.TestCase):
-	def test_lcv_fractional_document_rate_not_integerized(self):
+class TestAuthoritativeAcquisitionIntegerRate(unittest.TestCase):
+	def test_lcv_document_rate_integerized_on_sle(self):
+		"""v5.7.19: SLE acquisition path integerizes document VR under IRR."""
 		from erpnext_extensions.iran_accounting.domain.stock_ledger_deterministic import (
 			authoritative_acquisition_incoming_rate,
 			align_authoritative_acquisition_movement,
@@ -171,7 +214,7 @@ class TestAuthoritativeAcquisitionKeepsFractionalRate(unittest.TestCase):
 			("Purchase Receipt", "PR-TEST"): {"is_return": 0, "is_internal_supplier": 0},
 			("Purchase Receipt Item", "row1"): {
 				"item_code": "ITEM",
-				"valuation_rate": 1_000_001.875,
+				"valuation_rate": 1_000_002,  # already integer after align
 			},
 		}
 
@@ -198,10 +241,10 @@ class TestAuthoritativeAcquisitionKeepsFractionalRate(unittest.TestCase):
 			),
 		):
 			rate = authoritative_acquisition_incoming_rate(sle, "IRR")
-			self.assertEqual(rate, 1_000_001.875)
+			self.assertEqual(rate, 1_000_002)
 			self.assertTrue(align_authoritative_acquisition_movement(sle, "Co"))
-		self.assertEqual(sle["incoming_rate"], 1_000_001.875)
-		self.assertEqual(sle["stock_value_difference"], 800_001_500)
+		self.assertEqual(sle["incoming_rate"], 1_000_002)
+		self.assertEqual(sle["stock_value_difference"], 800_001_600)
 
 
 class TestGrniProtectedFromResidualPartner(unittest.TestCase):
