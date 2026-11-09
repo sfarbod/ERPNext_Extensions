@@ -25,6 +25,11 @@ OUTGOING_VOUCHER_TYPES = frozenset({"Delivery Note", "Sales Invoice"})
 TWO_SLICE_BUNDLES_FLAG = "iran_physical_two_slice_bundles"
 IRAN_TWO_SLICE_PARENT_ATTR = "_iran_physical_two_slice_bundle"
 
+# Pick List writes Outward SABE rows that are later duplicated on the Delivery Note
+# / Sales Invoice. Including them in the valuation pool double-counts qty and can
+# drive pool_qty negative while Bin/SLE still show available stock.
+POOL_EXCLUDED_VOUCHER_TYPES = frozenset({"Pick List"})
+
 
 def _d(v) -> Decimal:
 	return Decimal(str(v if v is not None else 0))
@@ -55,8 +60,24 @@ def is_two_slice_bundle_marked(bundle_name: str) -> bool:
 
 
 def read_batch_pool(item_code: str, batch_no: str, warehouse: str, exclude_voucher_detail_no=None):
-	"""Submitted SABE net qty/value for batch@warehouse, excluding current detail."""
+	"""Submitted SABE net qty/value for batch@warehouse, excluding current detail.
+
+	Pick List Outward rows are excluded — they reserve/pick qty that the linked
+	Delivery Note (or Sales Invoice) posts again as stock Outward. Counting both
+	falsely shortens the pool (e.g. pool_qty=-3 while Bin still has stock).
+	"""
 	params = [item_code, batch_no, warehouse]
+	excluded = tuple(sorted(POOL_EXCLUDED_VOUCHER_TYPES))
+	if not excluded:
+		voucher_filter = ""
+	elif len(excluded) == 1:
+		voucher_filter = " AND IFNULL(e.voucher_type,'') != %s"
+		params.append(excluded[0])
+	else:
+		voucher_filter = " AND IFNULL(e.voucher_type,'') NOT IN ({})".format(
+			", ".join(["%s"] * len(excluded))
+		)
+		params.extend(excluded)
 	excl = ""
 	if exclude_voucher_detail_no:
 		excl = " AND IFNULL(e.voucher_detail_no,'') != %s"
@@ -69,6 +90,7 @@ def read_batch_pool(item_code: str, batch_no: str, warehouse: str, exclude_vouch
 		WHERE e.item_code=%s AND e.batch_no=%s AND e.warehouse=%s
 		  AND e.docstatus=1 AND e.is_cancelled=0
 		  AND e.type_of_transaction IN ('Inward', 'Outward')
+		  {voucher_filter}
 		  {excl}
 		""",
 		tuple(params),
