@@ -107,14 +107,16 @@ def _path_derived_bound(qty) -> float:
 def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate, currency: str) -> bool:
 	"""True when VR is the historical UVR float ``amount / stock_qty`` (pre-Iran integerization).
 
-	Exact reconstruction only (no abs-diff tolerance):
+	Reconstruction gates (fail-closed on true price mismatches):
 
 	1. Rate is non-integer under the IRR monetary-rate contract.
 	2. ``ROUND_HALF_UP(rate)`` equals ``integer_valuation_rate_from_amount(auth, qty)``.
 	3. Rate equals one of:
 	   - ``flt(auth / qty)`` (ERPNext UVR float division), or
 	   - ``(auth / qty)`` quantized to DECIMAL(30,9) via ROUND_HALF_UP / ROUND_DOWN /
-	     ROUND_HALF_EVEN (MariaDB persistence of the same rational).
+	     ROUND_HALF_EVEN (MariaDB persistence of the same rational), or
+	   - the same reconstructions within ±1 DECIMAL(30,9) quantum / IEEE ULP
+	     (HRC-00014: stored VR 1e-9 off exact auth÷qty while qty×VR ≈ auth).
 
 	Economically amount-authoritative: the float is storage shape, not a second price.
 	"""
@@ -135,7 +137,8 @@ def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate
 		return False
 
 	# Path 1: IEEE float reconstruction used by BuyingController.update_valuation_rate
-	if rate_f == flt(auth_f / qty_f):
+	ieee = flt(auth_f / qty_f)
+	if rate_f == ieee:
 		return True
 
 	# Path 2: DECIMAL(30,9) persistence of the exact rational amount/qty
@@ -148,8 +151,18 @@ def is_legacy_uvr_float_valuation_rate(authoritative_amount, qty, valuation_rate
 		return False
 
 	for mode in (ROUND_HALF_UP, ROUND_DOWN, ROUND_HALF_EVEN):
-		if quot.quantize(_PR_VALUATION_RATE_QUANTUM, rounding=mode) == d_rate:
+		q = quot.quantize(_PR_VALUATION_RATE_QUANTUM, rounding=mode)
+		if q == d_rate:
 			return True
+		# Path 2b: ±1 DECIMAL(30,9) quantum persistence drift (HRC-00014).
+		# e.g. auth/qty → …043 vs stored …044 while qty×VR still equals auth.
+		if abs(d_rate - q) <= _PR_VALUATION_RATE_QUANTUM:
+			return True
+
+	# Path 3: IEEE one-ULP drift vs flt(auth/qty) (same Class B false-positive class).
+	ulp = max(1e-9 * max(abs(ieee), 1.0), 1e-9)
+	if abs(rate_f - ieee) <= ulp:
+		return True
 	return False
 
 
