@@ -301,6 +301,31 @@ def rewrite_outgoing_bundle_after_core(self, sle, doc) -> AllocationPlan | None:
 				f"SABE repair; batch={batch_no} warehouse={warehouse}"
 			)
 
+	# Negative pool value with positive qty is an integrity defect. Live submit
+	# fails closed. During RIV the mid-chain pool can be temporarily negative
+	# (HRC-00015); audit + fall through so integer SABE policy still runs.
+	if pool_v < 0 and pool_q > 0:
+		if through_riv:
+			from erpnext_extensions.iran_accounting.domain.historical_fractional_sabe_repair import (
+				log_riv_short_pool_event,
+			)
+
+			log_riv_short_pool_event(
+				item_code=item_code,
+				batch_no=batch_no,
+				warehouse=warehouse,
+				pool_qty=f"{pool_q}|pv={pool_v}",
+				out_qty=out_qty,
+				voucher_type=voucher_type,
+				voucher_no=sle.get("voucher_no") if hasattr(sle, "get") else None,
+				bundle=bundle,
+			)
+			return None
+		raise AllocationError(
+			f"negative pool_value={pool_v} for batch {batch_no} @ {warehouse} "
+			f"(item {item_code}): pool_qty={pool_q} out_qty={out_qty}"
+		)
+
 	plan = allocate_physical_two_slice(pool_q, pool_v, out_qty)
 	apply_plan_to_bundle(
 		bundle,

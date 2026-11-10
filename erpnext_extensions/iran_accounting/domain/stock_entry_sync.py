@@ -1211,7 +1211,139 @@ def refresh_sle_authoritative_sed_from_ledger(doc) -> int:
 			},
 			update_modified=False,
 		)
+	if changed:
+		# Outgoing ABSORB remirror can change the manufacture material pool.
+		# Re-close FG SED then push document amounts onto incoming SLEs so
+		# SLE↔SED holds (MAT-STE-2026-43765 Class A +2228).
+		reconcile_manufacture_pool_after_absorb_remirror(doc)
 	return changed
+
+
+def _persist_stock_entry_detail_economics(row) -> None:
+	"""Write in-memory SED monetary fields without bumping modified."""
+	if not row or not row.get("name"):
+		return
+	frappe.db.set_value(
+		"Stock Entry Detail",
+		row.name,
+		{
+			"basic_rate": row.get("basic_rate"),
+			"valuation_rate": row.get("valuation_rate"),
+			"basic_amount": row.get("basic_amount"),
+			"amount": row.get("amount"),
+			"additional_cost": row.get("additional_cost"),
+		},
+		update_modified=False,
+	)
+
+
+def _adjust_bin_stock_value_for_sle_delta(sle, delta: float) -> None:
+	"""Keep Bin.stock_value coherent when an already-posted SLE SVD is rewritten."""
+	if abs(flt(delta)) <= 0.5:
+		return
+	item_code = sle.get("item_code") if hasattr(sle, "get") else getattr(sle, "item_code", None)
+	warehouse = sle.get("warehouse") if hasattr(sle, "get") else getattr(sle, "warehouse", None)
+	if not item_code or not warehouse:
+		return
+	bin_name = frappe.db.get_value(
+		"Bin", {"item_code": item_code, "warehouse": warehouse}, "name"
+	)
+	if not bin_name:
+		return
+	company = sle.get("company") if hasattr(sle, "get") else getattr(sle, "company", None)
+	ccy = get_company_currency(company) if company else "IRR"
+	current = flt(frappe.db.get_value("Bin", bin_name, "stock_value"))
+	qty = flt(frappe.db.get_value("Bin", bin_name, "actual_qty"))
+	new_sv = float(round_currency(current + flt(delta), ccy))
+	payload = {"stock_value": new_sv}
+	if abs(qty) > 1e-9:
+		payload["valuation_rate"] = float(round_monetary_rate(new_sv / qty, ccy))
+	elif abs(new_sv) <= 0.5:
+		payload["valuation_rate"] = 0.0
+	frappe.db.set_value("Bin", bin_name, payload, update_modified=False)
+
+
+def reconcile_manufacture_pool_after_absorb_remirror(doc) -> int:
+	"""After SLE→SED ABSORB remirror: close FG pool and reassert incoming SLEs.
+
+	Full-warehouse Manufacture consume posts SLE from Bin.stock_value (Class A may
+	differ from qty×integer rate). Remirroring that magnitude onto SED changes the
+	outgoing pool; ``align_manufacture_finished_good_residual`` absorbs the delta
+	into FG SED. FG SLE was posted from the pre-remirror pool and must be
+	rewritten from SED.amount (document amount authority) with Bin follow-through.
+
+	Returns the number of SLE rows rewritten.
+	"""
+	if not doc or getattr(doc, "doctype", None) != "Stock Entry":
+		return 0
+	if str(doc.purpose or "") not in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return 0
+	if not is_irr_company(doc.company):
+		return 0
+
+	from erpnext_extensions.iran_accounting.manufacture_rounding import (
+		align_manufacture_finished_good_residual,
+	)
+
+	# Close the (possibly remirrored) outgoing pool into FG SED. Callers that
+	# invoke patched ``set_total_incoming_outgoing_value`` will align again
+	# idempotently afterward.
+	align_manufacture_finished_good_residual(doc)
+
+	for row in doc.get("items") or []:
+		_persist_stock_entry_detail_economics(row)
+
+	rewritten = 0
+	sles = frappe.get_all(
+		"Stock Ledger Entry",
+		filters={
+			"voucher_type": "Stock Entry",
+			"voucher_no": doc.name,
+			"is_cancelled": 0,
+		},
+		fields=[
+			"name",
+			"item_code",
+			"warehouse",
+			"company",
+			"actual_qty",
+			"stock_value_difference",
+			"stock_value",
+			"qty_after_transaction",
+			"incoming_rate",
+			"outgoing_rate",
+			"valuation_rate",
+			"voucher_detail_no",
+			"voucher_type",
+			"voucher_no",
+			"is_cancelled",
+			"batch_no",
+			"serial_and_batch_bundle",
+		],
+	)
+	for sle_row in sles:
+		sle = frappe._dict(sle_row)
+		prev = flt(sle.stock_value_difference)
+		if not reassert_document_amount_authority_sle(sle):
+			continue
+		delta = flt(sle.stock_value_difference) - prev
+		# Monetary-only write — never db_update an incomplete SLE mapping
+		# (that cleared batch_no / serial_and_batch_bundle on 43765).
+		frappe.db.set_value(
+			"Stock Ledger Entry",
+			sle.name,
+			{
+				"stock_value_difference": sle.stock_value_difference,
+				"stock_value": sle.stock_value,
+				"valuation_rate": sle.valuation_rate,
+				"incoming_rate": sle.incoming_rate,
+				"outgoing_rate": sle.outgoing_rate,
+			},
+			update_modified=False,
+		)
+		_adjust_bin_stock_value_for_sle_delta(sle, delta)
+		rewritten += 1
+	return rewritten
 
 
 def reassert_document_amount_authority_sle(sle) -> bool:
