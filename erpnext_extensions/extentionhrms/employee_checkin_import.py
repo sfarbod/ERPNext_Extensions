@@ -117,6 +117,45 @@ def report_employee_code_stored_as_device_id(limit=500):
 
 
 @frappe.whitelist()
+def get_employee_match_index():
+	"""Return Employee rows needed for Excel importer matching (one request).
+
+	Authorized import callers only. Respects Employee read permissions via
+	``frappe.get_list``. Includes ``custom_personal_code`` when that field
+	exists on Employee. Caps at 50_000 rows to bound memory.
+	"""
+	_authorize()
+	fields = [
+		"name",
+		"employee_name",
+		"status",
+		"attendance_device_id",
+		"employee_number",
+	]
+	if frappe.get_meta("Employee").has_field("custom_personal_code"):
+		fields.append("custom_personal_code")
+
+	employees = []
+	page = 1000
+	start = 0
+	max_rows = 50000
+	while start < max_rows:
+		chunk = frappe.get_list(
+			"Employee",
+			fields=fields,
+			limit_page_length=page,
+			limit_start=start,
+			order_by="name asc",
+		)
+		employees.extend(chunk)
+		if len(chunk) < page:
+			break
+		start += page
+
+	return {"employees": employees, "count": len(employees)}
+
+
+@frappe.whitelist()
 def find_existing_checkin_keys(records=None):
 	"""Return which punch keys already exist (pre-import duplicate detection).
 

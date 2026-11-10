@@ -13,12 +13,16 @@ from frappe.utils import add_days, getdate, nowdate
 
 from erpnext_extensions.extentionhrms.employee_checkin_import import (
 	find_existing_checkin_keys,
+	get_employee_match_index,
 	import_device_checkins,
 	report_employee_code_stored_as_device_id,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_import_setup import (
+	CLIENT_SCRIPT_NAME,
 	IMPORT_ROLE,
+	ensure_attendance_source_shift_default_clear,
 	ensure_device_import_setup,
+	ensure_list_view_indexes,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
 	DEFAULT_MAX_MANUAL_CHECKINS,
@@ -417,6 +421,58 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		)
 		frappe.set_user("Administrator")
 		self.assertEqual(result["existing"], 1)
+
+	def test_get_employee_match_index_returns_readable_employees(self):
+		employee = self._employee()
+		result = get_employee_match_index()
+		self.assertGreaterEqual(result["count"], 1)
+		self.assertEqual(len(result["employees"]), result["count"])
+		names = {row["name"] for row in result["employees"]}
+		self.assertIn(employee, names)
+		sample = next(row for row in result["employees"] if row["name"] == employee)
+		for field in ("employee_name", "status", "attendance_device_id", "employee_number"):
+			self.assertIn(field, sample)
+
+	def test_get_employee_match_index_requires_import_authorization(self):
+		user = self._user(["HR User"])
+		frappe.set_user(user)
+		with self.assertRaises(frappe.PermissionError):
+			get_employee_match_index()
+		frappe.set_user("Administrator")
+
+	def test_client_script_uses_local_sheetjs_asset(self):
+		ensure_device_import_setup()
+		script = frappe.db.get_value("Client Script", CLIENT_SCRIPT_NAME, "script") or ""
+		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
+		self.assertNotIn("cdnjs.cloudflare.com", script)
+		self.assertIn("V1.3.3", script)
+		self.assertIn("get_employee_match_index", script)
+
+	def test_list_view_indexes_are_idempotent(self):
+		first = ensure_list_view_indexes()
+		second = ensure_list_view_indexes()
+		self.assertIn(first["espad_checkin_modified"], ("created", "exists"))
+		self.assertIn(first["espad_checkin_time"], ("created", "exists"))
+		self.assertEqual(second["espad_checkin_modified"], "exists")
+		self.assertEqual(second["espad_checkin_time"], "exists")
+
+	def test_attendance_source_shift_zero_default_is_cleared(self):
+		cf_name = frappe.db.get_value(
+			"Custom Field",
+			{"dt": "Attendance", "fieldname": "custom_source_shift_assignment"},
+			"name",
+		)
+		if not cf_name:
+			self.skipTest("Attendance.custom_source_shift_assignment not installed")
+		frappe.db.set_value("Custom Field", cf_name, "default", "0", update_modified=False)
+		frappe.clear_cache(doctype="Attendance")
+		result = ensure_attendance_source_shift_default_clear()
+		self.assertEqual(result, "cleared_zero_default")
+		self.assertEqual(
+			frappe.db.get_value("Custom Field", cf_name, "default") or "",
+			"",
+		)
+		self.assertEqual(ensure_attendance_source_shift_default_clear(), "already_empty")
 
 	def test_inactive_employee_is_rejected_and_status_is_unchanged(self):
 		employee = self._employee(status="Inactive")

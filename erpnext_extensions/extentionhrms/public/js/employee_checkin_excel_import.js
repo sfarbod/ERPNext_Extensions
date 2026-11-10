@@ -5,10 +5,11 @@
 // browser via SheetJS, maps personnel to Employee records, previews the result
 // and creates Employee Checkin documents.
 //
-// XLSX: loads SheetJS community build xlsx@0.18.5 (Apache-2.0) from a
-// version-pinned CDN URL when window.XLSX is not already present. Verifies
-// readiness before parse. Does not use site /files or erpnext_extensions assets.
-// Version: V1.3.2 (Client Script — authorized existing-key lookup + clearer errors)
+// XLSX: loads SheetJS community build xlsx@0.18.5 (Apache-2.0) from the
+// bundled site asset /assets/erpnext_extensions/js/lib/xlsx.full.min.js when
+// window.XLSX is not already present (same pattern as Attendance Excel Import).
+// Verifies readiness before parse. Avoids CDN round-trips and offline failures.
+// Version: V1.3.3 (local SheetJS + server employee index + calc-date punch fallback)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_import");
@@ -222,13 +223,14 @@ espad.attendance_import.lib = (function () {
 
 			const in_date = parse_jalali_date(raw.in_date) || day;
 			const in_time = parse_time(raw.in_time);
-			if (in_time && raw.in_date) rec.in = in_date + " " + in_time;
+			// Prefer punch date; fall back to calc_date (day) when the clock is present.
+			if (in_time) rec.in = in_date + " " + in_time;
 			if (raw.in_time && !in_time) rec.issues.push({ level: "error", text: "زمان ورود نامعتبر: " + raw.in_time });
 			if (raw.in_date && !parse_jalali_date(raw.in_date)) rec.issues.push({ level: "error", text: "تاریخ ورود نامعتبر: " + raw.in_date });
 
 			const out_date = parse_jalali_date(raw.out_date) || day;
 			const out_time = parse_time(raw.out_time);
-			if (out_time && raw.out_date) rec.out = out_date + " " + out_time;
+			if (out_time) rec.out = out_date + " " + out_time;
 			if (raw.out_time && !out_time) rec.issues.push({ level: "error", text: "زمان خروج نامعتبر: " + raw.out_time });
 			if (raw.out_date && !parse_jalali_date(raw.out_date)) rec.issues.push({ level: "error", text: "تاریخ خروج نامعتبر: " + raw.out_date });
 
@@ -344,9 +346,9 @@ espad.attendance_import.lib = (function () {
 // ---------------------------------------------------------------------------
 
 espad.attendance_import.SHEETJS =
-	"https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+	"/assets/erpnext_extensions/js/lib/xlsx.full.min.js";
 espad.attendance_import.SHEETJS_TIMEOUT_MS = 20000;
-espad.attendance_import.VERSION = "V1.3.1";
+espad.attendance_import.VERSION = "V1.3.3";
 
 espad.attendance_import.open = function () {
 	const lib = espad.attendance_import.lib;
@@ -1100,6 +1102,22 @@ espad.attendance_import.open = function () {
 	}
 
 	async function fetch_all_employees(on_progress) {
+		// Single authorized API call avoids N× get_list round-trips on large sites.
+		try {
+			const r = await frappe.call({
+				method:
+					"erpnext_extensions.extentionhrms.employee_checkin_import.get_employee_match_index",
+			});
+			const employees =
+				r && r.message && Array.isArray(r.message.employees) ? r.message.employees : null;
+			if (employees) {
+				if (on_progress) on_progress(employees.length);
+				return employees;
+			}
+		} catch (e) {
+			console.warn("espad.attendance_import: employee index API unavailable, paging", e);
+		}
+
 		const page = 500;
 		const fields = [
 			"name",
