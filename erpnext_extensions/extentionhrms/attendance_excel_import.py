@@ -512,15 +512,19 @@ def preload_attendance_import_context(employees=None):
 	assignments_by_employee: dict[str, list] = {e: [] for e in employees}
 	ssa_names = set()
 	shift_names = set()
+	# Include Inactive submitted assignments so historical Excel rows can
+	# resolve the shift that was effective on the attendance date. Status is
+	# returned for diagnostics; date coverage decides eligibility.
 	for row in frappe.get_all(
 		"Shift Assignment",
-		filters={"employee": ["in", employees], "docstatus": 1, "status": "Active"},
+		filters={"employee": ["in", employees], "docstatus": 1},
 		fields=[
 			"name",
 			"employee",
 			"shift_type",
 			"start_date",
 			"end_date",
+			"status",
 			"shift_schedule_assignment",
 		],
 		order_by="employee asc, start_date asc",
@@ -532,6 +536,7 @@ def preload_attendance_import_context(employees=None):
 				"shift_type": row.shift_type,
 				"start_date": str(row.start_date) if row.start_date else None,
 				"end_date": str(row.end_date) if row.end_date else None,
+				"status": cstr(row.status),
 				"shift_schedule_assignment": row.shift_schedule_assignment,
 			}
 		)

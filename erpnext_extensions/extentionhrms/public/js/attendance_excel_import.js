@@ -7,7 +7,7 @@
 //
 // XLSX: SheetJS community build xlsx@0.18.5 (Apache-2.0), served locally from
 // /assets/erpnext_extensions/js/lib/xlsx.full.min.js (no runtime CDN).
-// Version: V2.0.10 (Work+Leave → Present; retain leave hours)
+// Version: V2.0.11 (historical Inactive Shift Assignments + SSA default repair)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_details");
@@ -1507,9 +1507,17 @@ frappe.provide("espad.attendance_details");
             let assignments = (ctx.assignments && ctx.assignments[r.employee]) || [];
             if (!assignments.length) {
                 // Fallback for employees added after preload.
+                // Include Inactive submitted assignments for historical dates.
                 assignments = await frappe.db.get_list("Shift Assignment", {
-                    filters: { employee: r.employee, docstatus: 1, status: "Active" },
-                    fields: ["name", "shift_type", "start_date", "end_date", "shift_schedule_assignment"],
+                    filters: { employee: r.employee, docstatus: 1 },
+                    fields: [
+                        "name",
+                        "shift_type",
+                        "start_date",
+                        "end_date",
+                        "status",
+                        "shift_schedule_assignment"
+                    ],
                     order_by: "start_date asc",
                     limit_page_length: 500
                 });
@@ -1839,7 +1847,7 @@ frappe.provide("espad.attendance_details");
             if (state.fields.has("custom_calculation_details")) {
                 doc.custom_calculation_details = JSON.stringify({
                     source: "Attendance Excel Import",
-                    mapping_version: "V2.0.10",
+                    mapping_version: "V2.0.11",
                     source_file: state.fileName,
                     excel_row: r.row, personnel_code: r.code,
                     raw_excel_date: r.rawDate,
