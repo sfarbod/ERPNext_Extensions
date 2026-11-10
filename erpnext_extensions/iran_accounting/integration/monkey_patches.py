@@ -34,8 +34,11 @@ def apply_monkey_patches():
 		_patch_stock_reconciliation()
 		_patch_repost_compatibility()
 		_patch_buying_regional_valuation_rate()
+		_patch_standalone_return_foc_valuation()
 	# Always (re)ensure stock-ledger engine patches — idempotent + fail-closed upgrade guard.
 	_patch_stock_ledger_engine()
+	# Idempotent: standalone FOC return must not post zero incoming_rate when warehouse VR exists.
+	_patch_standalone_return_foc_valuation()
 	# Idempotent: UVR regional hook must stay bound even if apply is re-entered.
 	_patch_buying_regional_valuation_rate()
 	# Idempotent: Pattern A must not post ERPNext product-first precision-loss Round Off.
@@ -1854,3 +1857,153 @@ def _patch_stock_ledger_report():
 def _patch_accounting_ledger_preview():
 	# Applied inside _patch_stock_controller on stock_controller module
 	pass
+
+
+def _patch_standalone_return_foc_valuation():
+	"""Sales-return valuation hierarchy (opening stock; never selling rate).
+
+	After Core ``set_incoming_rate`` / ``get_rate_for_return``, re-resolve
+	standalone (and still-unvalued linked) return rows via
+	``standalone_return_valuation``:
+
+	1. original ``return_against`` rate
+	2. valid batch / stock ledger rate
+	3. earliest Opening Stock valuation
+	4. allow_zero / validation error
+
+	Core's silent fallback to ``item.rate`` is stripped for inventory cost.
+	"""
+	from erpnext.controllers.selling_controller import SellingController
+	from erpnext.controllers import sales_and_purchase_return as spr
+	from erpnext_extensions.iran_accounting.domain.standalone_return_valuation import (
+		apply_sales_return_valuation_hierarchy,
+		resolve_sales_return_incoming_rate,
+	)
+
+	# Rebind even if an older 5.7.22 patch wrapper is present.
+	_orig_set = getattr(
+		SellingController.set_incoming_rate, "_iran_original", SellingController.set_incoming_rate
+	)
+	if not getattr(_orig_set, "_iran_raw_set_incoming_rate", False):
+		_orig_set._iran_raw_set_incoming_rate = True
+
+	def set_incoming_rate(self):
+		_orig_set(self)
+		# Throw only on submit so draft editing can still resolve rates.
+		throw = getattr(self, "_action", None) == "submit"
+		apply_sales_return_valuation_hierarchy(self, throw_on_missing=throw)
+
+	set_incoming_rate._iran_standalone_foc_vr = True
+	set_incoming_rate._iran_opening_stock_vr = True
+	set_incoming_rate._iran_original = _orig_set
+	SellingController.set_incoming_rate = set_incoming_rate
+
+	_orig_rate = getattr(spr.get_rate_for_return, "_iran_original", spr.get_rate_for_return)
+
+	def get_rate_for_return(
+		voucher_type,
+		voucher_no,
+		item_code,
+		return_against=None,
+		item_row=None,
+		voucher_detail_no=None,
+		sle=None,
+	):
+		if voucher_type not in ("Sales Invoice", "Delivery Note", "POS Invoice"):
+			return _orig_rate(
+				voucher_type,
+				voucher_no,
+				item_code,
+				return_against=return_against,
+				item_row=item_row,
+				voucher_detail_no=voucher_detail_no,
+				sle=sle,
+			)
+
+		if not return_against:
+			return_against = frappe.get_cached_value(voucher_type, voucher_no, "return_against")
+
+		core_rate = flt(
+			_orig_rate(
+				voucher_type,
+				voucher_no,
+				item_code,
+				return_against=return_against,
+				item_row=item_row,
+				voucher_detail_no=voucher_detail_no,
+				sle=sle,
+			)
+		)
+
+		# Linked return with a usable original rate → Priority 1.
+		if return_against and core_rate:
+			return core_rate
+
+		allow_zero = 0
+		warehouse = None
+		batch_no = None
+		qty = None
+		company = None
+		sales_rate = None
+		if item_row:
+			allow_zero = cint(item_row.get("allow_zero_valuation_rate"))
+			warehouse = item_row.get("warehouse")
+			batch_no = item_row.get("batch_no")
+			qty = item_row.get("stock_qty") or item_row.get("qty")
+			sales_rate = item_row.get("rate")
+		elif voucher_detail_no:
+			row = frappe.db.get_value(
+				f"{voucher_type} Item",
+				voucher_detail_no,
+				["allow_zero_valuation_rate", "warehouse", "batch_no", "stock_qty", "qty", "rate"],
+				as_dict=1,
+			)
+			if row:
+				allow_zero = cint(row.allow_zero_valuation_rate)
+				warehouse = row.warehouse
+				batch_no = row.batch_no
+				qty = row.stock_qty or row.qty
+				sales_rate = row.rate
+		if sle:
+			warehouse = warehouse or sle.get("warehouse")
+			company = sle.get("company")
+			qty = qty if qty is not None else sle.get("actual_qty")
+			batch_no = batch_no or sle.get("batch_no")
+
+		company = company or frappe.get_cached_value(voucher_type, voucher_no, "company")
+		posting_date = None
+		posting_time = None
+		if sle:
+			posting_date = sle.get("posting_date")
+			posting_time = sle.get("posting_time")
+		else:
+			posting_date, posting_time = frappe.db.get_value(
+				voucher_type, voucher_no, ["posting_date", "posting_time"]
+			) or (None, None)
+
+		# If Core only echoed the selling rate, treat it as missing stock cost.
+		original_rate = core_rate
+		if not return_against and sales_rate is not None and flt(core_rate) == flt(sales_rate):
+			original_rate = 0.0
+
+		return resolve_sales_return_incoming_rate(
+			item_code=item_code,
+			warehouse=warehouse,
+			company=company,
+			posting_date=posting_date,
+			posting_time=posting_time,
+			qty=qty,
+			batch_no=batch_no,
+			voucher_type=voucher_type,
+			voucher_no=voucher_no,
+			voucher_detail_no=voucher_detail_no,
+			return_against=return_against,
+			original_rate=original_rate if return_against else None,
+			allow_zero_valuation_rate=allow_zero,
+			throw_on_missing=False,
+		)
+
+	get_rate_for_return._iran_standalone_foc_vr = True
+	get_rate_for_return._iran_opening_stock_vr = True
+	get_rate_for_return._iran_original = _orig_rate
+	spr.get_rate_for_return = get_rate_for_return
