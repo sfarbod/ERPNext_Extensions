@@ -1,0 +1,1131 @@
+{
+  "campaign": "A_asset_purchase_receipt",
+  "phase": "execution_production",
+  "site": "https://erp.espadpharmed.com",
+  "site_company": "اسپاد فارمد دارو",
+  "required_app_version": "5.7.18",
+  "generated_at": "2026-11-09T20:58:43.722612+00:00",
+  "mutated": true,
+  "final_campaign_status": "COMPLETED",
+  "status_counts": {
+    "RECONCILED": 7,
+    "RECONCILED_WITH_ASSET_EXCEPTION": 1
+  },
+  "versions": {
+    "frappe": "16.54.0",
+    "erpnext": "16.53.0",
+    "erpnext_extensions": "5.7.18",
+    "hrms": "16.53.0"
+  },
+  "version_gate_pass": true,
+  "runtime_verification": {
+    "erpnext_extensions": "5.7.18",
+    "asset_pr_correction_module": "AVAILABLE",
+    "fa_pr_gl_amount_difference_active": true,
+    "riv_execution_path": {
+      "method": "execute_job(..., is_async=False) inside apply_asset_purchase_receipt_correction",
+      "runs_in": "web request process (same process as FA patch bootstrap)",
+      "separate_rq_worker_required": false,
+      "ssh_worker_probe": "unavailable (connection timed out); not required for this RIV path",
+      "web_patch_verified": true,
+      "empirical_patch_proof": "MAT-PRE-2026-00747 FA debit 1,225,500,000 after RIV (includes amt_diff -64,500,000)"
+    },
+    "conflicting_riv_on_scope": "none_open",
+    "failed_riv_out_of_scope": {
+      "name": "8tt4rqd11g",
+      "note": "Failed RIV with null voucher_no; outside Campaign A"
+    },
+    "ssh_bench_diagnostics": "Connection timed out on port 22; not required because campaign RIV uses execute_job(is_async=False) in web process"
+  },
+  "backup_verification": {
+    "waived_by_user": true,
+    "checked": false
+  },
+  "restrictions_honored": [
+    "backup_waived_by_user",
+    "no_cohort_B",
+    "no_512_fractional_STE",
+    "no_three_exceptional_MTfM",
+    "no_manual_JE",
+    "no_arbitrary_stock_adjustment",
+    "no_rewrite_submitted_historical_docs_beyond_PRI_expense_account",
+    "no_automatic_depreciation_rebuild",
+    "never_touch_ACC-JV-1405-169046",
+    "extension_version_kept_5.7.18",
+    "no_git_history_change"
+  ],
+  "denylist_je": {
+    "name": "ACC-JV-1405-169046",
+    "policy": "NEVER_TOUCH",
+    "modified": "2026-10-19 14:35:53.838699",
+    "total_debit": 18215880000.0,
+    "docstatus": 1,
+    "untouched": true
+  },
+  "execution_notes": [
+    "Corrections applied via apply_asset_purchase_receipt_correction (confirm=APPLY_ASSET_PR_CORRECTION, dry_run=0) with per-row account_overrides to approved targets.",
+    "Accounting-only Transaction RIV created and executed synchronously per voucher (repost_only_accounting_ledgers=1).",
+    "MAT-PRE-2026-00747 FA debit after RIV is 1,225,500,000 IRR (PI amt_diff -64,500,000 applied by fa_pr_gl_amount_difference) with matching GRNI credit — empirical proof patch active on RIV path.",
+    "MAT-PRE-2026-01311: GL account corrected; Case E asset acquisition/depreciation NOT rebuilt; historical depr preserved → RECONCILED_WITH_ASSET_EXCEPTION.",
+    "All eight vouchers have Completed RIV jobs and verified Production GL."
+  ],
+  "documents": [
+    {
+      "purchase_receipt": "MAT-PRE-2026-01907",
+      "status": "RECONCILED",
+      "target_account": "121013 — Computer (تجهیزات کامپیوتری)",
+      "target_prefix": "121013",
+      "posting_date": "2026-05-16",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 6630000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 6630000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 6630000.0,
+        "gl_debit_total": 6630000.0,
+        "gl_credit_total": 6630000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14000064",
+            "expense_account": "121000 - زمین - E",
+            "amount": 6630000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "121013 - تجهیزات کامپیوتری - E": {
+            "debit": 6630000.0,
+            "credit": 0.0,
+            "entries": [
+              "229a9c9369"
+            ]
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 6630000.0,
+            "entries": [
+              "a85f5ed01e"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 6630000.0,
+        "grni_credit": 6630000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 6630000.0,
+        "gl_credit_total": 6630000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121013 - تجهیزات کامپیوتری - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14000064",
+            "expense_account": "121013 - تجهیزات کامپیوتری - E",
+            "amount": 6630000.0,
+            "rate": 6630000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 6630000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "qlv379euo1",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:16:11.134505",
+        "modified": "2026-11-10 00:16:11.650694",
+        "all_jobs": [
+          {
+            "name": "qlv379euo1",
+            "voucher_no": "MAT-PRE-2026-01907",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:16:11.134505",
+            "modified": "2026-11-10 00:16:11.650694",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {}
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-00953",
+      "status": "RECONCILED",
+      "target_account": "121013 — Computer (تجهیزات کامپیوتری)",
+      "target_prefix": "121013",
+      "posting_date": "2026-05-23",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 1500000000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 6247000000.0,
+            "n": 1
+          },
+          "121006 - اثاثیه ومنصوبات - E": {
+            "debit": 4747000000.0,
+            "credit": 0.0,
+            "n": 1
+          }
+        },
+        "land_debit": 1500000000.0,
+        "gl_debit_total": 6247000000.0,
+        "gl_credit_total": 6247000000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14200093",
+            "expense_account": "121000 - زمین - E",
+            "amount": 1500000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14100154",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 2820000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14200050",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 306000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14200048",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 20000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14200047",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 9000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14200050",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 153000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14200047",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 9000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14200048",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 20000000.0,
+            "amt_diff": null
+          },
+          {
+            "item_code": "14100154",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 1410000000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 6247000000.0,
+            "entries": [
+              "1f4377b685"
+            ]
+          },
+          "121006 - اثاثیه ومنصوبات - E": {
+            "debit": 4747000000.0,
+            "credit": 0.0,
+            "entries": [
+              "45e0798b27"
+            ]
+          },
+          "121013 - تجهیزات کامپیوتری - E": {
+            "debit": 1500000000.0,
+            "credit": 0.0,
+            "entries": [
+              "83831ba7e9"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 1500000000.0,
+        "grni_credit": 6247000000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 6247000000.0,
+        "gl_credit_total": 6247000000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121006 - اثاثیه ومنصوبات - E",
+          "121013 - تجهیزات کامپیوتری - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14200093",
+            "expense_account": "121013 - تجهیزات کامپیوتری - E",
+            "amount": 1500000000.0,
+            "rate": 1500000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 1500000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14100154",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 2820000000.0,
+            "rate": 1410000000.0,
+            "qty": 2.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 1410000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14200050",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 306000000.0,
+            "rate": 153000000.0,
+            "qty": 2.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 153000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14200048",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 20000000.0,
+            "rate": 20000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 20000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14200047",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 9000000.0,
+            "rate": 9000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 9000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14200050",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 153000000.0,
+            "rate": 153000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 153000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14200047",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 9000000.0,
+            "rate": 9000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 9000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14200048",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 20000000.0,
+            "rate": 20000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 20000000.0,
+            "is_fixed_asset": 1
+          },
+          {
+            "item_code": "14100154",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 1410000000.0,
+            "rate": 1410000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 1410000000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "tvcubv1s0n",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:21:48.412235",
+        "modified": "2026-11-10 00:21:48.684950",
+        "all_jobs": [
+          {
+            "name": "tvcubv1s0n",
+            "voucher_no": "MAT-PRE-2026-00953",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:21:48.412235",
+            "modified": "2026-11-10 00:21:48.684950",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {}
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01311",
+      "status": "RECONCILED_WITH_ASSET_EXCEPTION",
+      "target_account": "121006 — Furniture (اثاثیه ومنصوبات)",
+      "target_prefix": "121006",
+      "posting_date": "2026-06-10",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 1290000000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1290000000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 1290000000.0,
+        "gl_debit_total": 1290000000.0,
+        "gl_credit_total": 1290000000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14200235",
+            "expense_account": "121000 - زمین - E",
+            "amount": 1290000000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "121006 - اثاثیه ومنصوبات - E": {
+            "debit": 1290000000.0,
+            "credit": 0.0,
+            "entries": [
+              "25f38a7845"
+            ]
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1290000000.0,
+            "entries": [
+              "5e9fc809ff"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 1290000000.0,
+        "grni_credit": 1290000000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 1290000000.0,
+        "gl_credit_total": 1290000000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121006 - اثاثیه ومنصوبات - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14200235",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 1290000000.0,
+            "rate": 129000000.0,
+            "qty": 10.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 129000000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "uceg805sb5",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:22:30.245839",
+        "modified": "2026-11-10 00:22:30.479323",
+        "all_jobs": [
+          {
+            "name": "uceg805sb5",
+            "voucher_no": "MAT-PRE-2026-01311",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:22:30.245839",
+            "modified": "2026-11-10 00:22:30.479323",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {
+        "case": "E_submitted_cost_changed_with_posted_depr",
+        "linked_asset_count": 10,
+        "asset_unit_cost": 122550000.0,
+        "pr_unit_implied": 129000000.0,
+        "pr_gl_fa_debit_after": 1290000000.0,
+        "historical_depreciation_preserved": true,
+        "acquisition_cost_not_rewritten": true,
+        "assets": [
+          {
+            "name": "3736",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113489623.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:37.564194",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3737",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:37.735684",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3738",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:37.905083",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3739",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:38.089389",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3740",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:38.257714",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3741",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:38.432246",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3742",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:38.602226",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3743",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:38.783597",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3744",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:38.975860",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          },
+          {
+            "name": "3745",
+            "purchase_amount": 122550000.0,
+            "value_after_depreciation": 113589355.0,
+            "status": "Partially Depreciated",
+            "modified": "2026-10-22 00:02:39.174055",
+            "purchase_receipt": "MAT-PRE-2026-01311"
+          }
+        ],
+        "exception_note": "Account/GL corrected Land→Furniture. Ten Assets remain at purchase_amount 122,550,000 IRR with posted depreciation; acquisition-cost rebuild not performed (Case E)."
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-00747",
+      "status": "RECONCILED",
+      "target_account": "121006 — Furniture (اثاثیه ومنصوبات)",
+      "target_prefix": "121006",
+      "posting_date": "2026-06-12",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 1290000000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1290000000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 1290000000.0,
+        "gl_debit_total": 1290000000.0,
+        "gl_credit_total": 1290000000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14200235",
+            "expense_account": "121000 - زمین - E",
+            "amount": 1290000000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "121006 - اثاثیه ومنصوبات - E": {
+            "debit": 1225500000.0,
+            "credit": 0.0,
+            "entries": [
+              "1c01cd9c1b"
+            ]
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1225500000.0,
+            "entries": [
+              "e22e5a153e"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 1225500000.0,
+        "grni_credit": 1225500000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 1225500000.0,
+        "gl_credit_total": 1225500000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121006 - اثاثیه ومنصوبات - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14200235",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 1290000000.0,
+            "rate": 129000000.0,
+            "qty": 10.0,
+            "amt_diff": -64500000.0,
+            "valuation_rate": 122550000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "u46unout0l",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:22:03.832825",
+        "modified": "2026-11-10 00:22:04.103908",
+        "all_jobs": [
+          {
+            "name": "u46unout0l",
+            "voucher_no": "MAT-PRE-2026-00747",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:22:03.832825",
+            "modified": "2026-11-10 00:22:04.103908",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {
+        "pi_amount_difference": -64500000.0,
+        "expected_fa_debit": 1225500000.0,
+        "actual_fa_debit": 1225500000.0,
+        "actual_grni_credit": 1225500000.0,
+        "matched_expectation": true,
+        "linked_pi": "ACC-PINV-2026-00331"
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01413",
+      "status": "RECONCILED",
+      "target_account": "121003 — Machinery (ماشین آلات و تجهیزات تولید)",
+      "target_prefix": "121003",
+      "posting_date": "2026-06-30",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 11781250000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 11781250000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 11781250000.0,
+        "gl_debit_total": 11781250000.0,
+        "gl_credit_total": 11781250000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14100511",
+            "expense_account": "121000 - زمین - E",
+            "amount": 11781250000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "121003 - ماشین آلات و تجهیزات تولید - E": {
+            "debit": 11781250000.0,
+            "credit": 0.0,
+            "entries": [
+              "3ff3a30623"
+            ]
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 11781250000.0,
+            "entries": [
+              "5f53db82df"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 11781250000.0,
+        "grni_credit": 11781250000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 11781250000.0,
+        "gl_credit_total": 11781250000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121003 - ماشین آلات و تجهیزات تولید - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14100511",
+            "expense_account": "121003 - ماشین آلات و تجهیزات تولید - E",
+            "amount": 11781250000.0,
+            "rate": 11781250000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 11781250000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "tpuirqpe62",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:21:31.061424",
+        "modified": "2026-11-10 00:21:31.307223",
+        "all_jobs": [
+          {
+            "name": "tpuirqpe62",
+            "voucher_no": "MAT-PRE-2026-01413",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:21:31.061424",
+            "modified": "2026-11-10 00:21:31.307223",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {}
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-00880",
+      "status": "RECONCILED",
+      "target_account": "121006 — Furniture (اثاثیه ومنصوبات)",
+      "target_prefix": "121006",
+      "posting_date": "2026-07-15",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 158000000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 158000000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 158000000.0,
+        "gl_debit_total": 158000000.0,
+        "gl_credit_total": 158000000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14200239",
+            "expense_account": "121000 - زمین - E",
+            "amount": 158000000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "121006 - اثاثیه ومنصوبات - E": {
+            "debit": 158000000.0,
+            "credit": 0.0,
+            "entries": [
+              "12f0d22892"
+            ]
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 158000000.0,
+            "entries": [
+              "b98d6e0d96"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 158000000.0,
+        "grni_credit": 158000000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 158000000.0,
+        "gl_credit_total": 158000000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121006 - اثاثیه ومنصوبات - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14200239",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 158000000.0,
+            "rate": 158000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 158000000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "r7nb5olmha",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:17:07.914798",
+        "modified": "2026-11-10 00:17:08.252898",
+        "all_jobs": [
+          {
+            "name": "r7nb5olmha",
+            "voucher_no": "MAT-PRE-2026-00880",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:17:07.914798",
+            "modified": "2026-11-10 00:17:08.252898",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {}
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01241",
+      "status": "RECONCILED",
+      "target_account": "121003 — Machinery (ماشین آلات و تجهیزات تولید)",
+      "target_prefix": "121003",
+      "posting_date": "2026-07-30",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 1030000000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1030000000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 1030000000.0,
+        "gl_debit_total": 1030000000.0,
+        "gl_credit_total": 1030000000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14100083",
+            "expense_account": "121000 - زمین - E",
+            "amount": 1030000000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1030000000.0,
+            "entries": [
+              "1f3a048f91"
+            ]
+          },
+          "121003 - ماشین آلات و تجهیزات تولید - E": {
+            "debit": 1030000000.0,
+            "credit": 0.0,
+            "entries": [
+              "80affe203c"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 1030000000.0,
+        "grni_credit": 1030000000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 1030000000.0,
+        "gl_credit_total": 1030000000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121003 - ماشین آلات و تجهیزات تولید - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14100083",
+            "expense_account": "121003 - ماشین آلات و تجهیزات تولید - E",
+            "amount": 1030000000.0,
+            "rate": 1030000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 1030000000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "raj6kdech2",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:17:17.121399",
+        "modified": "2026-11-10 00:17:17.352678",
+        "all_jobs": [
+          {
+            "name": "raj6kdech2",
+            "voucher_no": "MAT-PRE-2026-01241",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:17:17.121399",
+            "modified": "2026-11-10 00:17:17.352678",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {}
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01266",
+      "status": "RECONCILED",
+      "target_account": "121006 — Furniture (اثاثیه ومنصوبات)",
+      "target_prefix": "121006",
+      "posting_date": "2026-08-02",
+      "before": {
+        "gl_by_account": {
+          "121000 - زمین - E": {
+            "debit": 1160000000.0,
+            "credit": 0.0,
+            "n": 1
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1160000000.0,
+            "n": 1
+          }
+        },
+        "land_debit": 1160000000.0,
+        "gl_debit_total": 1160000000.0,
+        "gl_credit_total": 1160000000.0,
+        "items_expense_sample": [
+          {
+            "item_code": "14100509",
+            "expense_account": "121000 - زمین - E",
+            "amount": 1160000000.0,
+            "amt_diff": null
+          }
+        ],
+        "sle_count": 0
+      },
+      "after": {
+        "gl_by_account": {
+          "121006 - اثاثیه ومنصوبات - E": {
+            "debit": 1160000000.0,
+            "credit": 0.0,
+            "entries": [
+              "14ff85bb74"
+            ]
+          },
+          "211230 - معلق خرید دارایی ثابت - E": {
+            "debit": 0.0,
+            "credit": 1160000000.0,
+            "entries": [
+              "531969ef59"
+            ]
+          }
+        },
+        "land_debit": 0,
+        "target_debit": 1160000000.0,
+        "grni_credit": 1160000000.0,
+        "grni_debit": 0.0,
+        "gl_debit_total": 1160000000.0,
+        "gl_credit_total": 1160000000.0,
+        "balanced": true,
+        "fa_expense_accounts": [
+          "121006 - اثاثیه ومنصوبات - E"
+        ],
+        "sle_count": 0,
+        "items": [
+          {
+            "item_code": "14100509",
+            "expense_account": "121006 - اثاثیه ومنصوبات - E",
+            "amount": 1160000000.0,
+            "rate": 1160000000.0,
+            "qty": 1.0,
+            "amt_diff": 0.0,
+            "valuation_rate": 1160000000.0,
+            "is_fixed_asset": 1
+          }
+        ]
+      },
+      "riv": {
+        "name": "tlmpufh927",
+        "status": "Completed",
+        "repost_only_accounting_ledgers": 1,
+        "creation": "2026-11-10 00:21:17.422743",
+        "modified": "2026-11-10 00:21:17.661558",
+        "all_jobs": [
+          {
+            "name": "tlmpufh927",
+            "voucher_no": "MAT-PRE-2026-01266",
+            "status": "Completed",
+            "repost_only_accounting_ledgers": 1,
+            "creation": "2026-11-10 00:21:17.422743",
+            "modified": "2026-11-10 00:21:17.661558",
+            "error_log": null,
+            "voucher_type": "Purchase Receipt"
+          }
+        ]
+      },
+      "checks": {
+        "land_clear": true,
+        "fa_ok": true,
+        "source_ok": true,
+        "riv_completed": true,
+        "balanced": true
+      },
+      "special": {}
+    }
+  ],
+  "approved_scope_only": [
+    "MAT-PRE-2026-01907",
+    "MAT-PRE-2026-00953",
+    "MAT-PRE-2026-01311",
+    "MAT-PRE-2026-00747",
+    "MAT-PRE-2026-01413",
+    "MAT-PRE-2026-00880",
+    "MAT-PRE-2026-01241",
+    "MAT-PRE-2026-01266"
+  ]
+}

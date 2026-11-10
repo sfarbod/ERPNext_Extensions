@@ -1,0 +1,1083 @@
+{
+  "campaign": "A_asset_purchase_receipt",
+  "phase": "preflight_and_dry_run_only",
+  "site": "https://erp.espadpharmed.com",
+  "generated_at": "2026-11-09T20:10:46Z",
+  "mutated": false,
+  "riv_executed": false,
+  "final_status": "BLOCKED",
+  "authentication": {
+    "succeeded": true,
+    "http_status": 200,
+    "user": "Administrator",
+    "company_visible": [
+      "اسپاد فارمد دارو"
+    ],
+    "system_settings": {
+      "country": "Iran",
+      "language": "en",
+      "time_zone": "Asia/Tehran"
+    },
+    "credentials_exposed_in_report": false
+  },
+  "versions": {
+    "required_erpnext_extensions": "5.7.18",
+    "frappe": "16.54.0",
+    "erpnext": "16.53.0",
+    "erpnext_extensions": "5.7.17",
+    "hrms": "16.53.0",
+    "version_gate_pass": false
+  },
+  "patch_verification": {
+    "web": {
+      "asset_purchase_receipt_correction_module": "MISSING",
+      "fa_pr_gl_amount_difference_module": "MISSING",
+      "evidence": {
+        "asset_api": {
+          "http": 417,
+          "exc": "ValidationError",
+          "message_type": "NoneType",
+          "message_preview": null,
+          "exception_preview": "frappe.exceptions.ValidationError: Failed to get method for command erpnext_extensions.iran_accounting.asset_purchase_receipt_correction.api.get_asset_pr_correction_api_status with No module named 'erpnext_extensions.iran_accounting.asset_purchase_receipt_correction'"
+        },
+        "fa_api": {
+          "http": 417,
+          "exc": "ValidationError",
+          "message_type": "NoneType",
+          "message_preview": null,
+          "exception_preview": "frappe.exceptions.ValidationError: Failed to get method for command erpnext_extensions.iran_accounting.integration.fa_pr_gl_amount_difference.is_fa_pr_gl_amount_difference_patch_installed with No module named 'erpnext_extensions.iran_accounting.integration.fa_pr_gl_amount_difference'"
+        }
+      }
+    },
+    "workers_and_riv_processes": {
+      "status": "NOT_VERIFIED",
+      "reason": "No SSH/bench access; web process already missing FA/correction modules so workers cannot be assumed patched"
+    }
+  },
+  "backup_verification": {
+    "database": {
+      "verified": false,
+      "path": null,
+      "timestamp": null,
+      "completion": null
+    },
+    "files": {
+      "verified": false,
+      "path": null,
+      "timestamp": null,
+      "completion": null
+    },
+    "api_file_search": {
+      "file_backup_matches": [
+        {
+          "name": "b405351a5c",
+          "file_name": "fiorage M Backup -items.xlsx",
+          "file_url": "/private/files/fiorage M Backup -items.xlsx",
+          "creation": "2026-04-14 16:43:42.461328",
+          "modified": "2026-04-14 16:43:42.461328",
+          "file_size": 12406,
+          "is_private": 1
+        },
+        {
+          "name": "d7186606fa",
+          "file_name": "fiorage M Backup - Copy.xlsx",
+          "file_url": "/private/files/fiorage M Backup - Copy.xlsx",
+          "creation": "2026-04-14 16:23:20.026203",
+          "modified": "2026-04-14 16:23:20.026203",
+          "file_size": 29256,
+          "is_private": 1
+        }
+      ],
+      "sql_gz": [],
+      "files_tar": [],
+      "verification": "INCOMPLETE_NO_SERVER_FS_ACCESS",
+      "note": "API cannot see /home/frappe/backups or private/backups on disk without SSH"
+    },
+    "status": "INCOMPLETE",
+    "gate": "STOP — backup verification unavailable via API; SSH/server FS not accessible"
+  },
+  "riv_and_campaigns": {
+    "open_or_failed": [
+      {
+        "name": "8tt4rqd11g",
+        "status": "Failed",
+        "voucher_type": null,
+        "voucher_no": null,
+        "item_code": "15010547",
+        "warehouse": "انبار ملزومات مصرفی اسپاد",
+        "modified": "2026-11-09 08:17:33.765140",
+        "error_log": "IRR rate-rounding residual rejected: valuation inconsistency (Class B). Round Off Account and Stock Adjustment Account must not absorb this gap.\nVoucher: Purchase Receipt MAT-PRE-2026-02045\nRow 2 item 15010547: qty=46.0, valuation_rate=1737714.673913044, amount=79934875.0, expected_rate=1737715.0, expected_amount=79934890, residual=-15, reason=non_integer_rate_under_irr_contract<br><br><b>Traceback:</b> <br>Traceback (most recent call last):\n  File \"apps/erpnext/erpnext/stock/doctype/repost_item_valuation/repost_item_valuation.py\", line 548, in repost\n    repost_gl_entries(doc, vouchers)\n    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^\n  File \"apps/erpnext/erpnext/stock/doctype/repost_item_valuation/repost_item_valuation.py\", line 673, in repost_gl_entries\n    repost_gle_for_stock_vouchers(\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n    \ttransactions,\n     ^^^^^^^^^^^^^\n    ...<2 lines>...\n    \trepost_doc=doc,\n     ^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"apps/erpnext/erpnext/accounts/utils.py\", line 1703, in repost_gle_for_stock_vouchers\n    voucher_obj.make_gl_entries(gl_entries=expected_gle, from_repost=True)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"apps/erpnext_extensions/erpnext_extensions/iran_accounting/integration/monkey_patches.py\", line 450, in make_gl_entries\n    apply_irr_rate_rounding_residual_gl(self, gl_entries)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File \"apps/erpnext_extensions/erpnext_extensions/iran_accounting/domain/irr_rounding_residual.py\", line 824, in apply_irr_rate_rounding_residual_gl\n    raise_residual_decision(decision)\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"apps/erpnext_extensions/erpnext_extensions/iran_accounting/domain/irr_residual_classification.py\", line 951, in raise_residual_decision\n    frappe.throw(msg, title=title)\n    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File \"apps/frappe/frappe/utils/messages.py\", line 159, in throw\n    msgprint(\n    ~~~~~~~~^\n    \tmsg,\n     ^^^^\n    ...<7 lines>...\n    \tallow_dangerous_html=allow_dangerous_html,\n     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"apps/frappe/frappe/utils/messages.py\", line 118, in msgprint\n    _raise_exception()\n    ~~~~~~~~~~~~~~~~^^\n  File \"apps/frappe/frappe/utils/messages.py\", line 59, in _raise_exception\n    raise exc\nfrappe.exceptions.ValidationError: IRR rate-rounding residual rejected: valuation inconsistency (Class B). Round Off Account and Stock Adjustment Account must not absorb this gap.\nVoucher: Purchase Receipt MAT-PRE-2026-02045\nRow 2 item 15010547: qty=46.0, valuation_rate=1737714.673913044, amount=79934875.0, expected_rate=1737715.0, expected_amount=79934890, residual=-15, reason=non_integer_rate_under_irr_contract\n"
+      }
+    ],
+    "historical_rebuild_campaign": [
+      {
+        "name": "HRC-00014",
+        "status": "Failed",
+        "modified": "2026-11-09 08:17:33.831109"
+      }
+    ],
+    "note": "Failed RIV 8tt4rqd11g / HRC-00014 Class B residual on MAT-PRE-2026-02045 — outside Cohort A scope but indicates conflicting failed campaign state"
+  },
+  "denylist_je": {
+    "http": 200,
+    "name": "ACC-JV-1405-169046",
+    "docstatus": 1,
+    "modified": "2026-10-19 14:35:53.838699",
+    "modified_by": "motamedifar.m@espadpharmedco.com",
+    "total_debit": 18215880000.0,
+    "company": "اسپاد فارمد دارو",
+    "policy": "NEVER_TOUCH",
+    "touched_this_task": false
+  },
+  "approved_accounts_resolved": {
+    "lookup_http": 200,
+    "rows": [
+      {
+        "name": "121000 - زمین - E",
+        "account_number": "121000",
+        "account_name": "زمین",
+        "disabled": 0,
+        "company": "اسپاد فارمد دارو",
+        "is_group": 0
+      },
+      {
+        "name": "121003 - ماشین آلات و تجهیزات تولید - E",
+        "account_number": "121003",
+        "account_name": "ماشین آلات و تجهیزات تولید",
+        "disabled": 0,
+        "company": "اسپاد فارمد دارو",
+        "is_group": 0
+      },
+      {
+        "name": "121006 - اثاثیه ومنصوبات - E",
+        "account_number": "121006",
+        "account_name": "اثاثیه ومنصوبات",
+        "disabled": 0,
+        "company": "اسپاد فارمد دارو",
+        "is_group": 0
+      },
+      {
+        "name": "121013 - تجهیزات کامپیوتری - E",
+        "account_number": "121013",
+        "account_name": "تجهیزات کامپیوتری",
+        "disabled": 0,
+        "company": "اسپاد فارمد دارو",
+        "is_group": 0
+      }
+    ],
+    "121013": {
+      "http": 200,
+      "rows": [
+        {
+          "name": "121013 - تجهیزات کامپیوتری - E",
+          "account_number": "121013",
+          "account_name": "تجهیزات کامپیوتری",
+          "disabled": 0
+        }
+      ]
+    },
+    "121006": {
+      "http": 200,
+      "rows": [
+        {
+          "name": "121006 - اثاثیه ومنصوبات - E",
+          "account_number": "121006",
+          "account_name": "اثاثیه ومنصوبات",
+          "disabled": 0
+        }
+      ]
+    },
+    "121003": {
+      "http": 200,
+      "rows": [
+        {
+          "name": "121003 - ماشین آلات و تجهیزات تولید - E",
+          "account_number": "121003",
+          "account_name": "ماشین آلات و تجهیزات تولید",
+          "disabled": 0
+        }
+      ]
+    },
+    "121000": {
+      "http": 200,
+      "rows": [
+        {
+          "name": "121000 - زمین - E",
+          "account_number": "121000",
+          "account_name": "زمین",
+          "disabled": 0
+        }
+      ]
+    }
+  },
+  "dry_run_manifest": [
+    {
+      "purchase_receipt": "MAT-PRE-2026-01907",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "Completed",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-05-16",
+      "supplier": "SUP-00058",
+      "total": 6630000.0,
+      "base_net_total": 6630000.0,
+      "grand_total": 6630000.0,
+      "approved_target_prefix": "121013",
+      "approved_target_account": "121013 - تجهیزات کامپیوتری - E",
+      "rows": [
+        {
+          "item_row": "46armtf0s1",
+          "item_code": "14000064",
+          "item_group": "اموال سازمان",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 6630000.0,
+          "amount": 6630000.0,
+          "base_net_amount": 6630000.0,
+          "valuation_rate": 6630000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 6630000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 6630000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 6630000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 6630000.0,
+      "gl_credit_total": 6630000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 6630000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121013 - تجهیزات کامپیوتری - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-00953",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "To Bill",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-05-23",
+      "supplier": "SUP-00944",
+      "total": 6247000000.0,
+      "base_net_total": 6247000000.0,
+      "grand_total": 6247000000.0,
+      "approved_target_prefix": "121013",
+      "approved_target_account": "121013 - تجهیزات کامپیوتری - E",
+      "rows": [
+        {
+          "item_row": "npfokhgvhr",
+          "item_code": "14200093",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 1.0,
+          "rate": 1500000000.0,
+          "amount": 1500000000.0,
+          "base_net_amount": 1500000000.0,
+          "valuation_rate": 1500000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npfkbdkdm4",
+          "item_code": "14100154",
+          "item_group": "ماشین آلات و تجهیزات",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 2.0,
+          "rate": 1410000000.0,
+          "amount": 2820000000.0,
+          "base_net_amount": 2820000000.0,
+          "valuation_rate": 1410000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npf27lip2q",
+          "item_code": "14200050",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 2.0,
+          "rate": 153000000.0,
+          "amount": 306000000.0,
+          "base_net_amount": 306000000.0,
+          "valuation_rate": 153000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npf0cjct6c",
+          "item_code": "14200048",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 20000000.0,
+          "amount": 20000000.0,
+          "base_net_amount": 20000000.0,
+          "valuation_rate": 20000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npfsd536s2",
+          "item_code": "14200047",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 9000000.0,
+          "amount": 9000000.0,
+          "base_net_amount": 9000000.0,
+          "valuation_rate": 9000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npf1nd4cbu",
+          "item_code": "14200050",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 153000000.0,
+          "amount": 153000000.0,
+          "base_net_amount": 153000000.0,
+          "valuation_rate": 153000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npfeduoqpr",
+          "item_code": "14200047",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 9000000.0,
+          "amount": 9000000.0,
+          "base_net_amount": 9000000.0,
+          "valuation_rate": 9000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npfer87omc",
+          "item_code": "14200048",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 20000000.0,
+          "amount": 20000000.0,
+          "base_net_amount": 20000000.0,
+          "valuation_rate": 20000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        },
+        {
+          "item_row": "npfsp7gmet",
+          "item_code": "14100154",
+          "item_group": "ماشین آلات و تجهیزات",
+          "is_fixed_asset": 1,
+          "asset_category": "تجهیزات کامپیوتری3 ساله مستقیم",
+          "qty": 1.0,
+          "rate": 1410000000.0,
+          "amount": 1410000000.0,
+          "base_net_amount": 1410000000.0,
+          "valuation_rate": 1410000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121006 - اثاثیه ومنصوبات - E",
+          "already_target": false,
+          "on_land": false,
+          "needs_correction": false,
+          "purchase_invoice": null,
+          "approved_target": "121013 - تجهیزات کامپیوتری - E",
+          "approved_target_prefix": "121013"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 1500000000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 1500000000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 6247000000.0,
+          "rows": 1
+        },
+        "121006 - اثاثیه ومنصوبات - E": {
+          "debit": 4747000000.0,
+          "credit": 0.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 6247000000.0,
+      "gl_credit_total": 6247000000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 6247000000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121013 - تجهیزات کامپیوتری - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01311",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "To Bill",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-06-10",
+      "supplier": "SUP-00102",
+      "total": 1290000000.0,
+      "base_net_total": 1290000000.0,
+      "grand_total": 1290000000.0,
+      "approved_target_prefix": "121006",
+      "approved_target_account": "121006 - اثاثیه ومنصوبات - E",
+      "rows": [
+        {
+          "item_row": "vp9ittm7ta",
+          "item_code": "14200235",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 10.0,
+          "rate": 129000000.0,
+          "amount": 1290000000.0,
+          "base_net_amount": 1290000000.0,
+          "valuation_rate": 129000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121006 - اثاثیه ومنصوبات - E",
+          "approved_target_prefix": "121006"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 1290000000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 1290000000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1290000000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 1290000000.0,
+      "gl_credit_total": 1290000000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1290000000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121006 - اثاثیه ومنصوبات - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-00747",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "Completed",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-06-12",
+      "supplier": "SUP-00102",
+      "total": 1290000000.0,
+      "base_net_total": 1290000000.0,
+      "grand_total": 1290000000.0,
+      "approved_target_prefix": "121006",
+      "approved_target_account": "121006 - اثاثیه ومنصوبات - E",
+      "rows": [
+        {
+          "item_row": "fgkfbknjms",
+          "item_code": "14200235",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 10.0,
+          "rate": 129000000.0,
+          "amount": 1290000000.0,
+          "base_net_amount": 1290000000.0,
+          "valuation_rate": 122550000.0,
+          "amount_difference_with_purchase_invoice": -64500000.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121006 - اثاثیه ومنصوبات - E",
+          "approved_target_prefix": "121006"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 1290000000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 1290000000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1290000000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 1290000000.0,
+      "gl_credit_total": 1290000000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1290000000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121006 - اثاثیه ومنصوبات - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": true,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01413",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "Completed",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-06-30",
+      "supplier": "SUP-00112",
+      "total": 11781250000.0,
+      "base_net_total": 11781250000.0,
+      "grand_total": 12959375000.0,
+      "approved_target_prefix": "121003",
+      "approved_target_account": "121003 - ماشین آلات و تجهیزات تولید - E",
+      "rows": [
+        {
+          "item_row": "njc5nqamb9",
+          "item_code": "14100511",
+          "item_group": "ماشین آلات و تجهیزات",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 1.0,
+          "rate": 11781250000.0,
+          "amount": 11781250000.0,
+          "base_net_amount": 11781250000.0,
+          "valuation_rate": 11781250000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121003 - ماشین آلات و تجهیزات تولید - E",
+          "approved_target_prefix": "121003"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 11781250000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 11781250000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 11781250000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 11781250000.0,
+      "gl_credit_total": 11781250000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 11781250000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121003 - ماشین آلات و تجهیزات تولید - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-00880",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "To Bill",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-07-15",
+      "supplier": "SUP-00058",
+      "total": 158000000.0,
+      "base_net_total": 158000000.0,
+      "grand_total": 158000000.0,
+      "approved_target_prefix": "121006",
+      "approved_target_account": "121006 - اثاثیه ومنصوبات - E",
+      "rows": [
+        {
+          "item_row": "ne9j1pi0r3",
+          "item_code": "14200239",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 1.0,
+          "rate": 158000000.0,
+          "amount": 158000000.0,
+          "base_net_amount": 158000000.0,
+          "valuation_rate": 158000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121006 - اثاثیه ومنصوبات - E",
+          "approved_target_prefix": "121006"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 158000000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 158000000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 158000000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 158000000.0,
+      "gl_credit_total": 158000000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 158000000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121006 - اثاثیه ومنصوبات - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01241",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "Completed",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-07-30",
+      "supplier": "SUP-01117",
+      "total": 1030000000.0,
+      "base_net_total": 1030000000.0,
+      "grand_total": 1133000000.0,
+      "approved_target_prefix": "121003",
+      "approved_target_account": "121003 - ماشین آلات و تجهیزات تولید - E",
+      "rows": [
+        {
+          "item_row": "3fjtp6a9qc",
+          "item_code": "14100083",
+          "item_group": "ماشین آلات و تجهیزات",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 1.0,
+          "rate": 1030000000.0,
+          "amount": 1030000000.0,
+          "base_net_amount": 1030000000.0,
+          "valuation_rate": 1030000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121003 - ماشین آلات و تجهیزات تولید - E",
+          "approved_target_prefix": "121003"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 1030000000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 1030000000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1030000000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 1030000000.0,
+      "gl_credit_total": 1030000000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1030000000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121003 - ماشین آلات و تجهیزات تولید - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    },
+    {
+      "purchase_receipt": "MAT-PRE-2026-01266",
+      "http": 200,
+      "exists": true,
+      "docstatus": 1,
+      "status": "Completed",
+      "company": "اسپاد فارمد دارو",
+      "posting_date": "2026-08-02",
+      "supplier": "SUP-00274",
+      "total": 1160000000.0,
+      "base_net_total": 1160000000.0,
+      "grand_total": 1276000000.0,
+      "approved_target_prefix": "121006",
+      "approved_target_account": "121006 - اثاثیه ومنصوبات - E",
+      "rows": [
+        {
+          "item_row": "50vlav4r1m",
+          "item_code": "14100509",
+          "item_group": "اثاثیه اداری",
+          "is_fixed_asset": 1,
+          "asset_category": "NA",
+          "qty": 1.0,
+          "rate": 1160000000.0,
+          "amount": 1160000000.0,
+          "base_net_amount": 1160000000.0,
+          "valuation_rate": 1160000000.0,
+          "amount_difference_with_purchase_invoice": 0.0,
+          "expense_account": "121000 - زمین - E",
+          "already_target": false,
+          "on_land": true,
+          "needs_correction": true,
+          "purchase_invoice": null,
+          "approved_target": "121006 - اثاثیه ومنصوبات - E",
+          "approved_target_prefix": "121006"
+        }
+      ],
+      "actionable_land_rows": 1,
+      "already_on_target_rows": 0,
+      "land_gl_debit": 1160000000.0,
+      "target_gl_debit": 0,
+      "gl_by_account": {
+        "121000 - زمین - E": {
+          "debit": 1160000000.0,
+          "credit": 0.0,
+          "rows": 1
+        },
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1160000000.0,
+          "rows": 1
+        }
+      },
+      "gl_balanced": true,
+      "gl_debit_total": 1160000000.0,
+      "gl_credit_total": 1160000000.0,
+      "grni": {
+        "211230 - معلق خرید دارایی ثابت - E": {
+          "debit": 0.0,
+          "credit": 1160000000.0,
+          "rows": 1
+        }
+      },
+      "sle_count": 0,
+      "sle": [],
+      "purchase_invoices": [],
+      "assets": [],
+      "asset_case_notes": [],
+      "readiness_status": "BLOCKED",
+      "blockers": [
+        "asset_pr_correction_module_missing_on_prod",
+        "backup_db_not_verified",
+        "backup_files_not_verified",
+        "backup_not_verified",
+        "fa_pr_gl_amount_difference_module_missing_on_prod",
+        "prod_extension_version_is_5.7.17_not_5.7.18",
+        "worker_fa_patch_not_verified"
+      ],
+      "expected_after": {
+        "expense_account": "121006 - اثاثیه ومنصوبات - E",
+        "land_gl_debit": 0.0,
+        "target_gl_debit_expected_note": "After source correction + Transaction RIV with FA amt_diff patch; FA debit should follow base_net+tax+LCV+amt_diff",
+        "requires_fa_patch_for_amt_diff": false,
+        "commercial_rates_preserved": true
+      }
+    }
+  ],
+  "counts": {
+    "documents": 8,
+    "ready_for_review": 0,
+    "blocked": 8,
+    "failed": 0,
+    "still_on_land_gl": 8,
+    "with_nonzero_amt_diff": 1
+  },
+  "remaining_blockers": [
+    "Install/deploy erpnext_extensions 5.7.18 on Production (currently 5.7.17)",
+    "Confirm asset_purchase_receipt_correction and fa_pr_gl_amount_difference modules importable on web AND workers",
+    "Provide verifiable fresh Production DB backup path+timestamp+completion",
+    "Provide verifiable fresh Production Files backup path+timestamp+completion",
+    "Re-run preflight after deploy; then seek explicit execution authorization"
+  ],
+  "explicit_non_actions": [
+    "No RIV/repost",
+    "No PR/Asset/GL/SLE mutation",
+    "No Journal Entry changes",
+    "ACC-JV-1405-169046 untouched",
+    "No Cohort B",
+    "No git commit/push"
+  ]
+}
