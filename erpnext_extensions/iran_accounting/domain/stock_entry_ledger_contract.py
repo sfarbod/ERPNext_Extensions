@@ -271,13 +271,98 @@ def _manufacture_output_amount_authoritative(doc, row, company: str) -> bool:
 	return _manufacture_fg_amount_authoritative(doc, row, company)
 
 
+def _sle_warehouse_clear_absorb_authority(doc, row) -> bool:
+	"""True when posted SLE proves genuine full-warehouse ABSORB for this SED.
+
+	HALF_UP-consistent ``(amount, rate, qty)`` alone is not authority — any integer
+	amount can satisfy R2. Require the live SLE for this voucher detail to be an
+	outgoing consume-to-zero whose movement magnitude matches SED.basic_amount
+	(remirror contract). In-memory ``iran_sle_authoritative_amount`` from
+	``refresh_sle_authoritative_sed_from_ledger`` is accepted as the same stamp
+	before ``enforce`` reloads the doc.
+	"""
+	flags = getattr(row, "flags", None)
+	if flags is not None and getattr(flags, "iran_sle_authoritative_amount", None) is not None:
+		return True
+
+	detail_no = row.get("name")
+	voucher_no = getattr(doc, "name", None)
+	if not detail_no or not voucher_no:
+		return False
+
+	sle = frappe.db.get_value(
+		"Stock Ledger Entry",
+		{
+			"voucher_type": "Stock Entry",
+			"voucher_no": voucher_no,
+			"voucher_detail_no": detail_no,
+			"is_cancelled": 0,
+		},
+		["actual_qty", "qty_after_transaction", "stock_value_difference", "stock_value"],
+		as_dict=True,
+	)
+	if not sle:
+		return False
+	# Outgoing warehouse clear only.
+	if flt(sle.actual_qty) >= 0:
+		return False
+	if abs(flt(sle.qty_after_transaction)) > 1e-9:
+		return False
+	if abs(flt(sle.stock_value)) > 0.5:
+		return False
+	movement = abs(flt(sle.stock_value_difference))
+	basic_amount = abs(flt(row.get("basic_amount")))
+	return abs(movement - basic_amount) <= 0.5
+
+
+def _manufacture_consume_absorb_amount_authoritative(doc, row, company: str) -> bool:
+	"""True for Manufacture/Repack/MCFM outgoing ABSORB Class A residuals.
+
+	Full-warehouse consume clears Bin.stock_value onto SLE, then
+	``refresh_sle_authoritative_sed_from_ledger`` remirrors that magnitude onto
+	SED.basic_amount. Integer ``basic_rate`` stays
+	``ROUND_HALF_UP(amount / qty)`` and the |amount − qty×rate| gap is a Class A
+	representational residual bounded by ``r2_representation_bound(qty)`` — not a
+	composition bug.
+
+	R2 bound alone is insufficient (HALF_UP identity). Also require genuine
+	ABSORB authority via SLE warehouse-clear match or the remirror stamp.
+	STAGE_CO FG/secondaries stay rate-authoritative via the FG gate; this path
+	covers outgoing consume legs only.
+	"""
+	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+		DOCUMENT_AMOUNT_AUTHORITY_PURPOSES,
+	)
+
+	purpose = getattr(doc, "purpose", None) or ""
+	if purpose not in DOCUMENT_AMOUNT_AUTHORITY_PURPOSES:
+		return False
+	# One-sided outgoing consume (not transfer, not FG/incoming).
+	if not row.get("s_warehouse") or row.get("t_warehouse"):
+		return False
+	if row.get("is_finished_item"):
+		return False
+	if not _r2_residual_within_bound(row, company):
+		return False
+	# Exact qty×rate already satisfies composition — no ABSORB exemption needed
+	# (avoids SLE lookup for identity rows).
+	exp_basic = round_row_amount_financial(
+		_r2_transfer_qty(row), row.get("basic_rate"), get_company_currency(company)
+	)
+	if abs(flt(row.get("basic_amount")) - flt(exp_basic)) <= _tol(company):
+		return False
+	return _sle_warehouse_clear_absorb_authority(doc, row)
+
+
 def _assert_row_composition(doc, company: str) -> list[str]:
 	"""Verify rate-first IRR composition (verifier, not calculator).
 
 	- basic_rate / valuation_rate must be integer (IRR)
 	- basic_amount == ROUND_HALF_UP(transfer_qty × integer basic_rate)
 	  except Manufacture amount-authoritative FG pool shares:
-	  single-FG residual or SAME_ITEM_MULTI_FG R2 (STAGE_CO secondaries excluded)
+	  single-FG residual or SAME_ITEM_MULTI_FG R2 (STAGE_CO secondaries excluded);
+	  and Manufacture/Repack/MCFM outgoing ABSORB Class A residuals
+	  (``_manufacture_consume_absorb_amount_authoritative``)
 	- amount == basic_amount + additional_cost + LCV
 	- valuation_rate == ROUND_HALF_UP(amount / transfer_qty); amount remains authoritative
 	  **except** source-linked consumption returns that keep rate-authoritative
@@ -320,6 +405,8 @@ def _assert_row_composition(doc, company: str) -> list[str]:
 				)
 
 				amount_auth = native_outgoing_r2_amount_authoritative(doc, row, company)
+			if not amount_auth:
+				amount_auth = _manufacture_consume_absorb_amount_authoritative(doc, row, company)
 			if abs(flt(row.basic_amount) - exp_basic) > tol and not amount_auth:
 				failures.append(
 					_fail(

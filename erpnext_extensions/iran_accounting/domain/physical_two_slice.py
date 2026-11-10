@@ -4,6 +4,8 @@
 Policy:
 - out_value = ROUND_HALF_UP(pool_value × out_qty / pool_qty); full deplete → pool_value
 - Represent as slices at integer rates R and/or R+1 with rate×qty identity on each slice
+- R = mathematical floor(pool_value/pool_qty) via ROUND_FLOOR — never Decimal //
+  (Decimal // truncates toward 0; breaks negative pools — HRC-00015 / v5.7.22)
 - Historical fractional pools are refused (no silent Stock Adjustment)
 - Fractional quantities: single integer rate with RHU(qty×rate) == out_value, else fail closed
 """
@@ -11,7 +13,7 @@ Policy:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, getcontext
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, getcontext
 from typing import Sequence
 
 getcontext().prec = 80
@@ -23,6 +25,19 @@ def _d(value) -> Decimal:
 
 def _rhu(value: Decimal) -> Decimal:
 	return value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def _floor_div(numerator: Decimal, denominator: Decimal) -> int:
+	"""Mathematical floor(numerator/denominator) as int.
+
+	``Decimal.__floordiv__`` follows ``divmod`` remainder-sign rules and truncates
+	toward zero for negative dividends — NOT toward −∞. Two-slice rates require
+	true floor so ``out_v ∈ [oq·R, oq·(R+1)]`` holds for negative pools
+	(HRC-00015 / ``n_high out of range``).
+	"""
+	if denominator == 0:
+		raise AllocationError("floor_div by zero")
+	return int((numerator / denominator).to_integral_value(rounding=ROUND_FLOOR))
 
 
 @dataclass(frozen=True)
@@ -99,16 +114,19 @@ def allocate_physical_two_slice(
 	sign = Decimal(-1 if outgoing_sign < 0 else 1)
 	full = abs(oq - pq) <= Decimal("1e-12")
 	if full:
-		out_v = pv
+		out_v_signed = pv
 		mode = "full_deplete"
 	else:
-		out_v = _rhu(pv * oq / pq)
+		out_v_signed = _rhu(pv * oq / pq)
 		mode = "two_slice"
 
-	R = int(pv // pq)  # floor average
-	n_high = int(out_v - oq * R)
+	# True mathematical floor — do NOT use Decimal // (truncates toward 0).
+	R = _floor_div(pv, pq)
+	n_high = int(out_v_signed - oq * R)
 	if n_high < 0 or n_high > int(oq):
-		raise AllocationError(f"n_high out of range: out_v={out_v} R={R} oq={oq} n={n_high}")
+		raise AllocationError(
+			f"n_high out of range: out_v={out_v_signed} R={R} oq={oq} n={n_high}"
+		)
 
 	n_base = int(oq) - n_high
 	slices: list[ValuationSlice] = []
@@ -128,8 +146,10 @@ def allocate_physical_two_slice(
 		assert_slice_identity(s)
 
 	total = sum((s.amount for s in slices), Decimal(0))
-	if abs(total) != out_v:
-		raise AllocationError(f"slice sum {abs(total)} != out_v {out_v}")
+	# Slice amounts carry outgoing_sign; out_v_signed carries pool-value sign.
+	# Magnitudes must match (positive pools: both sides positive magnitude).
+	if abs(total) != abs(out_v_signed):
+		raise AllocationError(f"slice sum {abs(total)} != out_v {abs(out_v_signed)}")
 
 	if len(slices) == 1:
 		mode = "single" if not full else mode
@@ -138,7 +158,7 @@ def allocate_physical_two_slice(
 		pool_qty=pq,
 		pool_value=pv,
 		out_qty_abs=oq,
-		out_value_abs=out_v,
+		out_value_abs=abs(out_v_signed),
 		base_rate=R,
 		slices=tuple(slices),
 		mode=mode,
@@ -149,12 +169,15 @@ def _allocate_fractional_qty(pq, pv, oq, *, outgoing_sign: int) -> AllocationPla
 	"""Single-rate attempt: integer R with RHU(q×R) == RHU(exact pool share)."""
 	exact = _rhu(pv * oq / pq)
 	sign = Decimal(-1 if outgoing_sign < 0 else 1)
-	R0 = int(pv // pq)
+	R0 = _floor_div(pv, pq)
 	found = None
 	for delta in range(0, 20):
 		candidates = {R0} if delta == 0 else {R0 - delta, R0 + delta}
 		for cand in candidates:
-			if cand <= 0:
+			if cand == 0:
+				continue
+			# Positive pools keep legacy (cand > 0). Negative pools allow negative rates.
+			if pv >= 0 and cand <= 0:
 				continue
 			if _rhu(oq * Decimal(cand)) == exact:
 				found = cand
@@ -167,14 +190,16 @@ def _allocate_fractional_qty(pq, pv, oq, *, outgoing_sign: int) -> AllocationPla
 			f"ROUND_HALF_UP(qty×rate)=={exact}"
 		)
 	qty = sign * oq
-	amt = sign * _rhu(oq * Decimal(found))
+	# Fractional qty: amount is RHU(qty×|rate|) with outgoing sign and rate sign.
+	mag = _rhu(oq * Decimal(abs(found)))
+	amt = sign * mag * (Decimal(1) if found > 0 else Decimal(-1))
 	slice_ = ValuationSlice(qty=qty, rate=found, amount=amt)
 	assert_slice_identity(slice_)
 	return AllocationPlan(
 		pool_qty=pq,
 		pool_value=pv,
 		out_qty_abs=oq,
-		out_value_abs=exact,
+		out_value_abs=abs(exact),
 		base_rate=found,
 		slices=(slice_,),
 		mode="single",
@@ -192,6 +217,8 @@ def simulate_sequential(
 	for oq in out_qtys:
 		plan = allocate_physical_two_slice(q, v, oq)
 		q = q - plan.out_qty_abs
-		v = v - plan.out_value_abs
+		# Slice amounts are signed SVD; adding them updates remaining pool value
+		# for both positive and negative pools.
+		v = v + sum((s.amount for s in plan.slices), Decimal(0))
 		out.append((plan, q, v))
 	return out
