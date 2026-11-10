@@ -9,16 +9,20 @@ from types import SimpleNamespace
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
-from frappe.utils import add_days, getdate, nowdate
+from frappe.utils import add_days, cint, getdate, nowdate
 
 from erpnext_extensions.extentionhrms.employee_checkin_import import (
 	find_existing_checkin_keys,
+	get_employee_match_index,
 	import_device_checkins,
 	report_employee_code_stored_as_device_id,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_import_setup import (
+	CLIENT_SCRIPT_NAME,
 	IMPORT_ROLE,
+	ensure_attendance_source_shift_default_clear,
 	ensure_device_import_setup,
+	ensure_list_view_indexes,
 )
 from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
 	DEFAULT_MAX_MANUAL_CHECKINS,
@@ -135,8 +139,8 @@ class TestManualLimitSettings(FrappeTestCase):
 		frappe.db.set_single_value("HR Settings", MAX_FIELD, maximum, update_modified=False)
 		clear_manual_checkin_policy_cache()
 
-	def _employee(self, status="Active"):
-		return _make_employee(self, status)
+	def _employee(self, status="Active", relieving_date=None):
+		return _make_employee(self, status, relieving_date=relieving_date)
 
 	def _user(self, roles):
 		return _make_user(self, roles)
@@ -418,7 +422,60 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		frappe.set_user("Administrator")
 		self.assertEqual(result["existing"], 1)
 
-	def test_inactive_employee_is_rejected_and_status_is_unchanged(self):
+	def test_get_employee_match_index_returns_readable_employees(self):
+		employee = self._employee()
+		result = get_employee_match_index()
+		self.assertGreaterEqual(result["count"], 1)
+		self.assertEqual(len(result["employees"]), result["count"])
+		names = {row["name"] for row in result["employees"]}
+		self.assertIn(employee, names)
+		sample = next(row for row in result["employees"] if row["name"] == employee)
+		for field in ("employee_name", "status", "attendance_device_id", "employee_number"):
+			self.assertIn(field, sample)
+
+	def test_get_employee_match_index_requires_import_authorization(self):
+		user = self._user(["HR User"])
+		frappe.set_user(user)
+		with self.assertRaises(frappe.PermissionError):
+			get_employee_match_index()
+		frappe.set_user("Administrator")
+
+	def test_client_script_uses_local_sheetjs_asset(self):
+		ensure_device_import_setup()
+		script = frappe.db.get_value("Client Script", CLIENT_SCRIPT_NAME, "script") or ""
+		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
+		self.assertNotIn("cdnjs.cloudflare.com", script)
+		self.assertIn("V1.3.4", script)
+		self.assertIn("get_employee_match_index", script)
+		self.assertIn("employment_allows_punch", script)
+
+	def test_list_view_indexes_are_idempotent(self):
+		first = ensure_list_view_indexes()
+		second = ensure_list_view_indexes()
+		self.assertIn(first["espad_checkin_modified"], ("created", "exists"))
+		self.assertIn(first["espad_checkin_time"], ("created", "exists"))
+		self.assertEqual(second["espad_checkin_modified"], "exists")
+		self.assertEqual(second["espad_checkin_time"], "exists")
+
+	def test_attendance_source_shift_zero_default_is_cleared(self):
+		cf_name = frappe.db.get_value(
+			"Custom Field",
+			{"dt": "Attendance", "fieldname": "custom_source_shift_assignment"},
+			"name",
+		)
+		if not cf_name:
+			self.skipTest("Attendance.custom_source_shift_assignment not installed")
+		frappe.db.set_value("Custom Field", cf_name, "default", "0", update_modified=False)
+		frappe.clear_cache(doctype="Attendance")
+		result = ensure_attendance_source_shift_default_clear()
+		self.assertEqual(result, "cleared_zero_default")
+		self.assertEqual(
+			frappe.db.get_value("Custom Field", cf_name, "default") or "",
+			"",
+		)
+		self.assertEqual(ensure_attendance_source_shift_default_clear(), "already_empty")
+
+	def test_inactive_employee_is_rejected_by_hrms_policy(self):
 		employee = self._employee(status="Inactive")
 		active = self._employee()
 		result = import_device_checkins(
@@ -432,6 +489,53 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		self.assertEqual(result["failed"][0]["category"], "Inactive Employee")
 		self.assertEqual(frappe.db.get_value("Employee", employee, "status"), "Inactive")
 		self.assertEqual(self._count(employee), 0)
+
+	def test_left_employee_imports_before_relieving_and_rejects_on_or_after(self):
+		employee = self._employee(status="Left", relieving_date="2026-10-23")
+		ok = import_device_checkins([self._record(employee, "2026-10-22 08:00:00", "IN")])
+		self.assertEqual(len(ok["created"]), 1)
+		self.assertEqual(ok["failed"], [])
+		blocked = import_device_checkins([self._record(employee, "2026-10-23 08:00:00", "OUT")])
+		self.assertEqual(blocked["created"], [])
+		self.assertEqual(blocked["failed"][0]["category"], "Employment period")
+		self.assertEqual(self._count(employee), 1)
+
+	def test_punch_before_joining_date_is_rejected(self):
+		employee = self._employee()
+		frappe.db.set_value(
+			"Employee",
+			employee,
+			{"date_of_joining": "2026-10-01", "relieving_date": None},
+			update_modified=False,
+		)
+		result = import_device_checkins([self._record(employee, "2026-09-30 08:00:00", "IN")])
+		self.assertEqual(result["created"], [])
+		self.assertEqual(result["failed"][0]["category"], "Employment period")
+		self.assertEqual(self._count(employee), 0)
+
+	def test_device_import_suppresses_rest_attendance_creator(self):
+		from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
+			DEVICE_IMPORT_SUPPRESSED_SERVER_SCRIPTS,
+			device_import_context,
+			in_device_import,
+		)
+
+		name = DEVICE_IMPORT_SUPPRESSED_SERVER_SCRIPTS[0]
+		if not frappe.db.exists("Server Script", name):
+			self.skipTest("Rest Attendance Creator Server Script not installed")
+		was_disabled = cint(frappe.db.get_value("Server Script", name, "disabled"))
+		try:
+			if was_disabled:
+				frappe.db.set_value("Server Script", name, "disabled", 0, update_modified=False)
+			self.assertFalse(in_device_import())
+			with device_import_context():
+				self.assertTrue(in_device_import())
+				self.assertEqual(cint(frappe.db.get_value("Server Script", name, "disabled")), 1)
+			self.assertEqual(cint(frappe.db.get_value("Server Script", name, "disabled")), 0)
+		finally:
+			frappe.db.set_value(
+				"Server Script", name, "disabled", was_disabled, update_modified=False
+			)
 
 	def test_invalid_timestamp_and_log_type_do_not_reject_the_rest_of_the_batch(self):
 		employee = self._employee()
@@ -613,8 +717,8 @@ class TestDeviceCheckinImport(FrappeTestCase):
 				).insert(ignore_permissions=True)
 		frappe.clear_cache(doctype="Employee Checkin")
 
-	def _employee(self, status="Active"):
-		return _make_employee(self, status)
+	def _employee(self, status="Active", relieving_date=None):
+		return _make_employee(self, status, relieving_date=relieving_date)
 
 	def _user(self, roles):
 		return _make_user(self, roles)
@@ -656,27 +760,28 @@ class TestDeviceCheckinImport(FrappeTestCase):
 		)
 
 
-def _make_employee(suite, status="Active"):
+def _make_employee(suite, status="Active", relieving_date=None):
 	template = frappe.db.get_value(
 		"Employee",
 		{"status": "Active", "company": ["is", "set"], "department": ["is", "set"]},
 		["company", "department", "payroll_cost_center"],
 		as_dict=True,
 	)
-	doc = frappe.get_doc(
-		{
-			"doctype": "Employee",
-			"naming_series": "HR-EMP-",
-			"first_name": "DeviceImport",
-			"gender": "Male",
-			"date_of_birth": "1990-01-01",
-			"date_of_joining": "2020-01-01",
-			"status": status,
-			"company": template.company,
-			"department": template.department,
-			"payroll_cost_center": template.payroll_cost_center,
-		}
-	)
+	payload = {
+		"doctype": "Employee",
+		"naming_series": "HR-EMP-",
+		"first_name": "DeviceImport",
+		"gender": "Male",
+		"date_of_birth": "1990-01-01",
+		"date_of_joining": "2020-01-01",
+		"status": status,
+		"company": template.company,
+		"department": template.department,
+		"payroll_cost_center": template.payroll_cost_center,
+	}
+	if status == "Left" or relieving_date:
+		payload["relieving_date"] = relieving_date or "2026-10-23"
+	doc = frappe.get_doc(payload)
 	doc.insert()
 	suite.employees.append(doc.name)
 	return doc.name

@@ -100,9 +100,41 @@ def ensure_device_import_setup() -> dict:
 		"server_script": retire_legacy_server_script(),
 		"client_script": sync_client_script(),
 		"duplicate_index": ensure_duplicate_index(),
+		"list_indexes": ensure_list_view_indexes(),
+		# Direct Checkin dependency: Rest Attendance Creator Server Script inserts
+		# Attendance and inherits Link default "0" → LinkValidationError.
+		"attendance_ssa_default": ensure_attendance_source_shift_default_clear(),
 	}
 	clear_manual_checkin_policy_cache()
 	return result
+
+
+def ensure_attendance_source_shift_default_clear() -> str:
+	"""Clear Attendance.custom_source_shift_assignment default when it is ``0``.
+
+	A Link default of ``0`` is not a Shift Assignment name. Employee Checkin
+	inserts that trigger the site Server Script
+	``#_employee_checkin___rest_attendance_creator_v1.0.1`` then fail with
+	``Could not find Source Shift Assignment: 0``. Empty default preserves the
+	optional Link semantics without inventing a document name.
+	Does not rewrite historical Attendance rows or the Attendance Excel Import
+	JavaScript.
+	"""
+	name = frappe.db.get_value(
+		"Custom Field",
+		{"dt": "Attendance", "fieldname": "custom_source_shift_assignment"},
+		"name",
+	)
+	if not name:
+		return "missing"
+	current = frappe.db.get_value("Custom Field", name, "default")
+	if current in (None, ""):
+		return "already_empty"
+	if str(current).strip() != "0":
+		return f"left_as_{current}"
+	frappe.db.set_value("Custom Field", name, "default", "", update_modified=False)
+	frappe.clear_cache(doctype="Attendance")
+	return "cleared_zero_default"
 
 
 def ensure_hr_settings_fields() -> str:
@@ -264,6 +296,42 @@ def ensure_duplicate_index() -> str:
 	return "created"
 
 
+def ensure_list_view_indexes() -> dict:
+	"""Indexes for Desk list ORDER BY modified and date-range filters on time.
+
+	Confirmed against list ``get_list`` (``order_by=modified desc``) and typical
+	``time`` between filters. Unique ``(employee, time, log_type)`` already
+	covers employee+time equality; standalone ``time`` and ``modified`` cover
+	range/sort patterns that otherwise filesort the full table as it grows.
+	"""
+	return {
+		"espad_checkin_modified": _ensure_nonunique_index(
+			"Employee Checkin", ["modified"], "espad_checkin_modified"
+		),
+		"espad_checkin_time": _ensure_nonunique_index(
+			"Employee Checkin", ["time"], "espad_checkin_time"
+		),
+	}
+
+
+def _ensure_nonunique_index(doctype: str, columns: list[str], index_name: str) -> str:
+	table = f"tab{doctype}"
+	exists = frappe.db.sql(
+		"""
+		select INDEX_NAME from information_schema.STATISTICS
+		where table_schema = database()
+			and table_name = %s
+			and INDEX_NAME = %s
+		limit 1
+		""",
+		(table, index_name),
+	)
+	if exists:
+		return "exists"
+	frappe.db.add_index(doctype, columns, index_name)
+	return "created"
+
+
 def ensure_import_role() -> str:
 	if frappe.db.exists("Role", IMPORT_ROLE):
 		return "exists"
@@ -281,41 +349,70 @@ def ensure_import_role() -> str:
 
 
 def ensure_import_role_permissions() -> str:
-	"""Grant the import role Create + Read on Employee Checkin only.
+	"""Grant the import role Checkin Create/Read and Employee Read/Select.
 
-	Without Read, Desk ``get_list`` duplicate detection fails after matching
-	succeeds. Without Create, :func:`_authorize` rejects the import API.
-	Does not grant delete/write/submit or rights on other DocTypes.
+	Without Checkin Read, Desk ``get_list`` duplicate detection fails after
+	matching succeeds. Without Checkin Create, :func:`_authorize` rejects the
+	import API. Without Employee Read/Select, personnel matching and
+	:func:`find_existing_checkin_keys` omit every key (User Permission-aware
+	Employee readability). Does not grant Employee write/delete or Checkin
+	delete/write/submit.
 	"""
+	checkin = _ensure_custom_docperm(
+		"Employee Checkin",
+		{
+			"read": 1,
+			"write": 0,
+			"create": 1,
+			"delete": 0,
+			"submit": 0,
+			"cancel": 0,
+			"amend": 0,
+			"report": 0,
+			"export": 0,
+			"import": 0,
+			"share": 0,
+			"print": 0,
+			"email": 0,
+			"select": 1,
+		},
+	)
+	employee = _ensure_custom_docperm(
+		"Employee",
+		{
+			"read": 1,
+			"write": 0,
+			"create": 0,
+			"delete": 0,
+			"submit": 0,
+			"cancel": 0,
+			"amend": 0,
+			"report": 0,
+			"export": 0,
+			"import": 0,
+			"share": 0,
+			"print": 0,
+			"email": 0,
+			"select": 1,
+		},
+	)
+	return f"checkin={checkin};employee={employee}"
+
+
+def _ensure_custom_docperm(doctype: str, values: dict) -> str:
 	existing = frappe.db.get_value(
 		"Custom DocPerm",
-		{"parent": "Employee Checkin", "role": IMPORT_ROLE, "permlevel": 0},
+		{"parent": doctype, "role": IMPORT_ROLE, "permlevel": 0},
 		"name",
 	)
-	values = {
-		"read": 1,
-		"write": 0,
-		"create": 1,
-		"delete": 0,
-		"submit": 0,
-		"cancel": 0,
-		"amend": 0,
-		"report": 0,
-		"export": 0,
-		"import": 0,
-		"share": 0,
-		"print": 0,
-		"email": 0,
-		"select": 1,
-	}
 	if existing:
 		frappe.db.set_value("Custom DocPerm", existing, values, update_modified=False)
-		frappe.clear_cache(doctype="Employee Checkin")
+		frappe.clear_cache(doctype=doctype)
 		return "updated"
 	doc = frappe.get_doc(
 		{
 			"doctype": "Custom DocPerm",
-			"parent": "Employee Checkin",
+			"parent": doctype,
 			"parenttype": "DocType",
 			"parentfield": "permissions",
 			"role": IMPORT_ROLE,
@@ -324,7 +421,7 @@ def ensure_import_role_permissions() -> str:
 		}
 	)
 	doc.insert(ignore_permissions=True)
-	frappe.clear_cache(doctype="Employee Checkin")
+	frappe.clear_cache(doctype=doctype)
 	return "created"
 
 
