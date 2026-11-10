@@ -44,6 +44,14 @@ _J_DAYS = (31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29)
 
 _device_import_depth = contextvars.ContextVar("espad_device_checkin_import", default=0)
 
+# Site Server Scripts that create/submit Attendance from Checkin After Save.
+# They cannot see ``frappe.flags`` inside ``safe_exec``, so device import
+# temporarily disables them for the outermost import context only. Desk
+# punches and native device API paths are unaffected.
+DEVICE_IMPORT_SUPPRESSED_SERVER_SCRIPTS = (
+	"# EMPLOYEE CHECKIN - REST ATTENDANCE CREATOR V1.0.1",
+)
+
 
 def in_device_import() -> bool:
 	"""True only while :func:`device_import_context` is active on this task."""
@@ -55,12 +63,56 @@ def device_import_context():
 	"""Skip the manual-count restriction for inserts made in this block.
 
 	Nested calls are counted. The token cannot be supplied by the client.
+
+	On the outermost entry, temporarily disables Rest Attendance Creator so
+	bulk Excel device imports do not submit incorrect Absent Attendance for
+	rest-day / off-shift punches. Attendance for imported periods is owned by
+	the Attendance Excel Import workflow.
 	"""
+	outermost = _device_import_depth.get() == 0
 	token = _device_import_depth.set(_device_import_depth.get() + 1)
+	suppressed: list[str] = []
 	try:
+		if outermost:
+			suppressed = _suppress_server_scripts(DEVICE_IMPORT_SUPPRESSED_SERVER_SCRIPTS)
 		yield
 	finally:
+		if suppressed:
+			_restore_server_scripts(suppressed)
 		_device_import_depth.reset(token)
+
+
+def _suppress_server_scripts(names: tuple[str, ...]) -> list[str]:
+	disabled_now = []
+	for name in names:
+		if not frappe.db.exists("Server Script", name):
+			continue
+		if cint(frappe.db.get_value("Server Script", name, "disabled")):
+			continue
+		frappe.db.set_value("Server Script", name, "disabled", 1, update_modified=False)
+		disabled_now.append(name)
+	if disabled_now:
+		_clear_server_script_map_cache()
+	return disabled_now
+
+
+def _restore_server_scripts(names: list[str]) -> None:
+	for name in names:
+		if frappe.db.exists("Server Script", name):
+			frappe.db.set_value("Server Script", name, "disabled", 0, update_modified=False)
+	if names:
+		_clear_server_script_map_cache()
+
+
+def _clear_server_script_map_cache() -> None:
+	try:
+		frappe.client_cache.delete_value("server_script_map")
+	except Exception:
+		pass
+	try:
+		frappe.cache.delete_value("server_script_map")
+	except Exception:
+		pass
 
 
 def before_insert(doc, method=None):

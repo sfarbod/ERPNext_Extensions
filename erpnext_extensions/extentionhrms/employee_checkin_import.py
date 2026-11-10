@@ -23,7 +23,7 @@ from collections import OrderedDict
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, get_datetime
+from frappe.utils import cint, cstr, get_datetime, getdate
 
 from erpnext_extensions.extentionhrms.employee_checkin_manual_limit import (
 	device_import_context,
@@ -114,6 +114,47 @@ def report_employee_code_stored_as_device_id(limit=500):
 		"""
 	)[0][0]
 	return {"total": total, "returned": len(rows), "rows": rows}
+
+
+@frappe.whitelist()
+def get_employee_match_index():
+	"""Return Employee rows needed for Excel importer matching (one request).
+
+	Authorized import callers only. Respects Employee read permissions via
+	``frappe.get_list``. Includes ``custom_personal_code`` when that field
+	exists on Employee. Caps at 50_000 rows to bound memory.
+	"""
+	_authorize()
+	fields = [
+		"name",
+		"employee_name",
+		"status",
+		"attendance_device_id",
+		"employee_number",
+		"date_of_joining",
+		"relieving_date",
+	]
+	if frappe.get_meta("Employee").has_field("custom_personal_code"):
+		fields.append("custom_personal_code")
+
+	employees = []
+	page = 1000
+	start = 0
+	max_rows = 50000
+	while start < max_rows:
+		chunk = frappe.get_list(
+			"Employee",
+			fields=fields,
+			limit_page_length=page,
+			limit_start=start,
+			order_by="name asc",
+		)
+		employees.extend(chunk)
+		if len(chunk) < page:
+			break
+		start += page
+
+	return {"employees": employees, "count": len(employees)}
 
 
 @frappe.whitelist()
@@ -377,7 +418,14 @@ def _insert_records(parsed: list[dict]) -> dict:
 		for row in frappe.get_all(
 			"Employee",
 			filters={"name": ["in", employees]},
-			fields=["name", "status", "company", "attendance_device_id"],
+			fields=[
+				"name",
+				"status",
+				"company",
+				"attendance_device_id",
+				"date_of_joining",
+				"relieving_date",
+			],
 			limit_page_length=len(employees),
 		):
 			employee_rows[row.name] = row
@@ -510,11 +558,42 @@ def _row_problem(row, employee_rows, readable) -> dict | None:
 			"error": f"Not permitted to import checkins for {employee}.",
 			"category": "Permission error",
 		}
-	status = employee_rows[employee].status
-	if status != "Active":
-		return {**base, "error": f"Employee {employee} is not Active ({status}).", "category": "Inactive Employee"}
+	status = cstr(employee_rows[employee].status)
+	# HRMS ``validate_active_employee`` blocks Inactive transactions; do not import them.
+	if status == "Inactive":
+		return {
+			**base,
+			"error": f"Employee {employee} is Inactive; HRMS does not allow checkin transactions.",
+			"category": "Inactive Employee",
+		}
+	window_error = _employment_window_error(employee_rows[employee], row["time"])
+	if window_error:
+		return {**base, "error": window_error, "category": "Employment period"}
 	if row["log_type"] not in _LOG_TYPES:
 		return {**base, "error": "Invalid log_type. Expected IN or OUT.", "category": "Validation error"}
+	return None
+
+
+def _employment_window_error(employee_row, when) -> str | None:
+	"""Reject punches outside joining/relieving window.
+
+	Left employees remain importable when the punch date falls within their
+	employment period (joining ≤ punch date < relieving). Current status alone
+	is not decisive for Left.
+	"""
+	punch_date = getdate(when)
+	doj = employee_row.get("date_of_joining")
+	if doj and punch_date < getdate(doj):
+		return (
+			f"Punch date {punch_date} is before Date of Joining {getdate(doj)} "
+			f"for {employee_row.get('name') or employee_row.name}."
+		)
+	relieving = employee_row.get("relieving_date")
+	if relieving and punch_date >= getdate(relieving):
+		return (
+			f"Punch date {punch_date} is on or after Relieving Date {getdate(relieving)} "
+			f"for {employee_row.get('name') or employee_row.name}."
+		)
 	return None
 
 
@@ -615,6 +694,8 @@ def _is_duplicate_error(message: str) -> bool:
 
 def _failure_category(message: str) -> str:
 	lower = message.lower()
+	if "relieving date" in lower or "date of joining" in lower or "employment" in lower:
+		return "Employment period"
 	if "not active" in lower or "inactive" in lower:
 		return "Inactive Employee"
 	if "does not exist" in lower:

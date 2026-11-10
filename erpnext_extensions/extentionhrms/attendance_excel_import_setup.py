@@ -24,7 +24,61 @@ def ensure_attendance_excel_import_setup() -> dict:
 	return {
 		"client_script": sync_client_script(),
 		"status_options": remove_on_duty_status_option(),
+		"ssa_default": ensure_source_shift_assignment_default_clear(),
+		"ssa_invalid_links": repair_invalid_source_shift_assignment_links(),
 	}
+
+
+def ensure_source_shift_assignment_default_clear() -> str:
+	"""Clear Attendance.custom_source_shift_assignment default when it is ``0``.
+
+	A Link default of ``0`` is not a Shift Assignment name and breaks insert /
+	submit with LinkValidationError. Empty default preserves optional Link
+	semantics.
+	"""
+	name = frappe.db.get_value(
+		"Custom Field",
+		{"dt": "Attendance", "fieldname": "custom_source_shift_assignment"},
+		"name",
+	)
+	if not name:
+		return "missing"
+	current = frappe.db.get_value("Custom Field", name, "default")
+	if current in (None, ""):
+		return "already_empty"
+	if str(current).strip() != "0":
+		return f"left_as_{current}"
+	frappe.db.set_value("Custom Field", name, "default", "", update_modified=False)
+	frappe.clear_cache(doctype="Attendance")
+	return "cleared_zero_default"
+
+
+def repair_invalid_source_shift_assignment_links() -> dict:
+	"""Null out Attendance.custom_source_shift_assignment when stored as ``0``.
+
+	Does not cancel or amend documents. Valid Shift Assignment names are left
+	unchanged. Uses a direct DB update so submitted rows can be repaired without
+	bypassing Link validation on subsequent saves.
+	"""
+	if not frappe.db.has_column("Attendance", "custom_source_shift_assignment"):
+		return {"updated": 0, "status": "column_missing"}
+	before = frappe.db.sql(
+		"""
+		select count(*) from `tabAttendance`
+		where custom_source_shift_assignment = '0'
+		"""
+	)[0][0]
+	if not before:
+		return {"updated": 0, "status": "clean"}
+	frappe.db.sql(
+		"""
+		update `tabAttendance`
+		set custom_source_shift_assignment = NULL
+		where custom_source_shift_assignment = '0'
+		"""
+	)
+	frappe.clear_cache(doctype="Attendance")
+	return {"updated": int(before), "status": "repaired"}
 
 
 def remove_on_duty_status_option() -> str:

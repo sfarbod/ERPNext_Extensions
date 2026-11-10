@@ -5,10 +5,11 @@
 // browser via SheetJS, maps personnel to Employee records, previews the result
 // and creates Employee Checkin documents.
 //
-// XLSX: loads SheetJS community build xlsx@0.18.5 (Apache-2.0) from a
-// version-pinned CDN URL when window.XLSX is not already present. Verifies
-// readiness before parse. Does not use site /files or erpnext_extensions assets.
-// Version: V1.3.2 (Client Script — authorized existing-key lookup + clearer errors)
+// XLSX: loads SheetJS community build xlsx@0.18.5 (Apache-2.0) from the
+// bundled site asset /assets/erpnext_extensions/js/lib/xlsx.full.min.js when
+// window.XLSX is not already present (same pattern as Attendance Excel Import).
+// Verifies readiness before parse. Avoids CDN round-trips and offline failures.
+// Version: V1.3.4 (historical employment eligibility; Left/Inactive by date window)
 // ---------------------------------------------------------------------------
 
 frappe.provide("espad.attendance_import");
@@ -222,13 +223,14 @@ espad.attendance_import.lib = (function () {
 
 			const in_date = parse_jalali_date(raw.in_date) || day;
 			const in_time = parse_time(raw.in_time);
-			if (in_time && raw.in_date) rec.in = in_date + " " + in_time;
+			// Prefer punch date; fall back to calc_date (day) when the clock is present.
+			if (in_time) rec.in = in_date + " " + in_time;
 			if (raw.in_time && !in_time) rec.issues.push({ level: "error", text: "زمان ورود نامعتبر: " + raw.in_time });
 			if (raw.in_date && !parse_jalali_date(raw.in_date)) rec.issues.push({ level: "error", text: "تاریخ ورود نامعتبر: " + raw.in_date });
 
 			const out_date = parse_jalali_date(raw.out_date) || day;
 			const out_time = parse_time(raw.out_time);
-			if (out_time && raw.out_date) rec.out = out_date + " " + out_time;
+			if (out_time) rec.out = out_date + " " + out_time;
 			if (raw.out_time && !out_time) rec.issues.push({ level: "error", text: "زمان خروج نامعتبر: " + raw.out_time });
 			if (raw.out_date && !parse_jalali_date(raw.out_date)) rec.issues.push({ level: "error", text: "تاریخ خروج نامعتبر: " + raw.out_date });
 
@@ -271,17 +273,45 @@ espad.attendance_import.lib = (function () {
 		return Array.from(map.values());
 	}
 
+	// Punch date must fall in [date_of_joining, relieving_date).
+	function employment_allows_punch(match, time) {
+		if (!match || !time) return { ok: true };
+		const day = String(time).slice(0, 10);
+		const doj = match.date_of_joining ? String(match.date_of_joining).slice(0, 10) : "";
+		const rel = match.relieving_date ? String(match.relieving_date).slice(0, 10) : "";
+		if (doj && day < doj) {
+			return { ok: false, reason: "before_joining", detail: doj };
+		}
+		if (rel && day >= rel) {
+			return { ok: false, reason: "on_or_after_relieving", detail: rel };
+		}
+		return { ok: true };
+	}
+
 	// Flatten records into Employee Checkin payloads.
 	function build_checkins(records, people_by_key, opts) {
 		opts = opts || {};
 		const out = [];
 		const seen = new Set();
+		const skipped_employment = [];
 		records.forEach((rec) => {
 			const person = people_by_key[rec.code + "|" + rec.full_name];
 			if (!person || !person.employee) return;
 			if (rec.has_error) return; // shown in "Rows to check", never imported with a guessed time
 			[["IN", rec.in], ["OUT", rec.out]].forEach(([log_type, time]) => {
 				if (!time) return;
+				const allowed = employment_allows_punch(person.match || person, time);
+				if (!allowed.ok) {
+					skipped_employment.push({
+						employee: person.employee,
+						time: time,
+						log_type: log_type,
+						reason: allowed.reason,
+						detail: allowed.detail,
+						code: rec.code,
+					});
+					return;
+				}
 				// A repeated midnight row carries the same employee, time and log type.
 				// IN and OUT at the same timestamp are different punches.
 				const key = person.employee + "|" + time + "|" + log_type;
@@ -309,6 +339,7 @@ espad.attendance_import.lib = (function () {
 				});
 			});
 		});
+		out._skipped_employment = skipped_employment;
 		return out;
 	}
 
@@ -333,6 +364,7 @@ espad.attendance_import.lib = (function () {
 		parse_rows: parse_rows,
 		collect_people: collect_people,
 		build_checkins: build_checkins,
+		employment_allows_punch: employment_allows_punch,
 		date_range: date_range,
 		LABELS: LABELS,
 	};
@@ -344,9 +376,9 @@ espad.attendance_import.lib = (function () {
 // ---------------------------------------------------------------------------
 
 espad.attendance_import.SHEETJS =
-	"https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+	"/assets/erpnext_extensions/js/lib/xlsx.full.min.js";
 espad.attendance_import.SHEETJS_TIMEOUT_MS = 20000;
-espad.attendance_import.VERSION = "V1.3.1";
+espad.attendance_import.VERSION = "V1.3.4";
 
 espad.attendance_import.open = function () {
 	const lib = espad.attendance_import.lib;
@@ -1100,6 +1132,22 @@ espad.attendance_import.open = function () {
 	}
 
 	async function fetch_all_employees(on_progress) {
+		// Single authorized API call avoids N× get_list round-trips on large sites.
+		try {
+			const r = await frappe.call({
+				method:
+					"erpnext_extensions.extentionhrms.employee_checkin_import.get_employee_match_index",
+			});
+			const employees =
+				r && r.message && Array.isArray(r.message.employees) ? r.message.employees : null;
+			if (employees) {
+				if (on_progress) on_progress(employees.length);
+				return employees;
+			}
+		} catch (e) {
+			console.warn("espad.attendance_import: employee index API unavailable, paging", e);
+		}
+
 		const page = 500;
 		const fields = [
 			"name",
@@ -1108,6 +1156,8 @@ espad.attendance_import.open = function () {
 			"attendance_device_id",
 			"employee_number",
 			"custom_personal_code",
+			"date_of_joining",
+			"relieving_date",
 		];
 		const all = [];
 		let start = 0;
@@ -1122,7 +1172,15 @@ espad.attendance_import.open = function () {
 				});
 			} catch (e) {
 				rows = await get_list_safe("Employee", {
-					fields: ["name", "employee_name", "status", "attendance_device_id", "employee_number"],
+					fields: [
+						"name",
+						"employee_name",
+						"status",
+						"attendance_device_id",
+						"employee_number",
+						"date_of_joining",
+						"relieving_date",
+					],
 					limit: page,
 					limit_start: start,
 					order_by: "name asc",
@@ -1207,6 +1265,7 @@ espad.attendance_import.open = function () {
 		}
 		const inactive = uniq.filter((e) => e.status === "Inactive");
 		if (inactive.length) {
+			// HRMS blocks Inactive checkin transactions.
 			return {
 				employee: null,
 				matched_by: label,
@@ -1216,11 +1275,21 @@ espad.attendance_import.open = function () {
 				),
 			};
 		}
+		// Unique Left is eligible; punch dates are filtered by joining/relieving.
+		const left = uniq.filter((e) => e.status === "Left");
+		if (left.length === 1 && uniq.length === 1) {
+			return {
+				employee: left[0].name,
+				matched_by: label,
+				match: left[0],
+				historical_status: "Left",
+			};
+		}
 		return {
 			employee: null,
 			matched_by: label,
-			left_only: uniq.length,
-			candidates: uniq.map((e) => e.name + " | " + (e.employee_name || "") + " (Left)"),
+			left_only: left.length || uniq.length,
+			candidates: uniq.map((e) => e.name + " | " + (e.employee_name || "") + " (" + (e.status || "") + ")"),
 		};
 	}
 
@@ -1381,7 +1450,9 @@ espad.attendance_import.open = function () {
 					options: "Employee",
 					label: __("Employee"),
 					reqd: 1,
-					get_query: () => ({ filters: { status: ["in", ["Active", "Inactive"]] } }),
+					get_query: () => ({
+						filters: { status: ["in", ["Active", "Inactive", "Left"]] },
+					}),
 				},
 			],
 			primary_action_label: __("Apply"),
@@ -1586,9 +1657,18 @@ espad.attendance_import.open = function () {
 			skip_auto_attendance: dialog.get_value("skip_auto_attendance"),
 			location_device_id: dialog.get_value("location_device_id"),
 		});
+		state.skipped_employment = state.checkins._skipped_employment || [];
 		state.location_device_id = (dialog.get_value("location_device_id") || "").trim();
 		const invalid = state.parsed.records.filter((r) => r.has_error).length;
 		const matched_people = state.people.filter((p) => p.employee).length;
+		if (state.skipped_employment.length) {
+			term_append([
+				line(
+					"warn",
+					`[WARN] Skipped ${state.skipped_employment.length} punches outside employment window (joining/relieving).`
+				),
+			]);
+		}
 
 		if (!state.checkins.length) {
 			term_append([

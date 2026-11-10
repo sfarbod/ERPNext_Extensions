@@ -237,13 +237,83 @@ class TestAttendanceExcelImport(FrappeTestCase):
 		self.assertIn(employee, ctx["employees"])
 		self.assertTrue(ctx["employees"][employee]["company"])
 
+	def test_preload_includes_inactive_submitted_shift_assignments(self):
+		employee = self._employee("77017")
+		company = frappe.db.get_value("Employee", employee, "company")
+		shift_type = frappe.db.get_value("Shift Type", {"name": ["is", "set"]}, "name")
+		if not shift_type:
+			self.skipTest("No Shift Type available")
+		sa = frappe.get_doc(
+			{
+				"doctype": "Shift Assignment",
+				"employee": employee,
+				"company": company,
+				"shift_type": shift_type,
+				"start_date": add_days(getdate(nowdate()), -60),
+				"end_date": add_days(getdate(nowdate()), -30),
+				"status": "Inactive",
+			}
+		)
+		# Shift Assignment may require additional fields on this site
+		try:
+			sa.insert(ignore_permissions=True)
+			sa.submit()
+		except Exception as exc:
+			self.skipTest(f"Could not create Shift Assignment: {exc}")
+		self.addCleanup(
+			lambda: frappe.db.sql("delete from `tabShift Assignment` where name=%s", sa.name)
+			if frappe.db.exists("Shift Assignment", sa.name)
+			else None
+		)
+		frappe.db.set_value("Shift Assignment", sa.name, "status", "Inactive", update_modified=False)
+		ctx = preload_attendance_import_context([employee])
+		names = [row["name"] for row in ctx["assignments"].get(employee) or []]
+		self.assertIn(sa.name, names)
+		statuses = {row["name"]: row.get("status") for row in ctx["assignments"][employee]}
+		self.assertEqual(statuses[sa.name], "Inactive")
+
+	def test_source_shift_assignment_zero_default_and_links_are_repaired(self):
+		from erpnext_extensions.extentionhrms.attendance_excel_import_setup import (
+			ensure_source_shift_assignment_default_clear,
+			repair_invalid_source_shift_assignment_links,
+		)
+
+		cf = frappe.db.get_value(
+			"Custom Field",
+			{"dt": "Attendance", "fieldname": "custom_source_shift_assignment"},
+			"name",
+		)
+		if not cf:
+			self.skipTest("SSA custom field missing")
+		frappe.db.set_value("Custom Field", cf, "default", "0", update_modified=False)
+		self.assertEqual(ensure_source_shift_assignment_default_clear(), "cleared_zero_default")
+		self.assertEqual(frappe.db.get_value("Custom Field", cf, "default") or "", "")
+		# Seed an invalid link value on a disposable draft attendance if column exists
+		if frappe.db.has_column("Attendance", "custom_source_shift_assignment"):
+			employee = self._employee("77018")
+			day = add_days(getdate(nowdate()), -14)
+			doc = self._attendance(employee, day, submit=False)
+			frappe.db.set_value(
+				"Attendance", doc.name, "custom_source_shift_assignment", "0", update_modified=False
+			)
+			result = repair_invalid_source_shift_assignment_links()
+			self.assertGreaterEqual(result["updated"], 1)
+			self.assertFalse(
+				frappe.db.get_value("Attendance", doc.name, "custom_source_shift_assignment")
+			)
+
 	def test_client_script_sync_is_idempotent(self):
 		first = ensure_attendance_excel_import_setup()
 		second = ensure_attendance_excel_import_setup()
 		self.assertIn(first["client_script"], ("created", "updated", "unchanged"))
 		self.assertEqual(second["client_script"], "unchanged")
 		script = frappe.db.get_value("Client Script", "Employee Attendance Excel Import", "script")
-		self.assertIn("V2.0.10", script)
+		self.assertIn("V2.0.11", script)
+		self.assertIn("Include Inactive submitted assignments for historical dates", script)
+		self.assertIn("filters: { employee: r.employee, docstatus: 1 }", script)
+		self.assertNotIn(
+			'filters: { employee: r.employee, docstatus: 1, status: "Active" }', script
+		)
 		self.assertIn("import_attendance_details", script)
 		self.assertIn("get_personnel_code_index", script)
 		self.assertIn("/assets/erpnext_extensions/js/lib/xlsx.full.min.js", script)
