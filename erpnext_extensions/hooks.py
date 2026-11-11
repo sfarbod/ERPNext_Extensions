@@ -119,6 +119,8 @@ doctype_js = {
 	"Payment Entry": "public/js/payment_entry_pm_request_cancel.js",
 	# Recalculate net/purchase amount when Asset Quantity changes after PR/PI select.
 	"Asset": "asset_usage_depreciation/public/js/asset_purchase_amount_qty.js",
+	# v5.7.26: regenerate Draft accrual JE when no active (Draft/Submitted) JE exists.
+	"Payroll Entry": "extentionhrms/public/js/payroll_entry_accrual_je.js",
 }
 doctype_list_js = {
 	"PM Clearance": "erpnext_extensions/petty_management/doctype/pm_clearance/pm_clearance_list.js",

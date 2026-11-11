@@ -124,14 +124,12 @@ def _ss_fingerprint(payroll_entry: str, exclude_employee: str | None = None) -> 
 
 
 def _active_jes(payroll_entry: str) -> list[str]:
-	return frappe.db.sql_list(
-		"""
-		SELECT DISTINCT journal_entry
-		FROM `tabSalary Slip`
-		WHERE payroll_entry=%s AND docstatus=1 AND IFNULL(journal_entry,'')!=''
-		""",
-		(payroll_entry,),
+	"""Draft/Submitted accrual JEs only — cancelled or missing names never count."""
+	from erpnext_extensions.extentionhrms.payroll_accrual_je_guard import (
+		get_active_accrual_journal_entries,
 	)
+
+	return get_active_accrual_journal_entries(payroll_entry)
 
 
 def _validate_params(

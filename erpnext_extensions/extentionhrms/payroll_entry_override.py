@@ -44,6 +44,10 @@ from erpnext_extensions.extentionhrms.payroll_accrual_grouping import (
 	SalarySlip,
 	build_accrual_journal_accounts,
 )
+from erpnext_extensions.extentionhrms.payroll_accrual_je_guard import (
+	get_active_accrual_journal_entries,
+	prepare_accrual_journal_regeneration,
+)
 
 # Department stamped on the P&L round-off line (the round-off account is an
 # Expense account, so it needs one). Configured per company via a custom field;
@@ -70,6 +74,17 @@ class PayrollEntryWithAccountingDimensions(PayrollEntry):
 		return start_date, end_date
 
 	def make_accrual_jv_entry(self, submitted_salary_slips):
+		# Always refuse a second active accrual JE (Draft or Submitted), even when
+		# HRMS still holds cancelled/stale Salary Slip.journal_entry values.
+		active = get_active_accrual_journal_entries(self.name)
+		if active:
+			frappe.throw(
+				frappe._(
+					"Cannot create a new Accrual Journal Entry for Payroll Entry {0} while "
+					"active Journal Entry {1} exists (Draft or Submitted)."
+				).format(self.name, ", ".join(active))
+			)
+
 		employee_wise = cint(
 			frappe.db.get_single_value(
 				"Payroll Settings",
@@ -313,6 +328,48 @@ class PayrollEntryWithAccountingDimensions(PayrollEntry):
 		return self.payroll_payable_account or frappe.get_cached_value(
 			"Company", self.company, "default_payroll_payable_account"
 		)
+
+	@frappe.whitelist(methods=["POST"])
+	def has_active_accrual_journal_entry(self) -> dict:
+		"""Desk helper: whether Create Accrual JE should be offered."""
+		self.check_permission("read")
+		active = get_active_accrual_journal_entries(self.name)
+		return {"has_active": bool(active), "active": active}
+
+	@frappe.whitelist(methods=["POST"])
+	def generate_accrual_journal_entry(self):
+		"""Create a Draft accrual Journal Entry when no active JE exists.
+
+		Cancelled / missing JE links do not block. Clears inactive Salary Slip
+		``journal_entry`` references, then reuses ``make_accrual_jv_entry``.
+		Does not cancel or resubmit the Payroll Entry.
+		"""
+		self.check_permission("write")
+		prepare_accrual_journal_regeneration(self.name)
+		self.reload()
+
+		submitted = frappe.get_all(
+			"Salary Slip",
+			filters={"payroll_entry": self.name, "docstatus": 1},
+			pluck="name",
+			order_by="name",
+		)
+		if not submitted:
+			frappe.throw(
+				frappe._("No submitted Salary Slips found for Payroll Entry {0}").format(self.name)
+			)
+
+		slip_docs = [frappe.get_doc("Salary Slip", name) for name in submitted]
+		je = self.make_accrual_jv_entry(slip_docs)
+		if not je:
+			frappe.throw(frappe._("Accrual Journal Entry was not created"))
+
+		frappe.msgprint(
+			frappe._("Draft Accrual Journal Entry {0} created").format(je.name),
+			indicator="green",
+			alert=True,
+		)
+		return je.name
 
 	# ------------------------------------------------------------------
 	# Result -> Journal Entry account dicts (HRMS shape)
