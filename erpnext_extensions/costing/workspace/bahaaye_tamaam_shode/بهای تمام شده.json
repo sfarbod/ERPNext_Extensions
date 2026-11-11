@@ -1,0 +1,246 @@
+{
+ "app": "erpnext_extensions",
+ "charts": [],
+ "content": "[{\"id\":\"costing_hdr\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>\\u0628\\u0647\\u0627\\u06cc \\u062a\\u0645\\u0627\\u0645 \\u0634\\u062f\\u0647</b></span>\",\"col\":12}},{\"id\":\"costing_intro\",\"type\":\"paragraph\",\"data\":{\"text\":\"\\u062a\\u062e\\u0635\\u06cc\\u0635 \\u0647\\u0632\\u06cc\\u0646\\u0647\\u200c\\u0647\\u0627\\u06cc \\u0645\\u0627\\u0647\\u0627\\u0646\\u0647 \\u0628\\u0647 \\u0645\\u062d\\u0635\\u0648\\u0644\\u0627\\u062a \\u0646\\u0647\\u0627\\u06cc\\u06cc \\u062a\\u0632\\u0631\\u06cc\\u0642\\u06cc \\u0628\\u0631 \\u0627\\u0633\\u0627\\u0633 \\u0645\\u0627\\u0647 \\u0634\\u0645\\u0633\\u06cc.\",\"col\":12}},{\"id\":\"card_settings\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u062a\\u0646\\u0638\\u06cc\\u0645\\u0627\\u062a\",\"col\":6}},{\"id\":\"card_calc\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u0645\\u062d\\u0627\\u0633\\u0628\\u0627\\u062a \\u0645\\u0627\\u0647\\u0627\\u0646\\u0647\",\"col\":6}},{\"id\":\"card_reports\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u06af\\u0632\\u0627\\u0631\\u0634\\u200c\\u0647\\u0627 \\u0648 \\u062c\\u0632\\u0626\\u06cc\\u0627\\u062a\",\"col\":6}},{\"id\":\"card_mgmt\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u0645\\u062f\\u06cc\\u0631\\u06cc\\u062a \\u0648 \\u0633\\u0648\\u0627\\u0628\\u0642\",\"col\":6}}]",
+ "creation": "2026-11-12 01:40:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "hide_custom": 0,
+ "icon": "calculator",
+ "idx": 0,
+ "indicator_color": "blue",
+ "is_hidden": 0,
+ "label": "بهای تمام شده",
+ "links": [
+  {
+   "hidden": 0,
+   "icon": "settings",
+   "is_query_report": 0,
+   "label": "تنظیمات",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "settings",
+   "is_query_report": 0,
+   "label": "تنظیمات تخصیص هزینه",
+   "link_count": 0,
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "list",
+   "is_query_report": 0,
+   "label": "قوانین حساب‌ها و ابعاد",
+   "link_count": 0,
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "package",
+   "is_query_report": 0,
+   "label": "تنظیمات واحدهای اصلی و تبدیل UOM",
+   "link_count": 0,
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "calculator",
+   "is_query_report": 0,
+   "label": "محاسبات ماهانه",
+   "link_count": 2,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "file-plus",
+   "is_query_report": 0,
+   "label": "محاسبه بهای تمام‌شده محصولات نهایی",
+   "link_count": 0,
+   "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "list",
+   "is_query_report": 0,
+   "label": "فهرست محاسبات ماهانه",
+   "link_count": 0,
+   "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "alert-triangle",
+   "is_query_report": 0,
+   "label": "وضعیت محاسبات و مغایرت‌ها",
+   "link_count": 0,
+   "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "bar-chart-2",
+   "is_query_report": 0,
+   "label": "گزارش‌ها و جزئیات",
+   "link_count": 5,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "layers",
+   "is_query_report": 0,
+   "label": "استخرهای هزینه (Expense Pools)",
+   "link_count": 0,
+   "link_to": "MFG Cost Expense Pool",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "book-open",
+   "is_query_report": 0,
+   "label": "جزئیات اسناد حسابداری",
+   "link_count": 0,
+   "link_to": "MFG Cost GL Line",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "package",
+   "is_query_report": 0,
+   "label": "تخصیص هزینه به بچ‌های تولید",
+   "link_count": 0,
+   "link_to": "MFG Cost Batch Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "box",
+   "is_query_report": 0,
+   "label": "تخصیص هزینه به محصولات",
+   "link_count": 0,
+   "link_to": "MFG Cost Product Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "alert-circle",
+   "is_query_report": 0,
+   "label": "گزارش مغایرت‌ها و UOM",
+   "link_count": 0,
+   "link_to": "MFG Cost Product Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "archive",
+   "is_query_report": 0,
+   "label": "مدیریت و سوابق",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "history",
+   "is_query_report": 0,
+   "label": "تاریخچه محاسبات",
+   "link_count": 0,
+   "link_to": "MFG Cost Calculation Revision",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "git-branch",
+   "is_query_report": 0,
+   "label": "نسخه‌های محاسبات",
+   "link_count": 0,
+   "link_to": "MFG Cost Calculation Revision",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "lock",
+   "is_query_report": 0,
+   "label": "وضعیت قفل و بازگشایی محاسبات",
+   "link_count": 0,
+   "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-11-12 01:40:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "بهای تمام شده",
+ "number_cards": [],
+ "owner": "Administrator",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 25.0,
+ "shortcuts": [
+  {
+   "color": "Blue",
+   "doc_view": "List",
+   "label": "محاسبات ماهانه",
+   "link_to": "Monthly FG Cost Calculation",
+   "type": "DocType"
+  },
+  {
+   "color": "Gray",
+   "doc_view": "List",
+   "label": "تنظیمات تخصیص",
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "type": "DocType"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "استخرهای هزینه",
+   "link_to": "MFG Cost Expense Pool",
+   "type": "DocType"
+  }
+ ],
+ "title": "بهای تمام شده",
+ "type": "Workspace"
+}

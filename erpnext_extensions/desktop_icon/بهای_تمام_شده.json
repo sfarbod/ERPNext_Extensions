@@ -1,0 +1,37 @@
+{
+ "app": "erpnext_extensions",
+ "bg_color": "blue",
+ "creation": "2026-11-12 01:44:11.801454",
+ "docstatus": 0,
+ "doctype": "Desktop Icon",
+ "hidden": 0,
+ "icon": "calculator",
+ "icon_type": "Link",
+ "idx": 28,
+ "label": "\u0628\u0647\u0627\u06cc \u062a\u0645\u0627\u0645 \u0634\u062f\u0647",
+ "link_to": "\u0628\u0647\u0627\u06cc \u062a\u0645\u0627\u0645 \u0634\u062f\u0647",
+ "link_type": "Workspace Sidebar",
+ "modified": "2026-11-12 01:45:40.326992",
+ "modified_by": "Administrator",
+ "name": "\u0628\u0647\u0627\u06cc \u062a\u0645\u0627\u0645 \u0634\u062f\u0647",
+ "owner": "Administrator",
+ "restrict_removal": 0,
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Accounts Manager"
+  },
+  {
+   "role": "Accounts User"
+  },
+  {
+   "role": "Manufacturing Manager"
+  },
+  {
+   "role": "Auditor"
+  }
+ ],
+ "standard": 1
+}
