@@ -149,6 +149,9 @@ class TestConsumableContract(unittest.TestCase):
 		class Dummy:
 			status = "Locked"
 			is_consistent = 1
+			shares_are_provisional = 0
+			exception_count = 0
+			rule_count = 5
 
 		with patch("erpnext_extensions.iran_accounting.fg_cost_allocation.contract.frappe.get_doc", return_value=Dummy()):
 			doc = assert_consumable("X")

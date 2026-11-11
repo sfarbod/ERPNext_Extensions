@@ -1,0 +1,80 @@
+{
+ "actions": [],
+ "creation": "2026-11-12 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item",
+  "item_name",
+  "stock_uom",
+  "primary_uom",
+  "conversion_factor",
+  "conversion_status",
+  "remarks"
+ ],
+ "fields": [
+  {
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "item.item_name",
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Item Name",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "item.stock_uom",
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Stock UOM",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "primary_uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Primary UOM",
+   "options": "UOM",
+   "reqd": 1
+  },
+  {
+   "fieldname": "conversion_factor",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Conversion Factor",
+   "precision": "9",
+   "read_only": 1
+  },
+  {
+   "default": "Missing",
+   "fieldname": "conversion_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Conversion Status",
+   "options": "Valid\nMissing\nAmbiguous\nInvalid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
+ ],
+ "istable": 1,
+ "module": "Costing",
+ "name": "FG Item Primary UOM",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

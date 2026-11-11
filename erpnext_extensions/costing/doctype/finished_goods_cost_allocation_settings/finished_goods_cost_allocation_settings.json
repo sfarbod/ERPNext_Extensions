@@ -15,11 +15,17 @@
   "business_calendar",
   "enabled",
   "column_break_main",
-  "normalization_uom",
   "share_precision",
   "amount_precision",
+  "section_uom",
+  "default_primary_uom",
+  "item_primary_uoms",
   "section_rules",
-  "expense_account_dimension_rules"
+  "exclude_admin_staff_cost_centers",
+  "expense_account_dimension_rules",
+  "section_audit",
+  "last_rule_generation_summary",
+  "last_uom_validation_summary"
  ],
  "fields": [
   {
@@ -51,12 +57,6 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "normalization_uom",
-   "fieldtype": "Link",
-   "label": "Normalization UOM",
-   "options": "UOM"
-  },
-  {
    "default": "8",
    "fieldname": "share_precision",
    "fieldtype": "Int",
@@ -69,22 +69,64 @@
    "label": "Amount Precision"
   },
   {
+   "fieldname": "section_uom",
+   "fieldtype": "Section Break",
+   "label": "Primary UOM for Costing"
+  },
+  {
+   "description": "Used when generating Item primary UOM rows. Conversion factors always come from Item UOM Conversion Detail.",
+   "fieldname": "default_primary_uom",
+   "fieldtype": "Link",
+   "label": "Default Primary UOM",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "item_primary_uoms",
+   "fieldtype": "Table",
+   "label": "Item Primary UOMs",
+   "options": "FG Item Primary UOM"
+  },
+  {
    "fieldname": "section_rules",
    "fieldtype": "Section Break",
    "label": "Expense Account Dimension Rules"
+  },
+  {
+   "default": "1",
+   "description": "Exclude Cost Centers classified as اداری / ستادی (e.g. اداری و ستاد) from generated rules.",
+   "fieldname": "exclude_admin_staff_cost_centers",
+   "fieldtype": "Check",
+   "label": "Exclude Admin/Staff Cost Centers"
   },
   {
    "fieldname": "expense_account_dimension_rules",
    "fieldtype": "Table",
    "label": "Expense Account Dimension Rules",
    "options": "Expense Account Dimension Rule"
+  },
+  {
+   "fieldname": "section_audit",
+   "fieldtype": "Section Break",
+   "label": "Generation / Validation Audit"
+  },
+  {
+   "fieldname": "last_rule_generation_summary",
+   "fieldtype": "Long Text",
+   "label": "Last Rule Generation Summary",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_uom_validation_summary",
+   "fieldtype": "Long Text",
+   "label": "Last UOM Validation Summary",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-11 00:00:00.000000",
+ "modified": "2026-11-12 00:00:00.000000",
  "modified_by": "Administrator",
- "module": "erpnext_extensions",
+ "module": "Costing",
  "name": "Finished Goods Cost Allocation Settings",
  "naming_rule": "By fieldname",
  "owner": "Administrator",

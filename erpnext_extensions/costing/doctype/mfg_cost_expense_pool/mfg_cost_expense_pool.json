@@ -9,23 +9,26 @@
  "engine": "InnoDB",
  "field_order": [
   "monthly_calculation",
-  "expense_pool",
   "revision",
   "company",
   "column_break_meta",
-  "gl_entry",
-  "voucher_type",
-  "voucher_no",
-  "posting_date",
-  "section_amounts",
+  "persian_year",
+  "persian_month",
+  "start_date",
+  "end_date",
+  "section_pool",
+  "settings_rule",
   "account",
   "cost_center",
   "department",
-  "column_break_amt",
-  "debit",
-  "credit",
-  "net_amount",
-  "remarks"
+  "column_break_amounts",
+  "monthly_debit",
+  "monthly_credit",
+  "monthly_net_expense",
+  "gl_entry_count",
+  "allocated_amount",
+  "unallocated_amount",
+  "currency"
  ],
  "fields": [
   {
@@ -35,25 +38,19 @@
    "in_standard_filter": 1,
    "label": "Monthly Calculation",
    "options": "Monthly FG Cost Calculation",
-   "search_index": 1
-  },
-  {
-   "fieldname": "expense_pool",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Expense Pool",
-   "options": "MFG Cost Expense Pool",
+   "reqd": 1,
    "search_index": 1
   },
   {
    "fieldname": "revision",
    "fieldtype": "Int",
+   "in_list_view": 1,
    "label": "Revision"
   },
   {
    "fieldname": "company",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Company",
    "options": "Company"
   },
@@ -62,39 +59,43 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "gl_entry",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "GL Entry"
+   "fieldname": "persian_year",
+   "fieldtype": "Int",
+   "label": "Persian Year"
   },
   {
-   "fieldname": "voucher_type",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Voucher Type"
+   "fieldname": "persian_month",
+   "fieldtype": "Int",
+   "label": "Persian Month"
   },
   {
-   "fieldname": "voucher_no",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Voucher No"
-  },
-  {
-   "fieldname": "posting_date",
+   "fieldname": "start_date",
    "fieldtype": "Date",
-   "label": "Posting Date"
+   "label": "Start Date"
   },
   {
-   "fieldname": "section_amounts",
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date"
+  },
+  {
+   "fieldname": "section_pool",
    "fieldtype": "Section Break",
-   "label": "Amounts"
+   "label": "Pool"
+  },
+  {
+   "fieldname": "settings_rule",
+   "fieldtype": "Data",
+   "label": "Settings Rule"
   },
   {
    "fieldname": "account",
    "fieldtype": "Link",
    "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Account",
-   "options": "Account"
+   "options": "Account",
+   "search_index": 1
   },
   {
    "fieldname": "cost_center",
@@ -109,39 +110,64 @@
    "options": "Department"
   },
   {
-   "fieldname": "column_break_amt",
+   "fieldname": "column_break_amounts",
    "fieldtype": "Column Break"
   },
   {
    "default": "0",
-   "fieldname": "debit",
+   "fieldname": "monthly_debit",
    "fieldtype": "Currency",
-   "label": "Debit"
+   "label": "Monthly Debit",
+   "options": "currency"
   },
   {
    "default": "0",
-   "fieldname": "credit",
+   "fieldname": "monthly_credit",
    "fieldtype": "Currency",
-   "label": "Credit"
+   "label": "Monthly Credit",
+   "options": "currency"
   },
   {
    "default": "0",
-   "fieldname": "net_amount",
+   "fieldname": "monthly_net_expense",
    "fieldtype": "Currency",
-   "label": "Net Amount"
+   "in_list_view": 1,
+   "label": "Monthly Net Expense",
+   "options": "currency"
   },
   {
-   "fieldname": "remarks",
-   "fieldtype": "Small Text",
-   "label": "Remarks"
+   "default": "0",
+   "fieldname": "gl_entry_count",
+   "fieldtype": "Int",
+   "label": "GL Entry Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "allocated_amount",
+   "fieldtype": "Currency",
+   "label": "Allocated Amount",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "unallocated_amount",
+   "fieldtype": "Currency",
+   "label": "Unallocated Amount",
+   "options": "currency"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
  "modified": "2026-11-11 00:00:00.000000",
  "modified_by": "Administrator",
- "module": "erpnext_extensions",
- "name": "MFG Cost GL Line",
+ "module": "Costing",
+ "name": "MFG Cost Expense Pool",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
@@ -188,7 +214,7 @@
    "share": 1
   }
  ],
- "search_fields": "monthly_calculation,expense_pool,gl_entry,voucher_no,account",
+ "search_fields": "monthly_calculation,account,cost_center,department,company",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

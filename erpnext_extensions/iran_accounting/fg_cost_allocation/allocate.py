@@ -81,11 +81,15 @@ def build_batches(
 	*,
 	share_precision: int,
 	overrides: dict[str, Decimal] | None = None,
+	finalize_share_sum: bool = True,
 ) -> tuple[list[BatchAllocationState], Decimal, Decimal]:
 	"""Roll up products to batches; compute month-wide calculated/applied shares.
 
 	Returns (batches, month_norm, share_variance) where share_variance = sum(applied)-1.
 	Does NOT silently renormalize other batches.
+
+	When finalize_share_sum is False (UOM incomplete), residual-to-100% is skipped —
+	shares are provisional diagnostics only.
 	"""
 	overrides = overrides or {}
 	by_batch: dict[str, list[ProductBucket]] = {}
@@ -139,7 +143,8 @@ def build_batches(
 			b.calculated_share = Decimal("0")
 
 	# Absorb quantization residual into largest batch so Σ calculated_share == 1
-	if month_norm > 0:
+	# Only when all eligible production is normalized (finalize_share_sum).
+	if finalize_share_sum and month_norm > 0:
 		eligible = [b for b in batches if b.normalized_qty > 0]
 		calc_sum = sum((b.calculated_share for b in eligible), Decimal("0"))
 		diff = _share(Decimal("1") - calc_sum, share_precision)
@@ -169,6 +174,9 @@ def allocate_pools_to_batches(
 	results: list[BatchExpenseAlloc] = []
 	eligible = [b for b in batches if b.normalized_qty > 0]
 	for pool in pools:
+		# Zero-net pools remain as Expense Pool headers; skip dense zero cross-alloc rows.
+		if pool.monthly_net_expense == 0:
+			continue
 		pool_key = (pool.account, pool.cost_center or "", pool.department or "")
 		raw_amounts: list[tuple[BatchAllocationState, Decimal]] = []
 		allocated_sum = Decimal("0")

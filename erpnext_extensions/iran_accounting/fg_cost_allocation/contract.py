@@ -41,6 +41,20 @@ def assert_consumable(monthly_name: str):
 		raise FGCostAllocationNotConsumable(
 			_("Monthly FG Cost Calculation {0} is inconsistent.").format(monthly_name)
 		)
+	if cint(getattr(doc, "shares_are_provisional", 0)):
+		raise FGCostAllocationNotConsumable(
+			_("Monthly FG Cost Calculation {0} has provisional shares (UOM incomplete).").format(
+				monthly_name
+			)
+		)
+	if cint(getattr(doc, "exception_count", 0)):
+		raise FGCostAllocationNotConsumable(
+			_("Monthly FG Cost Calculation {0} still has exceptions.").format(monthly_name)
+		)
+	if cint(getattr(doc, "rule_count", 0)) <= 0:
+		raise FGCostAllocationNotConsumable(
+			_("Monthly FG Cost Calculation {0} has no expense rules.").format(monthly_name)
+		)
 	return doc
 
 

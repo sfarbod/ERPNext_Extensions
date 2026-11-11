@@ -10,8 +10,10 @@
  "field_order": [
   "monthly_calculation",
   "revision",
+  "product_allocation",
   "batch_allocation",
   "batch_no",
+  "item_code",
   "column_break_meta",
   "expense_pool",
   "account",
@@ -20,7 +22,9 @@
   "section_amounts",
   "pool_monthly_net_expense",
   "applied_batch_share",
-  "allocated_amount",
+  "product_share",
+  "batch_pool_allocated_amount",
+  "product_pool_allocated_amount",
   "currency",
   "residual_applied"
  ],
@@ -40,19 +44,31 @@
    "label": "Revision"
   },
   {
-   "fieldname": "batch_allocation",
+   "fieldname": "product_allocation",
    "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Batch Allocation",
-   "options": "MFG Cost Batch Allocation",
+   "label": "Product Allocation",
+   "options": "MFG Cost Product Allocation",
    "search_index": 1
+  },
+  {
+   "fieldname": "batch_allocation",
+   "fieldtype": "Link",
+   "label": "Batch Allocation",
+   "options": "MFG Cost Batch Allocation"
   },
   {
    "fieldname": "batch_no",
    "fieldtype": "Data",
-   "in_list_view": 1,
    "label": "Batch No"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
   },
   {
    "fieldname": "column_break_meta",
@@ -105,10 +121,24 @@
   },
   {
    "default": "0",
-   "fieldname": "allocated_amount",
+   "fieldname": "product_share",
+   "fieldtype": "Float",
+   "label": "Product Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "batch_pool_allocated_amount",
+   "fieldtype": "Currency",
+   "label": "Batch Pool Allocated Amount",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "product_pool_allocated_amount",
    "fieldtype": "Currency",
    "in_list_view": 1,
-   "label": "Allocated Amount",
+   "label": "Product Pool Allocated Amount",
    "options": "currency"
   },
   {
@@ -128,8 +158,8 @@
  "links": [],
  "modified": "2026-11-11 00:00:00.000000",
  "modified_by": "Administrator",
- "module": "erpnext_extensions",
- "name": "MFG Cost Batch Expense Allocation",
+ "module": "Costing",
+ "name": "MFG Cost Product Expense Allocation",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
@@ -176,7 +206,7 @@
    "share": 1
   }
  ],
- "search_fields": "monthly_calculation,batch_allocation,batch_no,expense_pool,account",
+ "search_fields": "monthly_calculation,product_allocation,batch_no,item_code,expense_pool",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

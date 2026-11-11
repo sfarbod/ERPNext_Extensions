@@ -10,30 +10,30 @@
  "field_order": [
   "monthly_calculation",
   "revision",
-  "company",
-  "persian_year",
-  "persian_month",
-  "column_break_meta",
+  "batch_allocation",
   "batch_no",
-  "finished_item",
-  "work_orders",
+  "column_break_meta",
+  "item_code",
+  "item_name",
+  "work_order",
+  "stock_entry",
+  "stock_entry_detail",
   "stock_entries",
-  "stock_entry_details",
   "section_qty",
-  "posting_date_min",
-  "posting_date_max",
   "actual_qty",
   "uom",
   "normalization_factor",
-  "column_break_share",
+  "normalization_uom",
   "normalized_qty",
-  "total_monthly_normalized_qty",
-  "calculated_share",
-  "manual_share",
-  "is_manual_override",
-  "applied_share",
-  "total_allocated_expense",
-  "currency"
+  "column_break_share",
+  "batch_total_normalized_qty",
+  "product_share",
+  "batch_allocated_expense",
+  "product_allocated_expense",
+  "unit_cost_on_actual",
+  "unit_cost_on_normalized",
+  "currency",
+  "missing_uom_factor"
  ],
  "fields": [
   {
@@ -51,44 +51,53 @@
    "label": "Revision"
   },
   {
-   "fieldname": "company",
+   "fieldname": "batch_allocation",
    "fieldtype": "Link",
-   "label": "Company",
-   "options": "Company"
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Batch Allocation",
+   "options": "MFG Cost Batch Allocation",
+   "search_index": 1
   },
   {
-   "fieldname": "persian_year",
-   "fieldtype": "Int",
-   "label": "Persian Year"
-  },
-  {
-   "fieldname": "persian_month",
-   "fieldtype": "Int",
-   "label": "Persian Month"
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Batch No"
   },
   {
    "fieldname": "column_break_meta",
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "batch_no",
-   "fieldtype": "Data",
+   "fieldname": "item_code",
+   "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Batch No",
+   "label": "Item Code",
+   "options": "Item",
    "search_index": 1
   },
   {
-   "fieldname": "finished_item",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Finished Item",
-   "options": "Item"
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "read_only": 1
   },
   {
-   "fieldname": "work_orders",
-   "fieldtype": "Small Text",
-   "label": "Work Orders"
+   "fieldname": "work_order",
+   "fieldtype": "Data",
+   "label": "Work Order"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Data",
+   "label": "Stock Entry"
+  },
+  {
+   "fieldname": "stock_entry_detail",
+   "fieldtype": "Data",
+   "label": "Stock Entry Detail"
   },
   {
    "fieldname": "stock_entries",
@@ -96,24 +105,9 @@
    "label": "Stock Entries"
   },
   {
-   "fieldname": "stock_entry_details",
-   "fieldtype": "Small Text",
-   "label": "Stock Entry Details"
-  },
-  {
    "fieldname": "section_qty",
    "fieldtype": "Section Break",
-   "label": "Quantity and Share"
-  },
-  {
-   "fieldname": "posting_date_min",
-   "fieldtype": "Date",
-   "label": "Posting Date Min"
-  },
-  {
-   "fieldname": "posting_date_max",
-   "fieldtype": "Date",
-   "label": "Posting Date Max"
+   "label": "Quantity and Cost"
   },
   {
    "default": "0",
@@ -136,8 +130,10 @@
    "precision": "9"
   },
   {
-   "fieldname": "column_break_share",
-   "fieldtype": "Column Break"
+   "fieldname": "normalization_uom",
+   "fieldtype": "Link",
+   "label": "Normalization UOM",
+   "options": "UOM"
   },
   {
    "default": "0",
@@ -147,46 +143,51 @@
    "precision": "9"
   },
   {
+   "fieldname": "column_break_share",
+   "fieldtype": "Column Break"
+  },
+  {
    "default": "0",
-   "fieldname": "total_monthly_normalized_qty",
+   "fieldname": "batch_total_normalized_qty",
    "fieldtype": "Float",
-   "label": "Total Monthly Normalized Qty",
+   "label": "Batch Total Normalized Qty",
    "precision": "9"
   },
   {
    "default": "0",
-   "fieldname": "calculated_share",
+   "fieldname": "product_share",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Calculated Share",
-   "precision": "9"
-  },
-  {
-   "fieldname": "manual_share",
-   "fieldtype": "Float",
-   "label": "Manual Share",
+   "label": "Product Share",
    "precision": "9"
   },
   {
    "default": "0",
-   "fieldname": "is_manual_override",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Is Manual Override"
+   "fieldname": "batch_allocated_expense",
+   "fieldtype": "Currency",
+   "label": "Batch Allocated Expense",
+   "options": "currency"
   },
   {
    "default": "0",
-   "fieldname": "applied_share",
-   "fieldtype": "Float",
-   "label": "Applied Share",
-   "precision": "9"
-  },
-  {
-   "default": "0",
-   "fieldname": "total_allocated_expense",
+   "fieldname": "product_allocated_expense",
    "fieldtype": "Currency",
    "in_list_view": 1,
-   "label": "Total Allocated Expense",
+   "label": "Product Allocated Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "unit_cost_on_actual",
+   "fieldtype": "Currency",
+   "label": "Unit Cost On Actual",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "unit_cost_on_normalized",
+   "fieldtype": "Currency",
+   "label": "Unit Cost On Normalized",
    "options": "currency"
   },
   {
@@ -194,14 +195,20 @@
    "fieldtype": "Link",
    "label": "Currency",
    "options": "Currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "missing_uom_factor",
+   "fieldtype": "Check",
+   "label": "Missing UOM Factor"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
  "modified": "2026-11-11 00:00:00.000000",
  "modified_by": "Administrator",
- "module": "erpnext_extensions",
- "name": "MFG Cost Batch Allocation",
+ "module": "Costing",
+ "name": "MFG Cost Product Allocation",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
@@ -257,7 +264,7 @@
    "share": 1
   }
  ],
- "search_fields": "monthly_calculation,batch_no,finished_item,company",
+ "search_fields": "monthly_calculation,batch_allocation,batch_no,item_code",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

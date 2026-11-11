@@ -50,6 +50,7 @@ def reconcile(
 	share_precision: int,
 	currency: str,
 	blocking_exceptions: list[str],
+	uom_complete: bool = True,
 ) -> ReconciliationResult:
 	result = ReconciliationResult(ok=True)
 	precision = get_currency_precision(currency)
@@ -65,8 +66,8 @@ def reconcile(
 	batch_norm_sum = sum((b.normalized_qty for b in batches), Decimal("0"))
 	result.add("batch_norm_sum", batch_norm_sum == month_norm, month_norm, batch_norm_sum)
 
-	# 3) calculated shares ≈ 1 when month_norm > 0
-	if month_norm > 0:
+	# 3) calculated shares ≈ 1 only when UOM-complete and month_norm > 0
+	if month_norm > 0 and uom_complete:
 		calc_sum = sum((b.calculated_share for b in batches), Decimal("0"))
 		result.add(
 			"calculated_share_sum",
@@ -74,18 +75,29 @@ def reconcile(
 			Decimal("1"),
 			calc_sum,
 		)
+	elif not uom_complete:
+		result.add(
+			"calculated_share_sum",
+			False,
+			Decimal("1"),
+			None,
+			"provisional — UOM incomplete; not a valid 100% allocation",
+		)
 
 	# 4) applied share variance (informational / blocking via Incomplete)
 	result.add(
 		"applied_share_sum",
-		abs(share_variance) <= eps_share * Decimal(max(len(batches), 1)) or month_norm == 0,
+		uom_complete
+		and (abs(share_variance) <= eps_share * Decimal(max(len(batches), 1)) or month_norm == 0),
 		Decimal("0"),
 		share_variance,
 		"variance from 100%",
 	)
 
 	# 5) per pool: sum batch allocations = pool net (only when share ok and production)
-	share_ok = abs(share_variance) <= eps_share * Decimal(max(len(batches), 1)) or month_norm == 0
+	share_ok = uom_complete and (
+		abs(share_variance) <= eps_share * Decimal(max(len(batches), 1)) or month_norm == 0
+	)
 	if share_ok and month_norm > 0:
 		for pool in pools:
 			key = (pool.account, pool.cost_center or "", pool.department or "")
