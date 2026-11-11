@@ -204,3 +204,65 @@ class TestPayrollAccrualJeConcurrentThreads(unittest.TestCase):
 		t1.join()
 		t2.join()
 		self.assertEqual(len(winner), 1)
+
+
+class TestPayrollAccrualJeWhitelistPath(unittest.TestCase):
+	"""Desk must call erpnext_extensions wrappers, not the HRMS module path."""
+
+	WRAPPER_GENERATE = (
+		"erpnext_extensions.extentionhrms.payroll_accrual_je_guard.generate_accrual_journal_entry"
+	)
+	WRAPPER_HAS_ACTIVE = (
+		"erpnext_extensions.extentionhrms.payroll_accrual_je_guard.has_active_accrual_journal_entry"
+	)
+	WRONG_HRMS_PATH = "hrms.payroll.doctype.payroll_entry.payroll_entry.generate_accrual_journal_entry"
+
+	def test_wrapper_methods_resolve(self):
+		gen = frappe.get_attr(self.WRAPPER_GENERATE)
+		has = frappe.get_attr(self.WRAPPER_HAS_ACTIVE)
+		self.assertTrue(callable(gen))
+		self.assertTrue(callable(has))
+
+	def test_hrms_module_does_not_own_generate(self):
+		import hrms.payroll.doctype.payroll_entry.payroll_entry as hrms_pe
+
+		self.assertFalse(hasattr(hrms_pe, "generate_accrual_journal_entry"))
+
+	def test_guest_rejected_on_generate(self):
+		from erpnext_extensions.extentionhrms import payroll_accrual_je_guard as guard
+
+		with patch.object(guard, "_require_logged_in", side_effect=frappe.PermissionError("Login required")):
+			with self.assertRaises(Exception):
+				guard.generate_accrual_journal_entry("اردیبهشت 1405")
+
+	def test_guest_rejected_on_has_active(self):
+		from erpnext_extensions.extentionhrms import payroll_accrual_je_guard as guard
+
+		with patch.object(guard, "_require_logged_in", side_effect=frappe.PermissionError("Login required")):
+			with self.assertRaises(Exception):
+				guard.has_active_accrual_journal_entry("اردیبهشت 1405")
+
+	def test_wrapper_generate_delegates_to_controller(self):
+		from erpnext_extensions.extentionhrms import payroll_accrual_je_guard as guard
+
+		pe = type("PE", (), {"generate_accrual_journal_entry": lambda self: "JE-NEW"})()
+		with (
+			patch.object(guard, "_require_logged_in"),
+			patch.object(guard.frappe.db, "exists", return_value=True),
+			patch.object(guard.frappe, "get_doc", return_value=pe),
+		):
+			self.assertEqual(guard.generate_accrual_journal_entry("PE-1"), "JE-NEW")
+
+	def test_wrapper_has_active_uses_guard(self):
+		from erpnext_extensions.extentionhrms import payroll_accrual_je_guard as guard
+
+		pe = type("PE", (), {"check_permission": lambda self, ptype: None})()
+		with (
+			patch.object(guard, "_require_logged_in"),
+			patch.object(guard.frappe.db, "exists", return_value=True),
+			patch.object(guard.frappe, "get_doc", return_value=pe),
+			patch.object(guard, "get_active_accrual_journal_entries", return_value=["JE-D"]),
+		):
+			out = guard.has_active_accrual_journal_entry("PE-1")
+			self.assertTrue(out["has_active"])
+			self.assertEqual(out["active"], ["JE-D"])

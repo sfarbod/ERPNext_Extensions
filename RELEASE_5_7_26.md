@@ -30,16 +30,27 @@ Allow a Submitted Payroll Entry to generate a new **Draft** accrual Journal Entr
 ## Implementation
 
 - `payroll_accrual_je_guard.py` — resolve JE links from Salary Slips **and** Journal Entry Account references; classify active/cancelled/missing; clear inactive slip links; row-lock Payroll Entry.
-- `PayrollEntryWithAccountingDimensions.generate_accrual_journal_entry` — whitelist regenerate path (Draft via existing override).
+- `PayrollEntryWithAccountingDimensions.generate_accrual_journal_entry` — controller regenerate path (Draft via existing override).
 - Guard inside `make_accrual_jv_entry` against duplicate active JEs.
 - Desk button `Create Accrual Journal Entry` when Submitted and no active JE.
 - `_active_jes` in `payroll_correction.py` now ignores cancelled/missing names.
 
 Cancelled Journal Entries are preserved for audit. Payroll calculation / GL posting math is unchanged.
 
+## Hotfix — Desk method resolution
+
+**Symptom:** Desk button called `hrms.payroll.doctype.payroll_entry.payroll_entry.generate_accrual_journal_entry`, which does not exist (`override_doctype_class` does not publish attributes on the HRMS module).
+
+**Fix:** Whitelisted wrappers in `erpnext_extensions.extentionhrms.payroll_accrual_je_guard`:
+
+- `has_active_accrual_journal_entry`
+- `generate_accrual_journal_entry`
+
+Desk JS calls these fully qualified paths and delegates to the existing controller implementation (no business-logic duplication).
+
 ## Tests
 
-`extentionhrms/tests/test_payroll_accrual_je_guard.py` — cancelled / draft / submitted / missing / multi-cancelled / cancelled+draft / cancelled+submitted / inactive link clear / concurrent prepare.
+`extentionhrms/tests/test_payroll_accrual_je_guard.py` — cancelled / draft / submitted / missing / multi-cancelled / cancelled+draft / cancelled+submitted / inactive link clear / concurrent prepare / whitelist path resolution / guest rejection / wrapper delegation.
 
 ## Dev validation (Ordibehesht 1405)
 
@@ -52,5 +63,16 @@ Cancelled Journal Entries are preserved for audit. Payroll calculation / GL post
 | Salary Slips linked to new JE | 240 / 240 |
 | Second generation attempt | **Blocked** (active Draft) |
 | Duplicate active JE | None |
+
+### Hotfix Desk validation
+
+| Check | Result |
+|---|---|
+| Correct method resolves | `erpnext_extensions.extentionhrms.payroll_accrual_je_guard.generate_accrual_journal_entry` |
+| HRMS module attribute | **Absent** (confirms original failure mode) |
+| Draft `ACC-JV-1405-172501` detected / second generate | **Blocked**, clear message |
+| JE count on blocked retry | Unchanged |
+| Payroll Entry | Remains **Submitted** |
+| Salary Slips | 240 linked to Draft JE |
 
 No Production push/merge/deploy.

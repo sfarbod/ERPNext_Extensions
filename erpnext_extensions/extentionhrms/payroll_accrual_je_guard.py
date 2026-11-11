@@ -157,3 +157,43 @@ def prepare_accrual_journal_regeneration(payroll_entry: str) -> dict[str, Any]:
 		"cleared_inactive_links": cleared,
 		"classified_after": classified_after,
 	}
+
+
+# ---------------------------------------------------------------------------
+# Desk / API whitelist wrappers
+# ---------------------------------------------------------------------------
+# ``frm.call("generate_accrual_journal_entry")`` resolves against the HRMS
+# Payroll Entry *module* path, not the override_doctype_class controller.
+# Desk must call these fully-qualified erpnext_extensions methods instead.
+
+
+def _require_logged_in() -> None:
+	if frappe.session.user == "Guest":
+		frappe.throw(_("Login required"), frappe.PermissionError)
+
+
+@frappe.whitelist(methods=["POST"])
+def has_active_accrual_journal_entry(payroll_entry: str) -> dict[str, Any]:
+	"""Whitelisted Desk helper — returns whether an active accrual JE exists."""
+	_require_logged_in()
+	if not payroll_entry:
+		frappe.throw(_("payroll_entry is required"))
+	if not frappe.db.exists("Payroll Entry", payroll_entry):
+		frappe.throw(_("Payroll Entry {0} not found").format(payroll_entry))
+	frappe.get_doc("Payroll Entry", payroll_entry).check_permission("read")
+	active = get_active_accrual_journal_entries(payroll_entry)
+	return {"has_active": bool(active), "active": active}
+
+
+@frappe.whitelist(methods=["POST"])
+def generate_accrual_journal_entry(payroll_entry: str) -> str:
+	"""Whitelisted Desk entry-point; delegates to the Payroll Entry controller."""
+	_require_logged_in()
+	if not payroll_entry:
+		frappe.throw(_("payroll_entry is required"))
+	if not frappe.db.exists("Payroll Entry", payroll_entry):
+		frappe.throw(_("Payroll Entry {0} not found").format(payroll_entry))
+
+	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	# Controller method enforces write permission + active-JE guard + Draft create.
+	return pe.generate_accrual_journal_entry()
