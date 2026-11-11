@@ -11,10 +11,13 @@ from decimal import Decimal
 import frappe
 from frappe.utils import flt
 
+from erpnext_extensions.iran_accounting.fg_cost_allocation import FG_ITEM_GROUP, FG_PARENT_ITEM_GROUP
+from erpnext_extensions.iran_accounting.fg_cost_allocation.eligibility import verify_fg_item_group_hierarchy
 from erpnext_extensions.iran_accounting.fg_cost_allocation.engine import run_calculation
 from erpnext_extensions.iran_accounting.fg_cost_allocation.expense_rules import is_admin_staff_cost_center
 from erpnext_extensions.iran_accounting.fg_cost_allocation.period import resolve_persian_month
 from erpnext_extensions.iran_accounting.fg_cost_allocation.production_extract import fetch_eligible_fg_rows
+from erpnext_extensions.iran_accounting.fg_cost_allocation.uom_config import list_fg_items, validate_and_refresh_item_uoms
 
 COMPANY = "اسپاد فارمد دارو"
 
@@ -30,10 +33,24 @@ def recalc_fy1405():
 
 
 def collect_audit():
+	hierarchy = verify_fg_item_group_hierarchy()
 	settings_name = frappe.db.get_value(
 		"Finished Goods Cost Allocation Settings", {"company": COMPANY}, "name"
 	)
 	settings = frappe.get_doc("Finished Goods Cost Allocation Settings", settings_name)
+	eligible_items = list_fg_items(COMPANY)
+	sibling_groups = frappe.db.sql(
+		"""
+		SELECT ig.name AS item_group, COUNT(i.name) AS item_count
+		FROM `tabItem Group` ig
+		LEFT JOIN tabItem i ON i.item_group = ig.name AND IFNULL(i.disabled,0)=0
+		WHERE ig.parent_item_group = %s AND ig.name != %s
+		GROUP BY ig.name
+		ORDER BY ig.name
+		""",
+		(FG_PARENT_ITEM_GROUP, FG_ITEM_GROUP),
+		as_dict=True,
+	)
 	uom_rows = frappe.get_all(
 		"FG Item Primary UOM",
 		filters={"parent": settings.name},
@@ -103,7 +120,7 @@ def collect_audit():
 	uom_exceptions = []
 	for m in months:
 		period = resolve_persian_month(COMPANY, 1405, int(m.persian_month))
-		rows = fetch_eligible_fg_rows(COMPANY, period)
+		rows, excluded_rows, exclusion_summary = fetch_eligible_fg_rows(COMPANY, period)
 		actual_sum = sum(Decimal(str(flt(r.qty))) for r in rows)
 		batch_actual = frappe.db.sql(
 			"""
@@ -148,6 +165,9 @@ def collect_audit():
 				"eligible_source_row_count": m.eligible_source_row_count,
 				"normalized_qty": m.total_monthly_normalized_qty,
 				"exception_count": m.exception_count,
+				"excluded_source_row_count": exclusion_summary.get("excluded_source_row_count"),
+				"excluded_qty": exclusion_summary.get("excluded_qty"),
+				"excluded_by_item_group": exclusion_summary.get("by_item_group"),
 				"pool_net": float(pool_net or 0),
 				"header_identified": float(m.total_identified_expenses or 0),
 				"batch_allocated": float(batch_alloc or 0),
@@ -222,6 +242,13 @@ def collect_audit():
 	out = {
 		"company": COMPANY,
 		"settings": settings.name,
+		"item_group_hierarchy": {
+			"item_group": hierarchy.item_group,
+			"parent_item_group": hierarchy.parent_item_group,
+			"is_group": hierarchy.is_group,
+		},
+		"eligible_item_count": len(eligible_items),
+		"excluded_sibling_item_groups": sibling_groups,
 		"module": module,
 		"costing_doctypes": doctypes,
 		"uom_status_counts": dict(status_counts),

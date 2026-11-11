@@ -11,7 +11,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
-from erpnext_extensions.iran_accounting.fg_cost_allocation import FG_PARENT_ITEM_GROUP
+from erpnext_extensions.iran_accounting.fg_cost_allocation import FG_ITEM_GROUP, FG_PARENT_ITEM_GROUP
+from erpnext_extensions.iran_accounting.fg_cost_allocation.eligibility import verify_fg_item_group_hierarchy
 
 
 def get_item_stock_uom(item_code: str) -> str:
@@ -44,17 +45,19 @@ def resolve_conversion(item_code: str, primary_uom: str) -> tuple[Decimal | None
 
 
 def list_fg_items(company: str | None = None) -> list[dict]:
-	"""Eligible Finished Goods items (parent item group محصول نهایی)."""
+	"""Eligible Finished Goods Items: Item Group تزریقی under parent محصول نهایی."""
+	verify_fg_item_group_hierarchy()
 	return frappe.db.sql(
 		"""
-		SELECT i.name AS item, i.item_name, i.stock_uom
+		SELECT i.name AS item, i.item_name, i.stock_uom, i.item_group
 		FROM tabItem i
 		INNER JOIN `tabItem Group` ig ON ig.name = i.item_group
-		WHERE ig.parent_item_group = %(fg)s
+		WHERE i.item_group = %(fg_item_group)s
+		  AND ig.parent_item_group = %(fg_parent)s
 		  AND IFNULL(i.disabled, 0) = 0
 		ORDER BY i.name
 		""",
-		{"fg": FG_PARENT_ITEM_GROUP},
+		{"fg_item_group": FG_ITEM_GROUP, "fg_parent": FG_PARENT_ITEM_GROUP},
 		as_dict=True,
 	)
 

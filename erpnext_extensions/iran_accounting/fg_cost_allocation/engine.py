@@ -12,6 +12,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from erpnext_extensions.iran_accounting.fg_cost_allocation import FG_ITEM_GROUP, FG_PARENT_ITEM_GROUP
 from erpnext_extensions.iran_accounting.fg_cost_allocation.allocate import (
 	allocate_pools_to_batches,
 	allocate_products,
@@ -125,9 +126,10 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 		rules = load_enabled_rules(settings.name)
 		pools, excluded = extract_pools_for_rules(doc.company, period, rules)
 
-		rows = fetch_eligible_fg_rows(doc.company, period)
+		rows, excluded_rows, exclusion_summary = fetch_eligible_fg_rows(doc.company, period)
 		products, prod_exceptions = consolidate_products(rows)
 		norm_exceptions = apply_normalization(products, settings)
+		# Item-group exclusions are reported separately and must not create UOM blockers
 		exceptions = prod_exceptions + norm_exceptions
 		uom_complete = not any(p.missing_uom_factor for p in products.values()) and not norm_exceptions
 
@@ -222,13 +224,24 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 				"ok": recon.ok,
 				"uom_complete": uom_complete,
 				"shares_are_provisional": not uom_complete,
+				"eligible_item_group": FG_ITEM_GROUP,
+				"parent_item_group": FG_PARENT_ITEM_GROUP,
+				"eligible_source_row_count": len(rows),
+				"item_group_exclusions": exclusion_summary,
 				"checks": recon.checks,
 				"messages": recon.messages,
 			},
 			ensure_ascii=False,
 			default=str,
 		)
-		doc.exceptions_json = json.dumps(exceptions, ensure_ascii=False)
+		doc.exceptions_json = json.dumps(
+			{
+				"blocking": exceptions,
+				"item_group_exclusions": exclusion_summary,
+			},
+			ensure_ascii=False,
+			default=str,
+		)
 		# ignore_version must be passed to save(); _save overwrites flags.ignore_version
 		doc.save(ignore_permissions=True, ignore_version=True)
 
@@ -242,6 +255,8 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 			"product_count": len(product_rows),
 			"gl_entry_count": doc.gl_entry_count,
 			"eligible_source_row_count": len(rows),
+			"excluded_source_row_count": exclusion_summary.get("excluded_source_row_count", 0),
+			"excluded_qty": exclusion_summary.get("excluded_qty", 0),
 			"uom_complete": uom_complete,
 		}
 		write_revision_log(

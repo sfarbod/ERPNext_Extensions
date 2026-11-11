@@ -17,3 +17,4 @@ DETAIL_DOCTYPE_MAP = {
 CONSUMABLE_STATUSES = frozenset({"Calculated", "Recalculated", "Locked"})
 
 FG_PARENT_ITEM_GROUP = "محصول نهایی"
+FG_ITEM_GROUP = "تزریقی"
