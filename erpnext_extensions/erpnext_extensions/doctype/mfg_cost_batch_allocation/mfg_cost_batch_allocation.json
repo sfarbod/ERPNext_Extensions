@@ -1,0 +1,265 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "monthly_calculation",
+  "revision",
+  "company",
+  "persian_year",
+  "persian_month",
+  "column_break_meta",
+  "batch_no",
+  "finished_item",
+  "work_orders",
+  "stock_entries",
+  "stock_entry_details",
+  "section_qty",
+  "posting_date_min",
+  "posting_date_max",
+  "actual_qty",
+  "uom",
+  "normalization_factor",
+  "column_break_share",
+  "normalized_qty",
+  "total_monthly_normalized_qty",
+  "calculated_share",
+  "manual_share",
+  "is_manual_override",
+  "applied_share",
+  "total_allocated_expense",
+  "currency"
+ ],
+ "fields": [
+  {
+   "fieldname": "monthly_calculation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Monthly Calculation",
+   "options": "Monthly FG Cost Calculation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "label": "Revision"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "persian_year",
+   "fieldtype": "Int",
+   "label": "Persian Year"
+  },
+  {
+   "fieldname": "persian_month",
+   "fieldtype": "Int",
+   "label": "Persian Month"
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Batch No",
+   "search_index": 1
+  },
+  {
+   "fieldname": "finished_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Finished Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "work_orders",
+   "fieldtype": "Small Text",
+   "label": "Work Orders"
+  },
+  {
+   "fieldname": "stock_entries",
+   "fieldtype": "Small Text",
+   "label": "Stock Entries"
+  },
+  {
+   "fieldname": "stock_entry_details",
+   "fieldtype": "Small Text",
+   "label": "Stock Entry Details"
+  },
+  {
+   "fieldname": "section_qty",
+   "fieldtype": "Section Break",
+   "label": "Quantity and Share"
+  },
+  {
+   "fieldname": "posting_date_min",
+   "fieldtype": "Date",
+   "label": "Posting Date Min"
+  },
+  {
+   "fieldname": "posting_date_max",
+   "fieldtype": "Date",
+   "label": "Posting Date Max"
+  },
+  {
+   "default": "0",
+   "fieldname": "actual_qty",
+   "fieldtype": "Float",
+   "label": "Actual Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM"
+  },
+  {
+   "default": "0",
+   "fieldname": "normalization_factor",
+   "fieldtype": "Float",
+   "label": "Normalization Factor",
+   "precision": "9"
+  },
+  {
+   "fieldname": "column_break_share",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "normalized_qty",
+   "fieldtype": "Float",
+   "label": "Normalized Qty",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_monthly_normalized_qty",
+   "fieldtype": "Float",
+   "label": "Total Monthly Normalized Qty",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "calculated_share",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Calculated Share",
+   "precision": "9"
+  },
+  {
+   "fieldname": "manual_share",
+   "fieldtype": "Float",
+   "label": "Manual Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_manual_override",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Manual Override"
+  },
+  {
+   "default": "0",
+   "fieldname": "applied_share",
+   "fieldtype": "Float",
+   "label": "Applied Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_allocated_expense",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Total Allocated Expense",
+   "options": "currency"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "MFG Cost Batch Allocation",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1
+  }
+ ],
+ "search_fields": "monthly_calculation,batch_no,finished_item,company",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

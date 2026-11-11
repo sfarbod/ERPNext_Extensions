@@ -1,0 +1,272 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "monthly_calculation",
+  "revision",
+  "batch_allocation",
+  "batch_no",
+  "column_break_meta",
+  "item_code",
+  "item_name",
+  "work_order",
+  "stock_entry",
+  "stock_entry_detail",
+  "stock_entries",
+  "section_qty",
+  "actual_qty",
+  "uom",
+  "normalization_factor",
+  "normalization_uom",
+  "normalized_qty",
+  "column_break_share",
+  "batch_total_normalized_qty",
+  "product_share",
+  "batch_allocated_expense",
+  "product_allocated_expense",
+  "unit_cost_on_actual",
+  "unit_cost_on_normalized",
+  "currency",
+  "missing_uom_factor"
+ ],
+ "fields": [
+  {
+   "fieldname": "monthly_calculation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Monthly Calculation",
+   "options": "Monthly FG Cost Calculation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "label": "Revision"
+  },
+  {
+   "fieldname": "batch_allocation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Batch Allocation",
+   "options": "MFG Cost Batch Allocation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Batch No"
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "search_index": 1
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Data",
+   "label": "Work Order"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Data",
+   "label": "Stock Entry"
+  },
+  {
+   "fieldname": "stock_entry_detail",
+   "fieldtype": "Data",
+   "label": "Stock Entry Detail"
+  },
+  {
+   "fieldname": "stock_entries",
+   "fieldtype": "Small Text",
+   "label": "Stock Entries"
+  },
+  {
+   "fieldname": "section_qty",
+   "fieldtype": "Section Break",
+   "label": "Quantity and Cost"
+  },
+  {
+   "default": "0",
+   "fieldname": "actual_qty",
+   "fieldtype": "Float",
+   "label": "Actual Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM"
+  },
+  {
+   "default": "0",
+   "fieldname": "normalization_factor",
+   "fieldtype": "Float",
+   "label": "Normalization Factor",
+   "precision": "9"
+  },
+  {
+   "fieldname": "normalization_uom",
+   "fieldtype": "Link",
+   "label": "Normalization UOM",
+   "options": "UOM"
+  },
+  {
+   "default": "0",
+   "fieldname": "normalized_qty",
+   "fieldtype": "Float",
+   "label": "Normalized Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "column_break_share",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "batch_total_normalized_qty",
+   "fieldtype": "Float",
+   "label": "Batch Total Normalized Qty",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "product_share",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Product Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "batch_allocated_expense",
+   "fieldtype": "Currency",
+   "label": "Batch Allocated Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "product_allocated_expense",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Product Allocated Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "unit_cost_on_actual",
+   "fieldtype": "Currency",
+   "label": "Unit Cost On Actual",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "unit_cost_on_normalized",
+   "fieldtype": "Currency",
+   "label": "Unit Cost On Normalized",
+   "options": "currency"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "missing_uom_factor",
+   "fieldtype": "Check",
+   "label": "Missing UOM Factor"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "MFG Cost Product Allocation",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1
+  }
+ ],
+ "search_fields": "monthly_calculation,batch_allocation,batch_no,item_code",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

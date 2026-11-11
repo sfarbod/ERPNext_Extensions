@@ -1,0 +1,222 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "monthly_calculation",
+  "revision",
+  "company",
+  "column_break_meta",
+  "persian_year",
+  "persian_month",
+  "start_date",
+  "end_date",
+  "section_pool",
+  "settings_rule",
+  "account",
+  "cost_center",
+  "department",
+  "column_break_amounts",
+  "monthly_debit",
+  "monthly_credit",
+  "monthly_net_expense",
+  "gl_entry_count",
+  "allocated_amount",
+  "unallocated_amount",
+  "currency"
+ ],
+ "fields": [
+  {
+   "fieldname": "monthly_calculation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Monthly Calculation",
+   "options": "Monthly FG Cost Calculation",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Revision"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "persian_year",
+   "fieldtype": "Int",
+   "label": "Persian Year"
+  },
+  {
+   "fieldname": "persian_month",
+   "fieldtype": "Int",
+   "label": "Persian Month"
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Date",
+   "label": "Start Date"
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date"
+  },
+  {
+   "fieldname": "section_pool",
+   "fieldtype": "Section Break",
+   "label": "Pool"
+  },
+  {
+   "fieldname": "settings_rule",
+   "fieldtype": "Data",
+   "label": "Settings Rule"
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Account",
+   "options": "Account",
+   "search_index": 1
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "column_break_amounts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "monthly_debit",
+   "fieldtype": "Currency",
+   "label": "Monthly Debit",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "monthly_credit",
+   "fieldtype": "Currency",
+   "label": "Monthly Credit",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "monthly_net_expense",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Monthly Net Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "gl_entry_count",
+   "fieldtype": "Int",
+   "label": "GL Entry Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "allocated_amount",
+   "fieldtype": "Currency",
+   "label": "Allocated Amount",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "unallocated_amount",
+   "fieldtype": "Currency",
+   "label": "Unallocated Amount",
+   "options": "currency"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "MFG Cost Expense Pool",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  }
+ ],
+ "search_fields": "monthly_calculation,account,cost_center,department,company",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

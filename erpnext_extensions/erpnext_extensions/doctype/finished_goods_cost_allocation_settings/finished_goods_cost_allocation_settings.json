@@ -1,0 +1,139 @@
+{
+ "actions": [],
+ "allow_copy": 0,
+ "allow_rename": 0,
+ "autoname": "field:company",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "business_calendar",
+  "enabled",
+  "column_break_main",
+  "normalization_uom",
+  "share_precision",
+  "amount_precision",
+  "section_rules",
+  "expense_account_dimension_rules"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "business_calendar",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Business Calendar",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "normalization_uom",
+   "fieldtype": "Link",
+   "label": "Normalization UOM",
+   "options": "UOM"
+  },
+  {
+   "default": "8",
+   "fieldname": "share_precision",
+   "fieldtype": "Int",
+   "label": "Share Precision"
+  },
+  {
+   "default": "0",
+   "fieldname": "amount_precision",
+   "fieldtype": "Int",
+   "label": "Amount Precision"
+  },
+  {
+   "fieldname": "section_rules",
+   "fieldtype": "Section Break",
+   "label": "Expense Account Dimension Rules"
+  },
+  {
+   "fieldname": "expense_account_dimension_rules",
+   "fieldtype": "Table",
+   "label": "Expense Account Dimension Rules",
+   "options": "Expense Account Dimension Rule"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "erpnext_extensions",
+ "name": "Finished Goods Cost Allocation Settings",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
