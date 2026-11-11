@@ -507,6 +507,45 @@
     "send_email_to_creator": 0,
     "state": "Assigned to Bank for Debt Purchase",
     "workflow_builder_id": "pdc-tr-dp-bounce"
+   },
+   {
+    "action": "Return from Debt Purchase",
+    "allow_self_approval": 1,
+    "allowed": "All",
+    "condition": "doc.get('cheque_direction') == 'Receivable'",
+    "next_state": "Registered",
+    "parent": "PDC Workflow",
+    "parentfield": "transitions",
+    "parenttype": "Workflow",
+    "send_email_to_creator": 0,
+    "state": "Assigned to Bank for Debt Purchase",
+    "workflow_builder_id": "pdc-tr-dp-return"
+   },
+   {
+    "action": "Send to Bank",
+    "allow_self_approval": 1,
+    "allowed": "All",
+    "condition": "doc.get('cheque_direction') == 'Receivable'",
+    "next_state": "Sent to Bank",
+    "parent": "PDC Workflow",
+    "parentfield": "transitions",
+    "parenttype": "Workflow",
+    "send_email_to_creator": 0,
+    "state": "Bounced",
+    "workflow_builder_id": "pdc-tr-bounce-resend"
+   },
+   {
+    "action": "Assign for Debt Purchase",
+    "allow_self_approval": 1,
+    "allowed": "All",
+    "condition": "doc.get('cheque_direction') == 'Receivable'",
+    "next_state": "Assigned to Bank for Debt Purchase",
+    "parent": "PDC Workflow",
+    "parentfield": "transitions",
+    "parenttype": "Workflow",
+    "send_email_to_creator": 0,
+    "state": "Bounced",
+    "workflow_builder_id": "pdc-tr-bounce-reassign-dp"
    }
   ],
   "workflow_data": "[]"

@@ -161,6 +161,30 @@ PDC_ACCOUNTING_TRANSITION_REGISTRY: Final[dict[tuple[str, str, str], PDCAccounti
 			True,
 			"Dr Protested, Cr Debt Purchase In Collection — drawer Party on both rows; no CIH fallback.",
 		),
+		_spec(
+			CHEQUE_DIRECTION_RECEIVABLE,
+			WORKFLOW_ASSIGNED_DEBT_PURCHASE,
+			WORKFLOW_REGISTERED,
+			PDC_ACCOUNTING_JOURNAL_ENTRY,
+			True,
+			"Dr assignment credit pool (usually CIH), Cr Debt Purchase In Collection — Return from Debt Purchase.",
+		),
+		_spec(
+			CHEQUE_DIRECTION_RECEIVABLE,
+			WORKFLOW_BOUNCED,
+			WORKFLOW_SENT_TO_BANK,
+			PDC_ACCOUNTING_JOURNAL_ENTRY,
+			True,
+			"Dr Cheques in Clearing, Cr bounce holding (protested or CIH) — re-send after bounce; Party on both.",
+		),
+		_spec(
+			CHEQUE_DIRECTION_RECEIVABLE,
+			WORKFLOW_BOUNCED,
+			WORKFLOW_ASSIGNED_DEBT_PURCHASE,
+			PDC_ACCOUNTING_JOURNAL_ENTRY,
+			True,
+			"Dr Debt Purchase In Collection, Cr bounce holding (protested or CIH) — re-assign after bounce; Party on both.",
+		),
 		# Payable: register / return / cancel / clear; clear uses JE (not Payment Entry — journal-centric architecture)
 		_spec(
 			CHEQUE_DIRECTION_PAYABLE,
