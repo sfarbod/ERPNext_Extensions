@@ -26,7 +26,7 @@ def execute():
 				}
 			).insert(ignore_permissions=True)
 
-	for name in ("Assign for Debt Purchase", "Bounce Cheque"):
+	for name in ("Assign for Debt Purchase", "Bounce Cheque", "Return from Debt Purchase"):
 		if not frappe.db.exists("Workflow Action Master", name):
 			frappe.get_doc(
 				{
@@ -74,6 +74,12 @@ def execute():
 			"Assigned to Bank for Debt Purchase",
 			"Bounced",
 			"Bounce Cheque",
+			"doc.get('cheque_direction') == 'Receivable'",
+		),
+		(
+			"Assigned to Bank for Debt Purchase",
+			"Registered",
+			"Return from Debt Purchase",
 			"doc.get('cheque_direction') == 'Receivable'",
 		),
 	]

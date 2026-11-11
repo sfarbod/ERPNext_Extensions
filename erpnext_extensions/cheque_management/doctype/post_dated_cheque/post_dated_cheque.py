@@ -150,6 +150,12 @@ PDC_JE_REMARK_SEND_RECEIVABLE_CHEQUE_TO_BANK = "Send receivable cheque to bank"
 PDC_JE_REMARK_RETURN_RECEIVABLE_FROM_BANK = "Return receivable cheque from bank to cashbox"
 # Journal Entry remarks — Receivable Registered → Assigned to Bank for Debt Purchase
 PDC_JE_REMARK_ASSIGN_RECEIVABLE_DEBT_PURCHASE = "Assign receivable cheque for debt purchase"
+# Journal Entry remarks — Receivable Bounced → Sent to Bank (re-send after bounce)
+PDC_JE_REMARK_RESEND_RECEIVABLE_AFTER_BOUNCE = "Re-send receivable cheque to bank after bounce"
+# Journal Entry remarks — Receivable Bounced → Assigned to Bank for Debt Purchase
+PDC_JE_REMARK_REASSIGN_RECEIVABLE_DEBT_PURCHASE_AFTER_BOUNCE = (
+	"Re-assign receivable cheque for debt purchase after bounce"
+)
 # Journal Entry remarks — Receivable Assigned DP → Returned
 PDC_JE_REMARK_RETURN_DEBT_PURCHASE_RECEIVABLE = "Return debt purchase assigned cheque to party"
 # Journal Entry remarks — Receivable Sent to Bank → Bounced
@@ -465,6 +471,89 @@ def resolve_pdc_accounts_for_journal(doc, settings=None):
 	return out
 
 
+def resolve_debt_purchase_assignment_credit_account(doc, acc: dict | None = None) -> str | None:
+	"""Account credited by the open Debt Purchase Assignment JE (CIH / bounce holding).
+
+	Return from Debt Purchase must **debit** that same account when reversing DPIC.
+	Falls back to ``account_paid_to`` / cheques in hand when no assignment JE is readable.
+	"""
+	acc = acc or {}
+	assign_jes: list[str] = []
+	for r in getattr(doc, "journal_references", None) or []:
+		purpose = (getattr(r, "purpose", None) or "").strip()
+		key = (getattr(r, "pdc_transition_key", None) or "").strip()
+		parts = [p.strip() for p in key.split("|") if p is not None]
+		is_assign = purpose == "Debt Purchase Assignment" or (
+			parts and parts[-1] == WORKFLOW_ASSIGNED_DEBT_PURCHASE
+		)
+		if not is_assign:
+			continue
+		je = _strip_link_name_or_none(getattr(r, "journal_entry", None))
+		if je:
+			assign_jes.append(je)
+	if assign_jes:
+		je_name = assign_jes[-1]
+		try:
+			credit_acc = frappe.db.get_value(
+				"Journal Entry Account",
+				{"parent": je_name, "credit": (">", 0)},
+				"account",
+				order_by="idx asc",
+			)
+		except Exception:
+			credit_acc = None
+		credit_acc = _strip_link_name_or_none(credit_acc)
+		if credit_acc:
+			return credit_acc
+	return (
+		_strip_link_name_or_none(getattr(doc, "account_paid_to", None))
+		or _strip_link_name_or_none(acc.get("cheques_in_hand"))
+	)
+
+
+def resolve_bounce_holding_account_for_reassignment(doc, acc: dict | None = None) -> str | None:
+	"""Return the GL account that currently holds the bounced instrument balance.
+
+	After **Sent to Bank → Bounced** or **Assigned DP → Bounced**, funds sit on the **debit**
+	side of the bounce Journal Entry (protested preferred, else Cheques in Hand). Forward
+	reassignment must **credit that same pool** — not blindly credit CIH when the bounce
+	debited protested (or vice versa).
+
+	When a bounce Journal Reference exists, reads the debit account from that JE. Otherwise
+	falls back to protested → ``account_paid_to`` → cheques in hand (same preference as
+	Sent → Bounce debit selection).
+	"""
+	acc = acc or {}
+	bounce_jes: list[str] = []
+	for r in getattr(doc, "journal_references", None) or []:
+		key = (getattr(r, "pdc_transition_key", None) or "").strip()
+		parts = [p.strip() for p in key.split("|") if p is not None]
+		if not parts or parts[-1] != WORKFLOW_BOUNCED:
+			continue
+		je = _strip_link_name_or_none(getattr(r, "journal_entry", None))
+		if je:
+			bounce_jes.append(je)
+	if bounce_jes:
+		je_name = bounce_jes[-1]
+		try:
+			holding = frappe.db.get_value(
+				"Journal Entry Account",
+				{"parent": je_name, "debit": (">", 0)},
+				"account",
+				order_by="idx asc",
+			)
+		except Exception:
+			holding = None
+		holding = _strip_link_name_or_none(holding)
+		if holding:
+			return holding
+	return (
+		_strip_link_name_or_none(acc.get("protested"))
+		or _strip_link_name_or_none(getattr(doc, "account_paid_to", None))
+		or _strip_link_name_or_none(acc.get("cheques_in_hand"))
+	)
+
+
 def _pdc_party_dims_for_doc(doc) -> dict[str, str]:
 	"""Drawer/supplier party dimensions for single-party cheque events."""
 	pt = _strip_link_name_or_none(getattr(doc, "party_type", None))
@@ -757,8 +846,12 @@ def build_pdc_journal_entry_data(doc, from_state: str, to_state: str, posting_da
 				)
 			return
 
-		# Debt Purchase assignment: pool reclass + Party on both; no invoice refs.
-		if edge == (WORKFLOW_REGISTERED, WORKFLOW_ASSIGNED_DEBT_PURCHASE):
+		# Debt Purchase assignment / return (unassign): pool reclass + Party on both; no invoice refs.
+		if edge in (
+			(WORKFLOW_REGISTERED, WORKFLOW_ASSIGNED_DEBT_PURCHASE),
+			(WORKFLOW_BOUNCED, WORKFLOW_ASSIGNED_DEBT_PURCHASE),
+			(WORKFLOW_ASSIGNED_DEBT_PURCHASE, WORKFLOW_REGISTERED),
+		):
 			if not dims:
 				frappe.throw(
 					frappe._(
@@ -824,6 +917,7 @@ def build_pdc_journal_entry_data(doc, from_state: str, to_state: str, posting_da
 			(WORKFLOW_REGISTERED, WORKFLOW_SENT_TO_BANK),
 			(WORKFLOW_SENT_TO_BANK, WORKFLOW_REGISTERED),
 			(WORKFLOW_SENT_TO_BANK, WORKFLOW_BOUNCED),
+			(WORKFLOW_BOUNCED, WORKFLOW_SENT_TO_BANK),
 		}
 		if edge in party_on_both_edges:
 			if not dims:
@@ -1278,6 +1372,36 @@ def build_pdc_journal_entry_data(doc, from_state: str, to_state: str, posting_da
 			]
 			return _return_je(je)
 
+		# Assigned DP -> Registered: reverse of assignment (Return from Debt Purchase).
+		# Dr the account credited by the open assignment JE (usually CIH), Cr DPIC.
+		if from_state == WORKFLOW_ASSIGNED_DEBT_PURCHASE and to_state == WORKFLOW_REGISTERED:
+			dpic = acc.get("debt_purchase_in_collection")
+			if not dpic:
+				return None
+			debit_account = resolve_debt_purchase_assignment_credit_account(doc, acc)
+			if not debit_account:
+				return None
+			remark = render_pdc_je_text(
+				getattr(settings, "je_remark_return_receivable_debt_purchase_template", None)
+				if settings
+				else None,
+				fallback_text=frappe._(PDC_JE_REMARK_RETURN_DEBT_PURCHASE_RECEIVABLE),
+				context=ctx,
+				append_cheque_no_suffix=True,
+			)
+			je = _base(remark)
+			je["accounts"] = [
+				{
+					"account": debit_account,
+					"debit_in_account_currency": doc.cheque_amount,
+				},
+				{
+					"account": dpic,
+					"credit_in_account_currency": doc.cheque_amount,
+				},
+			]
+			return _return_je(je)
+
 		# Assigned DP -> Bounced: Dr Protested / Cr DPIC (dishonour; not returned to cashier).
 		# No cheques_in_hand fallback — Protested must be configured in PDC Settings.
 		if from_state == WORKFLOW_ASSIGNED_DEBT_PURCHASE and to_state == WORKFLOW_BOUNCED:
@@ -1385,6 +1509,61 @@ def build_pdc_journal_entry_data(doc, from_state: str, to_state: str, posting_da
 				},
 				{
 					"account": acc["cheques_in_clearing"],
+					"credit_in_account_currency": doc.cheque_amount,
+				},
+			]
+			return _return_je(je)
+
+		# Bounced -> Sent to Bank: reverse of bounce holding into clearing (re-send after bounce).
+		# Credits the bounce debit pool (protested or CIH), not a blind Registered→Send from CIH.
+		if from_state == WORKFLOW_BOUNCED and to_state == WORKFLOW_SENT_TO_BANK:
+			if not acc["cheques_in_clearing"]:
+				return None
+			credit_account = resolve_bounce_holding_account_for_reassignment(doc, acc)
+			if not credit_account:
+				return None
+			remark = render_pdc_je_text(
+				getattr(settings, "je_remark_send_receivable_to_bank_template", None) if settings else None,
+				fallback_text=frappe._(PDC_JE_REMARK_RESEND_RECEIVABLE_AFTER_BOUNCE),
+				context=ctx,
+				append_cheque_no_suffix=True,
+			)
+			je = _base(remark)
+			je["accounts"] = [
+				{
+					"account": acc["cheques_in_clearing"],
+					"debit_in_account_currency": doc.cheque_amount,
+				},
+				{
+					"account": credit_account,
+					"credit_in_account_currency": doc.cheque_amount,
+				},
+			]
+			return _return_je(je)
+
+		# Bounced -> Assigned DP: Dr DPIC, Cr bounce holding (protested or CIH from prior bounce).
+		if from_state == WORKFLOW_BOUNCED and to_state == WORKFLOW_ASSIGNED_DEBT_PURCHASE:
+			if not acc.get("debt_purchase_in_collection"):
+				return None
+			credit_account = resolve_bounce_holding_account_for_reassignment(doc, acc)
+			if not credit_account:
+				return None
+			remark = render_pdc_je_text(
+				getattr(settings, "je_remark_assign_receivable_debt_purchase_template", None)
+				if settings
+				else None,
+				fallback_text=frappe._(PDC_JE_REMARK_REASSIGN_RECEIVABLE_DEBT_PURCHASE_AFTER_BOUNCE),
+				context=ctx,
+				append_cheque_no_suffix=True,
+			)
+			je = _base(remark)
+			je["accounts"] = [
+				{
+					"account": acc["debt_purchase_in_collection"],
+					"debit_in_account_currency": doc.cheque_amount,
+				},
+				{
+					"account": credit_account,
 					"credit_in_account_currency": doc.cheque_amount,
 				},
 			]
@@ -2484,6 +2663,34 @@ class PostDatedCheque(Document):
 				title=frappe._("Invalid Date Sequence"),
 			)
 
+	def _validate_receivable_resend_sent_vs_bounced_date(self) -> None:
+		"""Receivable re-send after bounce: Bounced → Sent to Bank requires ``sent_to_bank_date`` ≥ ``bounced_date``.
+
+		A new bank handover cannot be recorded before the prior bounce. Ordinary saves while already
+		Sent to Bank, and bounce entry itself, do not run this check.
+		"""
+		if (self.cheque_direction or "").strip() != CHEQUE_DIRECTION_RECEIVABLE:
+			return
+		curr = normalize_workflow_state_value(self.workflow_state)
+		if curr != WORKFLOW_SENT_TO_BANK:
+			return
+		prev = normalize_workflow_state_value(self._get_previous_workflow_state_raw())
+		if prev != WORKFLOW_BOUNCED:
+			return
+		bounced = getattr(self, "bounced_date", None)
+		sent = getattr(self, "sent_to_bank_date", None)
+		if not bounced or not sent:
+			return
+		if getdate(sent) < getdate(bounced):
+			frappe.throw(
+				frappe._(
+					"Sent to Bank Date cannot be earlier than Bounced Date.\n"
+					"When re-sending a cheque after bounce, enter a new Sent to Bank Date "
+					"on or after the Bounced Date."
+				),
+				title=frappe._("Invalid Date Sequence"),
+			)
+
 	def _validate_receivable_cleared_and_bounced_vs_sent_to_bank(self) -> None:
 		"""Receivable: clearing or bank bounce cannot precede bank submission when both sides are set."""
 		if self.cheque_direction != CHEQUE_DIRECTION_RECEIVABLE:
@@ -2672,6 +2879,7 @@ class PostDatedCheque(Document):
 		self._validate_issued_workflow_state()
 		self._validate_sent_to_bank_workflow_state()
 		self._validate_receivable_resend_sent_vs_returned_from_bank()
+		self._validate_receivable_resend_sent_vs_bounced_date()
 		self._validate_bank_account_for_workflow_state()
 		self._validate_bank_account_for_cleared_workflow_state()
 		self._validate_bank_gl_account_for_cleared_workflow_state()
@@ -2885,6 +3093,25 @@ class PostDatedCheque(Document):
 			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE
 		):
 			posting_date = getattr(self, "returned_from_bank_date", None)
+		elif (
+			curr_norm == WORKFLOW_REGISTERED
+			and prev_norm == WORKFLOW_ASSIGNED_DEBT_PURCHASE
+			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE
+		):
+			# Return from Debt Purchase is an operational unassign — never reuse received_date
+			# (would back-date before the assignment JE). Prefer assignment JE posting date,
+			# else today.
+			for r in reversed(list(self.journal_references or [])):
+				if (getattr(r, "purpose", None) or "").strip() != "Debt Purchase Assignment":
+					continue
+				je_name = _strip_link_name_or_none(getattr(r, "journal_entry", None))
+				if not je_name:
+					continue
+				posting_date = frappe.db.get_value("Journal Entry", je_name, "posting_date")
+				if posting_date:
+					break
+			if not posting_date:
+				posting_date = getdate()
 		elif (
 			curr_norm == WORKFLOW_ENDORSED
 			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE

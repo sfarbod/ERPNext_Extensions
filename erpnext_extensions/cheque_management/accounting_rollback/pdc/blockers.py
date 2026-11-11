@@ -54,6 +54,7 @@ _PURPOSE_TO_FAMILY: dict[str, str] = {
 	"Endorsement": FAMILY_OTHER,
 	"Debt Purchase Assignment": FAMILY_OTHER,
 	"Debt Purchase Settlement": FAMILY_OTHER,
+	"Return from Debt Purchase": FAMILY_OTHER,
 }
 
 

@@ -101,7 +101,8 @@ ALL_WORKFLOW_STATES: Final[tuple[str, ...]] = (
 #   Draft -> Registered, Cancelled
 #   Registered -> Sent to Bank, Cleared, Returned, Endorsed, Replaced, Under Legal Action, Cancelled
 #   Sent to Bank -> Cleared, Bounced, Registered (Return from Bank)
-#   Bounced -> Returned, Replaced, Under Legal Action
+#   Bounced -> Returned, Replaced, Under Legal Action, Sent to Bank (re-send),
+#              Assigned to Bank for Debt Purchase (re-assign after bounce)
 #   Returned -> Replaced, Cancelled
 #   Under Legal Action -> Cleared, Returned
 #   Endorsed -> (no transitions) — instrument left the company; see PDC_VALIDATION_ENDORSED_NO_BANK_CLEAR
@@ -130,13 +131,21 @@ RECEIVABLE_WORKFLOW_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
 		}
 	),
 	WORKFLOW_SENT_TO_BANK: frozenset({WORKFLOW_CLEARED, WORKFLOW_BOUNCED, WORKFLOW_REGISTERED}),
-	WORKFLOW_BOUNCED: frozenset({WORKFLOW_RETURNED, WORKFLOW_REPLACED, WORKFLOW_UNDER_LEGAL_ACTION}),
+	WORKFLOW_BOUNCED: frozenset(
+		{
+			WORKFLOW_RETURNED,
+			WORKFLOW_REPLACED,
+			WORKFLOW_UNDER_LEGAL_ACTION,
+			WORKFLOW_SENT_TO_BANK,
+			WORKFLOW_ASSIGNED_DEBT_PURCHASE,
+		}
+	),
 	WORKFLOW_RETURNED: frozenset({WORKFLOW_REPLACED}),
 	WORKFLOW_UNDER_LEGAL_ACTION: frozenset({WORKFLOW_CLEARED, WORKFLOW_RETURNED}),
 	WORKFLOW_ENDORSED: frozenset(),
-	# Assigned DP: Bounce only from PDC Management. Settled is Facility Repayment only
-	# (not in this set). Cleared / Returned / Registered are forbidden.
-	WORKFLOW_ASSIGNED_DEBT_PURCHASE: frozenset({WORKFLOW_BOUNCED}),
+	# Assigned DP: Bounce (dishonour) or Return from Debt Purchase → Registered (unassign).
+	# Settled is Facility Repayment only (not in this set). Cleared / Returned remain forbidden.
+	WORKFLOW_ASSIGNED_DEBT_PURCHASE: frozenset({WORKFLOW_BOUNCED, WORKFLOW_REGISTERED}),
 	WORKFLOW_DEBT_PURCHASE_SETTLED: frozenset(),
 }
 
@@ -178,8 +187,10 @@ _RECEIVABLE_ACCOUNTING_DECISIONS: Final[dict[tuple[str, str], str]] = {
 	(WORKFLOW_REGISTERED, WORKFLOW_ENDORSED): PDC_ACCOUNTING_JOURNAL_ENTRY,
 	# Registered → Assigned to Bank for Debt Purchase = JE (Dr DP in collection, Cr in hand)
 	(WORKFLOW_REGISTERED, WORKFLOW_ASSIGNED_DEBT_PURCHASE): PDC_ACCOUNTING_JOURNAL_ENTRY,
-	# Assigned DP → Bounced = JE (Dr protested, Cr DP in collection) — no party; Protested required
+	# Assigned DP → Bounced = JE (Dr protested, Cr DP in collection) — Protested required
 	(WORKFLOW_ASSIGNED_DEBT_PURCHASE, WORKFLOW_BOUNCED): PDC_ACCOUNTING_JOURNAL_ENTRY,
+	# Assigned DP → Registered = JE (Return from Debt Purchase; reverse of assignment)
+	(WORKFLOW_ASSIGNED_DEBT_PURCHASE, WORKFLOW_REGISTERED): PDC_ACCOUNTING_JOURNAL_ENTRY,
 	# Assigned DP → Settled: Facility Repayment owns the JE (PDC journal_reference only)
 	(WORKFLOW_ASSIGNED_DEBT_PURCHASE, WORKFLOW_DEBT_PURCHASE_SETTLED): PDC_ACCOUNTING_NO_DOCUMENT,
 	# Bounced → Returned = no business accounting document (workflow-only / customer follow-up)
@@ -188,6 +199,10 @@ _RECEIVABLE_ACCOUNTING_DECISIONS: Final[dict[tuple[str, str], str]] = {
 	(WORKFLOW_BOUNCED, WORKFLOW_REPLACED): PDC_ACCOUNTING_JOURNAL_ENTRY,
 	# Bounced → Under Legal Action = no document (legal follow-up only)
 	(WORKFLOW_BOUNCED, WORKFLOW_UNDER_LEGAL_ACTION): PDC_ACCOUNTING_NO_DOCUMENT,
+	# Bounced → Sent to Bank = JE (re-send after bounce; Dr clearing, Cr bounce holding)
+	(WORKFLOW_BOUNCED, WORKFLOW_SENT_TO_BANK): PDC_ACCOUNTING_JOURNAL_ENTRY,
+	# Bounced → Assigned DP = JE (re-assign after bounce; Dr DPIC, Cr bounce holding)
+	(WORKFLOW_BOUNCED, WORKFLOW_ASSIGNED_DEBT_PURCHASE): PDC_ACCOUNTING_JOURNAL_ENTRY,
 	# Returned → Replaced = JE (issue replacement against returned)
 	(WORKFLOW_RETURNED, WORKFLOW_REPLACED): PDC_ACCOUNTING_JOURNAL_ENTRY,
 	# Registered → Cancelled = no document (until explicit reverse logic is added)
@@ -240,14 +255,9 @@ PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_CLEAR: Final = (
 )
 
 PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_RETURN: Final = (
-	"Cheques Assigned to Bank for Debt Purchase cannot be Returned. "
-	"Use Bounce Cheque if the bank rejects the instrument, or settle via Facility Repayment."
-)
-
-PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_REGISTERED: Final = (
-	"Cheques Assigned to Bank for Debt Purchase cannot return to Registered via Desk workflow. "
-	"Use Rollback Workflow State to undo the assignment Journal Entry, or Bounce Cheque / "
-	"Facility Repayment for the normal Debt Purchase exits."
+	"Cheques Assigned to Bank for Debt Purchase cannot be Returned to the party. "
+	"Use Return from Debt Purchase to restore Registered (cheques in hand), "
+	"Bounce Cheque if the bank rejects the instrument, or settle via Facility Repayment."
 )
 
 PDC_VALIDATION_DEBT_PURCHASE_SETTLED_FACILITY_ONLY: Final = (
@@ -500,7 +510,8 @@ def get_pdc_workflow_transition_validation_error(
 	):
 		return PDC_VALIDATION_ENDORSED_NO_BANK_CLEAR
 
-	# Debt Purchase Assigned: forbid Cleared / Returned / Registered (Bounce + Facility settle only).
+	# Debt Purchase Assigned: forbid Cleared / Returned (party return). Bounce, Return from
+	# Debt Purchase → Registered, and Facility Settled remain the supported exits.
 	if (
 		cheque_type == CHEQUE_DIRECTION_RECEIVABLE
 		and had_previous
@@ -511,8 +522,6 @@ def get_pdc_workflow_transition_validation_error(
 			return PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_CLEAR
 		if curr == WORKFLOW_RETURNED:
 			return PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_RETURN
-		if curr == WORKFLOW_REGISTERED:
-			return PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_REGISTERED
 
 	# Debt Purchase Settled only via Facility Repayment (flag bypasses this validator).
 	if (
@@ -585,7 +594,6 @@ __all__ = [
 	"PDC_VALIDATION_DEBT_PURCHASE_RECEIVABLE_ONLY",
 	"PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_CLEAR",
 	"PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_RETURN",
-	"PDC_VALIDATION_DEBT_PURCHASE_ASSIGNED_NO_REGISTERED",
 	"PDC_VALIDATION_DEBT_PURCHASE_SETTLED_FACILITY_ONLY",
 	"PDC_VALIDATION_DEBT_PURCHASE_SETTLED_IS_TERMINAL",
 	"PDC_TERMINAL_WORKFLOW_STATE_ERRORS",

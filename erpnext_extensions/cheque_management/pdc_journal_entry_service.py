@@ -97,6 +97,15 @@ def _purpose_for_transition(
 			return "Return from Bank"
 		if f == WORKFLOW_REGISTERED and t == WORKFLOW_ASSIGNED_DEBT_PURCHASE:
 			return "Debt Purchase Assignment"
+		if f == WORKFLOW_BOUNCED and t == WORKFLOW_SENT_TO_BANK:
+			# Re-send after bounce: same operational purpose as Registered → Sent to Bank.
+			return "Under Collection"
+		if f == WORKFLOW_BOUNCED and t == WORKFLOW_ASSIGNED_DEBT_PURCHASE:
+			# Re-assign after bounce: same purpose as Registered → Assigned DP.
+			return "Debt Purchase Assignment"
+		if f == WORKFLOW_ASSIGNED_DEBT_PURCHASE and t == WORKFLOW_REGISTERED:
+			# Unassign: reverse of Debt Purchase Assignment (instrument back to cashbox).
+			return "Return from Debt Purchase"
 		if f == WORKFLOW_ASSIGNED_DEBT_PURCHASE and t == WORKFLOW_DEBT_PURCHASE_SETTLED:
 			return "Debt Purchase Settlement"
 		if f == WORKFLOW_ASSIGNED_DEBT_PURCHASE and t == WORKFLOW_BOUNCED:

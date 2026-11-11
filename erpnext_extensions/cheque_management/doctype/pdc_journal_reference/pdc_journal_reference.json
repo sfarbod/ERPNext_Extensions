@@ -38,7 +38,7 @@
    "in_list_view": 1,
    "label": "Purpose",
    "description": "Canonical tags for JE intent (§9.1). System-managed; map transitions in code. Last two values are legacy-only for old rows; new rows should not use them.",
-   "options": "Receive\nUnder Collection\nCollected\nReturned\nPayable Issue\nPayable Clear\nEndorsement\nCancel\nBounce\nReplacement\nDebt Purchase Assignment\nDebt Purchase Settlement\nReturn from Bank",
+   "options": "Receive\nUnder Collection\nCollected\nReturned\nPayable Issue\nPayable Clear\nEndorsement\nCancel\nBounce\nReplacement\nDebt Purchase Assignment\nDebt Purchase Settlement\nReturn from Bank\nReturn from Debt Purchase",
    "allow_on_submit": 1,
    "read_only": 1,
    "reqd": 1
