@@ -158,7 +158,7 @@ Coverage includes: primary UOM resolution, missing/ambiguous/invalid conversion,
 ## 14. Commit hash and version
 
 - **Version:** 5.7.28  
-- **Commit:** *(see git after release commit)*
+- **Commit:** `34b2cca00a9867b549e983aff98ea942e64761b7`
 
 ## 15. Unresolved defects / limitations
 
