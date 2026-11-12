@@ -9,7 +9,13 @@ import json
 import frappe
 from frappe.desk.doctype.desktop_icon.desktop_icon import clear_every_users_desktop_icons
 
-from erpnext_extensions.desk_navigation import sync_module_sidebar_items
+from frappe.modules.utils import get_doc_path
+from frappe.modules.import_file import import_file_by_path
+
+from erpnext_extensions.desk_navigation import (
+	assert_sidebar_link_targets_exist,
+	sync_module_sidebar_items,
+)
 
 APP = "erpnext_extensions"
 MODULE = "Costing"
@@ -17,6 +23,19 @@ DISPLAY = "Costing"
 LEGACY_DISPLAY = "بهای تمام شده"
 ICON = "calculator"
 BG_COLOR = "blue"
+
+# DocTypes referenced by Costing Workspace Sidebar / Sidebar Link To rows.
+# Keep in sync with _SIDEBAR_ITEMS DocType targets.
+REQUIRED_COSTING_DOCTYPES = (
+	"Finished Goods Cost Allocation Settings",
+	"Monthly FG Cost Calculation",
+	"MFG Cost Expense Pool",
+	"MFG Cost GL Line",
+	"MFG Cost Batch Allocation",
+	"MFG Cost Batch Expense Allocation",
+	"MFG Cost Product Allocation",
+	"MFG Cost Calculation Revision",
+)
 
 DESK_ROLES = [
 	"System Manager",
@@ -324,7 +343,61 @@ def _ensure_workspace() -> None:
 		ws.save(ignore_permissions=True)
 
 
+def _ensure_costing_doctypes() -> None:
+	"""Force-sync Costing DocTypes required by sidebar Link To before navigation writes.
+
+	Production failure mode: model sync progress can report complete while individual
+	Costing DocTypes are still absent (or not yet visible to Dynamic Link validation).
+	The earlier Persian desk patch used ignore_links=True and therefore masked the gap;
+	Workspace Sidebar sync must not.
+	"""
+	import os
+
+	missing_files: list[str] = []
+	for dt in REQUIRED_COSTING_DOCTYPES:
+		try:
+			path = get_doc_path(MODULE, "DocType", dt)
+		except Exception:
+			path = ""
+		if not path or not os.path.exists(path):
+			missing_files.append(dt)
+			continue
+		import_file_by_path(path, force=True)
+
+	# Clear negative DB value caches that Dynamic Link validation may have primed.
+	frappe.clear_cache()
+	still_missing = [dt for dt in REQUIRED_COSTING_DOCTYPES if not frappe.db.exists("DocType", dt)]
+	if missing_files or still_missing:
+		frappe.throw(
+			"Costing DocTypes required for Desk navigation are not installed. "
+			f"Missing files: {missing_files or '—'}; missing DocType rows: {still_missing or '—'}. "
+			"Re-run bench migrate after verifying erpnext_extensions Costing doctype JSON files.",
+			frappe.ValidationError,
+		)
+
+
+def _hide_legacy_sidebars() -> None:
+	"""Hide leftover Persian-titled Sidebar shells after English Costing is canonical."""
+	if not frappe.db.exists("DocType", "Sidebar"):
+		return
+	for name in frappe.get_all(
+		"Sidebar",
+		filters={"module": MODULE, "name": ["!=", DISPLAY]},
+		pluck="name",
+	):
+		if name == LEGACY_DISPLAY or name.startswith(LEGACY_DISPLAY):
+			_hide_doc_when_exists("Sidebar", name)
+
+
 def _ensure_sidebars() -> None:
+	_ensure_costing_doctypes()
+	# Workspace Home link target
+	if not frappe.db.exists("Workspace", DISPLAY):
+		frappe.throw(
+			f"Workspace {DISPLAY} must exist before Costing sidebar sync.",
+			frappe.ValidationError,
+		)
+	assert_sidebar_link_targets_exist(_SIDEBAR_ITEMS)
 	sync_module_sidebar_items(
 		MODULE,
 		_SIDEBAR_ITEMS,
@@ -333,6 +406,7 @@ def _ensure_sidebars() -> None:
 		app=APP,
 		standard=1,
 	)
+	_hide_legacy_sidebars()
 
 
 def _ensure_desktop_icon() -> None:

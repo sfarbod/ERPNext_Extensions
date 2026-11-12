@@ -1,7 +1,7 @@
 {
  "app": "erpnext_extensions",
  "bg_color": "blue",
- "creation": "2026-11-12 10:00:00.000000",
+ "creation": "2026-11-12 10:00:00",
  "docstatus": 0,
  "doctype": "Desktop Icon",
  "hidden": 0,
@@ -11,7 +11,7 @@
  "label": "Costing",
  "link_to": "Costing",
  "link_type": "Workspace Sidebar",
- "modified": "2026-11-12 10:00:00.000000",
+ "modified": "2026-11-12 19:01:30.702768",
  "modified_by": "Administrator",
  "name": "Costing",
  "owner": "Administrator",
