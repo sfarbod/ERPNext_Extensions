@@ -7,10 +7,18 @@
  "field_order": [
   "item",
   "item_name",
+  "item_group",
   "stock_uom",
   "primary_uom",
+  "source_conversion_factor",
+  "manual_override_factor",
   "conversion_factor",
   "conversion_status",
+  "conversion_source",
+  "override_reason",
+  "previous_applied_factor",
+  "override_by",
+  "override_on",
   "remarks"
  ],
  "fields": [
@@ -31,6 +39,15 @@
    "read_only": 1
   },
   {
+   "fetch_from": "item.item_group",
+   "fieldname": "item_group",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Group",
+   "options": "Item Group",
+   "read_only": 1
+  },
+  {
    "fetch_from": "item.stock_uom",
    "fieldname": "stock_uom",
    "fieldtype": "Link",
@@ -48,12 +65,27 @@
    "reqd": 1
   },
   {
+   "default": "0",
+   "fieldname": "source_conversion_factor",
+   "fieldtype": "Float",
+   "label": "ERPNext Source Conversion Factor",
+   "precision": "9",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manual_override_factor",
+   "fieldtype": "Float",
+   "label": "Manual Override Factor",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "description": "Applied factor used by costing (= Manual Override when set, else Source).",
    "fieldname": "conversion_factor",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Conversion Factor",
-   "precision": "9",
-   "read_only": 1
+   "label": "Applied Conversion Factor",
+   "precision": "9"
   },
   {
    "default": "Missing",
@@ -61,7 +93,41 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Conversion Status",
-   "options": "Valid\nMissing\nAmbiguous\nInvalid",
+   "options": "Valid\nMissing\nAmbiguous\nInvalid\nManual Override",
+   "read_only": 1
+  },
+  {
+   "default": "ERPNext",
+   "fieldname": "conversion_source",
+   "fieldtype": "Select",
+   "label": "Conversion Source",
+   "options": "ERPNext\nManual Override\nMissing",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.manual_override_factor",
+   "fieldname": "override_reason",
+   "fieldtype": "Small Text",
+   "label": "Override Reason"
+  },
+  {
+   "fieldname": "previous_applied_factor",
+   "fieldtype": "Float",
+   "label": "Previous Applied Factor",
+   "precision": "9",
+   "read_only": 1
+  },
+  {
+   "fieldname": "override_by",
+   "fieldtype": "Link",
+   "label": "Override By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "override_on",
+   "fieldtype": "Datetime",
+   "label": "Override On",
    "read_only": 1
   },
   {

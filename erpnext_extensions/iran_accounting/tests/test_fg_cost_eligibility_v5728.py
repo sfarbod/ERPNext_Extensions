@@ -143,14 +143,15 @@ class TestMixedSourceAndDenominatorV5728(unittest.TestCase):
 				uom="Nos",
 			),
 		]
+		# Eligibility is Settings Item Primary UOMs; تزریقی is only the default seed.
 		with patch(
-			"erpnext_extensions.iran_accounting.fg_cost_allocation.production_extract.verify_fg_item_group_hierarchy",
-			return_value=None,
+			"erpnext_extensions.iran_accounting.fg_cost_allocation.production_extract.configured_item_codes",
+			return_value={"INJ-1"},
 		), patch(
 			"erpnext_extensions.iran_accounting.fg_cost_allocation.production_extract._fetch_manufacture_fg_candidates",
 			return_value=candidates,
 		):
-			eligible, excluded, summary = fetch_eligible_fg_rows("C", period)
+			eligible, excluded, summary = fetch_eligible_fg_rows("C", period, settings_name="S")
 
 		self.assertEqual(len(eligible), 1)
 		self.assertEqual(eligible[0].item_code, "INJ-1")

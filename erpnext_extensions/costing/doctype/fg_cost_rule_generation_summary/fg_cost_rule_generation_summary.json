@@ -1,0 +1,100 @@
+{
+ "actions": [],
+ "creation": "2026-11-12 16:30:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "account_code",
+  "account_name",
+  "cost_center",
+  "department",
+  "action",
+  "reason",
+  "generation_date",
+  "account",
+  "generation_status"
+ ],
+ "fields": [
+  {
+   "columns": 1,
+   "fieldname": "account_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Code",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Name",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "cost_center",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Cost Center",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "department",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Department",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "fieldname": "action",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Action",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "generation_date",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Generation Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Account",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "generation_status",
+   "fieldtype": "Data",
+   "label": "Generation Status",
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-12 16:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "FG Cost Rule Generation Summary",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 0
+}

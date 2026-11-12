@@ -100,12 +100,14 @@
   {
    "fieldname": "cost_center",
    "fieldtype": "Link",
+   "in_standard_filter": 1,
    "label": "Cost Center",
    "options": "Cost Center"
   },
   {
    "fieldname": "department",
    "fieldtype": "Link",
+   "in_standard_filter": 1,
    "label": "Department",
    "options": "Department"
   },

@@ -10,7 +10,10 @@ DETAIL_DOCTYPE_MAP = {
 	"batch": "MFG Cost Batch Allocation",
 	"batch_expense": "MFG Cost Batch Expense Allocation",
 	"product": "MFG Cost Product Allocation",
-	"product_expense": "MFG Cost Product Expense Allocation",
+	"product_expense": "MFG Cost Product Expense Allocation",  # historical only; not primary costing
+	"account_dimension_summary": "MFG Cost Account Dimension Summary",
+	"reconciliation_check": "MFG Cost Reconciliation Check",
+	"exception": "MFG Cost Exception",
 	"revision": "MFG Cost Calculation Revision",
 }
 

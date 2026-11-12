@@ -54,9 +54,13 @@ class BatchExpenseAlloc:
 	cost_center: str
 	department: str
 	pool_monthly_net_expense: Decimal
+	calculated_batch_share: Decimal
+	manual_batch_share: Decimal | None
 	applied_batch_share: Decimal
 	allocated_amount: Decimal
 	residual_applied: bool = False
+	work_order: str = ""
+	is_manual_override: bool = False
 
 
 @dataclass
@@ -173,6 +177,12 @@ def allocate_pools_to_batches(
 	precision = get_currency_precision(currency)
 	results: list[BatchExpenseAlloc] = []
 	eligible = [b for b in batches if b.normalized_qty > 0]
+	applied_sum = sum((b.applied_share for b in eligible), Decimal("0"))
+	share_eps = Decimal("0.000001")
+	shares_complete = bool(eligible) and abs(applied_sum - Decimal("1")) <= share_eps
+	# When Applied shares sum to 100%, absorb currency rounding into the largest batch.
+	# When shares are incomplete/provisional, keep Allocated Amount = Pool × Applied Share
+	# exactly and leave the pool gap visible on the parent totals.
 	for pool in pools:
 		# Zero-net pools remain as Expense Pool headers; skip dense zero cross-alloc rows.
 		if pool.monthly_net_expense == 0:
@@ -184,10 +194,9 @@ def allocate_pools_to_batches(
 			raw = _money(pool.monthly_net_expense * b.applied_share, precision)
 			raw_amounts.append((b, raw))
 			allocated_sum += raw
-		# Residual to largest normalized batch
 		diff = _money(pool.monthly_net_expense - allocated_sum, precision)
 		residual_batch = None
-		if eligible and diff != 0:
+		if shares_complete and eligible and diff != 0:
 			residual_batch = max(eligible, key=lambda x: (x.normalized_qty, x.batch_no))
 		for b, amount in raw_amounts:
 			residual = False
@@ -204,9 +213,13 @@ def allocate_pools_to_batches(
 					cost_center=pool.cost_center or "",
 					department=pool.department or "",
 					pool_monthly_net_expense=pool.monthly_net_expense,
+					calculated_batch_share=b.calculated_share,
+					manual_batch_share=b.manual_share,
 					applied_batch_share=b.applied_share,
 					allocated_amount=final_amt,
 					residual_applied=residual,
+					work_order=next(iter(b.work_orders), "") if b.work_orders else "",
+					is_manual_override=b.is_manual_override,
 				)
 			)
 		# Update batch totals

@@ -1,0 +1,161 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-12 09:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "monthly_calculation",
+  "revision",
+  "account",
+  "account_name",
+  "cost_center",
+  "department",
+  "expense_pool",
+  "pool_monthly_net_expense",
+  "allocated_batch_count",
+  "total_applied_batch_share",
+  "total_allocated_amount",
+  "allocation_status",
+  "currency"
+ ],
+ "fields": [
+  {
+   "fieldname": "monthly_calculation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Monthly Calculation",
+   "options": "Monthly FG Cost Calculation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Revision"
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Account",
+   "options": "Account",
+   "search_index": 1
+  },
+  {
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "expense_pool",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Expense Pool",
+   "options": "MFG Cost Expense Pool"
+  },
+  {
+   "default": "0",
+   "fieldname": "pool_monthly_net_expense",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Pool Monthly Net Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "allocated_batch_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Number of Allocated Batches"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_applied_batch_share",
+   "fieldtype": "Float",
+   "label": "Total Applied Batch Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_allocated_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Total Allocated Amount",
+   "options": "currency"
+  },
+  {
+   "fieldname": "allocation_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Allocation Status"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  }
+ ],
+ "module": "Costing",
+ "name": "MFG Cost Account Dimension Summary",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0
+}

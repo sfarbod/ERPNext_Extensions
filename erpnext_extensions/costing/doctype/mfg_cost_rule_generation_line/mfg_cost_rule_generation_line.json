@@ -1,0 +1,50 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-11-12 14:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "settings",
+  "generation_batch",
+  "generation_date",
+  "action",
+  "generation_status",
+  "column_break_acc",
+  "account_code",
+  "account",
+  "account_name",
+  "cost_center",
+  "department",
+  "reason"
+ ],
+ "fields": [
+  {"fieldname": "settings", "fieldtype": "Link", "in_standard_filter": 1, "label": "Settings", "options": "Finished Goods Cost Allocation Settings", "search_index": 1},
+  {"fieldname": "generation_batch", "fieldtype": "Data", "in_list_view": 1, "in_standard_filter": 1, "label": "Generation Batch", "search_index": 1},
+  {"fieldname": "generation_date", "fieldtype": "Data", "label": "Generation Date"},
+  {"fieldname": "action", "fieldtype": "Select", "in_list_view": 1, "in_standard_filter": 1, "label": "Action", "options": "Created\nUpdated\nReused\nExcluded\nFailed"},
+  {"fieldname": "generation_status", "fieldtype": "Data", "in_standard_filter": 1, "label": "Generation Status"},
+  {"fieldname": "column_break_acc", "fieldtype": "Column Break"},
+  {"fieldname": "account_code", "fieldtype": "Data", "in_list_view": 1, "in_standard_filter": 1, "label": "Account Code", "search_index": 1},
+  {"fieldname": "account", "fieldtype": "Link", "in_standard_filter": 1, "label": "Account", "options": "Account"},
+  {"fieldname": "account_name", "fieldtype": "Data", "in_list_view": 1, "label": "Account Name"},
+  {"fieldname": "cost_center", "fieldtype": "Link", "in_list_view": 1, "in_standard_filter": 1, "label": "Cost Center", "options": "Cost Center"},
+  {"fieldname": "department", "fieldtype": "Link", "in_list_view": 1, "in_standard_filter": 1, "label": "Department", "options": "Department"},
+  {"fieldname": "reason", "fieldtype": "Small Text", "label": "Reason"}
+ ],
+ "module": "Costing",
+ "name": "MFG Cost Rule Generation Line",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1, "report": 1, "export": 1},
+  {"role": "Accounts Manager", "read": 1, "write": 1, "create": 1, "delete": 1, "report": 1, "export": 1},
+  {"role": "Accounts User", "read": 1, "report": 1, "export": 1},
+  {"role": "Auditor", "read": 1, "report": 1, "export": 1}
+ ],
+ "search_fields": "account_code,account_name,cost_center,department,action,generation_batch",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "title_field": "account_code",
+ "track_changes": 0
+}

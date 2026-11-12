@@ -9,9 +9,13 @@
  "engine": "InnoDB",
  "field_order": [
   "account",
+  "account_name",
   "cost_center",
   "department",
+  "company",
   "enabled",
+  "source",
+  "generation_batch",
   "description"
  ],
  "fields": [
@@ -22,6 +26,14 @@
    "label": "Account",
    "options": "Account",
    "reqd": 1
+  },
+  {
+   "fetch_from": "account.account_name",
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Name",
+   "read_only": 1
   },
   {
    "fieldname": "cost_center",
@@ -38,11 +50,31 @@
    "options": "Department"
   },
   {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
    "default": "1",
    "fieldname": "enabled",
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Enabled"
+  },
+  {
+   "default": "Manual",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Source",
+   "options": "Manual\nExcel Generated\nGL Generated\nGenerated"
+  },
+  {
+   "fieldname": "generation_batch",
+   "fieldtype": "Data",
+   "label": "Generation Batch"
   },
   {
    "fieldname": "description",
@@ -52,7 +84,7 @@
  ],
  "istable": 1,
  "links": [],
- "modified": "2026-11-11 00:00:00.000000",
+ "modified": "2026-11-12 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "Costing",
  "name": "Expense Account Dimension Rule",

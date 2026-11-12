@@ -27,6 +27,8 @@ from erpnext_extensions.iran_accounting.fg_cost_allocation.period import resolve
 from erpnext_extensions.iran_accounting.fg_cost_allocation.persist import (
 	clear_details,
 	persist_all,
+	persist_exceptions,
+	persist_reconciliation_checks,
 	write_revision_log,
 )
 from erpnext_extensions.iran_accounting.fg_cost_allocation.production_extract import (
@@ -119,18 +121,26 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 	doc.end_date = period.end_date
 	doc.persian_month_name = period.persian_month_name
 	doc.period_key = period.period_key
+	doc.persian_period = f"{cint(doc.persian_year):04d}-{cint(doc.persian_month):02d}"
 	doc.currency = currency
 
 	try:
 		# Persist NEW revision first; only clear previous on success
 		rules = load_enabled_rules(settings.name)
-		pools, excluded = extract_pools_for_rules(doc.company, period, rules)
+		extract = extract_pools_for_rules(doc.company, period, rules)
+		pools = extract.pools
+		excluded = extract.excluded_net
 
-		rows, excluded_rows, exclusion_summary = fetch_eligible_fg_rows(doc.company, period)
+		rows, excluded_rows, exclusion_summary = fetch_eligible_fg_rows(
+			doc.company, period, settings_name=settings.name
+		)
 		products, prod_exceptions = consolidate_products(rows)
 		norm_exceptions = apply_normalization(products, settings)
-		# Item-group exclusions are reported separately and must not create UOM blockers
+		# Item-scope exclusions are reported separately and must not create UOM blockers
 		exceptions = prod_exceptions + norm_exceptions
+		missing_uom_count = sum(1 for p in products.values() if p.missing_uom_factor) + len(
+			[e for e in norm_exceptions if "UOM" in e or "conversion" in e.lower()]
+		)
 		uom_complete = not any(p.missing_uom_factor for p in products.values()) and not norm_exceptions
 
 		batches, month_norm, share_variance = build_batches(
@@ -158,6 +168,23 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 			blocking.append(f"Applied share variance {share_variance} (must be 0 within tolerance)")
 		if not rules:
 			blocking.append("No enabled expense dimension rules configured")
+		if extract.has_overlap_conflicts:
+			pair_n = len(extract.overlapping_rule_pairs)
+			gl_n = len(extract.overlapping_gl_entries)
+			blocking.append(
+				f"Overlapping expense rules detected ({pair_n} rule pair(s), {gl_n} conflicting GL Entry(ies)). "
+				"Ambiguous GL amounts were withheld from all Expense Pools to prevent double allocation. "
+				"Resolve overlapping Account/Department/Cost Center rules before the calculation can be consumable."
+			)
+			for p in extract.overlapping_rule_pairs[:10]:
+				blocking.append(
+					f"Rule overlap: {p.get('rule_a')} vs {p.get('rule_b')} on Account {p.get('account')}"
+				)
+			for g in extract.overlapping_gl_entries[:10]:
+				rules_hit = ", ".join(x.get("name", "") for x in (g.get("matching_rules") or []))
+				blocking.append(
+					f"GL conflict {g.get('gl_entry')}: matches [{rules_hit}] — amount withheld"
+				)
 
 		recon = reconcile(
 			pools=pools,
@@ -184,18 +211,53 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 			product_rows=product_rows,
 			product_expenses=product_expenses,
 		)
+		persist_reconciliation_checks(
+			monthly_name=doc.name,
+			revision=new_revision,
+			persian_period=doc.persian_period
+			or f"{cint(doc.persian_year):04d}-{cint(doc.persian_month):02d}",
+			currency=currency,
+			checks=recon.checks,
+		)
+		persist_exceptions(
+			monthly_name=doc.name,
+			revision=new_revision,
+			persian_period=doc.persian_period
+			or f"{cint(doc.persian_year):04d}-{cint(doc.persian_month):02d}",
+			blocking=blocking,
+			products=products,
+		)
 
 		total_identified = sum((p.monthly_net_expense for p in pools), Decimal("0"))
 		total_allocated = sum((b.total_allocated_expense for b in batches), Decimal("0"))
 		fingerprint = _fingerprint(pools, products, period)
 
-		is_consistent = 1 if recon.ok and share_ok and uom_complete and rules and not exceptions else 0
+		is_consistent = (
+			1
+			if recon.ok
+			and share_ok
+			and uom_complete
+			and rules
+			and not exceptions
+			and not extract.has_overlap_conflicts
+			else 0
+		)
 		if action == "Recalculate" or previous_revision > 0:
 			status = "Recalculated" if is_consistent else "Incomplete"
 		else:
 			status = "Calculated" if is_consistent else "Incomplete"
 
 		unallocated = total_identified - total_allocated
+		over_allocated = total_allocated > total_identified
+		if over_allocated:
+			blocking.append(
+				f"Total Allocated Expenses {total_allocated} exceed Total Identified Monthly Expenses {total_identified}"
+			)
+			is_consistent = 0
+			status = "Incomplete"
+		if extract.has_overlap_conflicts:
+			is_consistent = 0
+			status = "Incomplete"
 
 		doc.revision = new_revision
 		doc.status = status
@@ -219,25 +281,65 @@ def run_calculation(monthly_name: str, *, retain_overrides: bool | None = None, 
 			doc.shares_are_provisional = 0 if uom_complete else 1
 		if hasattr(doc, "eligible_source_row_count"):
 			doc.eligible_source_row_count = len(rows)
+		if hasattr(doc, "missing_uom_count"):
+			doc.missing_uom_count = missing_uom_count
+		if hasattr(doc, "over_allocated"):
+			doc.over_allocated = 1 if over_allocated else 0
+		# Keep JSON compact — full per-row check lists blow max_allowed_packet on large months.
+		failed_checks = [c for c in recon.checks if not c.get("ok")]
 		doc.reconciliation_summary = json.dumps(
 			{
-				"ok": recon.ok,
+				"ok": recon.ok and not over_allocated,
 				"uom_complete": uom_complete,
 				"shares_are_provisional": not uom_complete,
-				"eligible_item_group": FG_ITEM_GROUP,
-				"parent_item_group": FG_PARENT_ITEM_GROUP,
+				"over_allocated": over_allocated,
+				"eligibility_source": "Item Primary UOMs",
+				"default_seed_item_group": FG_ITEM_GROUP,
+				"default_seed_parent_item_group": FG_PARENT_ITEM_GROUP,
 				"eligible_source_row_count": len(rows),
-				"item_group_exclusions": exclusion_summary,
-				"checks": recon.checks,
-				"messages": recon.messages,
+				"configured_item_exclusions": {
+					k: exclusion_summary.get(k)
+					for k in (
+						"excluded_source_row_count",
+						"excluded_qty",
+						"configured_item_count",
+						"by_item_group",
+					)
+					if k in exclusion_summary
+				},
+				"check_counts": {
+					"total": len(recon.checks),
+					"failed": len(failed_checks),
+				},
+				"failed_checks_sample": failed_checks[:50],
+				"messages": (
+					recon.messages
+					+ (
+						[
+							f"Allocated exceeds identified by {float(total_allocated - total_identified)}"
+						]
+						if over_allocated
+						else []
+					)
+				)[:50],
 			},
 			ensure_ascii=False,
 			default=str,
 		)
 		doc.exceptions_json = json.dumps(
 			{
-				"blocking": exceptions,
-				"item_group_exclusions": exclusion_summary,
+				"blocking": (blocking)[:100],
+				"configured_item_exclusions": {
+					"excluded_source_row_count": exclusion_summary.get("excluded_source_row_count"),
+					"excluded_qty": exclusion_summary.get("excluded_qty"),
+					"by_item_group": exclusion_summary.get("by_item_group"),
+				},
+				"rule_dimension_overlaps": {
+					"has_conflicts": extract.has_overlap_conflicts,
+					"overlapping_rule_pairs": extract.overlapping_rule_pairs[:50],
+					"overlapping_gl_entries": extract.overlapping_gl_entries[:50],
+					"policy": "reject_ambiguous_no_priority — conflicting GL amounts withheld from all pools",
+				},
 			},
 			ensure_ascii=False,
 			default=str,
@@ -321,27 +423,310 @@ def calculate_monthly(name: str, retain_overrides: int | None = None):
 def set_batch_manual_share(batch_allocation: str, manual_share: float | None = None, clear: int = 0):
 	row = frappe.get_doc("MFG Cost Batch Allocation", batch_allocation)
 	row.check_permission("write")
-	monthly = frappe.get_doc("Monthly FG Cost Calculation", row.monthly_calculation)
+	return _apply_batch_share_override(
+		monthly_name=row.monthly_calculation,
+		revision=cint(row.revision),
+		batch_no=row.batch_no,
+		batch_allocation=row.name,
+		applied_share=None if cint(clear) else flt(manual_share),
+		clear=cint(clear),
+	)
+
+
+@frappe.whitelist()
+def set_applied_batch_share(
+	batch_expense_allocation: str | None = None,
+	batch_allocation: str | None = None,
+	applied_share: float | None = None,
+	clear: int = 0,
+	reason: str | None = None,
+	commit: int = 1,
+):
+	"""Edit Applied Batch Share server-side; recalculate Allocated Amount and parent totals.
+
+	Does not silently redistribute remaining share to other batches.
+	"""
+	if frappe.flags.get("costing_in_share_engine"):
+		return {"skipped": 1, "reason": "already in share engine"}
+	if batch_expense_allocation:
+		bx = frappe.get_doc("MFG Cost Batch Expense Allocation", batch_expense_allocation)
+		bx.check_permission("write")
+		return _apply_batch_share_override(
+			monthly_name=bx.monthly_calculation,
+			revision=cint(bx.revision),
+			batch_no=bx.batch_no,
+			batch_allocation=bx.batch_allocation,
+			applied_share=None if cint(clear) else flt(applied_share),
+			clear=cint(clear),
+			reason=reason,
+			commit=bool(cint(commit)),
+		)
+	if batch_allocation:
+		return set_batch_manual_share(batch_allocation, applied_share, clear=clear)
+	frappe.throw(_("batch_expense_allocation or batch_allocation is required."))
+
+
+def _apply_batch_share_override(
+	*,
+	monthly_name: str,
+	revision: int,
+	batch_no: str,
+	batch_allocation: str | None,
+	applied_share: float | None,
+	clear: int = 0,
+	reason: str | None = None,
+	commit: bool = True,
+) -> dict:
+	from decimal import Decimal, ROUND_HALF_UP
+
+	from erpnext_extensions.iran_accounting.domain.currency import get_currency_precision
+	from erpnext_extensions.iran_accounting.fg_cost_allocation import DETAIL_DOCTYPE_MAP
+
+	frappe.flags.costing_in_share_engine = True
+	try:
+		return _apply_batch_share_override_inner(
+			monthly_name=monthly_name,
+			revision=revision,
+			batch_no=batch_no,
+			batch_allocation=batch_allocation,
+			applied_share=applied_share,
+			clear=clear,
+			reason=reason,
+			commit=commit,
+		)
+	finally:
+		frappe.flags.costing_in_share_engine = False
+
+
+def _apply_batch_share_override_inner(
+	*,
+	monthly_name: str,
+	revision: int,
+	batch_no: str,
+	batch_allocation: str | None,
+	applied_share: float | None,
+	clear: int = 0,
+	reason: str | None = None,
+	commit: bool = True,
+) -> dict:
+	from decimal import Decimal, ROUND_HALF_UP
+
+	from erpnext_extensions.iran_accounting.domain.currency import get_currency_precision
+	from erpnext_extensions.iran_accounting.fg_cost_allocation import DETAIL_DOCTYPE_MAP
+
+	monthly = frappe.get_doc("Monthly FG Cost Calculation", monthly_name)
+	monthly.check_permission("write")
 	if monthly.status == "Locked" or cint(monthly.is_consumed):
 		frappe.throw(_("Cannot edit shares on Locked/consumed calculation."))
+	if cint(monthly.revision) != cint(revision):
+		frappe.throw(_("Share edits apply only to the active revision."))
+
+	batch_row = None
+	if batch_allocation:
+		batch_row = frappe.get_doc("MFG Cost Batch Allocation", batch_allocation)
+	else:
+		name = frappe.db.get_value(
+			DETAIL_DOCTYPE_MAP["batch"],
+			{"monthly_calculation": monthly_name, "revision": revision, "batch_no": batch_no},
+			"name",
+		)
+		if not name:
+			frappe.throw(_("Production Batch allocation not found for {0}.").format(batch_no))
+		batch_row = frappe.get_doc(DETAIL_DOCTYPE_MAP["batch"], name)
+
+	previous_applied = flt(batch_row.applied_share)
+	previous_manual = batch_row.manual_share
+	calculated = flt(batch_row.calculated_share)
 
 	if cint(clear):
-		row.is_manual_override = 0
-		row.manual_share = None
-		row.applied_share = row.calculated_share
+		batch_row.is_manual_override = 0
+		batch_row.manual_share = 0
+		batch_row.applied_share = calculated
+		new_applied = Decimal(str(calculated))
 	else:
-		row.is_manual_override = 1
-		row.manual_share = flt(manual_share)
-		row.applied_share = flt(manual_share)
-	row.save(ignore_permissions=True)
+		if applied_share is None:
+			frappe.throw(_("Applied Batch Share is required."))
+		new_applied = Decimal(str(flt(applied_share)))
+		if new_applied < 0:
+			frappe.throw(_("Applied Batch Share cannot be negative."))
+		batch_row.is_manual_override = 1
+		batch_row.manual_share = float(new_applied)
+		batch_row.applied_share = float(new_applied)
+	# Never overwrite calculated_share
+	batch_row.calculated_share = calculated
+	batch_row.save(ignore_permissions=True)
 
+	currency = monthly.currency or frappe.get_cached_value("Company", monthly.company, "default_currency")
+	precision = get_currency_precision(currency)
+	q = Decimal("1") if precision <= 0 else Decimal("1").scaleb(-precision)
+
+	bx_rows = frappe.get_all(
+		DETAIL_DOCTYPE_MAP["batch_expense"],
+		filters={"monthly_calculation": monthly_name, "revision": revision, "batch_no": batch_no},
+		fields=["name", "pool_monthly_net_expense", "calculated_batch_share", "expense_pool", "account"],
+	)
+	updated_bx = []
+	for r in bx_rows:
+		pool_net = Decimal(str(flt(r.pool_monthly_net_expense)))
+		allocated = (pool_net * new_applied).quantize(q, rounding=ROUND_HALF_UP)
+		frappe.db.set_value(
+			DETAIL_DOCTYPE_MAP["batch_expense"],
+			r.name,
+			{
+				"manual_batch_share": float(new_applied) if not cint(clear) else 0.0,
+				"applied_batch_share": float(new_applied),
+				"allocated_amount": float(allocated),
+				"is_manual_override": 0 if cint(clear) else 1,
+				"calculated_batch_share": flt(r.calculated_batch_share),
+				"residual_applied": 0,
+			},
+			update_modified=True,
+		)
+		updated_bx.append({"name": r.name, "allocated_amount": float(allocated)})
+
+	# Tiny currency residual only when Applied Batch Shares sum to ~100%.
+	# Never redistribute large gaps (Incomplete / provisional shares) — that would break
+	# Allocated Amount = Pool Monthly Net Expense × Applied Batch Share.
+	share_rows_pre = frappe.get_all(
+		DETAIL_DOCTYPE_MAP["batch"],
+		filters={"monthly_calculation": monthly_name, "revision": revision},
+		fields=["batch_no", "applied_share", "normalized_qty"],
+	)
+	applied_sum_pre = sum((Decimal(str(flt(r.applied_share))) for r in share_rows_pre), Decimal("0"))
+	share_eps = Decimal("0.000001")
+	shares_complete = bool(share_rows_pre) and abs(applied_sum_pre - Decimal("1")) <= share_eps
+	if shares_complete:
+		batch_norms = {r.batch_no: Decimal(str(flt(r.normalized_qty))) for r in share_rows_pre}
+		pool_keys = frappe.db.sql(
+			"""
+			SELECT DISTINCT expense_pool, pool_monthly_net_expense
+			FROM `tabMFG Cost Batch Expense Allocation`
+			WHERE monthly_calculation=%s AND revision=%s
+			""",
+			(monthly_name, revision),
+			as_dict=True,
+		)
+		for pk in pool_keys:
+			rows = frappe.get_all(
+				DETAIL_DOCTYPE_MAP["batch_expense"],
+				filters={
+					"monthly_calculation": monthly_name,
+					"revision": revision,
+					"expense_pool": pk.expense_pool,
+				},
+				fields=["name", "batch_no", "allocated_amount"],
+			)
+			if not rows:
+				continue
+			pool_net = Decimal(str(flt(pk.pool_monthly_net_expense)))
+			alloc_sum = sum((Decimal(str(flt(x.allocated_amount))) for x in rows), Decimal("0"))
+			diff = (pool_net - alloc_sum).quantize(q, rounding=ROUND_HALF_UP)
+			if diff == 0:
+				continue
+			target = max(rows, key=lambda x: (batch_norms.get(x.batch_no, Decimal("0")), x.batch_no))
+			new_amt = (Decimal(str(flt(target.allocated_amount))) + diff).quantize(q, rounding=ROUND_HALF_UP)
+			frappe.db.set_value(
+				DETAIL_DOCTYPE_MAP["batch_expense"],
+				target.name,
+				{"allocated_amount": float(new_amt), "residual_applied": 1},
+				update_modified=True,
+			)
+
+	# Refresh batch totals from BxE amounts
+	for bname, bno in frappe.get_all(
+		DETAIL_DOCTYPE_MAP["batch"],
+		filters={"monthly_calculation": monthly_name, "revision": revision},
+		fields=["name", "batch_no"],
+		as_list=True,
+	):
+		btotal = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(allocated_amount), 0)
+			FROM `tabMFG Cost Batch Expense Allocation`
+			WHERE monthly_calculation=%s AND revision=%s AND batch_no=%s
+			""",
+			(monthly_name, revision, bno),
+		)[0][0]
+		frappe.db.set_value(
+			DETAIL_DOCTYPE_MAP["batch"],
+			bname,
+			"total_allocated_expense",
+			flt(btotal),
+			update_modified=True,
+		)
+
+	# Parent totals from active revision only
+	total_allocated = frappe.db.sql(
+		"""
+		SELECT COALESCE(SUM(allocated_amount), 0)
+		FROM `tabMFG Cost Batch Expense Allocation`
+		WHERE monthly_calculation=%s AND revision=%s
+		""",
+		(monthly_name, revision),
+	)[0][0]
+	total_allocated = Decimal(str(flt(total_allocated)))
+	identified = Decimal(str(flt(monthly.total_identified_expenses)))
+
+	# Share variance across batches (do not redistribute)
+	share_rows = frappe.get_all(
+		DETAIL_DOCTYPE_MAP["batch"],
+		filters={"monthly_calculation": monthly_name, "revision": revision},
+		fields=["batch_no", "applied_share", "normalized_qty"],
+	)
+	applied_sum = sum((Decimal(str(flt(r.applied_share))) for r in share_rows), Decimal("0"))
+	share_variance = applied_sum - (Decimal("1") if share_rows else Decimal("0"))
+	eps = Decimal("0.000001")
+	share_ok = abs(share_variance) <= eps
+	over_allocated = total_allocated > identified
+
+	monthly.total_allocated_expenses = float(total_allocated)
+	monthly.unallocated_amount = float(identified - total_allocated)
+	monthly.share_variance = float(share_variance)
+	monthly.over_allocated = 1 if over_allocated else 0
 	monthly.status = "Incomplete"
 	monthly.is_consistent = 0
-	if hasattr(monthly, "shares_are_provisional"):
-		monthly.shares_are_provisional = 1
-	monthly.save(ignore_permissions=True)
-	frappe.db.commit()
-	return {"batch_allocation": row.name, "applied_share": row.applied_share}
+	monthly.save(ignore_permissions=True, ignore_version=True)
+
+	write_revision_log(
+		monthly_name=monthly_name,
+		revision=revision,
+		action="Manual Share Override",
+		previous_status=monthly.status,
+		new_status="Incomplete",
+		source_fingerprint=monthly.source_fingerprint or "",
+		totals={
+			"total_allocated_expenses": str(total_allocated),
+			"share_variance": str(share_variance),
+			"batch_no": batch_no,
+			"previous_applied": previous_applied,
+			"new_applied": float(new_applied),
+			"previous_manual": previous_manual,
+			"reason": reason or "",
+			"user": frappe.session.user,
+			"timestamp": str(now_datetime()),
+		},
+		override_map={batch_no: str(new_applied)},
+		reconciliation={
+			"share_ok": share_ok,
+			"over_allocated": over_allocated,
+			"updated_batch_expense_rows": len(updated_bx),
+		},
+		retain_overrides=True,
+	)
+	if commit:
+		frappe.db.commit()
+	return {
+		"batch_no": batch_no,
+		"batch_allocation": batch_row.name,
+		"applied_share": float(new_applied),
+		"calculated_share": calculated,
+		"total_allocated_expenses": float(total_allocated),
+		"share_variance": float(share_variance),
+		"over_allocated": 1 if over_allocated else 0,
+		"updated_rows": updated_bx,
+		"status": "Incomplete",
+		"formula": "Allocated Amount = Pool Monthly Net Expense × Applied Batch Share",
+	}
 
 
 @frappe.whitelist()
@@ -353,6 +738,8 @@ def lock_monthly(name: str, lock: int = 1):
 			frappe.throw(_("Only consistent Calculated/Recalculated documents can be Locked."))
 		if cint(getattr(doc, "shares_are_provisional", 0)):
 			frappe.throw(_("Cannot lock a calculation with provisional shares."))
+		if cint(getattr(doc, "over_allocated", 0)):
+			frappe.throw(_("Cannot lock a calculation where allocated expenses exceed identified expenses."))
 		doc.status = "Locked"
 	else:
 		if cint(doc.is_consumed):

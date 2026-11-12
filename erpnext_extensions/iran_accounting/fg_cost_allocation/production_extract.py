@@ -1,6 +1,10 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 # License: MIT
-"""Eligible Finished Goods Manufacture Stock Entry extraction (تزریقی only)."""
+"""Eligible Finished Goods Manufacture Stock Entry extraction.
+
+Eligibility for NEW calculations is driven by Settings → Item Primary UOMs.
+Item Group تزریقی is only the initial default population criterion, not a permanent filter.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +15,9 @@ from typing import Any
 import frappe
 from frappe.utils import flt
 
-from erpnext_extensions.iran_accounting.fg_cost_allocation import FG_ITEM_GROUP, FG_PARENT_ITEM_GROUP
 from erpnext_extensions.iran_accounting.fg_cost_allocation.eligibility import (
 	ExclusionRow,
 	summarize_exclusions,
-	verify_fg_item_group_hierarchy,
 )
 from erpnext_extensions.iran_accounting.fg_cost_allocation.period import ResolvedPeriod
 
@@ -54,8 +56,24 @@ class ProductBucket:
 	item_group: str = ""
 
 
+def configured_item_codes(settings_name: str | None = None, company: str | None = None) -> set[str]:
+	"""Items currently in Item Primary UOMs — sole eligibility source for new calculations."""
+	if not settings_name and company:
+		settings_name = frappe.db.get_value(
+			"Finished Goods Cost Allocation Settings", {"company": company}, "name"
+		)
+	if not settings_name:
+		return set()
+	return set(
+		frappe.get_all(
+			"FG Item Primary UOM",
+			filters={"parent": settings_name},
+			pluck="item",
+		)
+	) - {None, ""}
+
+
 def _fetch_manufacture_fg_candidates(company: str, period: ResolvedPeriod) -> list[dict]:
-	"""All finished Manufacture SE detail rows matching WO production_item (any Item Group)."""
 	return frappe.db.sql(
 		"""
 		SELECT
@@ -66,7 +84,6 @@ def _fetch_manufacture_fg_candidates(company: str, period: ResolvedPeriod) -> li
 			sed.item_code,
 			i.item_name,
 			i.item_group,
-			ig.parent_item_group,
 			sed.batch_no,
 			sed.transfer_qty AS qty,
 			sed.stock_uom,
@@ -75,7 +92,6 @@ def _fetch_manufacture_fg_candidates(company: str, period: ResolvedPeriod) -> li
 		INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
 		INNER JOIN `tabWork Order` wo ON wo.name = se.work_order
 		INNER JOIN `tabItem` i ON i.name = sed.item_code
-		LEFT JOIN `tabItem Group` ig ON ig.name = i.item_group
 		WHERE se.docstatus = 1
 		  AND se.company = %(company)s
 		  AND se.purpose = 'Manufacture'
@@ -113,57 +129,44 @@ def _to_production_row(r: dict) -> ProductionRow:
 
 
 def fetch_eligible_fg_rows(
-	company: str, period: ResolvedPeriod
+	company: str,
+	period: ResolvedPeriod,
+	*,
+	settings_name: str | None = None,
 ) -> tuple[list[ProductionRow], list[ExclusionRow], dict]:
-	"""Return (eligible rows, exclusion rows, exclusion summary).
-
-	Eligible only when Item.item_group == تزریقی and that group’s parent is محصول نهایی.
-	Sibling groups under محصول نهایی (e.g. خوراکی) and all other groups are excluded
-	with source-level traceability — never silently dropped.
-	"""
-	verify_fg_item_group_hierarchy()
+	"""Return (eligible, excluded, exclusion_summary) using Settings Item Primary UOMs."""
+	allowed = configured_item_codes(settings_name=settings_name, company=company)
 	candidates = _fetch_manufacture_fg_candidates(company, period)
 	eligible: list[ProductionRow] = []
 	excluded: list[ExclusionRow] = []
 
 	for r in candidates:
-		item_group = r.item_group or ""
-		parent = r.parent_item_group or ""
-		is_eligible = item_group == FG_ITEM_GROUP and parent == FG_PARENT_ITEM_GROUP
-		if is_eligible:
+		item = r.item_code
+		if item in allowed:
 			eligible.append(_to_production_row(r))
 			continue
-		if parent == FG_PARENT_ITEM_GROUP:
-			reason = (
-				f"Item Group {item_group} is under {FG_PARENT_ITEM_GROUP} "
-				f"but is not eligible {FG_ITEM_GROUP}"
-			)
-		else:
-			reason = (
-				f"Item Group {item_group or '(blank)'} is outside "
-				f"{FG_PARENT_ITEM_GROUP} / {FG_ITEM_GROUP}"
-			)
 		excluded.append(
 			ExclusionRow(
 				stock_entry=r.stock_entry,
 				stock_entry_detail=r.stock_entry_detail,
 				work_order=r.work_order or "",
-				item_code=r.item_code,
+				item_code=item,
 				item_name=r.item_name or "",
-				item_group=item_group,
+				item_group=r.item_group or "",
 				batch_no=(r.batch_no or "").strip(),
 				qty=Decimal(str(flt(r.qty))),
-				reason=reason,
+				reason="Item not in Costing Settings Item Primary UOMs",
 			)
 		)
 
-	return eligible, excluded, summarize_exclusions(excluded)
+	summary = summarize_exclusions(excluded)
+	summary["configured_item_count"] = len(allowed)
+	return eligible, excluded, summary
 
 
 def consolidate_products(
 	rows: list[ProductionRow],
 ) -> tuple[dict[tuple[str, str], ProductBucket], list[str]]:
-	"""Group by (batch_no, item_code). Returns buckets and exception messages."""
 	buckets: dict[tuple[str, str], ProductBucket] = {}
 	exceptions: list[str] = []
 	for row in rows:
@@ -190,7 +193,7 @@ def consolidate_products(
 				item_code=row.item_code,
 				item_name=row.item_name,
 				uom=row.stock_uom or row.uom,
-				item_group=row.item_group or FG_ITEM_GROUP,
+				item_group=row.item_group,
 			)
 			buckets[key] = bucket
 		bucket.actual_qty += row.qty

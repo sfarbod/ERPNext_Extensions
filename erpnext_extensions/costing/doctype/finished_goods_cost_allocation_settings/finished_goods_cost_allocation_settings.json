@@ -17,13 +17,15 @@
   "column_break_main",
   "share_precision",
   "amount_precision",
+  "selling_price_list",
   "section_uom",
   "default_primary_uom",
   "item_primary_uoms",
   "section_rules",
-  "exclude_admin_staff_cost_centers",
   "expense_account_dimension_rules",
   "section_audit",
+  "rule_generation_summary",
+  "uom_validation_summary",
   "last_rule_generation_summary",
   "last_uom_validation_summary"
  ],
@@ -69,6 +71,13 @@
    "label": "Amount Precision"
   },
   {
+   "description": "Selling Price List used for Product Allocation unit economics. Must be an enabled Selling Price List. Leave blank to keep Selling Price as Missing.",
+   "fieldname": "selling_price_list",
+   "fieldtype": "Link",
+   "label": "Selling Price List",
+   "options": "Price List"
+  },
+  {
    "fieldname": "section_uom",
    "fieldtype": "Section Break",
    "label": "Primary UOM for Costing"
@@ -81,6 +90,7 @@
    "options": "UOM"
   },
   {
+   "allow_bulk_edit": 1,
    "fieldname": "item_primary_uoms",
    "fieldtype": "Table",
    "label": "Item Primary UOMs",
@@ -92,13 +102,8 @@
    "label": "Expense Account Dimension Rules"
   },
   {
-   "default": "1",
-   "description": "Exclude Cost Centers classified as اداری / ستادی (e.g. اداری و ستاد) from generated rules.",
-   "fieldname": "exclude_admin_staff_cost_centers",
-   "fieldtype": "Check",
-   "label": "Exclude Admin/Staff Cost Centers"
-  },
-  {
+   "allow_bulk_edit": 1,
+   "description": "Rules are Account \u00d7 Department with blank Cost Center. Use Preview / Generate from Excel (private site files).",
    "fieldname": "expense_account_dimension_rules",
    "fieldtype": "Table",
    "label": "Expense Account Dimension Rules",
@@ -110,21 +115,39 @@
    "label": "Generation / Validation Audit"
   },
   {
+   "allow_bulk_edit": 1,
+   "description": "Read-only audit grid. Populated after Excel rule generation. Use Download for full export.",
+   "fieldname": "rule_generation_summary",
+   "fieldtype": "Table",
+   "label": "Last Rule Generation Summary",
+   "options": "FG Cost Rule Generation Summary"
+  },
+  {
+   "allow_bulk_edit": 1,
+   "description": "Read-only snapshot of Item Primary UOM validation. Use Download for full export.",
+   "fieldname": "uom_validation_summary",
+   "fieldtype": "Table",
+   "label": "Last UOM Validation Summary",
+   "options": "FG Cost UOM Validation Summary"
+  },
+  {
    "fieldname": "last_rule_generation_summary",
    "fieldtype": "Long Text",
-   "label": "Last Rule Generation Summary",
+   "hidden": 1,
+   "label": "Last Rule Generation Summary (Technical JSON)",
    "read_only": 1
   },
   {
    "fieldname": "last_uom_validation_summary",
    "fieldtype": "Long Text",
-   "label": "Last UOM Validation Summary",
+   "hidden": 1,
+   "label": "Last UOM Validation Summary (Technical JSON)",
    "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-12 00:00:00.000000",
+ "modified": "2026-11-12 16:30:00.000000",
  "modified_by": "Administrator",
  "module": "Costing",
  "name": "Finished Goods Cost Allocation Settings",

@@ -12,15 +12,48 @@ from frappe import _
 from frappe.utils import cint, getdate
 
 ADMIN_STAFF_TOKENS = ("اداری", "ستادی", "ستاد")
+# Previously approved / verified administrative Cost Center leaf for اسپاد فارمد دارو.
+VERIFIED_ADMIN_COST_CENTERS = ("3000 - اداری و ستاد - E",)
 
 
 def is_admin_staff_cost_center(cost_center: str | None) -> bool:
+	"""Return True only for verified administrative/headquarters Cost Centers.
+
+	Uses the previously approved leaf Cost Center identity first. Token matching is
+	retained only as a secondary check against that same known classification family
+	and must not invent new administrative centers from arbitrary names.
+	"""
 	if not cost_center:
 		return False
-	name = cost_center
+	if cost_center in VERIFIED_ADMIN_COST_CENTERS:
+		return True
+	# Secondary: exact previously-known naming pattern for the verified leaf only.
 	cc_name = frappe.db.get_value("Cost Center", cost_center, "cost_center_name") or ""
-	blob = f"{name} {cc_name}"
-	return any(tok in blob for tok in ADMIN_STAFF_TOKENS)
+	if cost_center.startswith("3000 -") and "اداری و ستاد" in f"{cost_center} {cc_name}":
+		return True
+	return False
+
+
+def admin_classification(cost_center: str | None) -> dict:
+	"""Explain inclusion/exclusion for reporting (never silent)."""
+	if not cost_center:
+		return {"cost_center": cost_center, "exclude": False, "reason": "Blank Cost Center"}
+	if is_admin_staff_cost_center(cost_center):
+		return {
+			"cost_center": cost_center,
+			"exclude": True,
+			"reason": "Verified administrative/headquarters Cost Center (اداری و ستاد)",
+		}
+	cc_name = frappe.db.get_value("Cost Center", cost_center, "cost_center_name") or ""
+	blob = f"{cost_center} {cc_name}"
+	if any(tok in blob for tok in ADMIN_STAFF_TOKENS):
+		return {
+			"cost_center": cost_center,
+			"exclude": False,
+			"review": True,
+			"reason": "Name contains اداری/ستاد tokens but is not the verified headquarters leaf — listed for review, not auto-excluded",
+		}
+	return {"cost_center": cost_center, "exclude": False, "reason": "Not administrative"}
 
 
 def list_expense_accounts_starting_with_6(company: str) -> list[str]:
@@ -99,9 +132,9 @@ def preview_generate_department_rules(
 ):
 	doc = frappe.get_doc("Finished Goods Cost Allocation Settings", settings_name)
 	doc.check_permission("read")
-	exclude = bool(cint(doc.exclude_admin_staff_cost_centers))
+	# Admin/Staff Cost Center exclusion setting removed — do not auto-exclude by CC class.
 	combos, excluded = discover_gl_dimension_combos(
-		doc.company, from_date=from_date, to_date=to_date, exclude_admin_staff=exclude
+		doc.company, from_date=from_date, to_date=to_date, exclude_admin_staff=False
 	)
 	existing = {
 		_rule_key(r.account, r.cost_center, r.department)
@@ -145,9 +178,9 @@ def generate_department_rules(
 	"""Idempotent generation of Account×CC×Dept rules from GL discovery."""
 	doc = frappe.get_doc("Finished Goods Cost Allocation Settings", settings_name)
 	doc.check_permission("write")
-	exclude = bool(cint(doc.exclude_admin_staff_cost_centers))
+	# Admin/Staff Cost Center exclusion setting removed — do not auto-exclude by CC class.
 	combos, excluded = discover_gl_dimension_combos(
-		doc.company, from_date=from_date, to_date=to_date, exclude_admin_staff=exclude
+		doc.company, from_date=from_date, to_date=to_date, exclude_admin_staff=False
 	)
 
 	created = skipped = 0

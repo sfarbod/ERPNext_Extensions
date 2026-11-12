@@ -1,6 +1,10 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 # License: MIT
-"""Finished Goods Item Group eligibility for costing (تزریقی under محصول نهایی)."""
+"""Item Group helpers for Costing.
+
+تزریقی under محصول نهایی is the *initial default seed* for Item Primary UOMs only.
+New calculation eligibility is driven by Settings → Item Primary UOMs (see production_extract).
+"""
 
 from __future__ import annotations
 

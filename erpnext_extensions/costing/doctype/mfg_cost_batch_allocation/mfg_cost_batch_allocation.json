@@ -82,8 +82,10 @@
    "fieldname": "finished_item",
    "fieldtype": "Link",
    "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Finished Item",
-   "options": "Item"
+   "options": "Item",
+   "search_index": 1
   },
   {
    "fieldname": "work_orders",

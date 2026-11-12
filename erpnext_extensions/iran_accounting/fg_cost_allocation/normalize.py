@@ -32,16 +32,16 @@ def apply_normalization(
 			exceptions.append(msg)
 			continue
 
+		# Use Applied Conversion Factor from Settings (includes Manual Override).
+		# Do NOT re-resolve from Item master only — that would discard Costing overrides.
 		factor = cfg.get("factor")
 		status = cfg.get("status") or "Missing"
 		primary = cfg.get("primary_uom") or ""
-		# Re-resolve live in case Settings row stale
-		live_factor, live_status, remarks = resolve_conversion(bucket.item_code, primary)
-		factor = live_factor
-		status = live_status
+		remarks = cfg.get("remarks") or ""
 
 		bucket.normalization_uom = primary
-		if status != "Valid" or factor is None:
+		ok = status in ("Valid", "Manual Override") and factor is not None and factor > 0
+		if not ok:
 			bucket.missing_uom_factor = True
 			bucket.normalization_factor = None
 			bucket.normalized_qty = Decimal("0")
@@ -55,5 +55,6 @@ def apply_normalization(
 
 		bucket.missing_uom_factor = False
 		bucket.normalization_factor = factor
+		# Convention: Normalized Qty = Actual Qty (Stock UOM) × Applied Conversion Factor
 		bucket.normalized_qty = bucket.actual_qty * factor
 	return exceptions

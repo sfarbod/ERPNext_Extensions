@@ -55,6 +55,10 @@ def assert_consumable(monthly_name: str):
 		raise FGCostAllocationNotConsumable(
 			_("Monthly FG Cost Calculation {0} has no expense rules.").format(monthly_name)
 		)
+	if cint(getattr(doc, "over_allocated", 0)):
+		raise FGCostAllocationNotConsumable(
+			_("Monthly FG Cost Calculation {0} is over-allocated.").format(monthly_name)
+		)
 	return doc
 
 
@@ -111,9 +115,35 @@ def get_product_allocations(monthly_name: str, revision: int | None = None):
 
 
 def get_product_expense_allocations(monthly_name: str, revision: int | None = None):
+	"""Historical Product × Expense rows only. Not used for active costing totals."""
 	rev = _revision(monthly_name, revision)
 	return frappe.get_all(
 		DETAIL_DOCTYPE_MAP["product_expense"],
 		filters={"monthly_calculation": monthly_name, "revision": rev},
 		fields=["*"],
 	)
+
+
+@frappe.whitelist()
+def get_account_dimension_summary(monthly_name: str, revision: int | None = None):
+	rev = _revision(monthly_name, revision)
+	rows = frappe.get_all(
+		DETAIL_DOCTYPE_MAP["account_dimension_summary"],
+		filters={"monthly_calculation": monthly_name, "revision": rev},
+		fields=[
+			"name",
+			"account",
+			"account_name",
+			"cost_center",
+			"department",
+			"expense_pool",
+			"pool_monthly_net_expense",
+			"allocated_batch_count",
+			"total_applied_batch_share",
+			"total_allocated_amount",
+			"allocation_status",
+			"currency",
+		],
+		order_by="account asc, cost_center asc, department asc",
+	)
+	return {"revision": rev, "count": len(rows), "rows": rows}

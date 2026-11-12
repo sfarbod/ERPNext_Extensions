@@ -12,8 +12,10 @@ from frappe.utils import cint
 class MonthlyFGCostCalculation(Document):
 	def validate(self):
 		self._validate_persian_month()
+		self._set_persian_period()
 		self._validate_company_period_unique()
 		self._default_currency()
+		self._refresh_over_allocation_flag()
 
 	def on_trash(self):
 		if cint(self.is_consumed):
@@ -29,6 +31,17 @@ class MonthlyFGCostCalculation(Document):
 				_("Persian Month must be between 1 and 12."),
 				title=_("Invalid Persian Month"),
 			)
+
+	def _set_persian_period(self):
+		if self.persian_year is None or self.persian_month is None:
+			self.persian_period = None
+			return
+		self.persian_period = f"{cint(self.persian_year):04d}-{cint(self.persian_month):02d}"
+
+	def _refresh_over_allocation_flag(self):
+		identified = float(self.total_identified_expenses or 0)
+		allocated = float(self.total_allocated_expenses or 0)
+		self.over_allocated = 1 if allocated > identified + 0.0001 else 0
 
 	def _validate_company_period_unique(self):
 		if not self.company or self.persian_year is None or self.persian_month is None:

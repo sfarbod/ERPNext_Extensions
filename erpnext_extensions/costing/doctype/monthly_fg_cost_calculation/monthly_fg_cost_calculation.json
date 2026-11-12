@@ -12,6 +12,7 @@
   "company",
   "persian_year",
   "persian_month",
+  "persian_period",
   "persian_month_name",
   "period_key",
   "column_break_period",
@@ -43,11 +44,18 @@
   "rule_count",
   "pool_count",
   "exception_count",
+  "missing_uom_count",
   "share_variance",
   "shares_are_provisional",
   "eligible_source_row_count",
+  "over_allocated",
+  "section_account_dimension",
+  "account_dimension_summary_html",
   "section_reconciliation",
+  "reconciliation_html",
   "reconciliation_summary",
+  "section_exceptions",
+  "exceptions_html",
   "exceptions_json"
  ],
  "fields": [
@@ -85,6 +93,16 @@
    "reqd": 1
   },
   {
+   "bold": 1,
+   "description": "Display period as YYYY-MM (Persian). Document name remains the internal ID.",
+   "fieldname": "persian_period",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Persian Period",
+   "read_only": 1
+  },
+  {
    "fieldname": "persian_month_name",
    "fieldtype": "Data",
    "label": "Persian Month Name",
@@ -93,7 +111,6 @@
   {
    "fieldname": "period_key",
    "fieldtype": "Data",
-   "in_list_view": 1,
    "label": "Period Key",
    "read_only": 1
   },
@@ -273,25 +290,17 @@
   },
   {
    "default": "0",
+   "fieldname": "missing_uom_count",
+   "fieldtype": "Int",
+   "label": "Missing UOM Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
    "fieldname": "share_variance",
    "fieldtype": "Float",
    "label": "Share Variance",
    "precision": "9"
-  },
-  {
-   "fieldname": "section_reconciliation",
-   "fieldtype": "Section Break",
-   "label": "Reconciliation"
-  },
-  {
-   "fieldname": "reconciliation_summary",
-   "fieldtype": "Long Text",
-   "label": "Reconciliation Summary"
-  },
-  {
-   "fieldname": "exceptions_json",
-   "fieldtype": "Long Text",
-   "label": "Exceptions JSON"
   },
   {
    "default": "0",
@@ -307,6 +316,58 @@
    "fieldtype": "Int",
    "label": "Eligible Source Row Count",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "over_allocated",
+   "fieldtype": "Check",
+   "label": "Over Allocated",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_account_dimension",
+   "fieldtype": "Section Break",
+   "label": "Account / Dimension Allocation Summary"
+  },
+  {
+   "fieldname": "account_dimension_summary_html",
+   "fieldtype": "HTML",
+   "label": "Account Dimension Summary"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "section_reconciliation",
+   "fieldtype": "Section Break",
+   "label": "Reconciliation"
+  },
+  {
+   "fieldname": "reconciliation_html",
+   "fieldtype": "HTML",
+   "label": "Reconciliation Checks"
+  },
+  {
+   "fieldname": "reconciliation_summary",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Reconciliation Summary (Technical JSON)"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "section_exceptions",
+   "fieldtype": "Section Break",
+   "label": "Exceptions"
+  },
+  {
+   "fieldname": "exceptions_html",
+   "fieldtype": "HTML",
+   "label": "Exception List"
+  },
+  {
+   "fieldname": "exceptions_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Exceptions JSON (Technical)"
   }
  ],
  "index_web_pages_for_search": 0,

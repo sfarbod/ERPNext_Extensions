@@ -139,36 +139,54 @@ def reconcile(
 			batch.batch_no,
 		)
 
-	# 7) per product: sum product×pool = product total
-	px_by_product: dict[tuple[str, str], Decimal] = {}
-	for px in product_expenses:
-		k = (px.batch_no, px.item_code)
-		px_by_product[k] = px_by_product.get(k, Decimal("0")) + px.product_pool_allocated_amount
-	for batch, product, _share, amt in product_rows:
-		k = (batch.batch_no, product.item_code)
-		actual = px_by_product.get(k, Decimal("0"))
-		result.add(
-			"product_to_product_pool",
-			_money(actual, precision) == _money(amt, precision),
-			amt,
-			actual,
-			f"{k}",
-		)
+	# 7–8) Product × Expense Pool is historical/display-only.
+	# When rows exist (legacy revisions), still reconcile; new revisions may omit them.
+	if product_expenses:
+		px_by_product: dict[tuple[str, str], Decimal] = {}
+		for px in product_expenses:
+			k = (px.batch_no, px.item_code)
+			px_by_product[k] = px_by_product.get(k, Decimal("0")) + px.product_pool_allocated_amount
+		for batch, product, _share, amt in product_rows:
+			k = (batch.batch_no, product.item_code)
+			actual = px_by_product.get(k, Decimal("0"))
+			result.add(
+				"product_to_product_pool",
+				_money(actual, precision) == _money(amt, precision),
+				amt,
+				actual,
+				f"{k}",
+			)
 
-	# 8) per batch×pool: sum product×pool = batch×pool
-	bx_map = {(bx.batch_no, bx.pool_key, bx.settings_rule): bx.allocated_amount for bx in batch_expenses}
-	px_group: dict[tuple, Decimal] = {}
-	for px in product_expenses:
-		k = (px.batch_no, px.pool_key, px.settings_rule)
-		px_group[k] = px_group.get(k, Decimal("0")) + px.product_pool_allocated_amount
-	for k, expected in bx_map.items():
-		actual = px_group.get(k, Decimal("0"))
+		bx_map = {(bx.batch_no, bx.pool_key, bx.settings_rule): bx.allocated_amount for bx in batch_expenses}
+		px_group: dict[tuple, Decimal] = {}
+		for px in product_expenses:
+			k = (px.batch_no, px.pool_key, px.settings_rule)
+			px_group[k] = px_group.get(k, Decimal("0")) + px.product_pool_allocated_amount
+		for k, expected in bx_map.items():
+			actual = px_group.get(k, Decimal("0"))
+			result.add(
+				"batch_pool_to_product_pool",
+				_money(actual, precision) == _money(expected, precision),
+				expected,
+				actual,
+				str(k),
+			)
+
+	# 9) Each Batch×Pool amount = pool_net × applied_share (within money precision).
+	# Rows marked residual_applied intentionally absorb pool-level rounding and are
+	# validated via pool-sum identity elsewhere; skip strict per-row formula there.
+	for bx in batch_expenses:
+		expected = _money(bx.pool_monthly_net_expense * bx.applied_batch_share, precision)
+		if bx.residual_applied:
+			ok = True
+		else:
+			ok = _money(bx.allocated_amount, precision) == expected
 		result.add(
-			"batch_pool_to_product_pool",
-			_money(actual, precision) == _money(expected, precision),
+			"batch_pool_formula",
+			ok,
 			expected,
-			actual,
-			str(k),
+			bx.allocated_amount,
+			f"{bx.batch_no}/{bx.account}",
 		)
 
 	if blocking_exceptions:

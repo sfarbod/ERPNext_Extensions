@@ -24,6 +24,9 @@ from erpnext_extensions.iran_accounting.fg_cost_allocation.production_extract im
 DETAIL_TYPES = [
 	DETAIL_DOCTYPE_MAP["product_expense"],
 	DETAIL_DOCTYPE_MAP["batch_expense"],
+	DETAIL_DOCTYPE_MAP["account_dimension_summary"],
+	DETAIL_DOCTYPE_MAP["reconciliation_check"],
+	DETAIL_DOCTYPE_MAP["exception"],
 	DETAIL_DOCTYPE_MAP["gl_line"],
 	DETAIL_DOCTYPE_MAP["product"],
 	DETAIL_DOCTYPE_MAP["batch"],
@@ -32,7 +35,12 @@ DETAIL_TYPES = [
 
 
 def clear_details(monthly_name: str, revision: int | None = None) -> None:
-	"""Bulk-delete detail rows. Uses raw DELETE to avoid QB lock churn on large sets."""
+	"""Bulk-delete detail rows. Uses raw DELETE to avoid QB lock churn on large sets.
+
+	When ``revision`` is None (full clear / delete monthly), also removes
+	``MFG Cost Calculation Revision`` audit rows for that monthly so deletes
+	leave no orphans. Per-revision clears keep revision logs for history.
+	"""
 	for dt in DETAIL_TYPES:
 		table = f"tab{dt}"
 		if revision is not None:
@@ -45,6 +53,12 @@ def clear_details(monthly_name: str, revision: int | None = None) -> None:
 				f"DELETE FROM `{table}` WHERE monthly_calculation=%s",
 				(monthly_name,),
 			)
+	if revision is None:
+		rev_dt = DETAIL_DOCTYPE_MAP["revision"]
+		frappe.db.sql(
+			f"DELETE FROM `tab{rev_dt}` WHERE monthly_calculation=%s",
+			(monthly_name,),
+		)
 
 
 def _f(value) -> float:
@@ -298,15 +312,19 @@ def persist_all(
 		"revision",
 		"batch_allocation",
 		"batch_no",
+		"work_order",
 		"expense_pool",
 		"account",
 		"cost_center",
 		"department",
 		"pool_monthly_net_expense",
+		"calculated_batch_share",
+		"manual_batch_share",
 		"applied_batch_share",
 		"allocated_amount",
 		"currency",
 		"residual_applied",
+		"is_manual_override",
 	]
 	bx_rows = []
 	for idx, bx in enumerate(batch_expenses, start=1):
@@ -326,20 +344,58 @@ def persist_all(
 				rev,
 				batch_map[bx.batch_no],
 				bx.batch_no,
+				bx.work_order or None,
 				pool_name,
 				bx.account,
 				bx.cost_center or None,
 				bx.department or None,
 				_f(bx.pool_monthly_net_expense),
+				_f(bx.calculated_batch_share),
+				_f(bx.manual_batch_share) if bx.manual_batch_share is not None else 0.0,
 				_f(bx.applied_batch_share),
 				_f(bx.allocated_amount),
 				currency,
 				1 if bx.residual_applied else 0,
+				1 if bx.is_manual_override else 0,
 			]
 		)
 	_bulk(DETAIL_DOCTYPE_MAP["batch_expense"], bx_fields, bx_rows)
 
-	# --- products ---
+	# --- products (with material consumption + selling price economics) ---
+	from erpnext_extensions.iran_accounting.fg_cost_allocation.material_cost import (
+		attribute_material_to_products,
+		get_selling_price,
+	)
+	from erpnext_extensions.iran_accounting.domain.currency import get_currency_precision
+
+	precision = get_currency_precision(currency)
+	settings_name = frappe.db.get_value(
+		"Finished Goods Cost Allocation Settings", {"company": frappe.db.get_value("Monthly FG Cost Calculation", monthly_name, "company")}, "name"
+	)
+	selling_price_list = (
+		frappe.db.get_value("Finished Goods Cost Allocation Settings", settings_name, "selling_price_list")
+		if settings_name
+		else None
+	)
+	persian_period = frappe.db.get_value("Monthly FG Cost Calculation", monthly_name, "persian_period")
+
+	# Material attribution per batch
+	material_by_batch_item: dict[tuple[str, str], dict] = {}
+	by_batch: dict[str, list] = {}
+	for batch, product, product_share, product_allocated in product_rows:
+		by_batch.setdefault(batch.batch_no, []).append(
+			{
+				"item_code": product.item_code,
+				"product_share": float(product_share),
+				"stock_entries": sorted(product.stock_entries or []),
+				"work_orders": sorted(product.work_orders or []),
+			}
+		)
+	for bno, plist in by_batch.items():
+		attrs = attribute_material_to_products(batch_no=bno, products=plist, precision=precision)
+		for item_code, meta in attrs.items():
+			material_by_batch_item[(bno, item_code)] = meta
+
 	prod_fields = [
 		"name",
 		"creation",
@@ -349,6 +405,7 @@ def persist_all(
 		"docstatus",
 		"idx",
 		"monthly_calculation",
+		"persian_period",
 		"revision",
 		"batch_allocation",
 		"batch_no",
@@ -365,19 +422,44 @@ def persist_all(
 		"normalized_qty",
 		"batch_total_normalized_qty",
 		"product_share",
+		"product_share_pct",
+		"material_consumption_value",
 		"batch_allocated_expense",
 		"product_allocated_expense",
+		"total_product_cost",
 		"unit_cost_on_actual",
 		"unit_cost_on_normalized",
+		"selling_price",
+		"price_list",
+		"gross_difference",
+		"gross_margin_pct",
+		"price_status",
 		"currency",
+		"material_allocation_method",
+		"material_source",
+		"material_source_detail",
+		"selling_price_source",
+		"item_price",
 		"missing_uom_factor",
 	]
 	prod_rows = []
 	for idx, (batch, product, product_share, product_allocated) in enumerate(product_rows, start=1):
 		pname = _name()
 		product_map[(batch.batch_no, product.item_code)] = pname
-		unit_actual = (product_allocated / product.actual_qty) if product.actual_qty else Decimal("0")
-		unit_norm = (product_allocated / product.normalized_qty) if product.normalized_qty else Decimal("0")
+		mat = material_by_batch_item.get((batch.batch_no, product.item_code)) or {}
+		material_val = Decimal(str(flt(mat.get("material_consumption_value") or 0)))
+		total_cost = material_val + Decimal(str(product_allocated))
+		unit_actual = (total_cost / product.actual_qty) if product.actual_qty else Decimal("0")
+		unit_norm = (total_cost / product.normalized_qty) if product.normalized_qty else Decimal("0")
+		price = get_selling_price(product.item_code, selling_price_list)
+		selling = price.get("selling_price")
+		gross_diff = gross_pct = None
+		if selling is not None and price.get("status") == "Available":
+			gross_diff = Decimal(str(selling)) - unit_norm
+			if Decimal(str(selling)) != 0:
+				gross_pct = (gross_diff / Decimal(str(selling))) * Decimal("100")
+			else:
+				gross_pct = Decimal("0")
 		prod_rows.append(
 			[
 				pname,
@@ -388,6 +470,7 @@ def persist_all(
 				0,
 				idx,
 				monthly_name,
+				persian_period,
 				rev,
 				batch_map[batch.batch_no],
 				batch.batch_no,
@@ -404,11 +487,24 @@ def persist_all(
 				_f(product.normalized_qty),
 				_f(batch.normalized_qty),
 				_f(product_share),
+				_f(Decimal(str(product_share)) * Decimal("100")),
+				_f(material_val),
 				_f(batch.total_allocated_expense),
 				_f(product_allocated),
+				_f(total_cost),
 				_f(unit_actual),
 				_f(unit_norm),
+				_f(selling) if selling is not None else 0.0,
+				price.get("price_list"),
+				_f(gross_diff) if gross_diff is not None else 0.0,
+				_f(gross_pct) if gross_pct is not None else 0.0,
+				price.get("status") or "Missing",
 				currency,
+				mat.get("material_allocation_method"),
+				mat.get("material_source"),
+				mat.get("material_source_detail"),
+				price.get("reason") or (f"Item Price {price.get('item_price')}" if price.get("item_price") else ""),
+				price.get("item_price"),
 				1 if product.missing_uom_factor else 0,
 			]
 		)
@@ -441,12 +537,65 @@ def persist_all(
 		"currency",
 		"residual_applied",
 	]
-	px_rows = []
-	for idx, px in enumerate(product_expenses, start=1):
-		pool_name = pool_map.get((px.account, px.cost_center, px.department, px.settings_rule)) or pool_map.get(
-			(px.account, px.cost_center, px.department)
+	# Product × Expense Pool is no longer a primary costing structure.
+	# Historical rows remain for prior revisions; new revisions do not write PxE rows.
+	_ = (px_fields, product_expenses)
+
+	# Account / Dimension allocation summary (grouped Batch × Expense)
+	from collections import defaultdict
+
+	ads_fields = [
+		"name",
+		"creation",
+		"modified",
+		"owner",
+		"modified_by",
+		"docstatus",
+		"idx",
+		"monthly_calculation",
+		"revision",
+		"account",
+		"account_name",
+		"cost_center",
+		"department",
+		"expense_pool",
+		"pool_monthly_net_expense",
+		"allocated_batch_count",
+		"total_applied_batch_share",
+		"total_allocated_amount",
+		"allocation_status",
+		"currency",
+	]
+	grouped: dict[tuple, dict] = {}
+	for bx in batch_expenses:
+		pool_name = pool_map.get((bx.account, bx.cost_center, bx.department, bx.settings_rule)) or pool_map.get(
+			(bx.account, bx.cost_center, bx.department)
 		)
-		px_rows.append(
+		key = (bx.account, bx.cost_center or "", bx.department or "", pool_name or "")
+		g = grouped.setdefault(
+			key,
+			{
+				"account": bx.account,
+				"cost_center": bx.cost_center or None,
+				"department": bx.department or None,
+				"expense_pool": pool_name,
+				"pool_net": bx.pool_monthly_net_expense,
+				"batches": set(),
+				"share": Decimal("0"),
+				"amount": Decimal("0"),
+			},
+		)
+		g["batches"].add(bx.batch_no)
+		g["share"] += bx.applied_batch_share
+		g["amount"] += bx.allocated_amount
+
+	ads_rows = []
+	for idx, g in enumerate(grouped.values(), start=1):
+		acct_name = frappe.db.get_value("Account", g["account"], "account_name") or ""
+		status = "OK"
+		if abs(g["share"] - Decimal("1")) > Decimal("0.0001") and g["pool_net"] != 0:
+			status = "Share variance"
+		ads_rows.append(
 			[
 				_name(),
 				ts,
@@ -457,26 +606,280 @@ def persist_all(
 				idx,
 				monthly_name,
 				rev,
-				product_map[(px.batch_no, px.item_code)],
-				batch_map[px.batch_no],
-				px.batch_no,
-				px.item_code,
-				pool_name,
-				px.account,
-				px.cost_center or None,
-				px.department or None,
-				_f(px.pool_monthly_net_expense),
-				_f(px.applied_batch_share),
-				_f(px.product_share),
-				_f(px.batch_pool_allocated_amount),
-				_f(px.product_pool_allocated_amount),
+				g["account"],
+				acct_name,
+				g["cost_center"],
+				g["department"],
+				g["expense_pool"],
+				_f(g["pool_net"]),
+				len(g["batches"]),
+				_f(g["share"]),
+				_f(g["amount"]),
+				status,
 				currency,
-				1 if px.residual_applied else 0,
 			]
 		)
-	_bulk(DETAIL_DOCTYPE_MAP["product_expense"], px_fields, px_rows)
+	_bulk(DETAIL_DOCTYPE_MAP["account_dimension_summary"], ads_fields, ads_rows)
 
 	return {"pools": pool_map, "batches": batch_map, "products": product_map}
+
+
+def persist_reconciliation_checks(
+	*,
+	monthly_name: str,
+	revision: int,
+	persian_period: str,
+	currency: str,
+	checks: list[dict],
+) -> int:
+	"""Materialize reconciliation checks as searchable rows (failed + sample of passed)."""
+	fields = [
+		"name",
+		"creation",
+		"modified",
+		"owner",
+		"modified_by",
+		"docstatus",
+		"idx",
+		"monthly_calculation",
+		"revision",
+		"persian_period",
+		"check_name",
+		"description",
+		"status",
+		"account",
+		"account_name",
+		"cost_center",
+		"department",
+		"batch_no",
+		"item_code",
+		"expense_pool",
+		"expected_value",
+		"actual_value",
+		"difference",
+		"details",
+		"currency",
+	]
+	user = frappe.session.user
+	ts = now()
+	rows = []
+	failed = [c for c in checks if not c.get("ok")]
+	passed = [c for c in checks if c.get("ok")]
+	# Persist all failed + up to 100 passed samples to keep tables usable
+	selected = failed + passed[:100]
+	for idx, c in enumerate(selected, start=1):
+		status = "Passed" if c.get("ok") else "Failed"
+		detail = c.get("detail") or ""
+		exp = c.get("expected")
+		act = c.get("actual")
+		try:
+			diff = float(act) - float(exp) if exp is not None and act is not None else None
+		except Exception:
+			diff = None
+		rows.append(
+			[
+				_name(),
+				ts,
+				ts,
+				user,
+				user,
+				0,
+				idx,
+				monthly_name,
+				cint(revision),
+				persian_period,
+				c.get("name") or "",
+				detail,
+				status,
+				None,
+				None,
+				None,
+				None,
+				None,
+				None,
+				None,
+				_f(exp) if exp is not None else 0,
+				_f(act) if act is not None else 0,
+				_f(diff) if diff is not None else 0,
+				detail,
+				currency,
+			]
+		)
+	_bulk(DETAIL_DOCTYPE_MAP["reconciliation_check"], fields, rows)
+	return len(rows)
+
+
+def persist_exceptions(
+	*,
+	monthly_name: str,
+	revision: int,
+	persian_period: str,
+	blocking: list[str],
+	products: dict | None = None,
+) -> int:
+	"""Materialize blocking exceptions as searchable MFG Cost Exception rows."""
+	fields = [
+		"name",
+		"creation",
+		"modified",
+		"owner",
+		"modified_by",
+		"docstatus",
+		"idx",
+		"monthly_calculation",
+		"revision",
+		"persian_period",
+		"exception_type",
+		"severity",
+		"resolution_status",
+		"item_code",
+		"item_name",
+		"item_group",
+		"stock_uom",
+		"primary_uom",
+		"conversion_factor",
+		"batch_no",
+		"work_order",
+		"stock_entry",
+		"account",
+		"cost_center",
+		"department",
+		"actual_qty",
+		"description",
+	]
+	user = frappe.session.user
+	ts = now()
+	rows = []
+	idx = 0
+	seen_keys = set()
+
+	def _append_row(
+		*,
+		etype,
+		severity,
+		item=None,
+		item_name="",
+		item_group="",
+		stock_uom="",
+		primary_uom=None,
+		conversion_factor=0,
+		batch=None,
+		work_order=None,
+		stock_entry=None,
+		actual_qty=0,
+		description="",
+	):
+		nonlocal idx
+		key = (etype, item or "", batch or "", description[:120])
+		if key in seen_keys:
+			return
+		seen_keys.add(key)
+		idx += 1
+		rows.append(
+			[
+				_name(),
+				ts,
+				ts,
+				user,
+				user,
+				0,
+				idx,
+				monthly_name,
+				cint(revision),
+				persian_period,
+				etype,
+				severity,
+				"Open",
+				item,
+				item_name,
+				item_group,
+				stock_uom,
+				primary_uom,
+				_f(conversion_factor),
+				batch,
+				work_order,
+				stock_entry,
+				None,
+				None,
+				None,
+				_f(actual_qty),
+				description,
+			]
+		)
+
+	# Product-level missing UOM rows (searchable by Item / Batch)
+	for product in (products or {}).values():
+		if not getattr(product, "missing_uom_factor", False):
+			continue
+		meta = frappe.db.get_value(
+			"Item", product.item_code, ["item_name", "item_group", "stock_uom"], as_dict=True
+		) or {}
+		wo = ",".join(sorted(getattr(product, "work_orders", []) or [])) or None
+		se = ",".join(sorted(getattr(product, "stock_entries", []) or [])) or None
+		if wo and len(wo) > 500:
+			wo = wo[:497] + "..."
+		if se and len(se) > 500:
+			se = se[:497] + "..."
+		_append_row(
+			etype="Missing UOM Conversion",
+			severity="Blocking",
+			item=product.item_code,
+			item_name=meta.get("item_name") or getattr(product, "item_name", "") or "",
+			item_group=meta.get("item_group") or "",
+			stock_uom=meta.get("stock_uom") or getattr(product, "stock_uom", "") or "",
+			primary_uom=getattr(product, "primary_uom", None),
+			conversion_factor=getattr(product, "conversion_factor", 0) or 0,
+			batch=product.batch_no,
+			work_order=wo,
+			stock_entry=se,
+			actual_qty=getattr(product, "actual_qty", 0) or 0,
+			description=(
+				f"Missing verified conversion for item {product.item_code} "
+				f"batch {product.batch_no} (Stock UOM → Primary UOM)"
+			),
+		)
+
+	for msg in blocking or []:
+		etype = "Other Validation Errors"
+		severity = "Blocking"
+		item = batch = None
+		if "UOM" in msg or "conversion" in msg.lower():
+			etype = (
+				"Missing UOM Conversion"
+				if "Missing" in msg or "missing" in msg.lower() or "incomplete" in msg.lower()
+				else "Invalid Conversion Factor"
+			)
+		elif "share variance" in msg.lower() or "Applied share" in msg:
+			etype = "Share Variance"
+		elif "No enabled expense" in msg or "rules" in msg.lower():
+			etype = "Missing Account / Dimension Rule"
+		elif "Item not in Costing" in msg or "configured" in msg.lower():
+			etype = "Unconfigured Item"
+		parts = msg.split()
+		for i, p in enumerate(parts):
+			if p == "item" and i + 1 < len(parts):
+				item = parts[i + 1].strip("():,")
+			if p == "batch" and i + 1 < len(parts):
+				batch = parts[i + 1].strip("():,")
+		item_name = item_group = stock_uom = ""
+		if item and frappe.db.exists("Item", item):
+			meta = frappe.db.get_value("Item", item, ["item_name", "item_group", "stock_uom"], as_dict=True)
+			item_name = meta.item_name
+			item_group = meta.item_group
+			stock_uom = meta.stock_uom
+		_append_row(
+			etype=etype,
+			severity=severity,
+			item=item,
+			item_name=item_name,
+			item_group=item_group,
+			stock_uom=stock_uom,
+			batch=batch,
+			description=msg,
+		)
+
+	_bulk(DETAIL_DOCTYPE_MAP["exception"], fields, rows)
+	return len(rows)
 
 
 def write_revision_log(
