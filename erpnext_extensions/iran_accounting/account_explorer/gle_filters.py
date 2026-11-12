@@ -49,7 +49,7 @@ def apply_document_scope_filters(query, gle, spec: AccountExplorerQuerySpec):
 		document_scope,
 		skip_party_filters=bool(spec.resolved_member_tuples),
 	)
-	query = _apply_document_dimension_filters(query, gle, document_scope)
+	query = _apply_document_dimension_filters(query, gle, document_scope, spec=spec)
 	query = _apply_document_currency_filters(query, gle, document_scope)
 	return query
 
@@ -91,9 +91,27 @@ def _apply_document_accounting_filters(
 	return query
 
 
-def _apply_document_dimension_filters(query, gle, document_scope: DocumentScope):
+def _apply_document_dimension_filters(
+	query,
+	gle,
+	document_scope: DocumentScope,
+	*,
+	spec: AccountExplorerQuerySpec | None = None,
+):
+	"""Apply document accounting_dimensions to GLE.
+
+	v5.7.29: on the Dimensions axis, only the active ``dimension_scope.dimension_type``
+	may contribute dimension predicates. Stale Cost Center (or other) document filters
+	must not leak into a Department (or other) analysis result.
+	"""
+	active_type = None
+	if spec is not None and getattr(spec, "view_axis", None) == "dimension":
+		active_type = getattr(getattr(spec, "dimension_scope", None), "dimension_type", None) or None
+
 	for fieldname, value in (document_scope.accounting_dimensions or {}).items():
 		if value is None or value == "":
+			continue
+		if active_type and fieldname != active_type:
 			continue
 		validate_dimension_field(fieldname)
 		dim = gle[fieldname]

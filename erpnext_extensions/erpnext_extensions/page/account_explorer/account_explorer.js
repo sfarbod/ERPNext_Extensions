@@ -3021,6 +3021,39 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 	}
 
+	/**
+	 * v5.7.29 — keep Dimension Analyze scoped to one Dimension Type.
+	 * Drops analysis filters / document dims / selected value belonging to other types.
+	 */
+	isolate_dimension_type_analysis_scope(dimension_type) {
+		if (!dimension_type) {
+			return;
+		}
+		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+		let bag = this.get_analysis_filters();
+		const other_fields = Object.keys(bag.dimensions || {}).filter((field) => field !== dimension_type);
+		other_fields.forEach((field) => {
+			bag = AF.remove_entry(bag, `dimensions.${field}`);
+		});
+		this.set_analysis_filters_bag(bag);
+		const keep_value =
+			bag.dimensions?.[dimension_type]?.value != null
+				? bag.dimensions[dimension_type].value
+				: null;
+		this.analysis_context.dimension_scope = {
+			dimension_type,
+			selected_dimension_value: keep_value,
+		};
+		const dims = { ...(this.document_scope.accounting_dimensions || {}) };
+		Object.keys(dims).forEach((field) => {
+			if (field !== dimension_type) {
+				delete dims[field];
+			}
+		});
+		this.document_scope.accounting_dimensions = dims;
+		this._sync_scopes_from_analysis_filters();
+	}
+
 	_clear_legacy_scope_for_filter_key(key) {
 		const parsed = String(key || "");
 		if (parsed === "account") {
@@ -3828,13 +3861,22 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			}
 		} else if (view_axis === "dimension") {
 			this.analysis_context.sort_field = "display_code";
+			const prev_dimension_type = this.analysis_context.dimension_scope?.dimension_type || null;
 			if (level_or_dimension) {
 				this.analysis_context.dimension_scope.dimension_type = level_or_dimension;
 			} else if (!this.analysis_context.dimension_scope.dimension_type) {
 				this.analysis_context.dimension_scope.dimension_type =
 					this.metadata.default_dimension_type || this.metadata.default_dimension_field;
 			}
-			// Do not clear selected_dimension_value here — comes from analysis_filters via payload mapper
+			const next_dimension_type = this.analysis_context.dimension_scope.dimension_type;
+			// v5.7.29: switching Dimension Type must not retain another type's analysis scope.
+			if (
+				next_dimension_type &&
+				(prev_axis !== "dimension" ||
+					(prev_dimension_type && prev_dimension_type !== next_dimension_type))
+			) {
+				this.isolate_dimension_type_analysis_scope(next_dimension_type);
+			}
 		} else if (view_axis === "currency") {
 			this.analysis_context.sort_field = "currency";
 		} else 		if (view_axis === "voucher") {
@@ -4475,7 +4517,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 								: "",
 			column_widths: { ...(this.grid_column_widths || {}) },
 			on_server_sort: (column_id, column) => this.handle_datatable_server_sort(column_id, column),
-			on_server_column_filters: (filters) => this.handle_datatable_column_filters(filters),
+			on_server_column_filters: (filters, opts) =>
+				this.handle_datatable_column_filters(filters, opts || {}),
 			on_clear_column_filter: (field) => this.clear_single_column_filter(field),
 			on_selection_change: (checked_rows) => this.handle_datatable_selection_change(checked_rows),
 			on_column_removed: () => this.handle_datatable_column_state_changed(),
@@ -4501,7 +4544,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		return net > 0 ? `${compact} ${__("Dr")}` : `${compact} ${__("Cr")}`;
 	}
 
-	handle_datatable_column_filters(filters_by_col_index) {
+	map_datatable_column_filters(filters_by_col_index) {
 		const columns = this.last_summary_columns || this.columns || [];
 		const visible = this.get_summary_visible_columns
 			? this.get_summary_visible_columns(columns)
@@ -4525,10 +4568,27 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			}
 			mapped[field] = value;
 		});
+		return mapped;
+	}
+
+	handle_datatable_column_filters(filters_by_col_index, opts = {}) {
+		const mapped = this.map_datatable_column_filters(filters_by_col_index);
+		this._latest_column_filter_mapped = mapped;
 		clearTimeout(this._column_filter_timer);
-		this._column_filter_timer = setTimeout(() => {
-			this.set_column_filters(mapped, { refresh: true });
-		}, 350);
+		this._column_filter_timer = null;
+		const apply = () => {
+			this._column_filter_timer = null;
+			this._column_filter_seq = (this._column_filter_seq || 0) + 1;
+			const seq = this._column_filter_seq;
+			const latest = this._latest_column_filter_mapped || mapped;
+			this.set_column_filters(latest, { refresh: true, filter_seq: seq });
+		};
+		// v5.7.29: 500 ms after last keystroke; Enter / Clear use immediate: true.
+		if (opts && opts.immediate) {
+			apply();
+			return;
+		}
+		this._column_filter_timer = setTimeout(apply, 500);
 	}
 
 	build_analyze_action_html(row) {
@@ -7492,6 +7552,19 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.analyze_party_identity(row);
 			return;
 		}
+		// v5.7.29: Dimension Analyze must pin Dimension Type before drill so Filter Summary
+		// and query payload never carry another type's analysis chip.
+		if (this.analysis_context.view_axis === "dimension") {
+			const dim_type =
+				row.dimension_type || this.analysis_context.dimension_scope?.dimension_type || null;
+			if (dim_type) {
+				this.analysis_context.dimension_scope = {
+					...(this.analysis_context.dimension_scope || {}),
+					dimension_type: dim_type,
+				};
+				this.isolate_dimension_type_analysis_scope(dim_type);
+			}
+		}
 		const before_crumbs = (this.breadcrumbs || []).length;
 		const before_level = this.analysis_context.level_sequence;
 		const is_account_nav =
@@ -8702,6 +8775,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	clear_single_column_filter(field, { refresh = true } = {}) {
+		clearTimeout(this._column_filter_timer);
+		this._column_filter_timer = null;
 		const next = { ...(this.analysis_context.column_filters || {}) };
 		delete next[field];
 		// Also drop aliases for Party Name.
@@ -8711,10 +8786,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (field === "party_name") {
 			delete next.display_title;
 		}
-		this.set_column_filters(next, { refresh });
+		this._latest_column_filter_mapped = next;
+		this._column_filter_seq = (this._column_filter_seq || 0) + 1;
+		this.set_column_filters(next, { refresh, filter_seq: this._column_filter_seq });
 	}
 
-	set_column_filters(filters, { refresh = true } = {}) {
+	set_column_filters(filters, { refresh = true, filter_seq = null } = {}) {
 		const next = {};
 		Object.entries(filters || {}).forEach(([key, value]) => {
 			const field = String(key || "").trim();
@@ -8730,6 +8807,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.analysis_context.page = 1;
 		this._sync_store_context?.({ emit: true });
 		if (refresh) {
+			if (filter_seq != null) {
+				this._column_filter_applied_seq = filter_seq;
+			}
 			this.refresh_summary({ new_execution: true, reason: "column_filters" });
 		}
 	}

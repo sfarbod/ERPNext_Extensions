@@ -123,8 +123,14 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 			if (cint(party_scope.unified_identity) && !filters_has_party_identity(bag)) {
 				push_doc("unified_identity", __("Unified Party / Related Identity"), __("Yes"));
 			}
+			const active_dimension_type =
+				ctx.view_axis === "dimension" ? ctx.dimension_scope?.dimension_type || null : null;
 			Object.entries(doc.accounting_dimensions || {}).forEach(([field, value]) => {
 				if (ae_af_is_empty(value)) {
+					return;
+				}
+				// v5.7.29: Dimensions axis Filter Summary only shows the active Dimension Type.
+				if (active_dimension_type && field !== active_dimension_type) {
 					return;
 				}
 				const dim = (metadata?.dimensions || []).find((item) => item.fieldname === field);
@@ -132,6 +138,14 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 			});
 
 			this.list_entries(bag).forEach((entry) => {
+				const parsed = ae_af_parse_key(entry.key);
+				if (
+					active_dimension_type &&
+					parsed?.kind === "dimension" &&
+					parsed.fieldname !== active_dimension_type
+				) {
+					return;
+				}
 				const label = this._label_for_entry(entry, metadata);
 				const display = this._display_value(entry);
 				rows.push({

@@ -593,13 +593,46 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 		if (!column_manager) {
 			return;
 		}
+		const emit = (filters, immediate) => {
+			options.on_server_column_filters(filters || {}, { immediate: !!immediate });
+		};
 		// Replace client-only page filter with server-side Account Explorer filters.
+		// DataTable's built-in keydown debounce is 300ms; AE owns 500ms + Enter/Clear.
 		column_manager.applyFilter = (filters) => {
-			options.on_server_column_filters(filters || {});
+			emit(filters || {}, false);
 		};
 		if (typeof column_manager.toggleFilter === "function") {
 			column_manager.toggleFilter(true);
 		}
+		this._bind_column_filter_immediate_actions(column_manager, emit);
+	}
+
+	_bind_column_filter_immediate_actions(column_manager, emit) {
+		const host = this._host;
+		if (!host || host.dataset.aeColumnFilterImmediateBound === "1") {
+			return;
+		}
+		host.dataset.aeColumnFilterImmediateBound = "1";
+		const collect = () =>
+			typeof column_manager.getAppliedFilters === "function"
+				? column_manager.getAppliedFilters()
+				: {};
+		host.addEventListener(
+			"keydown",
+			(event) => {
+				const input = event.target;
+				if (!input?.classList?.contains("dt-filter")) {
+					return;
+				}
+				if (event.key !== "Enter") {
+					return;
+				}
+				event.preventDefault();
+				event.stopPropagation();
+				emit(collect(), true);
+			},
+			true
+		);
 	}
 
 	_resolve_filter_value_for_column(col, filters_by_id = {}) {

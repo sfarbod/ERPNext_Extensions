@@ -1,0 +1,265 @@
+{
+  "site": "development.localhost",
+  "base": "http://development.localhost:8000",
+  "company": "اسپاد فارمد دارو",
+  "version": "5.7.29",
+  "passed": 7,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "dimension_type_isolation",
+      "ok": true,
+      "detail": {
+        "skipped": false,
+        "nextType": "department",
+        "afterCC": {
+          "type": "cost_center",
+          "selected": "1110 - تولید بیولوژیک - E",
+          "bagDims": [
+            "cost_center"
+          ],
+          "rowTypes": [
+            "cost_center"
+          ],
+          "payloadType": "cost_center",
+          "payloadDims": [
+            "cost_center"
+          ]
+        },
+        "afterSwitch": {
+          "type": "department",
+          "bagDims": [],
+          "selected": null,
+          "payloadDims": []
+        },
+        "afterDept": {
+          "type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bagDims": [
+            "department"
+          ],
+          "rowTypes": [
+            "department"
+          ],
+          "payloadDims": [
+            "department"
+          ]
+        },
+        "ccValue": "1110 - تولید بیولوژیک - E"
+      }
+    },
+    {
+      "name": "filter_summary_matches_scope",
+      "ok": true,
+      "detail": {
+        "chips": [
+          "Companyاسپاد فارمد دارو",
+          "Fiscal Year1405",
+          "Date Range2026-03-21 → 2027-03-20",
+          "Departmentایمنی و بهداشت - E×",
+          "AxisDimensions",
+          "Dimension TypeDepartment"
+        ],
+        "chipLeak": false,
+        "onDept": true
+      }
+    },
+    {
+      "name": "column_filter_debounce_500",
+      "ok": true,
+      "detail": {
+        "midCalls": 0,
+        "afterDebounce": 1,
+        "afterEnter": 2,
+        "afterClear": 3,
+        "lastFilters": {
+          "display_code": "نانو"
+        },
+        "seqDelta": 3,
+        "page": 1,
+        "retainedInput": {
+          "display_code": "نانوX"
+        }
+      }
+    },
+    {
+      "name": "debounce_axis_dimension",
+      "ok": true,
+      "detail": {
+        "axis": "dimension",
+        "mid": 0,
+        "after": 1
+      }
+    },
+    {
+      "name": "debounce_axis_item",
+      "ok": true,
+      "detail": {
+        "axis": "item",
+        "mid": 0,
+        "after": 1
+      }
+    },
+    {
+      "name": "debounce_axis_voucher",
+      "ok": true,
+      "detail": {
+        "axis": "voucher",
+        "mid": 0,
+        "after": 1
+      }
+    },
+    {
+      "name": "cross_axis_regression",
+      "ok": true,
+      "detail": {
+        "dimSelected": "1110 - تولید بیولوژیک - E",
+        "afterAccount": {
+          "axis": "account_level",
+          "column_filters": {
+            "display_code": "1"
+          },
+          "dimType": "cost_center",
+          "dimSelected": "1110 - تولید بیولوژیک - E",
+          "bagDims": [
+            "cost_center"
+          ]
+        },
+        "afterParty": {
+          "axis": "party",
+          "column_filters": {
+            "display_code": "1"
+          }
+        }
+      }
+    }
+  ],
+  "api_request_samples": [
+    {
+      "url": "http://development.localhost:8000/api/method/frappe.core.doctype.session_default_settings.session_default_settings.get_session_default_values",
+      "method": "POST",
+      "t": 1794502120440
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/frappe.desk.doctype.notification_log.notification_log.get_notification_logs?limit=20&_=1794502120261",
+      "method": "GET",
+      "t": 1794502120440
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/persian_calendar.jalali_support.api.get_effective_calendar",
+      "method": "POST",
+      "t": 1794502120454
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_explorer_metadata",
+      "method": "POST",
+      "t": 1794502120549
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_explorer_metadata_enrichment",
+      "method": "POST",
+      "t": 1794502120600
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_explorer_metadata_enrichment",
+      "method": "POST",
+      "t": 1794502121595
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/frappe.client.get_value?doctype=Fiscal%20Year&fieldname=%5B%22year_start_date%22%2C%22year_end_date%22%5D&filters=1405&_=1794502120265",
+      "method": "GET",
+      "t": 1794502121613
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/frappe.client.get_value?doctype=Fiscal%20Year&fieldname=%5B%22year_start_date%22%2C%22year_end_date%22%5D&filters=1405&_=1794502120266",
+      "method": "GET",
+      "t": 1794502121613
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_summary",
+      "method": "POST",
+      "t": 1794502121647
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502122636
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502124715
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502124821
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502127237
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_party_summary",
+      "method": "POST",
+      "t": 1794502129408
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_party_summary",
+      "method": "POST",
+      "t": 1794502130909
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502131347
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502134212
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_item_summary",
+      "method": "POST",
+      "t": 1794502136271
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_item_summary",
+      "method": "POST",
+      "t": 1794502138293
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_voucher_summary",
+      "method": "POST",
+      "t": 1794502139430
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_voucher_summary",
+      "method": "POST",
+      "t": 1794502144393
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502150198
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "method": "POST",
+      "t": 1794502152522
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_summary",
+      "method": "POST",
+      "t": 1794502152630
+    },
+    {
+      "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_party_summary",
+      "method": "POST",
+      "t": 1794502152735
+    }
+  ],
+  "generated_at": "2026-11-12T16:49:12.869Z"
+}

@@ -317,8 +317,10 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				if (!fieldname) {
 					return this.set_entry(current, entry, defaults);
 				}
-				next = this.set_entry(current, { ...entry, key: `dimensions.${fieldname}` }, defaults);
-				return next;
+				// v5.7.29: Analyze one Dimension Type replaces all others — no cross-type chips.
+				next = this.normalize_bag(current);
+				next.dimensions = {};
+				return this.set_entry(next, { ...entry, key: `dimensions.${fieldname}` }, defaults);
 			}
 			default:
 				if (entry) {
@@ -468,15 +470,21 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 			inventory.inventory_account = filters.inventory_account.value;
 		}
 
+		const view_axis = ctx.view_axis || null;
+		const active_dimension_type = dimension_scope.dimension_type || null;
 		Object.entries(filters.dimensions || {}).forEach(([fieldname, entry]) => {
 			if (!entry) {
 				return;
 			}
 			const value = typeof entry.value === "object" ? entry.value.dimension_value ?? entry.value : entry.value;
+			// v5.7.29: on Dimensions axis, only the active Dimension Type may project into
+			// dimension_scope / accounting_dimensions — prevents Cost Center↔Department leakage.
+			if (view_axis === "dimension" && active_dimension_type && fieldname !== active_dimension_type) {
+				return;
+			}
 			if (dimension_scope.dimension_type === fieldname || !dimension_scope.selected_dimension_value) {
 				dimension_scope.dimension_type = dimension_scope.dimension_type || fieldname;
 			}
-			// Multi-dimension: park all in accounting_dimensions; primary axis type also in dimension_scope
 			if (Object.keys(filters.dimensions).length === 1 || dimension_scope.dimension_type === fieldname) {
 				dimension_scope.dimension_type = fieldname;
 				dimension_scope.selected_dimension_value = value;
@@ -494,6 +502,20 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				});
 			}
 		});
+		if (view_axis === "dimension" && active_dimension_type) {
+			// Drop stale document-panel dims of other types while presenting one Dimension Type.
+			Object.keys(accounting_dimensions).forEach((fieldname) => {
+				if (fieldname !== active_dimension_type) {
+					delete accounting_dimensions[fieldname];
+				}
+			});
+			if (
+				dimension_scope.selected_dimension_value != null &&
+				dimension_scope.dimension_type !== active_dimension_type
+			) {
+				dimension_scope.dimension_type = active_dimension_type;
+			}
+		}
 
 		return {
 			analysis_context: {
