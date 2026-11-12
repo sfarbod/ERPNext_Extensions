@@ -163,6 +163,78 @@ Empty export shows a Desk message (no silent empty file claimed as success).
 - `/tmp/costing_qa_v5727/ui_final/`
 - Backup: `sites/preserved_dev_backups/costing_20261112_140446/`
 
+## Production migration incident (Workspace Sidebar LinkValidationError)
+
+### Root cause
+
+`ensure_costing_english_desk_v5727` called `sync_module_sidebar_items()` → `_sync_workspace_sidebar()` → `Workspace Sidebar.save()` **without** ensuring Costing DocTypes exist and **without** pre-validating Dynamic Link `link_to` targets.
+
+During migrate, Frappe 16.52 still allows writes to the archived `Workspace Sidebar`. Child row `link_to` is a Dynamic Link (`options=link_type`). For `link_type=DocType`, Frappe resolves `tabDocType.name == link_to`. Missing DocType rows raise:
+
+`frappe.exceptions.LinkValidationError: Could not find Row #N: Link To: <DocType>`
+
+The earlier patch `ensure_costing_desk_module_v5730` created the Persian Desk shell using `ignore_links=True`, so it **masked** missing Costing DocTypes and could complete even when Link targets were unresolved. DocType sync progress at 100% does **not** guarantee every Costing DocType row exists.
+
+Missing Link To targets reported in production matched the sidebar item list:
+
+- Finished Goods Cost Allocation Settings
+- Monthly FG Cost Calculation
+- MFG Cost Expense Pool / GL Line / Batch Allocation / Batch Expense Allocation / Product Allocation
+- MFG Cost Calculation Revision
+
+Tag `v5.7.27` **includes** all Costing DocType JSON files under module `Costing`; this was a **patch-order/ensure gap**, not a missing-file packaging gap.
+
+### Fix (backward compatible, version stays 5.7.27)
+
+1. `_ensure_costing_doctypes()` force-imports required DocType JSON then asserts `tabDocType` rows exist (clear cache first).
+2. `assert_sidebar_link_targets_exist()` fails with an explicit missing-target list **before** save (does not disable link validation).
+3. Idempotent repair patch `repair_costing_english_desk_sidebar_v5727` re-applies English desk sync on sites that already recorded the original patch.
+
+### Development evidence
+
+- Unit tests: `test_costing_desk_sidebar_v5727` — **5 passed**
+- Reproduced `LinkValidationError` with a fake missing Link To on Workspace Sidebar
+- Full `execute()` of fixed English desk patch: Workspace Sidebar + Sidebar each **19** items; Desktop Icon `Costing`; rules **3026** / GL **815194** untouched
+- `bench migrate` applied `repair_costing_english_desk_sidebar_v5727` successfully (`Success: Done in 0.726s`)
+
+### Production recovery (do not run until authorized)
+
+State after the failed migrate:
+
+- Completed (keep): `expand_fg_cost_amount_precision_v5728`, `ensure_costing_desk_module_v5730`
+- Failed / not recorded as successful: `ensure_costing_english_desk_v5727` (unless `--skip-failing` marked skipped — check Patch Log)
+- Pending after deploy: fixed `ensure_costing_english_desk_v5727` (if not completed) + `repair_costing_english_desk_sidebar_v5727`
+
+Recommended sequence on `erp.espadpharmed.com` after deploying the hotfix commit (no force-push of tag; ship hotfix commit/tag only with explicit approval):
+
+```bash
+# 1) Confirm Patch Log (read-only)
+bench --site erp.espadpharmed.com mariadb -e \
+  "SELECT patch, skipped, creation FROM \`tabPatch Log\` WHERE patch LIKE '%costing%' ORDER BY creation;"
+
+# 2) Confirm whether Costing DocTypes exist (read-only)
+bench --site erp.espadpharmed.com mariadb -e \
+  "SELECT name FROM \`tabDocType\` WHERE module='Costing' ORDER BY name;"
+
+# 3) Deploy hotfix code for erpnext_extensions (pull/checkout approved commit). Do not rewrite v5.7.27.
+
+# 4) Resume migrate — completed patches are skipped automatically
+bench --site erp.espadpharmed.com migrate
+
+# 5) Verify
+bench --site erp.espadpharmed.com execute \
+  erpnext_extensions.patches.post_model_sync.ensure_costing_english_desk_v5727.ensure_now
+```
+
+Expected outcomes:
+
+- Migrate does **not** re-run completed precision / Persian desk patches
+- Failed English desk patch (if absent from Patch Log) runs with DocType ensure and succeeds
+- Repair patch runs once and is idempotent
+- No GL / SLE / Stock Entry / rule-table mutations from these desk patches
+
+**Do not** manually insert a Patch Log row for the failed patch. **Do not** delete production Workspace/Sidebar rows before retry.
+
 ## Production
 
-Unauthorized. User reviews local commits, then pushes manually.
+Unauthorized for push/deploy/repair execution during investigation. User reviews local hotfix commit, then authorizes production steps.

@@ -58,6 +58,41 @@ def _row_get(row: Any, key: str, default=None):
 	return getattr(row, key, default)
 
 
+def collect_sidebar_link_targets(items: list[dict]) -> list[tuple[str, str]]:
+	"""Return ``(link_type, link_to)`` pairs for Link rows that have a target."""
+	out: list[tuple[str, str]] = []
+	for row in items or []:
+		if (row.get("type") or "Link") != "Link":
+			continue
+		link_type = (row.get("link_type") or "").strip()
+		link_to = (row.get("link_to") or "").strip()
+		if link_type and link_to:
+			out.append((link_type, link_to))
+	return out
+
+
+def assert_sidebar_link_targets_exist(items: list[dict]) -> None:
+	"""Fail fast with an explicit missing-target list (never skip required links).
+
+	Workspace Sidebar Item / Sidebar Item ``link_to`` is a Dynamic Link. Saving
+	without the target DocType/Workspace/Page present raises LinkValidationError
+	with a weak message. Call this before save so migrate failures name every
+	missing target.
+	"""
+	missing: list[str] = []
+	for link_type, link_to in collect_sidebar_link_targets(items):
+		# Dynamic Link options=link_type → exists(link_type, link_to)
+		# For link_type=DocType this checks tabDocType.name == link_to.
+		if not frappe.db.exists(link_type, link_to):
+			missing.append(f"{link_type}:{link_to}")
+	if missing:
+		frappe.throw(
+			"Sidebar Link To targets are missing (install/sync DocTypes before navigation sync): "
+			+ ", ".join(missing),
+			frappe.ValidationError,
+		)
+
+
 def sync_module_sidebar_items(
 	module: str,
 	items: list[dict],
@@ -69,6 +104,7 @@ def sync_module_sidebar_items(
 ) -> None:
 	"""Idempotently write navigation items to legacy and/or modern sidebar stores."""
 	title = title or module
+	assert_sidebar_link_targets_exist(items)
 	if workspace_sidebar_writable():
 		_sync_workspace_sidebar(
 			module,
@@ -118,6 +154,7 @@ def _sync_workspace_sidebar(
 		payload = dict(row)
 		payload["idx"] = idx
 		sb.append("items", payload)
+	# Targets already asserted by sync_module_sidebar_items / callers.
 	sb.save(ignore_permissions=True)
 
 

@@ -1,11 +1,26 @@
 {
  "app": "erpnext_extensions",
- "creation": "2026-11-12 10:00:00.000000",
+ "creation": "2026-11-12 10:00:00",
  "docstatus": 0,
  "doctype": "Sidebar",
  "header_icon": "calculator",
  "idx": 0,
  "items": [
+  {
+   "added": 0,
+   "child": 0,
+   "collapsible": 1,
+   "hidden": 0,
+   "icon": "settings",
+   "indent": 0,
+   "is_default_module": 0,
+   "keep_closed": 0,
+   "label": "Settings",
+   "link_type": "DocType",
+   "open_in_new_tab": 1,
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
   {
    "added": 0,
    "child": 0,
@@ -18,24 +33,9 @@
    "label": "Home",
    "link_to": "Costing",
    "link_type": "Workspace",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
-  },
-  {
-   "added": 0,
-   "child": 0,
-   "collapsible": 1,
-   "hidden": 0,
-   "icon": "settings",
-   "indent": 0,
-   "is_default_module": 0,
-   "keep_closed": 0,
-   "label": "Settings",
-   "link_type": "DocType",
-   "open_in_new_tab": 0,
-   "show_arrow": 0,
-   "type": "Section Break"
   },
   {
    "added": 0,
@@ -49,7 +49,7 @@
    "label": "Cost Allocation Settings",
    "link_to": "Finished Goods Cost Allocation Settings",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -65,7 +65,7 @@
    "label": "Account and Dimension Rules",
    "link_to": "Finished Goods Cost Allocation Settings",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -81,7 +81,7 @@
    "label": "Item Primary UOMs",
    "link_to": "Finished Goods Cost Allocation Settings",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -96,7 +96,7 @@
    "keep_closed": 0,
    "label": "Monthly Calculations",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Section Break"
   },
@@ -112,7 +112,7 @@
    "label": "Monthly FG Cost Calculations",
    "link_to": "Monthly FG Cost Calculation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -126,9 +126,9 @@
    "is_default_module": 0,
    "keep_closed": 0,
    "label": "Calculation Status",
-   "link_to": "MFG Cost Account Dimension Summary",
+   "link_to": "Monthly FG Cost Calculation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -143,7 +143,7 @@
    "keep_closed": 0,
    "label": "Reports & Details",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Section Break"
   },
@@ -159,7 +159,7 @@
    "label": "Expense Pools",
    "link_to": "MFG Cost Expense Pool",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -175,7 +175,7 @@
    "label": "GL Entry Details",
    "link_to": "MFG Cost GL Line",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -191,7 +191,7 @@
    "label": "Production Batches",
    "link_to": "MFG Cost Batch Allocation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -204,10 +204,10 @@
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 0,
-   "label": "Batch × Expense Pool Allocations",
+   "label": "Batch \u00d7 Expense Pool Allocations",
    "link_to": "MFG Cost Batch Expense Allocation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -223,7 +223,7 @@
    "label": "Product Details",
    "link_to": "MFG Cost Product Allocation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -239,7 +239,7 @@
    "label": "UOM Exceptions",
    "link_to": "MFG Cost Product Allocation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -254,7 +254,7 @@
    "keep_closed": 0,
    "label": "Management & History",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Section Break"
   },
@@ -270,7 +270,7 @@
    "label": "Calculation Revisions",
    "link_to": "MFG Cost Calculation Revision",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -286,7 +286,7 @@
    "label": "Calculation History",
    "link_to": "MFG Cost Calculation Revision",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   },
@@ -302,12 +302,12 @@
    "label": "Lock / Unlock Management",
    "link_to": "Monthly FG Cost Calculation",
    "link_type": "DocType",
-   "open_in_new_tab": 0,
+   "open_in_new_tab": 1,
    "show_arrow": 0,
    "type": "Link"
   }
  ],
- "modified": "2026-11-12 10:00:00.000000",
+ "modified": "2026-11-12 19:01:30.676738",
  "modified_by": "Administrator",
  "module": "Costing",
  "name": "Costing",
