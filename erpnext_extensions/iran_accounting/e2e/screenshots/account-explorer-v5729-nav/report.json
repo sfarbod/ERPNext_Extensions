@@ -1,0 +1,829 @@
+{
+  "version": "5.7.29",
+  "passed": 9,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "T1 explicit delete on-type",
+      "ok": true,
+      "detail": {
+        "label": "T1",
+        "view_axis": "dimension",
+        "dimension_type": "department",
+        "selected": null,
+        "bag_dims": {},
+        "doc_dims": {},
+        "parked": {
+          "department": {
+            "value": null,
+            "cleared_flag": true,
+            "selected": null
+          },
+          "cost_center": {
+            "value": null,
+            "cleared_flag": true,
+            "selected": null
+          }
+        },
+        "cleared": {
+          "department": true
+        },
+        "chips": [
+          {
+            "group": "document_scope",
+            "key": "document.company",
+            "label": "Company",
+            "value": "اسپاد فارمد دارو",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.fiscal_year",
+            "label": "Fiscal Year",
+            "value": "1405",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.date_range",
+            "label": "Date Range",
+            "value": "2026-03-21 → 2027-03-20",
+            "removable": false
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.axis",
+            "label": "Axis",
+            "value": "Dimensions",
+            "removable": false
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.dimension_type",
+            "label": "Dimension Type",
+            "value": "Department",
+            "removable": false
+          }
+        ],
+        "payload_dims": {},
+        "payload_selected": null,
+        "payload_dim_type": "department"
+      }
+    },
+    {
+      "name": "T1b delete parked chip on CC",
+      "ok": true,
+      "detail": {
+        "onCc": {
+          "label": "T1b on CC",
+          "view_axis": "dimension",
+          "dimension_type": "cost_center",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "parked_dimension_filters",
+              "key": "dimensions.department",
+              "label": "Department (parked)",
+              "value": "ایمنی و بهداشت - E",
+              "removable": true
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Dimensions",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.dimension_type",
+              "label": "Dimension Type",
+              "value": "Cost Center",
+              "removable": false
+            }
+          ],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "cost_center"
+        },
+        "back": {
+          "label": "T1b back",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            },
+            "cost_center": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": true
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Dimensions",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.dimension_type",
+              "label": "Dimension Type",
+              "value": "Department",
+              "removable": false
+            }
+          ],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "T2 intentional park preserve",
+      "ok": true,
+      "detail": {
+        "before": {
+          "label": "T2 before",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "analysis_filters",
+              "key": "dimensions.department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": true
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Dimensions",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.dimension_type",
+              "label": "Dimension Type",
+              "value": "Department",
+              "removable": false
+            }
+          ],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "after": {
+          "label": "T2 after",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            },
+            "cost_center": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": false
+            },
+            {
+              "group": "analysis_filters",
+              "key": "dimensions.department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": true
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Dimensions",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.dimension_type",
+              "label": "Dimension Type",
+              "value": "Department",
+              "removable": false
+            }
+          ],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "T3 independent dimension types",
+      "ok": true,
+      "detail": {
+        "values": {
+          "department": "ایمنی و بهداشت - E",
+          "cost_center": "1110 - تولید بیولوژیک - E",
+          "project": "PROJ-0001"
+        }
+      }
+    },
+    {
+      "name": "T4 main axis tour",
+      "ok": true,
+      "detail": {
+        "before": {
+          "label": "T4 before",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "analysis_filters",
+              "key": "dimensions.department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": true
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Dimensions",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.dimension_type",
+              "label": "Dimension Type",
+              "value": "Department",
+              "removable": false
+            }
+          ],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "after": {
+          "label": "T4 after",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": false
+            },
+            {
+              "group": "analysis_filters",
+              "key": "dimensions.department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": true
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Dimensions",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.dimension_type",
+              "label": "Dimension Type",
+              "value": "Department",
+              "removable": false
+            }
+          ],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "T5 twenty transitions",
+      "ok": true,
+      "detail": {
+        "sequence": [
+          "dimension:department",
+          "party",
+          "dimension:project",
+          "voucher",
+          "dimension:cost_center",
+          "account_level",
+          "dimension:department",
+          "dimension",
+          "dimension:project",
+          "item",
+          "dimension:cost_center",
+          "currency",
+          "dimension:department",
+          "item_group",
+          "dimension:project",
+          "party",
+          "dimension:cost_center",
+          "voucher",
+          "dimension:department",
+          "account_level"
+        ],
+        "end": {
+          "label": "T5 end",
+          "view_axis": "account_level",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            },
+            "cost_center": {
+              "value": "1110 - تولید بیولوژیک - E",
+              "cleared_flag": false,
+              "selected": "1110 - تولید بیولوژیک - E"
+            },
+            "project": {
+              "value": "PROJ-0001",
+              "cleared_flag": false,
+              "selected": "PROJ-0001"
+            }
+          },
+          "cleared": {
+            "department": false,
+            "cost_center": false,
+            "project": false
+          },
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "label": "Company",
+              "value": "اسپاد فارمد دارو",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "label": "Fiscal Year",
+              "value": "1405",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "label": "Date Range",
+              "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": false
+            },
+            {
+              "group": "analysis_filters",
+              "key": "dimensions.department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": true
+            },
+            {
+              "group": "parked_dimension_filters",
+              "key": "dimensions.cost_center",
+              "label": "Cost Center (parked)",
+              "value": "تولید بیولوژیک",
+              "removable": true
+            },
+            {
+              "group": "parked_dimension_filters",
+              "key": "dimensions.project",
+              "label": "Project (parked)",
+              "value": "کارخانه سیمین دشت",
+              "removable": true
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "label": "Axis",
+              "value": "Account Levels",
+              "removable": false
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.level",
+              "label": "Level",
+              "value": "Group",
+              "removable": false
+            }
+          ],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "T6 summary vs payload",
+      "ok": true,
+      "detail": {
+        "label": "T6 on CC",
+        "view_axis": "dimension",
+        "dimension_type": "cost_center",
+        "selected": "1110 - تولید بیولوژیک - E",
+        "bag_dims": {
+          "cost_center": "1110 - تولید بیولوژیک - E"
+        },
+        "doc_dims": {},
+        "parked": {
+          "department": {
+            "value": "ایمنی و بهداشت - E",
+            "cleared_flag": false,
+            "selected": "ایمنی و بهداشت - E"
+          },
+          "cost_center": {
+            "value": "1110 - تولید بیولوژیک - E",
+            "cleared_flag": false,
+            "selected": "1110 - تولید بیولوژیک - E"
+          }
+        },
+        "cleared": {
+          "department": false,
+          "cost_center": false
+        },
+        "chips": [
+          {
+            "group": "document_scope",
+            "key": "document.company",
+            "label": "Company",
+            "value": "اسپاد فارمد دارو",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.fiscal_year",
+            "label": "Fiscal Year",
+            "value": "1405",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.date_range",
+            "label": "Date Range",
+            "value": "2026-03-21 → 2027-03-20",
+            "removable": false
+          },
+          {
+            "group": "analysis_filters",
+            "key": "dimensions.cost_center",
+            "label": "Cost Center",
+            "value": "تولید بیولوژیک",
+            "removable": true
+          },
+          {
+            "group": "parked_dimension_filters",
+            "key": "dimensions.department",
+            "label": "Department (parked)",
+            "value": "ایمنی و بهداشت - E",
+            "removable": true
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.axis",
+            "label": "Axis",
+            "value": "Dimensions",
+            "removable": false
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.dimension_type",
+            "label": "Dimension Type",
+            "value": "Cost Center",
+            "removable": false
+          }
+        ],
+        "payload_dims": {
+          "cost_center": "1110 - تولید بیولوژیک - E"
+        },
+        "payload_selected": "1110 - تولید بیولوژیک - E",
+        "payload_dim_type": "cost_center"
+      }
+    },
+    {
+      "name": "T7 filter alignment",
+      "ok": true,
+      "detail": {
+        "code": {
+          "col": 1,
+          "deltaHeaderFilter": 0,
+          "deltaWidth": 0,
+          "filterPos": "sticky",
+          "bodyDelta": null
+        },
+        "title": {
+          "col": 2,
+          "deltaHeaderFilter": 0,
+          "deltaWidth": 0,
+          "filterPos": "relative",
+          "bodyDelta": null
+        }
+      }
+    },
+    {
+      "name": "T8 clear_all clears parked",
+      "ok": true,
+      "detail": {
+        "label": "T8",
+        "view_axis": "dimension",
+        "dimension_type": "department",
+        "selected": null,
+        "bag_dims": {},
+        "doc_dims": {},
+        "parked": {
+          "cost_center": {
+            "value": null,
+            "cleared_flag": true,
+            "selected": null
+          }
+        },
+        "cleared": {},
+        "chips": [
+          {
+            "group": "document_scope",
+            "key": "document.company",
+            "label": "Company",
+            "value": "اسپاد فارمد دارو",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.fiscal_year",
+            "label": "Fiscal Year",
+            "value": "1405",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.date_range",
+            "label": "Date Range",
+            "value": "2026-03-21 → 2027-03-20",
+            "removable": false
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.axis",
+            "label": "Axis",
+            "value": "Dimensions",
+            "removable": false
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.dimension_type",
+            "label": "Dimension Type",
+            "value": "Department",
+            "removable": false
+          }
+        ],
+        "payload_dims": {},
+        "payload_selected": null,
+        "payload_dim_type": "department"
+      }
+    }
+  ],
+  "generated_at": "2026-11-12T19:54:30.853Z"
+}

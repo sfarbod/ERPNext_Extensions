@@ -2895,15 +2895,18 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			document_scope: this.document_scope,
 			analysis_context: this.analysis_context,
 			metadata: this.metadata,
+			parked_dimensions: this.get_parked_dimension_summary_entries(),
 		});
 		const analysis_rows = rows.filter((row) => row.group === "analysis_filters");
+		const parked_rows = rows.filter((row) => row.group === "parked_dimension_filters");
 		const document_rows = rows.filter((row) => row.group === "document_scope");
 		const presentation_rows = rows.filter((row) => row.group === "presentation");
 
 		this.$filter_summary.empty().show();
 		const $header = $('<div class="ae-filter-summary-header"></div>').appendTo(this.$filter_summary);
 		$header.append($('<span class="ae-filter-summary-title">').text(__("Filter Summary")));
-		if (analysis_rows.length) {
+		// Parked Dimension analyses are not in the active query but remain deletable.
+		if (analysis_rows.length || parked_rows.length) {
 			$('<button type="button" class="ae-filter-summary-clear btn btn-xs btn-default">')
 				.text(__("Clear Analysis Filters"))
 				.on("click", () => this.clear_all_analysis_filters())
@@ -2958,7 +2961,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 					$('<span class="ae-filter-chip-label">').text(row.label),
 					$('<span class="ae-filter-chip-value">').text(row.value)
 				);
-				if (row.removable && row.group === "analysis_filters") {
+				if (
+					row.removable &&
+					(row.group === "analysis_filters" || row.group === "parked_dimension_filters")
+				) {
 					$('<button type="button" class="ae-filter-chip-remove">')
 						.attr("aria-label", __("Remove {0}", [row.label]))
 						.text("×")
@@ -2969,11 +2975,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 						})
 						.appendTo($chip);
 				}
+				if (row.group === "parked_dimension_filters") {
+					$chip.addClass("ae-filter-chip--parked");
+				}
 			});
 		};
 
 		render_group(__("Document Scope"), document_rows);
 		render_group(__("Analysis Filters"), analysis_rows);
+		render_group(__("Parked Dimension Filters"), parked_rows);
 		render_group(__("Presentation"), presentation_rows);
 
 		const elapsed = performance.now() - started;
@@ -2992,8 +3002,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filter:removed", { key, filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._clear_legacy_scope_for_filter_key(key);
-		// v5.7.30: explicit delete must also clear parked Dimension analysis so Park/Activate
-		// cannot resurrect the removed filter.
+		// v5.7.29: explicit delete must also clear parked Dimension analysis so Park/Activate
+		// cannot resurrect the removed filter (including parked-only chips).
 		if (String(key || "").startsWith("dimensions.")) {
 			this.forget_parked_dimension_analysis(String(key).slice("dimensions.".length));
 		}
@@ -3017,10 +3027,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filters:cleared", { filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._reset_analytical_legacy_scopes();
-		// Explicit global clear — drop parked Dimension analysis entries too.
+		// Explicit global clear — drop every parked Dimension analysis (not only active bag).
 		Object.keys(this._dimension_type_parked || {}).forEach((field) => {
 			this.forget_parked_dimension_analysis(field);
 		});
+		this._dimension_type_parked = {};
+		this._dimension_type_cleared = {};
 		this._sync_scopes_from_analysis_filters();
 		this.sync_filter_controls_from_document_scope();
 		this.analysis_context.page = 1;
@@ -3033,8 +3045,31 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 	}
 
+	/** Parked Dimension analyses that are not in the active query bag (removable). */
+	get_parked_dimension_summary_entries() {
+		const bag = this.get_analysis_filters();
+		const parked = this._dimension_type_parked || {};
+		const cleared = this._dimension_type_cleared || {};
+		const out = {};
+		Object.entries(parked).forEach(([field, state]) => {
+			if (!field || cleared[field] || state?.analysis_cleared) {
+				return;
+			}
+			const entry = state?.analysis_entry;
+			if (!entry || entry.value == null || entry.value === "") {
+				return;
+			}
+			// Already active in the bag — shown as a normal analysis chip.
+			if (bag.dimensions?.[field]) {
+				return;
+			}
+			out[field] = state;
+		});
+		return out;
+	}
+
 	/**
-	 * v5.7.30 — mark a Dimension Type's analysis as intentionally cleared.
+	 * v5.7.29 — mark a Dimension Type's analysis as intentionally cleared.
 	 * Park/Activate must not restore analysis_entry / selected_dimension_value after this.
 	 */
 	forget_parked_dimension_analysis(dimension_type) {
@@ -3063,7 +3098,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	/**
-	 * v5.7.29/30 — snapshot one Dimension Type's UI/analysis state without destroying it.
+	 * v5.7.29 — snapshot one Dimension Type's UI/analysis state without destroying it.
 	 * Used when switching types so Cost Center ↔ Department each keep independent state.
 	 * When the active bag has no analysis entry, do not retain a prior parked analysis.
 	 */
@@ -3137,13 +3172,20 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			}
 			const entry = bag.dimensions[field];
 			const prior = this._dimension_type_parked[field] || {};
+			const field_cleared = !!(this._dimension_type_cleared || {})[field];
+			// Explicit delete wins: never re-park analysis for a cleared Dimension Type.
+			const next_entry = field_cleared
+				? null
+				: entry
+					? JSON.parse(JSON.stringify(entry))
+					: prior.analysis_entry || null;
 			this._dimension_type_parked[field] = {
 				...prior,
-				analysis_entry: entry
-					? JSON.parse(JSON.stringify(entry))
-					: prior.analysis_entry || null,
-				selected_dimension_value:
-					prior.selected_dimension_value ?? entry?.value ?? null,
+				analysis_entry: next_entry,
+				selected_dimension_value: next_entry
+					? prior.selected_dimension_value ?? entry?.value ?? null
+					: null,
+				analysis_cleared: field_cleared || !next_entry,
 			};
 			bag = AF.remove_entry(bag, `dimensions.${field}`);
 		});

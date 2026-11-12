@@ -366,6 +366,15 @@
 	border-color: var(--primary, #2490ef);
 }
 
+/* Parked Dimension analyses: visible + removable, not in active query payload. */
+.account-explorer-page .ae-filter-chip[data-group="parked_dimension_filters"],
+.account-explorer-page .ae-filter-chip--parked {
+	border-style: dashed;
+	border-color: var(--text-muted, #6c7680);
+	opacity: 0.92;
+	background: var(--control-bg, var(--bg-color));
+}
+
 .account-explorer-page .ae-filter-chip-label {
 	font-weight: 600;
 	color: var(--text-muted);
@@ -1679,7 +1688,7 @@ html[dir="rtl"] .account-explorer-page .ae-grid-toolbar-meta {
  * Clear-button positioning needs a containing block, but must NOT override
  * DataTable's position:sticky on sticky filter cells. Using position:relative
  * on sticky cells made DataTable's left offset act as a layout shift (~checkbox
- * width), misaligning Code/Title filter inputs under their headers (v5.7.30).
+ * width), misaligning Code/Title filter inputs under their headers (v5.7.29).
  */
 .account-explorer-page .ae-dt-filter-cell {
 	box-sizing: border-box;

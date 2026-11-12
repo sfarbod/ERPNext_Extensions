@@ -44,7 +44,15 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 	};
 
 	Object.assign(AF, {
-		build_summary_rows(bag, { document_scope = null, analysis_context = null, metadata = null } = {}) {
+		build_summary_rows(
+			bag,
+			{
+				document_scope = null,
+				analysis_context = null,
+				metadata = null,
+				parked_dimensions = null,
+			} = {}
+		) {
 			const rows = [];
 			const doc = document_scope || {};
 			const ctx = analysis_context || {};
@@ -160,6 +168,34 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 					removable: entry.removable !== false,
 					bound_to: entry.bound_to || null,
 					meta: entry.meta || null,
+				});
+			});
+
+			// Parked Dimension Type analyses are not in the active query payload, but remain
+			// visible and explicitly removable so Park/Activate cannot silently resurrect them.
+			Object.entries(parked_dimensions || {}).forEach(([field, state]) => {
+				const entry = state?.analysis_entry;
+				if (!entry || ae_af_is_empty(entry.value)) {
+					return;
+				}
+				if (bag?.dimensions?.[field]) {
+					return;
+				}
+				const dim = (metadata?.dimensions || []).find((item) => item.fieldname === field);
+				const label = dim?.label || field;
+				const display = this._display_value(entry);
+				rows.push({
+					group: "parked_dimension_filters",
+					key: `dimensions.${field}`,
+					label: __("{0} (parked)", [label]),
+					value: display,
+					origin: "parked_dimension",
+					origin_label: __("Parked Dimension"),
+					lifetime: entry.lifetime || "session",
+					lifetime_label: this._lifetime_label(entry.lifetime || "session"),
+					removable: true,
+					bound_to: entry.bound_to || null,
+					meta: { ...(entry.meta || {}), parked: true, dimension_type: field },
 				});
 			});
 
