@@ -25,11 +25,15 @@ cross-axis state handling:
 
 ### Fixes
 
-- `AnalysisFilters.apply_policy("replace_dimension")` clears other Dimension Types.
-- `isolate_dimension_type_analysis_scope()` on Dimension Type switch / Analyze.
+- `AnalysisFilters.apply_policy("replace_dimension")` clears other Dimension Types from the **active** bag.
+- Per–Dimension Type **park / activate** state (`park_dimension_type_state`, `activate_dimension_type_scope`):
+  switching Cost Center ↔ Department isolates the active query while restoring each type’s
+  analysis selection, column filters, breadcrumbs, and page on return.
 - Payload projection and Filter Summary hide non-active Dimension Types on the Dimensions axis.
 - Backend `query_spec` + `gle_filters` enforce active `dimension_scope.dimension_type` only.
 - Column filters: **500 ms** debounce, Enter immediate, Clear immediate, sequence/generation race protection.
+- Column-filter UI: values stay in the DataTable filter row with inline clear; **no** technical
+  `display_code: …` chips beside pagination; filter inputs re-sync after grid refresh.
 
 ### Files (primary)
 

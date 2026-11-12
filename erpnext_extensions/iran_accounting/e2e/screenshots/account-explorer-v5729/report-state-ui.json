@@ -1,0 +1,87 @@
+{
+  "version": "5.7.29",
+  "suite": "state_ui",
+  "passed": 3,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "dimension_state_persistence",
+      "ok": true,
+      "detail": {
+        "skipped": false,
+        "afterCC": {
+          "type": "cost_center",
+          "selected": "1110 - تولید بیولوژیک - E",
+          "bag": [
+            "cost_center"
+          ],
+          "parkedKeys": [
+            "cost_center"
+          ]
+        },
+        "afterDeptSwitch": {
+          "type": "department",
+          "selected": null,
+          "bag": [],
+          "column_filters": {},
+          "payloadDims": [],
+          "parkedCC": "1110 - تولید بیولوژیک - E"
+        },
+        "afterDeptAnalyze": {
+          "type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag": [
+            "department"
+          ],
+          "rowTypes": [
+            "department"
+          ]
+        },
+        "backCC": {
+          "type": "cost_center",
+          "selected": "1110 - تولید بیولوژیک - E",
+          "bag": [
+            "cost_center"
+          ],
+          "column_filters": {
+            "display_code": "ای"
+          },
+          "payloadType": "cost_center"
+        },
+        "backDept": {
+          "type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag": [
+            "department"
+          ]
+        },
+        "ccValue": "1110 - تولید بیولوژیک - E"
+      }
+    },
+    {
+      "name": "column_filter_ui_no_pagination_chips",
+      "ok": true,
+      "detail": {
+        "inputValue": "ای",
+        "inputActive": true,
+        "paginationChipCount": 0,
+        "chipText": [],
+        "clearVisible": true,
+        "headerCount": 8,
+        "filterCellCount": 8,
+        "payloadFilter": "ای",
+        "totalRows": 0
+      }
+    },
+    {
+      "name": "column_filter_clear_restores",
+      "ok": true,
+      "detail": {
+        "inputValue": "",
+        "filters": {},
+        "paginationChips": 0
+      }
+    }
+  ],
+  "generated_at": "2026-11-12T19:13:32.558Z"
+}

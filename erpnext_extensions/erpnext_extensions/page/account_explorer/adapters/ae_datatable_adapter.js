@@ -667,12 +667,10 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 			}
 			input.setAttribute("data-ae-column-filter", col.id);
 			input.setAttribute("aria-label", __("Filter {0}", [__(col.label || col.id)]));
-			if (value) {
-				input.value = value;
-				input.classList.add("ae-dt-filter--active");
-			} else if (!input.value) {
-				input.classList.remove("ae-dt-filter--active");
-			}
+			// Always sync from authoritative state so Dimension Type switches / clears
+			// do not leave a stale typed value in a recreated DataTable filter row.
+			input.value = value || "";
+			input.classList.toggle("ae-dt-filter--active", !!value);
 		});
 	}
 

@@ -1670,36 +1670,21 @@ html[dir="rtl"] .account-explorer-page .ae-grid-toolbar-meta {
 	white-space: nowrap;
 }
 
-.account-explorer-page .ae-column-filter-chips {
-	display: inline-flex;
-	flex-wrap: wrap;
-	gap: 4px;
-	align-items: center;
-	margin-inline-start: 8px;
-}
-
-.account-explorer-page .ae-column-filter-chip {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding: 1px 6px;
-	border: 1px solid var(--ae-border);
-	border-radius: var(--border-radius);
-	background: var(--control-bg);
-	font-size: var(--text-sm, 12px);
-}
-
-.account-explorer-page .ae-column-filter-chip-clear {
-	border: 0;
-	background: transparent;
-	padding: 0 2px;
-	line-height: 1;
-	cursor: pointer;
-	color: var(--text-muted);
+/* Pagination must not host technical column-filter chips (v5.7.29 UI repair). */
+.account-explorer-page .ae-pagination-bar .ae-column-filter-chips {
+	display: none !important;
 }
 
 .account-explorer-page .ae-dt-filter-cell {
 	position: relative;
+	box-sizing: border-box;
+}
+
+.account-explorer-page .ae-dt-filter-cell .dt-filter {
+	width: 100%;
+	max-width: 100%;
+	box-sizing: border-box;
+	padding-inline-end: 1.4em;
 }
 
 .account-explorer-page .ae-dt-filter-cell .dt-filter.ae-dt-filter--active {

@@ -206,6 +206,7 @@ class TestAccountExplorerV5729DebounceContract(unittest.TestCase):
 		self.assertIn("_bind_column_filter_immediate_actions", adapter)
 		self.assertIn('event.key !== "Enter"', adapter)
 		self.assertIn("immediate: !!immediate", adapter)
+		self.assertIn('input.value = value || ""', adapter)
 
 	def test_analysis_filters_replace_dimension_policy(self):
 		app_root = Path(frappe.get_app_path("erpnext_extensions"))
@@ -219,3 +220,26 @@ class TestAccountExplorerV5729DebounceContract(unittest.TestCase):
 		).read_text(encoding="utf-8")
 		self.assertIn("next.dimensions = {}", af)
 		self.assertIn('view_axis === "dimension"', af)
+
+	def test_dimension_type_park_activate_and_no_pagination_chips(self):
+		app_root = Path(frappe.get_app_path("erpnext_extensions"))
+		controller = (
+			app_root
+			/ "erpnext_extensions"
+			/ "page"
+			/ "account_explorer"
+			/ "account_explorer.js"
+		).read_text(encoding="utf-8")
+		self.assertIn("park_dimension_type_state", controller)
+		self.assertIn("activate_dimension_type_scope", controller)
+		self.assertIn("_dimension_type_parked", controller)
+		self.assertNotIn("this.render_column_filter_chips($bar)", controller)
+		css = (
+			app_root
+			/ "erpnext_extensions"
+			/ "page"
+			/ "account_explorer"
+			/ "account_explorer.css"
+		).read_text(encoding="utf-8")
+		self.assertIn(".ae-pagination-bar .ae-column-filter-chips", css)
+		self.assertIn("display: none !important", css)
