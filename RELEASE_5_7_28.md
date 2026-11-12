@@ -1,179 +1,232 @@
-# Release 5.7.28 — Finished Goods Cost Allocation Enhancement & Audit
+# Release 5.7.28 — Finished Goods Cost Allocation (Costing)
 
 **Version:** **5.7.28**  
 **Branch:** `develop`  
-**Site validated:** `development.localhost` — Company `اسپاد فارمد دارو`, FY **1405** Farvardin–Shahrivar  
-**Deployment status:** Local Development only. **No Production push/merge/deploy.**
+**Site validated:** `development.localhost` — Company `اسپاد فارمد دارو`  
+**Deployment status:** Local Development validated. Production migrate requires the Sidebar hotfix procedure below. **Do not rewrite published tag `v5.7.27`.**
 
-## 1. Architecture and DocTypes
+This document consolidates Costing work previously tracked under interim notes 5.7.28 / 5.7.29 / 5.7.30 and the 5.7.27 QA + Sidebar repair cycle into a single application release version **5.7.28**.
 
-Module Def / package: **Costing** (Persian Workspace: **بهای تمام شده**).
+Historical patch module names (e.g. `…_v5727`, `…_v5728`, `…_v5730`) are **identifiers only** and must remain for sites that already executed them.
+
+---
+
+## A. Costing Module
+
+### Architecture
+
+Module Def / package: **Costing**.
 
 | DocType | Role |
 |---|---|
-| Finished Goods Cost Allocation Settings | Company settings + UOM + expense rules |
-| FG Item Primary UOM | Child: one Primary UOM per FG item + conversion status |
-| Expense Account Dimension Rule | Child: Account × Cost Center × Department |
+| Finished Goods Cost Allocation Settings | Company settings, Primary UOMs, expense rules, audit summaries |
+| FG Item Primary UOM | Child: Primary UOM + source/manual/applied conversion factors |
+| Expense Account Dimension Rule | Child: Account × Department (Cost Center optional) |
 | Monthly FG Cost Calculation | Parent monthly calculation / revision header |
-| MFG Cost Expense Pool | Level 1 pools |
+| MFG Cost Expense Pool | Level 1 expense pools |
 | MFG Cost GL Line | Persisted GL source lines |
 | MFG Cost Batch Allocation | Level 2 batches + shares |
-| MFG Cost Batch Expense Allocation | Batch × Pool |
-| MFG Cost Product Allocation | Level 3 products |
-| MFG Cost Product Expense Allocation | Product × Pool |
+| MFG Cost Batch Expense Allocation | Batch × Expense Pool |
+| MFG Cost Product Allocation | Level 3 products + material/selling economics |
+| MFG Cost Product Expense Allocation | Historical Product × Pool (not written for new revisions) |
+| MFG Cost Account Dimension Summary | Account × dimension rollup |
+| MFG Cost Reconciliation Check | Structured reconciliation rows |
+| MFG Cost Exception | Structured exceptions |
 | MFG Cost Calculation Revision | Audit / revision log |
 
-Engine package: `erpnext_extensions.iran_accounting.fg_cost_allocation`  
-Contract: `assert_consumable()` rejects Incomplete / provisional / inconsistent / zero-rule calculations.
+Engine: `erpnext_extensions.iran_accounting.fg_cost_allocation`  
+Contract: `assert_consumable()` / `is_consumable()` reject Incomplete, provisional, inconsistent, zero-rule, or over-allocated calculations.
 
-## 2. Costing module organization
+### Eligibility (Item Group)
 
-- All 11 related DocTypes assigned to module **Costing**.
-- Public Workspace **بهای تمام شده** (`module=Costing`) for ERPNext navigation.
-- No DocType duplication; existing records retained.
+Eligible Finished Goods are **only** Items in Item Group **`تزریقی`**, verified as a child of **`محصول نهایی`**.
 
-## 3. UOM configuration design
-
-- One **Primary UOM** per FG item on Settings (`FG Item Primary UOM`).
-- Conversion factor read only from Item **UOM Conversion Detail** (or 1.0 when Stock UOM = Primary UOM).
-- Status: Valid / Missing / Ambiguous / Invalid — never invented.
-- Action: validate/refresh Item UOM rows (does **not** modify Item masters).
-- Missing UOM → product/batch marked exception; month **Incomplete**; shares **provisional** / non-consumable.
-
-### Validation results (اسپاد فارمد دارو)
-
-| Metric | Value |
+| Metric | Count |
 |---|---|
-| FG items scanned | 226 |
-| Valid | 39 |
-| Missing | 187 |
-| Ambiguous | 0 |
-| Invalid | 0 |
-| Default Primary UOM | سرنگ |
+| Enabled Items in `تزریقی` | **220** |
+| Sibling `خوراکی` under parent | Excluded |
+| Outside groups (e.g. `اینسپکت`) | Excluded at source; reported, not silent |
 
-## 4. Eligible items with Valid primary UOM (sample / count)
+Constants: `FG_ITEM_GROUP=تزریقی`, `FG_PARENT_ITEM_GROUP=محصول نهایی`. Hierarchy checked on calculation / UOM refresh.
 
-39 Valid items (Primary UOM = سرنگ). Examples:
+### Expense Account Dimension Rules (current)
 
-| Item | Stock UOM | Primary UOM | Factor |
-|---|---|---|---|
-| 20010024 | BOX(2pfs) | سرنگ | 2 |
-| 20100002 | BOX(2pfs) | سرنگ | 2 |
-| 20100007 | BOX(2pfs) | سرنگ | 2 |
-| 20100008 | BOX(2pfs) | سرنگ | 2 |
-| 20100011 | BOX(2pfs) | سرنگ | 2 |
-
-Full list is on Settings → Item Primary UOMs (status Valid).
-
-## 5. Missing / invalid UOM exceptions (FY1405 production)
-
-- **132** product allocation rows across months with `missing_uom_factor=1`.
-- Distinct items (14): `20100006`, `20100009`, `20100015`, `20100042`, `20100043`, `20100068`, `20100102`, `20100103`, `20100144`, `20100190`, `20100209`, `20100210`, `20100212`, `20100213`.
-- Typical cause: Stock UOM such as `BOX(1pfs)` / other boxes without a Conversion Detail to `سرنگ`.
-- **User action required:** add Item UOM conversions (or change Primary UOM) — do not auto-edit masters.
-
-## 6. Expense accounts beginning with `6`
-
-- **176** leaf accounts discovered dynamically from Chart of Accounts (`account_number LIKE '6%'`).
-- No hardcoded account list.
-
-## 7. Department-level rule generation
-
-From Settings `last_rule_generation_summary`:
-
-| Metric | Value |
+| Check | Result |
 |---|---|
-| Accounts with prefix 6 | 176 |
-| Created rules | **988** |
-| Duplicates skipped | 0 |
-| Excluded اداری/ستادی combos | **615** |
-| Blank-CC rules remaining | **0** |
-| Period scanned | 2026-03-21 → 2026-09-22 |
+| Enabled rules | **3,026** |
+| Unique accounts | **89** |
+| Unique departments | **34** |
+| Cost Center blank | **3,026 / 3,026** |
+| Duplicate keys / overlaps | **0 / 0** |
 
-Exact Account + Cost Center + Department matching; blank ≠ wildcard.
+Generation: Account × Department from Excel (`معین حساب` × `مرکز` as Department). Cost Center intentionally blank. Row `مشترک عمومی شرکت` excluded pending master data.
 
-## 8. Three removed incorrect configuration rows
+**Matching semantics (authoritative):**
 
-Unambiguously identified blank-Cost-Center seed rows (removed via `remove_blank_cc_seed_rules`):
+- **Account** — exact mandatory match.
+- **Blank Cost Center / Department on a rule** — unrestricted filter (wildcard) for that dimension.
+- **Populated dimension** — exact match only.
+- Overlapping enabled rules → extraction conflict → month **Incomplete** (no silent double allocation).
+- Each GL line consumed at most once across pools.
 
-| Account | Cost Center | Department |
+> Historical note: an earlier interim design used exact blank≠wildcard and generated 988 Account×CC×Dept rules with اداری/ستادی exclusions. That configuration was superseded by the 3,026 Account×Department blank-CC model above.
+
+### UOM normalization
+
+- One **Primary UOM** per configured FG item (`FG Item Primary UOM`).
+- Applied factor = Manual Override when set; else ERPNext Item UOM Conversion Detail (or 1.0 when Stock UOM = Primary).
+- Status: Valid / Missing / Ambiguous / Invalid / Manual Override — never invent factors.
+- Missing UOM → structured exceptions; month Incomplete; shares provisional; not consumable.
+- **Item masters are never written** by Costing.
+
+**Verified Costing Manual Override — Item `20100213`:**
+
+| Field | Value |
+|---|---|
+| Stock UOM | `BOX(2Vial)` |
+| Primary UOM | `BOX(1pfs)` |
+| ERPNext source factor | `0` (no Conversion Detail for Primary) |
+| Manual Override / Applied | **2.0** |
+| Farvardin evidence | actual **25** → normalized **50**; `missing_uom_factor=0` |
+
+### Allocation model
+
+1. **Expense Pools** from matched GL lines (Account × optional dims).
+2. **Batch Share** = Batch Normalized Qty / Σ eligible FG batches in the Persian month.
+3. **Batch × Expense Pool:** `Allocated Amount = Pool Monthly Net × Applied Batch Share` (currency `ROUND_HALF_UP`).
+4. **Calculated Batch Share** remains read-only; **Applied Batch Share** editable with audit; no silent rebalance of other batches.
+5. **Product Share** within batch; Total Product Cost = Material Consumption Value + Product Allocated Expense.
+6. Unit Cost on Actual / Normalized; Selling Price from Settings Selling Price List when configured.
+
+No JE, Stock Entry, GL, SLE, or valuation postings from Costing.
+
+### Desk navigation
+
+| Layer | Canonical name | Notes |
 |---|---|---|
-| 611028 - حقوق پایه - E | *(blank)* | واحد فرمولاسیون و ساخت بیولوژیک - E |
-| 611028 - حقوق پایه - E | *(blank)* | واحد فرمولاسیون و ساخت غیربیولوژیک - E |
-| 611106 - هزینه آموزش کارکنان - E | *(blank)* | واحد بسته بندی - E |
+| Module Def | `Costing` | App `erpnext_extensions` |
+| Desktop Icon / Workspace / Sidebar | `Costing` (English) | Evolved from interim Persian tile `بهای تمام شده` |
+| Patch (historical) | `ensure_costing_desk_module_v5730` | Seeded Persian Desk shell |
+| Patch (historical) | `ensure_costing_english_desk_v5727` | Migrates to English Costing labels |
+| Patch (repair) | `repair_costing_english_desk_sidebar_v5727` | Idempotent Sidebar/DocType ensure |
 
-## 9. Excluded اداری / ستادی Cost Centers
+Sections: Settings · Monthly Calculations · Reports & Details · Management & History.
 
-Structured leaf Cost Center matching exclusion tokens: **`3000 - اداری و ستاد - E`**.  
-Generation excluded **615** Account×CC×Dept GL combinations tied to that classification during FY1405 scan.
+### UI grids and export
 
-## 10. Six-month FY1405 production reconciliation
+- Custom HTML recon/exception/account tables replaced with **summary panels** + standard **List Views** + DocType **Connections**.
+- Settings child tables remain native Frappe Tables with Download + XLSX.
+- Server CSV/XLSX export (`export_costing.py`) for detail DocTypes and Settings children; period-aware filenames (e.g. `Costing_Reconciliation_1405-01.csv`); all matching rows (chunked), UTF-8 BOM; empty export messaging.
 
-Source Manufacture SE detail qty vs persisted batch actual qty — **exact match** every month. Normalized qty is lower where UOM is missing (expected; Incomplete).
+### Lifecycle hardening
 
-| Month | Doc | Source rows | Source qty | Batch qty | Normalized | UOM exceptions |
-|---|---|---|---|---|---|---|
-| 1 | MFGCC-2026-00001 | 15 | 5,602 | 5,602 | 3,326 | 5 |
-| 2 | MFGCC-2026-00002 | 42 | 26,274 | 26,274 | 5,576 | 19 |
-| 3 | MFGCC-2026-00003 | 139 | 93,575 | 93,575 | 92,644 | 29 |
-| 4 | MFGCC-2026-00004 | 116 | 92,456 | 92,456 | 67,282 | 20 |
-| 5 | MFGCC-2026-00005 | 151 | 125,050 | 125,050 | 76,264 | 35 |
-| 6 | MFGCC-2026-00006 | 81 | 110,383 | 110,383 | 104,144 | 24 |
+- Idempotent recalculation (financial totals stable; revision advances).
+- Applied Batch Share edit + negative rejection; delete clears detail rows **and** revision orphans (`clear_details`).
+- Delete/recreate financial match verified; source ERP fingerprint unchanged.
 
-All months: `shares_are_provisional=1`, status **Incomplete**, `assert_consumable` blocked.
+### Final calculation evidence (development.localhost)
 
-## 11. Six-month expense extraction / allocation reconciliation
+#### Farvardin 1405 (`1405-01`) — `MFGCC-2026-00009`
 
-Pool net = header identified = batch allocated = product allocated (IRR). Excluded GL = account-6 activity not matching an enabled rule dimension.
-
-| Month | Identified | Allocated | Unallocated | Excluded GL | Active pools | GL lines | Batches |
-|---|---|---|---|---|---|---|---|
-| 1 | 158,778,930,060 | 158,778,930,060 | 0 | 11,737,872,905 | 163 | 2,647 | 8 |
-| 2 | 394,738,198,895 | 394,738,198,895 | 0 | 107,106,348,779 | 196 | 3,097 | 21 |
-| 3 | 494,136,940,675 | 494,136,940,675 | 0 | 60,600,859,272 | 239 | 3,960 | 73 |
-| 4 | 604,055,173,522 | 604,055,173,522 | 0 | 186,854,845,955 | 560 | 3,953 | 56 |
-| 5 | 724,333,764,208 | 724,333,764,208 | 0 | 51,451,819,114 | 274 | 3,884 | 78 |
-| 6 | 1,359,501,354,815 | 1,359,501,354,815 | 0 | 426,336,900,550 | 737 | 4,721 | 81 |
-
-Money columns widened to `DECIMAL(30,3)` (patch `expand_fg_cost_amount_precision_v5728`) for trillion-scale IRR totals.  
-`recon_ok=False` solely because UOM incomplete (provisional shares); money levels reconcile.
-
-## 12. Test results
-
-| Module | Result |
+| Metric | Result |
 |---|---|
-| `test_fg_cost_allocation_v5727` | **6/6 passed** |
-| `test_fg_cost_allocation_v5728` | **13/13 passed** |
-| Failed / skipped | **0** |
+| Status | **Recalculated**, consistent, consumable |
+| Identified = Allocated | **241,011,762,837** |
+| Pools / GL / Batches / Products | 421 / 1,730 / 8 / 8 |
+| Batch × Expense | **3,368** |
+| Missing UOM / Exceptions | **0 / 0** |
 
-Coverage includes: primary UOM resolution, missing/ambiguous/invalid conversion, provisional shares, zero-pool skip, admin/staff exclusion tokens, exact three seed-rule preview, consumable gate, month-wide shares, residuals, manual override non-renorm.
+#### Ordibehesht 1405 (`1405-02`) — `MFGCC-2026-00008`
 
-## 13. Remaining master-data / user-configuration actions
-
-1. **Add Item UOM Conversion Detail** to `سرنگ` (or set alternate Primary UOM) for the 187 Missing FG items — especially the 14 items appearing in FY1405 production.
-2. Review **excluded GL** amounts: add Department rules for legitimate manufacturing dimensions if intended to be pooled.
-3. After UOM fixes: **Recalculate** all months; lock only when `is_consistent=1` and shares not provisional.
-4. Confirm whether Cost Center exclusion should use a dedicated Cost Center category field (currently name/token based on `اداری` / `ستادی` / `ستاد`).
-
-## 14. Commit hash and version
-
-- **Version:** 5.7.28  
-- **Commit:** `34b2cca00a9867b549e983aff98ea942e64761b7`
-
-## 15. Unresolved defects / limitations
-
-| Item | Status |
+| Metric | Result |
 |---|---|
-| FY1405 months Incomplete due to missing UOM | **Blocked by master data** |
-| Shares provisional (successful-only denominator for diagnostics) | **Implemented & tested**; non-consumable by contract |
-| Zero-activity rules not persisted as empty pools | **Implemented** (cardinality); configured rules remain on Settings |
-| Prior-revision cleanup post-commit best-effort | **Implemented**; orphans possible under lock contention |
-| Expense absorption / JE posting | **Out of scope** (by design) |
-| Production documents / Item masters auto-fix | **Not done** (forbidden) |
+| Status | **Recalculated**, consistent, consumable |
+| Identified = Allocated | **79,048,154,971** |
+| Pools / GL / Batches / Products | 99 / 1,674 / 21 / 21 |
+| Batch × Expense | 2,079 |
+| Missing UOM / Exceptions | **0 / 0** |
 
-### Classification legend
+Source ERP during QA: GL 815,194 · SLE 182,831 · SE 20,806 — **unchanged**. Rules **3,026** preserved.
 
-- **Implemented and tested:** Costing module, UOM config engine, department rule generation, seed removal, bulk persist, atomic recalc commit, consumable gate, unit tests.
-- **Implemented but not fully validated:** Multi-revision archive comparison UI; full 187-item conversion master-data completeness.
-- **Blocked by missing master data:** Complete (non-provisional) FY1405 calculations.
-- **Requiring user approval:** Any Item master UOM edits; production deploy; future absorption feature.
+---
+
+## B. Production Migration Hotfix (Workspace Sidebar)
+
+### Incident
+
+Production site `erp.espadpharmed.com` failed during:
+
+`erpnext_extensions.patches.post_model_sync.ensure_costing_english_desk_v5727`
+
+at `_ensure_sidebars()` → `sync_module_sidebar_items()` → Workspace Sidebar save with:
+
+`frappe.exceptions.LinkValidationError`
+
+Earlier patches completed: `expand_fg_cost_amount_precision_v5728`, `ensure_costing_desk_module_v5730`.
+
+### Root cause
+
+Workspace Sidebar Item `link_to` is a **Dynamic Link** (`options=link_type`). For `link_type=DocType`, Frappe requires the DocType row to exist. Costing DocTypes were **not guaranteed** present before Sidebar sync. The Persian desk patch used `ignore_links=True`, masking the gap. Sync progress “100%” does not prove every Costing DocType row exists. Tag contents **did** include the DocType JSON files — this was a patch ensure gap, not a missing-file packaging gap.
+
+### Fix (application version 5.7.28; historical patch ids retained)
+
+1. **`_ensure_costing_doctypes()`** — force-import required Costing DocType JSON, clear cache, assert `tabDocType` rows.
+2. **`assert_sidebar_link_targets_exist()`** — explicit missing-target list before save; **link validation is not disabled**.
+3. **`repair_costing_english_desk_sidebar_v5727`** — idempotent re-apply for sites that already recorded the original English desk patch.
+
+### Safe production recovery (authorized deploy only)
+
+1. Confirm Patch Log (read-only) for completed vs pending Costing patches.
+2. Confirm Costing DocTypes in `tabDocType` (read-only).
+3. Deploy **5.7.28** code (do **not** rewrite tag `v5.7.27`).
+4. `bench --site <site> migrate` — completed patches skipped; failed English desk patch retries if not logged; repair patch runs once.
+5. Verify with `ensure_costing_english_desk_v5727.ensure_now`.
+
+Do **not** manually mark the failed patch complete. Do **not** delete Workspace/Sidebar rows before retry. Desk patches do not mutate GL/SLE/Stock Entry/rules.
+
+---
+
+## C. Tests and QA Evidence
+
+| Suite | Result |
+|---|---|
+| Costing final QA unit modules (optional dims, delete/share, allocation, user scope, eligibility, product cost, UOM/export) | **62 passed / 0 failed / 0 skipped** |
+| Sidebar regression `test_costing_desk_sidebar_v5727` | **5 passed** |
+| Development `bench migrate` after Sidebar fix (`repair_costing_english_desk_sidebar_v5727`) | **Success** |
+| Farvardin / Ordibehesht consumable recalculation | **Verified** (see §A) |
+| Production migrate after hotfix | **Not claimed** — pending authorized deploy |
+
+Interim eligibility/allocation modules also green historically: `test_fg_cost_eligibility_v5728` 7/7, `test_fg_cost_allocation_v5728` 13/13, `test_fg_cost_allocation_v5727` 6/6.
+
+### Known limitations
+
+1. Settings **`selling_price_list` unconfigured** → product `price_status=Missing`, selling_price 0.
+2. Item Master may still lack Primary UOM Conversion Detail where Costing uses Manual Override (by design; masters not written).
+3. Product × Expense rows not written for new revisions (Batch × Expense is primary).
+4. Expense absorption / JE posting remains out of scope.
+
+---
+
+## Patch compatibility review
+
+| Patch id (historical) | Role | Action in 5.7.28 |
+|---|---|---|
+| `expand_fg_cost_amount_precision_v5728` | DECIMAL width for IRR totals | Keep; already executed on many sites |
+| `ensure_costing_desk_module_v5730` | Persian Desk seed | Keep; do not rename |
+| `ensure_costing_english_desk_v5727` | English Desk + DocType ensure (fixed) | Keep; retryable if failed |
+| `repair_costing_english_desk_sidebar_v5727` | Idempotent repair | Keep; required for recovery |
+
+No executed patch modules renamed or removed. Application `__version__` is independent of patch filename suffixes.
+
+---
+
+## Version metadata
+
+- `erpnext_extensions/__init__.py` → `__version__ = "5.7.28"`
+- `pyproject.toml` → `dynamic = ["version"]` (reads `__init__.py` via flit)
+
+---
+
+## Superseded interim notes
+
+Content from `RELEASE_5_7_29.md` (تزریقی eligibility) and `RELEASE_5_7_30.md` (Persian Desk tile) is merged above. Those files are removed as part of this consolidation. Earlier baseline audit detail remains available in git history for those paths.
