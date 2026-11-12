@@ -32,7 +32,10 @@ app_include_css = [
 	"/assets/erpnext_extensions/css/petty_management_desk.css",
 	"/assets/erpnext_extensions/css/facility_grid_footer.css",
 ]
-# app_include_js = "/assets/erpnext_extensions/js/erpnext_extensions.js"
+app_include_js = [
+	"/assets/erpnext_extensions/js/costing_list_totals.js",
+	"/assets/erpnext_extensions/js/costing_grid_download.js",
+]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/erpnext_extensions/css/erpnext_extensions.css"

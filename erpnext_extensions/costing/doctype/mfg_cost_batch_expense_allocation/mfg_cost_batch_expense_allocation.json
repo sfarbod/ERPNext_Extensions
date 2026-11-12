@@ -1,0 +1,234 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "monthly_calculation",
+  "revision",
+  "batch_allocation",
+  "batch_no",
+  "work_order",
+  "column_break_meta",
+  "expense_pool",
+  "account",
+  "cost_center",
+  "department",
+  "section_share",
+  "pool_monthly_net_expense",
+  "calculated_batch_share",
+  "manual_batch_share",
+  "applied_batch_share",
+  "column_break_amt",
+  "allocated_amount",
+  "currency",
+  "residual_applied",
+  "is_manual_override"
+ ],
+ "fields": [
+  {
+   "fieldname": "monthly_calculation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Monthly Calculation",
+   "options": "Monthly FG Cost Calculation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Revision"
+  },
+  {
+   "fieldname": "batch_allocation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Production Batch",
+   "options": "MFG Cost Batch Allocation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Batch No",
+   "search_index": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Data",
+   "label": "Work Order"
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "expense_pool",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Expense Pool",
+   "options": "MFG Cost Expense Pool"
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Account",
+   "options": "Account",
+   "search_index": 1
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "section_share",
+   "fieldtype": "Section Break",
+   "label": "Share and Amount"
+  },
+  {
+   "default": "0",
+   "fieldname": "pool_monthly_net_expense",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Pool Monthly Net Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "calculated_batch_share",
+   "fieldtype": "Float",
+   "label": "Calculated Batch Share",
+   "precision": "9",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "manual_batch_share",
+   "fieldtype": "Float",
+   "label": "Manual Batch Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "applied_batch_share",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Applied Batch Share",
+   "precision": "9"
+  },
+  {
+   "fieldname": "column_break_amt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "allocated_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Allocated Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "residual_applied",
+   "fieldtype": "Check",
+   "label": "Residual Applied",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_manual_override",
+   "fieldtype": "Check",
+   "label": "Is Manual Override",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-12 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "MFG Cost Batch Expense Allocation",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  }
+ ],
+ "search_fields": "monthly_calculation,batch_allocation,batch_no,expense_pool,account",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

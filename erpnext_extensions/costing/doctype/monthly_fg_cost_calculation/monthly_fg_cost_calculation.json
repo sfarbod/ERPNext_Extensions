@@ -1,0 +1,488 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "company",
+  "persian_year",
+  "persian_month",
+  "persian_period",
+  "persian_month_name",
+  "period_key",
+  "column_break_period",
+  "start_date",
+  "end_date",
+  "currency",
+  "status",
+  "revision",
+  "is_consistent",
+  "section_calculation",
+  "calculated_on",
+  "calculated_by",
+  "source_fingerprint",
+  "column_break_calc",
+  "retain_manual_overrides_default",
+  "is_consumed",
+  "consumed_by",
+  "archive_prior_revision_details",
+  "section_totals",
+  "total_identified_expenses",
+  "total_allocated_expenses",
+  "unallocated_amount",
+  "excluded_gl_amount",
+  "total_monthly_normalized_qty",
+  "column_break_totals",
+  "gl_entry_count",
+  "batch_count",
+  "product_count",
+  "rule_count",
+  "pool_count",
+  "exception_count",
+  "missing_uom_count",
+  "share_variance",
+  "shares_are_provisional",
+  "eligible_source_row_count",
+  "over_allocated",
+  "section_account_dimension",
+  "account_dimension_summary_html",
+  "section_reconciliation",
+  "reconciliation_html",
+  "reconciliation_summary",
+  "section_exceptions",
+  "exceptions_html",
+  "exceptions_json"
+ ],
+ "fields": [
+  {
+   "default": "MFGCC-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "MFGCC-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "persian_year",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Persian Year",
+   "reqd": 1
+  },
+  {
+   "fieldname": "persian_month",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Persian Month",
+   "reqd": 1
+  },
+  {
+   "bold": 1,
+   "description": "Display period as YYYY-MM (Persian). Document name remains the internal ID.",
+   "fieldname": "persian_period",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Persian Period",
+   "read_only": 1
+  },
+  {
+   "fieldname": "persian_month_name",
+   "fieldtype": "Data",
+   "label": "Persian Month Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "period_key",
+   "fieldtype": "Data",
+   "label": "Period Key",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_period",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Date",
+   "label": "Start Date"
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nCalculated\nRecalculated\nIncomplete\nLocked",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Revision"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_consistent",
+   "fieldtype": "Check",
+   "label": "Is Consistent"
+  },
+  {
+   "fieldname": "section_calculation",
+   "fieldtype": "Section Break",
+   "label": "Calculation Meta"
+  },
+  {
+   "fieldname": "calculated_on",
+   "fieldtype": "Datetime",
+   "label": "Calculated On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "calculated_by",
+   "fieldtype": "Link",
+   "label": "Calculated By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_fingerprint",
+   "fieldtype": "Data",
+   "label": "Source Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_calc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "retain_manual_overrides_default",
+   "fieldtype": "Check",
+   "label": "Retain Manual Overrides Default"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_consumed",
+   "fieldtype": "Check",
+   "label": "Is Consumed"
+  },
+  {
+   "fieldname": "consumed_by",
+   "fieldtype": "Data",
+   "label": "Consumed By"
+  },
+  {
+   "default": "0",
+   "fieldname": "archive_prior_revision_details",
+   "fieldtype": "Check",
+   "label": "Archive Prior Revision Details"
+  },
+  {
+   "fieldname": "section_totals",
+   "fieldtype": "Section Break",
+   "label": "Totals"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_identified_expenses",
+   "fieldtype": "Float",
+   "label": "Total Identified Expenses",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_allocated_expenses",
+   "fieldtype": "Float",
+   "label": "Total Allocated Expenses",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "fieldname": "unallocated_amount",
+   "fieldtype": "Float",
+   "label": "Unallocated Amount",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "fieldname": "excluded_gl_amount",
+   "fieldtype": "Float",
+   "label": "Excluded GL Amount",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_monthly_normalized_qty",
+   "fieldtype": "Float",
+   "label": "Total Monthly Normalized Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "column_break_totals",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "gl_entry_count",
+   "fieldtype": "Int",
+   "label": "GL Entry Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "batch_count",
+   "fieldtype": "Int",
+   "label": "Batch Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "product_count",
+   "fieldtype": "Int",
+   "label": "Product Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "rule_count",
+   "fieldtype": "Int",
+   "label": "Rule Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "pool_count",
+   "fieldtype": "Int",
+   "label": "Pool Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "exception_count",
+   "fieldtype": "Int",
+   "label": "Exception Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "missing_uom_count",
+   "fieldtype": "Int",
+   "label": "Missing UOM Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "share_variance",
+   "fieldtype": "Float",
+   "label": "Share Variance",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "shares_are_provisional",
+   "fieldtype": "Check",
+   "label": "Shares Are Provisional",
+   "read_only": 1,
+   "description": "Set when any eligible production lacks a valid Primary UOM conversion. Not consumable."
+  },
+  {
+   "default": "0",
+   "fieldname": "eligible_source_row_count",
+   "fieldtype": "Int",
+   "label": "Eligible Source Row Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "over_allocated",
+   "fieldtype": "Check",
+   "label": "Over Allocated",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_account_dimension",
+   "fieldtype": "Section Break",
+   "label": "Account / Dimension Allocation Summary"
+  },
+  {
+   "description": "Summary panel with Open List / Export. Full rows use the standard List View (Connections).",
+   "fieldname": "account_dimension_summary_html",
+   "fieldtype": "HTML",
+   "label": "Account Dimension Summary"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "section_reconciliation",
+   "fieldtype": "Section Break",
+   "label": "Reconciliation"
+  },
+  {
+   "description": "Status counts for the active revision. Full reconciliation checks open in the standard List View — not an embedded custom HTML table.",
+   "fieldname": "reconciliation_html",
+   "fieldtype": "HTML",
+   "label": "Reconciliation Summary"
+  },
+  {
+   "fieldname": "reconciliation_summary",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Reconciliation Summary (Technical JSON)"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "section_exceptions",
+   "fieldtype": "Section Break",
+   "label": "Exceptions"
+  },
+  {
+   "description": "Exception counts for the active revision. Full structured exceptions open in the standard List View.",
+   "fieldname": "exceptions_html",
+   "fieldtype": "HTML",
+   "label": "Exceptions Summary"
+  },
+  {
+   "fieldname": "exceptions_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Exceptions JSON (Technical)"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Expense Pool",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost GL Line",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Batch Allocation",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Batch Expense Allocation",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Product Allocation",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Account Dimension Summary",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Controls",
+   "link_doctype": "MFG Cost Reconciliation Check",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Controls",
+   "link_doctype": "MFG Cost Exception",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Controls",
+   "link_doctype": "MFG Cost Calculation Revision",
+   "link_fieldname": "monthly_calculation"
+  }
+ ],
+ "modified": "2026-11-12 18:20:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "Monthly FG Cost Calculation",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1
+  }
+ ],
+ "search_fields": "company,persian_year,persian_month,status,period_key",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

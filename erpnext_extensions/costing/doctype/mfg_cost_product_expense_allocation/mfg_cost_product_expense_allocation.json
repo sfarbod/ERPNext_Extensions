@@ -1,0 +1,215 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-11-11 00:00:00.000000",
+ "custom": 0,
+ "docstatus": 0,
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "monthly_calculation",
+  "revision",
+  "product_allocation",
+  "batch_allocation",
+  "batch_no",
+  "item_code",
+  "column_break_meta",
+  "expense_pool",
+  "account",
+  "cost_center",
+  "department",
+  "section_amounts",
+  "pool_monthly_net_expense",
+  "applied_batch_share",
+  "product_share",
+  "batch_pool_allocated_amount",
+  "product_pool_allocated_amount",
+  "currency",
+  "residual_applied"
+ ],
+ "fields": [
+  {
+   "fieldname": "monthly_calculation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Monthly Calculation",
+   "options": "Monthly FG Cost Calculation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "label": "Revision"
+  },
+  {
+   "fieldname": "product_allocation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Product Allocation",
+   "options": "MFG Cost Product Allocation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "batch_allocation",
+   "fieldtype": "Link",
+   "label": "Batch Allocation",
+   "options": "MFG Cost Batch Allocation"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "label": "Batch No"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "expense_pool",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Expense Pool",
+   "options": "MFG Cost Expense Pool"
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "section_amounts",
+   "fieldtype": "Section Break",
+   "label": "Amounts"
+  },
+  {
+   "default": "0",
+   "fieldname": "pool_monthly_net_expense",
+   "fieldtype": "Currency",
+   "label": "Pool Monthly Net Expense",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "applied_batch_share",
+   "fieldtype": "Float",
+   "label": "Applied Batch Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "product_share",
+   "fieldtype": "Float",
+   "label": "Product Share",
+   "precision": "9"
+  },
+  {
+   "default": "0",
+   "fieldname": "batch_pool_allocated_amount",
+   "fieldtype": "Currency",
+   "label": "Batch Pool Allocated Amount",
+   "options": "currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "product_pool_allocated_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Product Pool Allocated Amount",
+   "options": "currency"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "default": "0",
+   "fieldname": "residual_applied",
+   "fieldtype": "Check",
+   "label": "Residual Applied"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 00:00:00.000000",
+ "modified_by": "Administrator",
+ "description": "Historical / derived Product × Expense Pool rows. Primary costing uses Batch × Expense Pool Allocation. New revisions do not write independent Product × Expense costing rows.",
+ "module": "Costing",
+ "name": "MFG Cost Product Expense Allocation",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor",
+   "share": 1
+  }
+ ],
+ "search_fields": "monthly_calculation,product_allocation,batch_no,item_code,expense_pool",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

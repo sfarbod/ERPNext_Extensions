@@ -1,0 +1,268 @@
+{
+ "app": "erpnext_extensions",
+ "charts": [],
+ "content": "[{\"id\":\"costing_hdr\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Costing</b></span>\",\"col\":12}},{\"id\":\"costing_intro\",\"type\":\"paragraph\",\"data\":{\"text\":\"Monthly finished-goods cost allocation based on solar calendar months.\",\"col\":12}},{\"id\":\"card_settings\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings\",\"col\":6}},{\"id\":\"card_calc\",\"type\":\"card\",\"data\":{\"card_name\":\"Monthly Calculations\",\"col\":6}},{\"id\":\"card_reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports & Details\",\"col\":6}},{\"id\":\"card_mgmt\",\"type\":\"card\",\"data\":{\"card_name\":\"Management & History\",\"col\":6}}]",
+ "creation": "2026-11-12 10:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "hide_custom": 0,
+ "icon": "calculator",
+ "idx": 0,
+ "indicator_color": "blue",
+ "is_hidden": 0,
+ "label": "Costing",
+ "links": [
+  {
+   "hidden": 0,
+   "icon": "settings",
+   "is_query_report": 0,
+   "label": "Settings",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "settings",
+   "is_query_report": 0,
+   "label": "Cost Allocation Settings",
+   "link_count": 0,
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "list",
+   "is_query_report": 0,
+   "label": "Account and Dimension Rules",
+   "link_count": 0,
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "package",
+   "is_query_report": 0,
+   "label": "Item Primary UOMs",
+   "link_count": 0,
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "calculator",
+   "is_query_report": 0,
+   "label": "Monthly Calculations",
+   "link_count": 2,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "file-plus",
+   "is_query_report": 0,
+   "label": "Monthly FG Cost Calculations",
+   "link_count": 0,
+   "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "alert-triangle",
+   "is_query_report": 0,
+   "label": "Calculation Status",
+   "link_count": 0,
+   "link_to": "MFG Cost Account Dimension Summary",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "bar-chart-2",
+   "is_query_report": 0,
+   "label": "Reports & Details",
+   "link_count": 9,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "layers",
+   "is_query_report": 0,
+   "label": "Expense Pools",
+   "link_count": 0,
+   "link_to": "MFG Cost Expense Pool",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "book-open",
+   "is_query_report": 0,
+   "label": "GL Entry Details",
+   "link_count": 0,
+   "link_to": "MFG Cost GL Line",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "package",
+   "is_query_report": 0,
+   "label": "Production Batches",
+   "link_count": 0,
+   "link_to": "MFG Cost Batch Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "git-merge",
+   "is_query_report": 0,
+   "label": "Batch × Expense Pool Allocations",
+   "link_count": 0,
+   "link_to": "MFG Cost Batch Expense Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "box",
+   "is_query_report": 0,
+   "label": "Product Details",
+   "link_count": 0,
+   "link_to": "MFG Cost Product Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "check-square",
+   "is_query_report": 0,
+   "label": "Reconciliation",
+   "link_count": 0,
+   "link_to": "MFG Cost Reconciliation Check",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "alert-circle",
+   "is_query_report": 0,
+   "label": "Exceptions",
+   "link_count": 0,
+   "link_to": "MFG Cost Exception",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "pie-chart",
+   "is_query_report": 0,
+   "label": "Account / Dimension Allocation Summary",
+   "link_count": 0,
+   "link_to": "MFG Cost Account Dimension Summary",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "archive",
+   "is_query_report": 0,
+   "label": "Management & History",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "icon": "git-branch",
+   "is_query_report": 0,
+   "label": "Calculation Revisions",
+   "link_count": 0,
+   "link_to": "MFG Cost Calculation Revision",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "history",
+   "is_query_report": 0,
+   "label": "Calculation History",
+   "link_count": 0,
+   "link_to": "MFG Cost Calculation Revision",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "lock",
+   "is_query_report": 0,
+   "label": "Lock / Unlock Management",
+   "link_count": 0,
+   "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-11-12 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "Costing",
+ "number_cards": [],
+ "owner": "Administrator",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 25.0,
+ "shortcuts": [
+  {
+   "color": "Blue",
+   "doc_view": "List",
+   "label": "Monthly Calculations",
+   "link_to": "Monthly FG Cost Calculation",
+   "type": "DocType"
+  },
+  {
+   "color": "Gray",
+   "doc_view": "List",
+   "label": "Cost Allocation Settings",
+   "link_to": "Finished Goods Cost Allocation Settings",
+   "type": "DocType"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "Expense Pools",
+   "link_to": "MFG Cost Expense Pool",
+   "type": "DocType"
+  }
+ ],
+ "title": "Costing",
+ "type": "Workspace"
+}
