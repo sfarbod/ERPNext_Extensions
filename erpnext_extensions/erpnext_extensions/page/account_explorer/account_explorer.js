@@ -466,8 +466,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._dates_user_override = false;
 		this._syncing_fy_dates = false;
 		this._column_filter_timer = null;
-		// v5.7.29: per–Dimension Type parked analysis / filters / breadcrumbs.
+		// v5.7.29/30: per–Dimension Type parked analysis / filters / breadcrumbs.
 		this._dimension_type_parked = {};
+		this._dimension_type_cleared = {};
 
 		this.breadcrumbs = [];
 		this._datatable_grid_namespace = ".aeDatatableGrid";
@@ -2991,6 +2992,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filter:removed", { key, filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._clear_legacy_scope_for_filter_key(key);
+		// v5.7.30: explicit delete must also clear parked Dimension analysis so Park/Activate
+		// cannot resurrect the removed filter.
+		if (String(key || "").startsWith("dimensions.")) {
+			this.forget_parked_dimension_analysis(String(key).slice("dimensions.".length));
+		}
 		// Re-project remaining filters so inventory/account/party scopes stay consistent.
 		this._sync_scopes_from_analysis_filters();
 		this.sync_filter_controls_from_document_scope();
@@ -3011,6 +3017,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filters:cleared", { filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._reset_analytical_legacy_scopes();
+		// Explicit global clear — drop parked Dimension analysis entries too.
+		Object.keys(this._dimension_type_parked || {}).forEach((field) => {
+			this.forget_parked_dimension_analysis(field);
+		});
 		this._sync_scopes_from_analysis_filters();
 		this.sync_filter_controls_from_document_scope();
 		this.analysis_context.page = 1;
@@ -3024,36 +3034,85 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	/**
-	 * v5.7.29 — snapshot one Dimension Type's UI/analysis state without destroying it.
+	 * v5.7.30 — mark a Dimension Type's analysis as intentionally cleared.
+	 * Park/Activate must not restore analysis_entry / selected_dimension_value after this.
+	 */
+	forget_parked_dimension_analysis(dimension_type) {
+		if (!dimension_type) {
+			return;
+		}
+		this._dimension_type_parked = this._dimension_type_parked || {};
+		this._dimension_type_cleared = this._dimension_type_cleared || {};
+		this._dimension_type_cleared[dimension_type] = true;
+		const prior = this._dimension_type_parked[dimension_type] || {};
+		this._dimension_type_parked[dimension_type] = {
+			...prior,
+			analysis_entry: null,
+			selected_dimension_value: null,
+			breadcrumbs: [],
+			// Keep column_filters / page — those are independent of the analysis chip.
+			column_filters: { ...(prior.column_filters || {}) },
+			page: prior.page || 1,
+			analysis_cleared: true,
+		};
+		if (this.document_scope?.accounting_dimensions) {
+			const dims = { ...this.document_scope.accounting_dimensions };
+			delete dims[dimension_type];
+			this.document_scope.accounting_dimensions = dims;
+		}
+	}
+
+	/**
+	 * v5.7.29/30 — snapshot one Dimension Type's UI/analysis state without destroying it.
 	 * Used when switching types so Cost Center ↔ Department each keep independent state.
+	 * When the active bag has no analysis entry, do not retain a prior parked analysis.
 	 */
 	park_dimension_type_state(dimension_type) {
 		if (!dimension_type) {
 			return;
 		}
 		this._dimension_type_parked = this._dimension_type_parked || {};
+		this._dimension_type_cleared = this._dimension_type_cleared || {};
 		const bag = this.get_analysis_filters();
 		const entry = bag.dimensions?.[dimension_type] || null;
 		const is_active = this.analysis_context.dimension_scope?.dimension_type === dimension_type;
 		const prior = this._dimension_type_parked[dimension_type] || {};
-		this._dimension_type_parked[dimension_type] = {
-			analysis_entry: entry
-				? JSON.parse(JSON.stringify(entry))
-				: prior.analysis_entry || null,
-			selected_dimension_value: is_active
+		const cleared = !!this._dimension_type_cleared[dimension_type];
+		let analysis_entry = null;
+		let selected_dimension_value = null;
+		if (is_active) {
+			// Active park always mirrors the live bag/scope — never revive a deleted prior.
+			analysis_entry = entry ? JSON.parse(JSON.stringify(entry)) : null;
+			selected_dimension_value = analysis_entry
 				? this.analysis_context.dimension_scope?.selected_dimension_value ??
 					entry?.value ??
 					null
-				: prior.selected_dimension_value ?? entry?.value ?? null,
+				: null;
+			if (analysis_entry) {
+				this._dimension_type_cleared[dimension_type] = false;
+			}
+		} else if (!cleared) {
+			analysis_entry = entry
+				? JSON.parse(JSON.stringify(entry))
+				: prior.analysis_entry || null;
+			selected_dimension_value =
+				prior.selected_dimension_value ?? entry?.value ?? null;
+		}
+		this._dimension_type_parked[dimension_type] = {
+			analysis_entry,
+			selected_dimension_value,
 			column_filters: is_active
 				? { ...(this.analysis_context.column_filters || {}) }
 				: { ...(prior.column_filters || {}) },
 			breadcrumbs: is_active
-				? JSON.parse(JSON.stringify(this.breadcrumbs || []))
+				? analysis_entry
+					? JSON.parse(JSON.stringify(this.breadcrumbs || []))
+					: []
 				: Array.isArray(prior.breadcrumbs)
 					? prior.breadcrumbs
 					: [],
 			page: is_active ? this.analysis_context.page || 1 : prior.page || 1,
+			analysis_cleared: !analysis_entry && (cleared || is_active),
 		};
 	}
 
@@ -3094,12 +3153,15 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		}
 
 		const parked = this._dimension_type_parked[dimension_type];
-		if (restore && parked?.analysis_entry) {
+		const cleared = !!(this._dimension_type_cleared || {})[dimension_type];
+		const can_restore_analysis =
+			restore && !cleared && parked?.analysis_entry && !parked?.analysis_cleared;
+		if (can_restore_analysis) {
 			bag = AF.set_entry(bag, parked.analysis_entry);
 		}
 		this.set_analysis_filters_bag(bag);
 
-		const selected = restore
+		const selected = can_restore_analysis
 			? parked?.selected_dimension_value ?? parked?.analysis_entry?.value ?? null
 			: null;
 		this.analysis_context.dimension_scope = {
@@ -3123,7 +3185,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (restore && parked) {
 			this.analysis_context.column_filters = { ...(parked.column_filters || {}) };
 			this.analysis_context.page = parked.page || 1;
-			this._reset_breadcrumbs(Array.isArray(parked.breadcrumbs) ? parked.breadcrumbs : []);
+			const crumbs =
+				can_restore_analysis && Array.isArray(parked.breadcrumbs) ? parked.breadcrumbs : [];
+			this._reset_breadcrumbs(crumbs);
 		} else if (reset_presentation_if_empty) {
 			this.analysis_context.column_filters = {};
 			this.analysis_context.page = 1;
@@ -7690,6 +7754,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		// first refresh can race a second one and restore sibling Group rows.
 		this.drill_row(row, "filter", is_account_nav ? { skip_refresh: true } : null);
 		if (analyzed_dimension_type) {
+			// New Analyze supersedes any prior explicit clear for this type.
+			if (this._dimension_type_cleared) {
+				this._dimension_type_cleared[analyzed_dimension_type] = false;
+			}
 			this.park_dimension_type_state(analyzed_dimension_type);
 		}
 		if (is_account_nav) {

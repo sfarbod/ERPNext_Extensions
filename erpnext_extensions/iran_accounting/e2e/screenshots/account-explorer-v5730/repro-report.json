@@ -1,0 +1,139 @@
+{
+  "phase": "repro",
+  "passed": 3,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "issue1_deleted_filter_persists",
+      "ok": true,
+      "detail": {
+        "note": "already fixed?",
+        "skipped": false,
+        "value": "1110 - تولید بیولوژیک - E",
+        "afterAnalyze": {
+          "bag": [
+            "cost_center"
+          ],
+          "selected": "1110 - تولید بیولوژیک - E",
+          "parked": "1110 - تولید بیولوژیک - E",
+          "chips": [
+            "Companyاسپاد فارمد دارو",
+            "Fiscal Year1405",
+            "Date Range2026-03-21 → 2027-03-20",
+            "Cost Centerتولید بیولوژیک×",
+            "AxisDimensions",
+            "Dimension TypeCost Center"
+          ]
+        },
+        "afterRemove": {
+          "bag": [],
+          "selected": null,
+          "parked": null,
+          "payloadSelected": null,
+          "payloadDims": {},
+          "analysisChips": [],
+          "allChips": [
+            "Companyاسپاد فارمد دارو",
+            "Fiscal Year1405",
+            "Date Range2026-03-21 → 2027-03-20",
+            "AxisDimensions",
+            "Dimension TypeCost Center"
+          ]
+        },
+        "afterSwitchBack": {
+          "bag": [],
+          "selected": null,
+          "parked": null,
+          "payloadSelected": null,
+          "payloadDims": {},
+          "analysisChipHasValue": false,
+          "bagHasCC": false
+        }
+      }
+    },
+    {
+      "name": "issue1_parked_after_remove",
+      "ok": true,
+      "detail": {
+        "bag": [],
+        "selected": null,
+        "parked": null,
+        "payloadSelected": null,
+        "payloadDims": {},
+        "analysisChips": [],
+        "allChips": [
+          "Companyاسپاد فارمد دارو",
+          "Fiscal Year1405",
+          "Date Range2026-03-21 → 2027-03-20",
+          "AxisDimensions",
+          "Dimension TypeCost Center"
+        ]
+      }
+    },
+    {
+      "name": "issue2_filter_alignment",
+      "ok": true,
+      "detail": {
+        "display_code": {
+          "colId": "display_code",
+          "colClass": "dt-cell--col-1",
+          "header": {
+            "left": 316,
+            "width": 141,
+            "right": 457
+          },
+          "filterCell": {
+            "left": 316,
+            "width": 141,
+            "right": 457
+          },
+          "body": {
+            "left": 316,
+            "width": 141,
+            "right": 457
+          },
+          "input": {
+            "left": 323,
+            "width": 126,
+            "right": 449
+          },
+          "deltaHeaderFilterLeft": 0,
+          "deltaHeaderFilterWidth": 0,
+          "deltaHeaderBodyLeft": 0,
+          "deltaHeaderBodyWidth": 0,
+          "inputOverflowsCell": false
+        },
+        "display_title": {
+          "colId": "display_title",
+          "colClass": "dt-cell--col-2",
+          "header": {
+            "left": 457,
+            "width": 241,
+            "right": 698
+          },
+          "filterCell": {
+            "left": 457,
+            "width": 241,
+            "right": 698
+          },
+          "body": {
+            "left": 457,
+            "width": 241,
+            "right": 698
+          },
+          "input": {
+            "left": 464,
+            "width": 226,
+            "right": 690
+          },
+          "deltaHeaderFilterLeft": 0,
+          "deltaHeaderFilterWidth": 0,
+          "deltaHeaderBodyLeft": 0,
+          "deltaHeaderBodyWidth": 0,
+          "inputOverflowsCell": false
+        }
+      }
+    }
+  ],
+  "generated_at": "2026-11-12T19:30:35.622Z"
+}
