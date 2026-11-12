@@ -28,38 +28,52 @@ def get_monthly_calculation(company: str, persian_year: int, persian_month: int)
 	return frappe.get_doc("Monthly FG Cost Calculation", name) if name else None
 
 
+def _consumable_result(doc) -> dict:
+	"""Evaluate consumable flags on a Monthly FG Cost Calculation-like object."""
+	status = getattr(doc, "status", None)
+	if status not in CONSUMABLE_STATUSES:
+		return {
+			"consumable": False,
+			"reason": _("Status {0} is not consumable.").format(status),
+			"status": status,
+		}
+	if not cint(getattr(doc, "is_consistent", 0)):
+		return {"consumable": False, "reason": _("Calculation is inconsistent."), "status": status}
+	if cint(getattr(doc, "shares_are_provisional", 0)):
+		return {
+			"consumable": False,
+			"reason": _("Provisional shares (UOM incomplete)."),
+			"status": status,
+		}
+	if cint(getattr(doc, "exception_count", 0)):
+		return {
+			"consumable": False,
+			"reason": _("Blocking exceptions remain ({0}).").format(doc.exception_count),
+			"status": status,
+		}
+	if cint(getattr(doc, "rule_count", 0)) <= 0:
+		return {"consumable": False, "reason": _("No expense rules."), "status": status}
+	if cint(getattr(doc, "over_allocated", 0)):
+		return {"consumable": False, "reason": _("Over-allocated."), "status": status}
+	return {"consumable": True, "reason": "", "status": status}
+
+
 def assert_consumable(monthly_name: str):
 	"""Raise if calculation must not be consumed by a downstream feature."""
 	doc = frappe.get_doc("Monthly FG Cost Calculation", monthly_name)
-	if doc.status not in CONSUMABLE_STATUSES:
-		raise FGCostAllocationNotConsumable(
-			_("Monthly FG Cost Calculation {0} status {1} is not consumable.").format(
-				monthly_name, doc.status
-			)
-		)
-	if not cint(doc.is_consistent):
-		raise FGCostAllocationNotConsumable(
-			_("Monthly FG Cost Calculation {0} is inconsistent.").format(monthly_name)
-		)
-	if cint(getattr(doc, "shares_are_provisional", 0)):
-		raise FGCostAllocationNotConsumable(
-			_("Monthly FG Cost Calculation {0} has provisional shares (UOM incomplete).").format(
-				monthly_name
-			)
-		)
-	if cint(getattr(doc, "exception_count", 0)):
-		raise FGCostAllocationNotConsumable(
-			_("Monthly FG Cost Calculation {0} still has exceptions.").format(monthly_name)
-		)
-	if cint(getattr(doc, "rule_count", 0)) <= 0:
-		raise FGCostAllocationNotConsumable(
-			_("Monthly FG Cost Calculation {0} has no expense rules.").format(monthly_name)
-		)
-	if cint(getattr(doc, "over_allocated", 0)):
-		raise FGCostAllocationNotConsumable(
-			_("Monthly FG Cost Calculation {0} is over-allocated.").format(monthly_name)
-		)
+	result = _consumable_result(doc)
+	if not result.get("consumable"):
+		raise FGCostAllocationNotConsumable(result.get("reason") or _("Not consumable."))
 	return doc
+
+
+@frappe.whitelist()
+def is_consumable(monthly_name: str) -> dict:
+	"""Non-throwing consumable check for Desk indicators."""
+	doc = frappe.get_doc("Monthly FG Cost Calculation", monthly_name)
+	if hasattr(doc, "check_permission"):
+		doc.check_permission("read")
+	return _consumable_result(doc)
 
 
 def _revision(monthly_name: str, revision: int | None) -> int:

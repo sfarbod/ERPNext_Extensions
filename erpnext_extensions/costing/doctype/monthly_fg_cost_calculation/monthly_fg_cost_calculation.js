@@ -1,5 +1,6 @@
 // Copyright (c) 2026, ERPNext Extensions contributors
 // License: MIT
+// Monthly FG Cost Calculation — native List drill-downs + export (no custom HTML grids).
 
 frappe.ui.form.on("Monthly FG Cost Calculation", {
 	refresh(frm) {
@@ -35,24 +36,41 @@ frappe.ui.form.on("Monthly FG Cost Calculation", {
 			});
 		}
 
-		add_list_button(frm, __("Expense Pools"), "MFG Cost Expense Pool");
-		add_list_button(frm, __("GL Entry Details"), "MFG Cost GL Line");
-		add_list_button(frm, __("Production Batches"), "MFG Cost Batch Allocation");
-		add_list_button(frm, __("Batch × Expense Pool Allocations"), "MFG Cost Batch Expense Allocation");
-		add_list_button(frm, __("Product Details"), "MFG Cost Product Allocation");
-		add_list_button(frm, __("Account / Dimension Summary"), "MFG Cost Account Dimension Summary");
-		add_list_button(frm, __("Calculation Revisions"), "MFG Cost Calculation Revision");
+		const drill = __("Details");
+		add_list_button(frm, __("Expense Pools"), "MFG Cost Expense Pool", drill);
+		add_list_button(frm, __("GL Entry Details"), "MFG Cost GL Line", drill);
+		add_list_button(frm, __("Production Batches"), "MFG Cost Batch Allocation", drill);
+		add_list_button(frm, __("Batch × Expense Pool"), "MFG Cost Batch Expense Allocation", drill);
+		add_list_button(frm, __("Product Allocations"), "MFG Cost Product Allocation", drill);
+		add_list_button(frm, __("Account / Dimension Summary"), "MFG Cost Account Dimension Summary", drill);
+		add_list_button(frm, __("Reconciliation Checks"), "MFG Cost Reconciliation Check", drill);
+		add_list_button(frm, __("Exceptions"), "MFG Cost Exception", drill);
+		add_list_button(frm, __("Calculation Revisions"), "MFG Cost Calculation Revision", drill);
+
+		const exp = __("Export");
+		COSTING_EXPORT_TARGETS.forEach((t) => {
+			frm.add_custom_button(__(t.label) + " (CSV)", () => export_detail(frm, t.doctype, "csv"), exp);
+			frm.add_custom_button(__(t.label) + " (XLSX)", () => export_detail(frm, t.doctype, "xlsx"), exp);
+		});
 
 		style_over_allocation(frm);
 		make_summary_clickable(frm);
-		render_account_dimension_summary(frm);
-		render_reconciliation_panel(frm);
-		render_exceptions_panel(frm);
-
-		add_list_button(frm, __("Reconciliation Checks"), "MFG Cost Reconciliation Check");
-		add_list_button(frm, __("Exceptions"), "MFG Cost Exception");
+		show_consumable_status(frm);
+		render_native_summary_panels(frm);
 	},
 });
+
+const COSTING_EXPORT_TARGETS = [
+	{ label: "Expense Pools", doctype: "MFG Cost Expense Pool" },
+	{ label: "GL Lines", doctype: "MFG Cost GL Line" },
+	{ label: "Batches", doctype: "MFG Cost Batch Allocation" },
+	{ label: "Batch Expense", doctype: "MFG Cost Batch Expense Allocation" },
+	{ label: "Product Allocation", doctype: "MFG Cost Product Allocation" },
+	{ label: "Account Dimension", doctype: "MFG Cost Account Dimension Summary" },
+	{ label: "Reconciliation", doctype: "MFG Cost Reconciliation Check" },
+	{ label: "Exceptions", doctype: "MFG Cost Exception" },
+	{ label: "Revisions", doctype: "MFG Cost Calculation Revision" },
+];
 
 function run_calc(frm, retain_overrides) {
 	frappe.call({
@@ -63,10 +81,7 @@ function run_calc(frm, retain_overrides) {
 		callback: (r) => {
 			if (r.message) {
 				frappe.show_alert({
-					message: __("Status: {0}, revision {1}", [
-						r.message.status,
-						r.message.revision,
-					]),
+					message: __("Status: {0}, revision {1}", [r.message.status, r.message.revision]),
 					indicator: r.message.is_consistent ? "green" : "orange",
 				});
 			}
@@ -75,19 +90,40 @@ function run_calc(frm, retain_overrides) {
 	});
 }
 
-function add_list_button(frm, label, doctype) {
-	frm.add_custom_button(label, () => open_filtered_list(frm, doctype), __("Drill-down"));
+function add_list_button(frm, label, doctype, group) {
+	frm.add_custom_button(label, () => open_filtered_list(frm, doctype), group);
 }
 
 function open_filtered_list(frm, doctype, extra_filters) {
-	frappe.route_options = Object.assign(
-		{
-			monthly_calculation: frm.doc.name,
-			revision: frm.doc.revision,
-		},
-		extra_filters || {}
-	);
+	const opts = { monthly_calculation: frm.doc.name };
+	if (doctype !== "MFG Cost Calculation Revision") {
+		opts.revision = frm.doc.revision;
+	}
+	frappe.route_options = Object.assign(opts, extra_filters || {});
 	frappe.set_route("List", doctype);
+}
+
+function export_detail(frm, doctype, file_format) {
+	const args = {
+		doctype,
+		file_format,
+		monthly_calculation: frm.doc.name,
+	};
+	if (doctype !== "MFG Cost Calculation Revision") {
+		args.revision = frm.doc.revision;
+	}
+	open_export_url(
+		"erpnext_extensions.iran_accounting.fg_cost_allocation.export_costing.export_costing_doctype",
+		args
+	);
+}
+
+function open_export_url(method, args) {
+	const params = new URLSearchParams();
+	Object.entries(args || {}).forEach(([k, v]) => {
+		if (v !== undefined && v !== null && v !== "") params.set(k, v);
+	});
+	window.open(`/api/method/${method}?${params.toString()}`, "_blank");
 }
 
 function style_over_allocation(frm) {
@@ -125,12 +161,12 @@ function make_summary_clickable(frm) {
 			extra: { missing_uom_factor: 1 },
 		},
 		{ field: "total_identified_expenses", doctype: "MFG Cost Expense Pool" },
+		{ field: "exception_count", doctype: "MFG Cost Exception" },
 	];
 
 	map.forEach((entry) => {
 		const field = frm.get_field(entry.field);
 		if (!field || !field.$wrapper) return;
-		// v16 may keep .control-value hidden while showing an input; bind both + label.
 		const $targets = field.$wrapper.find(
 			".control-value, .like-disabled-input, input, .control-input-wrapper, .form-control"
 		);
@@ -148,154 +184,119 @@ function make_summary_clickable(frm) {
 	});
 }
 
-function render_reconciliation_panel(frm) {
-	const field = frm.get_field("reconciliation_html");
-	if (!field) return;
+function show_consumable_status(frm) {
 	frappe.call({
-		method: "frappe.client.get_list",
-		args: {
-			doctype: "MFG Cost Reconciliation Check",
-			filters: { monthly_calculation: frm.doc.name, revision: frm.doc.revision },
-			fields: ["name", "check_name", "status", "expected_value", "actual_value", "difference", "details", "batch_no", "account"],
-			limit_page_length: 30,
-			order_by: "status asc, modified desc",
-		},
+		method: "erpnext_extensions.iran_accounting.fg_cost_allocation.contract.is_consumable",
+		args: { monthly_name: frm.doc.name },
 		callback(r) {
-			const rows = r.message || [];
-			const counts = { Passed: 0, Failed: 0, Warning: 0, Incomplete: 0 };
-			rows.forEach((x) => {
-				counts[x.status] = (counts[x.status] || 0) + 1;
-			});
-			let body = rows
-				.map(
-					(x) => `<tr style="cursor:pointer" data-status="${frappe.utils.escape_html(x.status || "")}">
-					<td>${frappe.utils.escape_html(x.check_name || "")}</td>
-					<td>${frappe.utils.escape_html(x.status || "")}</td>
-					<td class="text-right">${format_number(x.expected_value)}</td>
-					<td class="text-right">${format_number(x.actual_value)}</td>
-					<td class="text-right">${format_number(x.difference)}</td>
-					<td>${frappe.utils.escape_html(x.batch_no || x.account || "")}</td>
-					<td>${frappe.utils.escape_html(x.details || "")}</td>
-				</tr>`
-				)
-				.join("");
-			field.$wrapper.html(`
-				<p><a href="#" class="costing-open-recon">${__("Open full Reconciliation list")}</a>
-				&nbsp;|&nbsp; Passed: ${counts.Passed || 0}, Failed: ${counts.Failed || 0}, Warning: ${counts.Warning || 0}</p>
-				<div class="table-responsive" style="max-height:280px;overflow:auto">
-				<table class="table table-bordered table-condensed">
-				<thead><tr><th>${__("Check")}</th><th>${__("Status")}</th><th>${__("Expected")}</th><th>${__("Actual")}</th><th>${__("Diff")}</th><th>${__("Ref")}</th><th>${__("Details")}</th></tr></thead>
-				<tbody>${body || `<tr><td colspan="7" class="text-muted">${__("No structured reconciliation rows yet. Recalculate to generate.")}</td></tr>`}</tbody>
-				</table></div>`);
-			field.$wrapper.find(".costing-open-recon").on("click", (e) => {
-				e.preventDefault();
-				open_filtered_list(frm, "MFG Cost Reconciliation Check");
-			});
+			const msg = r.message || {};
+			const ok = !!msg.consumable;
+			frm.dashboard.add_indicator(
+				ok ? __("Consumable: Yes") : __("Consumable: No — {0}", [msg.reason || frm.doc.status]),
+				ok ? "green" : "orange"
+			);
 		},
 	});
 }
 
-function render_exceptions_panel(frm) {
-	const field = frm.get_field("exceptions_html");
-	if (!field) return;
+function render_native_summary_panels(frm) {
 	frappe.call({
-		method: "frappe.client.get_list",
-		args: {
-			doctype: "MFG Cost Exception",
-			filters: { monthly_calculation: frm.doc.name, revision: frm.doc.revision },
-			fields: ["exception_type", "severity", "item_code", "item_name", "batch_no", "description", "resolution_status"],
-			limit_page_length: 30,
-			order_by: "severity asc, modified desc",
-		},
-		callback(r) {
-			const rows = r.message || [];
-			let body = rows
-				.map(
-					(x) => `<tr>
-					<td>${frappe.utils.escape_html(x.exception_type || "")}</td>
-					<td>${frappe.utils.escape_html(x.severity || "")}</td>
-					<td>${frappe.utils.escape_html(x.item_code || "")}</td>
-					<td>${frappe.utils.escape_html(x.item_name || "")}</td>
-					<td>${frappe.utils.escape_html(x.batch_no || "")}</td>
-					<td>${frappe.utils.escape_html(x.description || "")}</td>
-				</tr>`
-				)
-				.join("");
-			field.$wrapper.html(`
-				<p><a href="#" class="costing-open-exc">${__("Open full Exceptions list")}</a></p>
-				<div class="table-responsive" style="max-height:280px;overflow:auto">
-				<table class="table table-bordered table-condensed">
-				<thead><tr><th>${__("Type")}</th><th>${__("Severity")}</th><th>${__("Item")}</th><th>${__("Name")}</th><th>${__("Batch")}</th><th>${__("Description")}</th></tr></thead>
-				<tbody>${body || `<tr><td colspan="6" class="text-muted">${__("No structured exceptions. Recalculate to generate.")}</td></tr>`}</tbody>
-				</table></div>`);
-			field.$wrapper.find(".costing-open-exc").on("click", (e) => {
-				e.preventDefault();
-				open_filtered_list(frm, "MFG Cost Exception");
-			});
-		},
-	});
-}
-
-function render_account_dimension_summary(frm) {
-	const field = frm.get_field("account_dimension_summary_html");
-	if (!field) return;
-	field.$wrapper.html(`<div class="text-muted">${__("Loading...")}</div>`);
-	frappe.call({
-		method:
-			"erpnext_extensions.iran_accounting.fg_cost_allocation.contract.get_account_dimension_summary",
+		method: "erpnext_extensions.iran_accounting.fg_cost_allocation.export_costing.get_detail_counts",
 		args: { monthly_name: frm.doc.name, revision: frm.doc.revision },
 		callback(r) {
-			const rows = (r.message && r.message.rows) || [];
-			if (!rows.length) {
-				field.$wrapper.html(
-					`<div class="text-muted">${__("No account / dimension allocations for this revision.")}</div>`
+			const c = r.message || {};
+			render_panel(
+				frm,
+				"account_dimension_summary_html",
+				__("Account / Dimension Allocation Summary"),
+				__("Native list of {0} Account × Dimension rows for revision {1}. Use Details or Export — no embedded custom grid.", [
+					cint(c.account_dimension),
+					cint(c.revision),
+				]),
+				"MFG Cost Account Dimension Summary",
+				c.account_dimension
+			);
+			const recon = c.reconciliation || {};
+			const recon_line = __(
+				"Passed {0} · Failed {1} · Warning {2} · Total {3} (revision {4})",
+				[
+					cint(recon.Passed),
+					cint(recon.Failed),
+					cint(recon.Warning),
+					cint(c.reconciliation_total),
+					cint(c.revision),
+				]
+			);
+			render_panel(
+				frm,
+				"reconciliation_html",
+				__("Reconciliation"),
+				recon_line +
+					"<br>" +
+					__(
+						"Full checks open in the standard List View (filterable, sortable, paginated). Preview tables were removed to match Frappe Desk conventions."
+					),
+				"MFG Cost Reconciliation Check",
+				c.reconciliation_total
+			);
+
+			const exc = c.exceptions || {};
+			let exc_msg;
+			if (!cint(c.exceptions_total)) {
+				exc_msg = __(
+					"No structured exceptions for revision {0}. This means exceptions were generated and none remain open — not that they were skipped.",
+					[cint(c.revision)]
 				);
-				return;
+			} else {
+				exc_msg = __(
+					"Blocking {0} · Warning {1} · Info {2} · Total {3} (revision {4})",
+					[
+						cint(exc.Blocking),
+						cint(exc.Warning),
+						cint(exc.Info) + cint(exc.Informational),
+						cint(c.exceptions_total),
+						cint(c.revision),
+					]
+				);
 			}
-			const head = [
-				__("Account"),
-				__("Account Name"),
-				__("Cost Center"),
-				__("Department"),
-				__("Expense Pool"),
-				__("Pool Monthly Net"),
-				__("Batches"),
-				__("Total Applied Share"),
-				__("Total Allocated"),
-				__("Status"),
-			];
-			let body = "";
-			rows.forEach((row) => {
-				const pool = row.expense_pool || "";
-				body += `<tr data-pool="${frappe.utils.escape_html(pool)}" style="cursor:pointer">
-					<td>${frappe.utils.escape_html(row.account || "")}</td>
-					<td>${frappe.utils.escape_html(row.account_name || "")}</td>
-					<td>${frappe.utils.escape_html(row.cost_center || "")}</td>
-					<td>${frappe.utils.escape_html(row.department || "")}</td>
-					<td>${frappe.utils.escape_html(pool)}</td>
-					<td class="text-right">${format_number(row.pool_monthly_net_expense)}</td>
-					<td class="text-right">${cint(row.allocated_batch_count)}</td>
-					<td class="text-right">${format_number(row.total_applied_batch_share)}</td>
-					<td class="text-right">${format_number(row.total_allocated_amount)}</td>
-					<td>${frappe.utils.escape_html(row.allocation_status || "")}</td>
-				</tr>`;
-			});
-			field.$wrapper.html(`
-				<div class="table-responsive" style="max-height:420px;overflow:auto">
-				<table class="table table-bordered table-condensed">
-					<thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
-					<tbody>${body}</tbody>
-				</table>
-				<p class="text-muted small">${__("Click a row to open Batch × Expense Pool Allocations for that Expense Pool.")}</p>
-				</div>`);
-			field.$wrapper.find("tbody tr").on("click", function () {
-				const pool = $(this).attr("data-pool");
-				open_filtered_list(
-					frm,
-					"MFG Cost Batch Expense Allocation",
-					pool ? { expense_pool: pool } : {}
-				);
-			});
+			render_panel(
+				frm,
+				"exceptions_html",
+				__("Exceptions"),
+				exc_msg +
+					"<br>" +
+					__("Open the standard Exceptions list for Type, Severity, Item, Batch, Description, and export."),
+				"MFG Cost Exception",
+				c.exceptions_total
+			);
 		},
+	});
+}
+
+function render_panel(frm, fieldname, title, body_html, doctype, count) {
+	const field = frm.get_field(fieldname);
+	if (!field) return;
+	const id = frappe.utils.get_random(8);
+	field.$wrapper.html(`
+		<div class="costing-summary-panel" style="border:1px solid var(--border-color);border-radius:8px;padding:12px 14px;background:var(--fg-color)">
+			<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+				<div>
+					<div style="font-weight:600;margin-bottom:4px">${frappe.utils.escape_html(title)}</div>
+					<div class="text-muted" style="font-size:13px;line-height:1.45">${body_html}</div>
+				</div>
+				<div style="display:flex;gap:8px;flex-wrap:wrap">
+					<button class="btn btn-sm btn-default" data-action="open" data-id="${id}">${__("Open List")} (${cint(count)})</button>
+					<button class="btn btn-sm btn-default" data-action="csv" data-id="${id}">${__("Export CSV")}</button>
+					<button class="btn btn-sm btn-default" data-action="xlsx" data-id="${id}">${__("Export XLSX")}</button>
+				</div>
+			</div>
+		</div>`);
+	field.$wrapper.find(`[data-id="${id}"]`).on("click", function () {
+		const action = $(this).attr("data-action");
+		if (action === "open") {
+			open_filtered_list(frm, doctype);
+		} else {
+			export_detail(frm, doctype, action);
+		}
 	});
 }

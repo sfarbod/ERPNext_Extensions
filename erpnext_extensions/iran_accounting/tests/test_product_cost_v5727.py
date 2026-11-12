@@ -1,9 +1,16 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
 # License: MIT
 
-from decimal import Decimal
+"""Product cost unit tests — pure Decimal/allocate logic (no ERPNext site fixtures).
 
-from frappe.tests.utils import FrappeTestCase
+Uses unittest.TestCase instead of FrappeTestCase to avoid ERPNext BootStrapTestData
+UOM Conversion Factor collisions on shared development sites.
+"""
+
+from __future__ import annotations
+
+import unittest
+from decimal import Decimal
 
 from erpnext_extensions.iran_accounting.fg_cost_allocation.allocate import (
 	BatchAllocationState,
@@ -33,7 +40,7 @@ def _batch(batch_no, products, total_expense, norm):
 	)
 
 
-class TestProductShareAndCost(FrappeTestCase):
+class TestProductShareAndCost(unittest.TestCase):
 	def test_single_product_share_is_100_percent(self):
 		p = ProductBucket(
 			batch_no="B1",

@@ -331,6 +331,7 @@
    "label": "Account / Dimension Allocation Summary"
   },
   {
+   "description": "Summary panel with Open List / Export. Full rows use the standard List View (Connections).",
    "fieldname": "account_dimension_summary_html",
    "fieldtype": "HTML",
    "label": "Account Dimension Summary"
@@ -342,9 +343,10 @@
    "label": "Reconciliation"
   },
   {
+   "description": "Status counts for the active revision. Full reconciliation checks open in the standard List View — not an embedded custom HTML table.",
    "fieldname": "reconciliation_html",
    "fieldtype": "HTML",
-   "label": "Reconciliation Checks"
+   "label": "Reconciliation Summary"
   },
   {
    "fieldname": "reconciliation_summary",
@@ -359,9 +361,10 @@
    "label": "Exceptions"
   },
   {
+   "description": "Exception counts for the active revision. Full structured exceptions open in the standard List View.",
    "fieldname": "exceptions_html",
    "fieldtype": "HTML",
-   "label": "Exception List"
+   "label": "Exceptions Summary"
   },
   {
    "fieldname": "exceptions_json",
@@ -371,8 +374,54 @@
   }
  ],
  "index_web_pages_for_search": 0,
- "links": [],
- "modified": "2026-11-11 00:00:00.000000",
+ "links": [
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Expense Pool",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost GL Line",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Batch Allocation",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Batch Expense Allocation",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Product Allocation",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Allocation Details",
+   "link_doctype": "MFG Cost Account Dimension Summary",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Controls",
+   "link_doctype": "MFG Cost Reconciliation Check",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Controls",
+   "link_doctype": "MFG Cost Exception",
+   "link_fieldname": "monthly_calculation"
+  },
+  {
+   "group": "Controls",
+   "link_doctype": "MFG Cost Calculation Revision",
+   "link_fieldname": "monthly_calculation"
+  }
+ ],
+ "modified": "2026-11-12 18:20:00.000000",
  "modified_by": "Administrator",
  "module": "Costing",
  "name": "Monthly FG Cost Calculation",
