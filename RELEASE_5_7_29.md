@@ -78,6 +78,26 @@ debounced column filters, and correct sticky filter-row alignment.
   keeps GL filter**, deleted filters do not restore, CC isolation while parked,
   summary vs payload, filter alignment, repeated navigation
 
+### Cross-axis filter semantics (final)
+
+| Context | Active query filters |
+| --- | --- |
+| Dimensions + Dimension Type tab | Only the **active** type's undeleted analysis |
+| Leave Dimensions → Accounts / Parties / Vouchers / Currency / Items / Item Groups | All **undeleted parked** Dimension session analyses re-enter the active bag (AND) via `restore_parked_dimension_filters_to_active_bag` |
+| Clear Selection | Row checkboxes only — analysis / parked unchanged |
+| Reset All Axes | Grid column preferences only — analysis unchanged |
+| Clear Analysis Filters / Reset All Filters / Delete chip | Forget parked analysis — restore must not revive |
+
+Parked chips are not proof of an active predicate. Payload `accounting_dimensions` + independent GL SQL are.
+
+### Cross-axis matrix coverage
+
+Playwright `playwright_account_explorer_v5729_cross_axis_matrix.mjs` + backend
+`test_account_explorer_v5729_cross_axis_matrix.py` cover Department→Cost Center /
+Project / Facility / Bank Dimension hops into Accounts, Parties, Vouchers, Items;
+type return; Clear Selection; Delete; Reset All Filters; Reset All Axes; empty
+department; dual Dimension AND; Cost Center session restore.
+
 ### Safety
 
 - Backend Dimension Type isolation unchanged / not weakened
@@ -86,5 +106,6 @@ debounced column filters, and correct sticky filter-row alignment.
 
 ### Version freeze note
 
-All Account Explorer navigation / park-delete / filter-alignment corrections for this
-cycle remain under **5.7.29**. No separate 5.7.30 application version is published.
+All Account Explorer navigation / park-delete / filter-alignment / data-accuracy
+corrections for this cycle remain under **5.7.29**. No separate 5.7.30 application
+version is published.

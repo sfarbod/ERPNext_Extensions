@@ -3070,9 +3070,22 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 
 	/**
 	 * v5.7.29 — promote undeleted parked Dimension analyses into the active bag.
-	 * Used when leaving the Dimensions axis so Account Levels / Parties / Vouchers / …
-	 * keep applying the user's session Dimension filters. Cleared analyses stay forgotten.
-	 * Dimension Type tabs still isolate via activate_dimension_type_scope.
+	 *
+	 * Intended filter semantics (explicit):
+	 * - Dimensions axis + Dimension Type tab: only the ACTIVE type's analysis may
+	 *   constrain the query (isolation). Other types stay parked / non-querying.
+	 * - Leaving Dimensions → Account Levels / Parties / Vouchers / Currency /
+	 *   Item Groups / Items: undeleted parked Dimension *session* analyses become
+	 *   active bag filters again (AND across types). They are analysis filters,
+	 *   projected into accounting_dimensions / dimension_scope for GL (+ SLE
+	 *   voucher-EXISTS on stock axes). They are NOT silent document-panel filters.
+	 * - Explicit Delete / Clear Analysis Filters / Reset All Filters: forget parked
+	 *   analysis; restore must not revive them.
+	 * - Clear Selection: row-checkbox UI only — must NOT touch analysis / parked.
+	 * - Reset All Axes: grid column preferences only — must NOT clear analysis.
+	 *
+	 * Cleared analyses stay forgotten. Dimension Type tabs still isolate via
+	 * activate_dimension_type_scope.
 	 */
 	restore_parked_dimension_filters_to_active_bag() {
 		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
