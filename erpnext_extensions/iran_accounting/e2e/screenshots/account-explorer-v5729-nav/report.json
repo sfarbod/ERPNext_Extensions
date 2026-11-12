@@ -555,10 +555,12 @@
         "end": {
           "label": "T5 end",
           "view_axis": "account_level",
-          "dimension_type": "department",
-          "selected": "ایمنی و بهداشت - E",
+          "dimension_type": "project",
+          "selected": "PROJ-0001",
           "bag_dims": {
-            "department": "ایمنی و بهداشت - E"
+            "department": "ایمنی و بهداشت - E",
+            "cost_center": "1110 - تولید بیولوژیک - E",
+            "project": "PROJ-0001"
           },
           "doc_dims": {
             "department": "ایمنی و بهداشت - E"
@@ -616,22 +618,22 @@
             },
             {
               "group": "analysis_filters",
+              "key": "dimensions.cost_center",
+              "label": "Cost Center",
+              "value": "تولید بیولوژیک",
+              "removable": true
+            },
+            {
+              "group": "analysis_filters",
               "key": "dimensions.department",
               "label": "Department",
               "value": "ایمنی و بهداشت - E",
               "removable": true
             },
             {
-              "group": "parked_dimension_filters",
-              "key": "dimensions.cost_center",
-              "label": "Cost Center (parked)",
-              "value": "تولید بیولوژیک",
-              "removable": true
-            },
-            {
-              "group": "parked_dimension_filters",
+              "group": "analysis_filters",
               "key": "dimensions.project",
-              "label": "Project (parked)",
+              "label": "Project",
               "value": "کارخانه سیمین دشت",
               "removable": true
             },
@@ -651,10 +653,12 @@
             }
           ],
           "payload_dims": {
-            "department": "ایمنی و بهداشت - E"
+            "department": "ایمنی و بهداشت - E",
+            "cost_center": "1110 - تولید بیولوژیک - E",
+            "project": "PROJ-0001"
           },
-          "payload_selected": "ایمنی و بهداشت - E",
-          "payload_dim_type": "department"
+          "payload_selected": "PROJ-0001",
+          "payload_dim_type": "project"
         }
       }
     },
@@ -825,5 +829,5 @@
       }
     }
   ],
-  "generated_at": "2026-11-12T19:54:30.853Z"
+  "generated_at": "2026-11-12T20:43:56.686Z"
 }

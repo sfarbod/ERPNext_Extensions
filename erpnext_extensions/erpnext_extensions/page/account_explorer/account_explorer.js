@@ -3069,6 +3069,36 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	/**
+	 * v5.7.29 — promote undeleted parked Dimension analyses into the active bag.
+	 * Used when leaving the Dimensions axis so Account Levels / Parties / Vouchers / …
+	 * keep applying the user's session Dimension filters. Cleared analyses stay forgotten.
+	 * Dimension Type tabs still isolate via activate_dimension_type_scope.
+	 */
+	restore_parked_dimension_filters_to_active_bag() {
+		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+		const parked = this._dimension_type_parked || {};
+		const cleared = this._dimension_type_cleared || {};
+		let bag = this.get_analysis_filters();
+		let changed = false;
+		Object.entries(parked).forEach(([field, state]) => {
+			if (!field || cleared[field] || state?.analysis_cleared) {
+				return;
+			}
+			const entry = state?.analysis_entry;
+			if (!entry || entry.value == null || entry.value === "") {
+				return;
+			}
+			bag = AF.set_entry(bag, JSON.parse(JSON.stringify(entry)));
+			changed = true;
+		});
+		if (!changed) {
+			return;
+		}
+		this.set_analysis_filters_bag(bag);
+		this._sync_scopes_from_analysis_filters();
+	}
+
+	/**
 	 * v5.7.29 — mark a Dimension Type's analysis as intentionally cleared.
 	 * Park/Activate must not restore analysis_entry / selected_dimension_value after this.
 	 */
@@ -4053,6 +4083,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._force_datatable_remount = true;
 		this._reset_breadcrumbs([]);
 		this.evaluate_analysis_filter_lifetimes({ consume_temporary: true });
+		// v5.7.29 data accuracy: after Dimension Type isolation parks non-active analyses,
+		// leaving Dimensions must re-promote undeleted parked Dimension filters into the
+		// active bag so Accounts/Parties/Vouchers stay GL-constrained. Cleared stay forgotten.
+		if (leaving_dimension_axis) {
+			this.restore_parked_dimension_filters_to_active_bag();
+		}
 		this._sync_scopes_from_analysis_filters();
 		this._pending_grid_perf_operation = "axis_switch";
 

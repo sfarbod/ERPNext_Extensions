@@ -1,0 +1,227 @@
+{
+  "version": "5.7.29",
+  "suite": "dimension-data-accuracy",
+  "company": "اسپاد فارمد دارو",
+  "department": "ایمنی و بهداشت - E",
+  "expected_period_debit": 5592288032,
+  "passed": 6,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "T1 analyze department payload+row",
+      "ok": true,
+      "detail": {
+        "payloadDocDims": {
+          "department": "ایمنی و بهداشت - E"
+        },
+        "payloadSelected": {
+          "dimension_type": "department",
+          "selected_dimension_value": "ایمنی و بهداشت - E"
+        },
+        "values": [
+          "ایمنی و بهداشت - E"
+        ],
+        "period_debit": 5592288032,
+        "period_credit": 1868092078
+      }
+    },
+    {
+      "name": "T2 dept → accounts filtered",
+      "ok": true,
+      "detail": {
+        "payloadDocDims": {
+          "department": "ایمنی و بهداشت - E"
+        },
+        "payloadSelected": {
+          "dimension_type": "department",
+          "selected_dimension_value": "ایمنی و بهداشت - E"
+        },
+        "sumPD": 5592288032,
+        "sumPC": 1868092078,
+        "codes": [
+          "11",
+          "12",
+          "61",
+          "62"
+        ],
+        "loanish": [],
+        "chips": [
+          {
+            "group": "document_scope",
+            "key": "document.company",
+            "text": "Company اسپاد فارمد دارو"
+          },
+          {
+            "group": "document_scope",
+            "key": "document.fiscal_year",
+            "text": "Fiscal Year 1405"
+          },
+          {
+            "group": "document_scope",
+            "key": "document.date_range",
+            "text": "Date Range 2026-03-21 → 2027-03-20"
+          },
+          {
+            "group": "analysis_filters",
+            "key": "dimensions.department",
+            "text": "Department ایمنی و بهداشت - E ×"
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.axis",
+            "text": "Axis Account Levels"
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.level",
+            "text": "Level Group"
+          }
+        ]
+      }
+    },
+    {
+      "name": "T3 dept → CC → accounts keeps filter",
+      "ok": true,
+      "detail": {
+        "onCc": {
+          "payloadDocDims": {},
+          "selected": {
+            "dimension_type": "cost_center",
+            "selected_dimension_value": null
+          },
+          "parkedDept": "ایمنی و بهداشت - E"
+        },
+        "s": {
+          "payloadDocDims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payloadSelected": {
+            "dimension_type": "department",
+            "selected_dimension_value": "ایمنی و بهداشت - E"
+          },
+          "sumPD": 5592288032,
+          "sumPC": 1868092078,
+          "codes": [
+            "11",
+            "12",
+            "61",
+            "62"
+          ],
+          "loanish": [],
+          "chips": [
+            {
+              "group": "document_scope",
+              "key": "document.company",
+              "text": "Company اسپاد فارمد دارو"
+            },
+            {
+              "group": "document_scope",
+              "key": "document.fiscal_year",
+              "text": "Fiscal Year 1405"
+            },
+            {
+              "group": "document_scope",
+              "key": "document.date_range",
+              "text": "Date Range 2026-03-21 → 2027-03-20"
+            },
+            {
+              "group": "analysis_filters",
+              "key": "dimensions.department",
+              "text": "Department ایمنی و بهداشت - E ×"
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.axis",
+              "text": "Axis Account Levels"
+            },
+            {
+              "group": "presentation",
+              "key": "presentation.level",
+              "text": "Level Group"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "T4 deleted dept does not restore on accounts",
+      "ok": true,
+      "detail": {
+        "payloadDocDims": {},
+        "payloadSelected": {
+          "dimension_type": "cost_center",
+          "selected_dimension_value": null
+        },
+        "sumPD": 157384608947185,
+        "sumPC": 157384608947185,
+        "codes": [
+          "11",
+          "12",
+          "21",
+          "22",
+          "31",
+          "41",
+          "51",
+          "61",
+          "62"
+        ],
+        "loanish": [],
+        "chips": [
+          {
+            "group": "document_scope",
+            "key": "document.company",
+            "text": "Company اسپاد فارمد دارو"
+          },
+          {
+            "group": "document_scope",
+            "key": "document.fiscal_year",
+            "text": "Fiscal Year 1405"
+          },
+          {
+            "group": "document_scope",
+            "key": "document.date_range",
+            "text": "Date Range 2026-03-21 → 2027-03-20"
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.axis",
+            "text": "Axis Account Levels"
+          },
+          {
+            "group": "presentation",
+            "key": "presentation.level",
+            "text": "Level Group"
+          }
+        ]
+      }
+    },
+    {
+      "name": "T5 vouchers/parties keep dept after CC hop",
+      "ok": true,
+      "detail": {
+        "v": {
+          "payloadDocDims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "n": 50
+        },
+        "party": {
+          "department": "ایمنی و بهداشت - E"
+        }
+      }
+    },
+    {
+      "name": "T6 CC isolation while dept parked",
+      "ok": true,
+      "detail": {
+        "payloadDocDims": {},
+        "rowCount": 8,
+        "selected": {
+          "dimension_type": "cost_center",
+          "selected_dimension_value": null
+        }
+      }
+    }
+  ],
+  "generated_at": "2026-11-12T20:41:19.272Z"
+}

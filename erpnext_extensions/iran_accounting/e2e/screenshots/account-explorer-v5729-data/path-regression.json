@@ -1,0 +1,58 @@
+{
+  "pathA": {
+    "payloadDocDims": {
+      "department": "ایمنی و بهداشت - E"
+    },
+    "payloadSelected": {
+      "dimension_type": "department",
+      "selected_dimension_value": "ایمنی و بهداشت - E"
+    },
+    "sumPD": 5592288032,
+    "codes": [
+      "11",
+      "12",
+      "61",
+      "62"
+    ]
+  },
+  "onCC": {
+    "payloadDocDims": {},
+    "payloadSelected": {
+      "dimension_type": "cost_center",
+      "selected_dimension_value": null
+    },
+    "parked": {
+      "department": "ایمنی و بهداشت - E"
+    },
+    "rowCount": 8
+  },
+  "pathB": {
+    "payloadDocDims": {},
+    "payloadSelected": {
+      "dimension_type": "cost_center",
+      "selected_dimension_value": null
+    },
+    "sumPD": 157384608947185,
+    "codes": [
+      "11",
+      "12",
+      "21",
+      "22",
+      "31",
+      "41",
+      "51",
+      "61",
+      "62"
+    ],
+    "loanish": [],
+    "chipTexts": [
+      "Company\nاسپاد فارمد دارو",
+      "Fiscal Year\n1405",
+      "Date Range\n2026-03-21 → 2027-03-20",
+      "Department (parked)\nایمنی و بهداشت - E\n×",
+      "Axis\nAccount Levels",
+      "Level\nGroup"
+    ]
+  },
+  "expectedFilteredPD": 5592288032
+}
