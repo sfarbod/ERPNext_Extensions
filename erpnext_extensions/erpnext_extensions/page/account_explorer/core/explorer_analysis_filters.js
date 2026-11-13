@@ -317,8 +317,12 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				if (!fieldname) {
 					return this.set_entry(current, entry, defaults);
 				}
-				next = this.set_entry(current, { ...entry, key: `dimensions.${fieldname}` }, defaults);
-				return next;
+				// v5.7.29 global filters: upsert this Dimension Type only; keep siblings (AND).
+				return this.set_entry(
+					current,
+					{ ...entry, key: `dimensions.${fieldname}` },
+					defaults
+				);
 			}
 			default:
 				if (entry) {
@@ -468,19 +472,19 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 			inventory.inventory_account = filters.inventory_account.value;
 		}
 
+		// Preserve presentation Dimension Type (tab). Do not let projection rewrite it
+		// to whichever dimension filter was last iterated.
+		const presentation_dimension_type =
+			(ctx.dimension_scope && ctx.dimension_scope.dimension_type) ||
+			dimension_scope.dimension_type ||
+			null;
 		Object.entries(filters.dimensions || {}).forEach(([fieldname, entry]) => {
 			if (!entry) {
 				return;
 			}
-			const value = typeof entry.value === "object" ? entry.value.dimension_value ?? entry.value : entry.value;
-			if (dimension_scope.dimension_type === fieldname || !dimension_scope.selected_dimension_value) {
-				dimension_scope.dimension_type = dimension_scope.dimension_type || fieldname;
-			}
-			// Multi-dimension: park all in accounting_dimensions; primary axis type also in dimension_scope
-			if (Object.keys(filters.dimensions).length === 1 || dimension_scope.dimension_type === fieldname) {
-				dimension_scope.dimension_type = fieldname;
-				dimension_scope.selected_dimension_value = value;
-			}
+			const value =
+				typeof entry.value === "object" ? entry.value.dimension_value ?? entry.value : entry.value;
+			// v5.7.29 global filters: every Dimension analysis projects into the query.
 			accounting_dimensions[fieldname] = value;
 			if (
 				doc.accounting_dimensions &&
@@ -494,6 +498,27 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				});
 			}
 		});
+		if (presentation_dimension_type) {
+			dimension_scope.dimension_type = presentation_dimension_type;
+			const active_entry = filters.dimensions?.[presentation_dimension_type];
+			if (active_entry) {
+				const value =
+					typeof active_entry.value === "object"
+						? active_entry.value.dimension_value ?? active_entry.value
+						: active_entry.value;
+				dimension_scope.selected_dimension_value = value;
+			} else {
+				dimension_scope.selected_dimension_value = null;
+			}
+		} else if (Object.keys(filters.dimensions || {}).length === 1) {
+			const only = Object.keys(filters.dimensions)[0];
+			dimension_scope.dimension_type = only;
+			const only_entry = filters.dimensions[only];
+			dimension_scope.selected_dimension_value =
+				typeof only_entry.value === "object"
+					? only_entry.value.dimension_value ?? only_entry.value
+					: only_entry.value;
+		}
 
 		return {
 			analysis_context: {

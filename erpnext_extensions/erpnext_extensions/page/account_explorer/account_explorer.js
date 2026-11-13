@@ -466,6 +466,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this._dates_user_override = false;
 		this._syncing_fy_dates = false;
 		this._column_filter_timer = null;
+		// v5.7.29: presentation-only Dimension Type UI (column filters / page).
+		// Global analysis filters live solely in analysis_filters bag.
+		this._dimension_type_ui = {};
+		this._dimension_type_parked = {}; // legacy alias cleared on Clear All
+		this._dimension_type_cleared = {};
 
 		this.breadcrumbs = [];
 		this._datatable_grid_namespace = ".aeDatatableGrid";
@@ -2989,6 +2994,10 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filter:removed", { key, filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._clear_legacy_scope_for_filter_key(key);
+		// Global filter delete: drop UI presentation leftovers for this Dimension Type.
+		if (String(key || "").startsWith("dimensions.")) {
+			this.clear_dimension_type_ui(String(key).slice("dimensions.".length));
+		}
 		// Re-project remaining filters so inventory/account/party scopes stay consistent.
 		this._sync_scopes_from_analysis_filters();
 		this.sync_filter_controls_from_document_scope();
@@ -3009,6 +3018,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.events.emit("analysis_filters:cleared", { filters: this.analysis_filters });
 		this.events.emit("analysis_filters:changed", { filters: this.analysis_filters });
 		this._reset_analytical_legacy_scopes();
+		this._dimension_type_ui = {};
+		this._dimension_type_parked = {};
+		this._dimension_type_cleared = {};
+		if (this.analysis_context?.dimension_scope) {
+			this.analysis_context.dimension_scope.selected_dimension_value = null;
+		}
+		this.document_scope.accounting_dimensions = {};
 		this._sync_scopes_from_analysis_filters();
 		this.sync_filter_controls_from_document_scope();
 		this.analysis_context.page = 1;
@@ -3019,6 +3035,98 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (refresh && this.document_scope.from_date && this.document_scope.to_date) {
 			this.refresh_summary({ new_execution: true, reason: "filters_cleared" });
 		}
+	}
+
+	/**
+	 * v5.7.29 global filters — presentation-only Dimension Type UI snapshot
+	 * (column filters / page / breadcrumbs). Never owns query filters.
+	 */
+	clear_dimension_type_ui(dimension_type) {
+		if (!dimension_type) {
+			return;
+		}
+		this._dimension_type_ui = this._dimension_type_ui || {};
+		delete this._dimension_type_ui[dimension_type];
+		if (this.document_scope?.accounting_dimensions) {
+			const dims = { ...this.document_scope.accounting_dimensions };
+			delete dims[dimension_type];
+			this.document_scope.accounting_dimensions = dims;
+		}
+		if (this.analysis_context?.dimension_scope?.dimension_type === dimension_type) {
+			this.analysis_context.dimension_scope.selected_dimension_value = null;
+		}
+	}
+
+	park_dimension_type_state(dimension_type) {
+		/** Presentation-only: remember grid UI for this Dimension Type tab. */
+		if (!dimension_type) {
+			return;
+		}
+		this._dimension_type_ui = this._dimension_type_ui || {};
+		this._dimension_type_ui[dimension_type] = {
+			column_filters: { ...(this.analysis_context.column_filters || {}) },
+			page: this.analysis_context.page || 1,
+			breadcrumbs: JSON.parse(JSON.stringify(this.breadcrumbs || [])),
+		};
+	}
+
+	/**
+	 * v5.7.29 global filters — switch Dimension Type presentation without mutating
+	 * the global analysis filter bag. All Dimension filters stay active (AND).
+	 */
+	activate_dimension_type_scope(
+		dimension_type,
+		{ restore = true, reset_presentation_if_empty = false } = {}
+	) {
+		if (!dimension_type) {
+			return;
+		}
+		const prev = this.analysis_context.dimension_scope?.dimension_type || null;
+		if (prev && prev !== dimension_type) {
+			this.park_dimension_type_state(prev);
+		}
+		const bag = this.get_analysis_filters();
+		const entry = bag.dimensions?.[dimension_type] || null;
+		const selected = entry ? entry.value ?? null : null;
+		this.analysis_context.dimension_scope = {
+			dimension_type,
+			selected_dimension_value: selected,
+		};
+		this._dimension_type_ui = this._dimension_type_ui || {};
+		const ui = this._dimension_type_ui[dimension_type];
+		if (restore && ui) {
+			this.analysis_context.column_filters = { ...(ui.column_filters || {}) };
+			this.analysis_context.page = ui.page || 1;
+			this._reset_breadcrumbs(Array.isArray(ui.breadcrumbs) ? ui.breadcrumbs : []);
+		} else if (reset_presentation_if_empty) {
+			this.analysis_context.column_filters = {};
+			this.analysis_context.page = 1;
+			this._reset_breadcrumbs([]);
+		}
+		// Re-project ALL global filters (including sibling Dimension Types).
+		this._sync_scopes_from_analysis_filters();
+	}
+
+	/** Alias kept for older callers — presentation switch only. */
+	isolate_dimension_type_analysis_scope(dimension_type) {
+		const prev = this.analysis_context.dimension_scope?.dimension_type || null;
+		this.activate_dimension_type_scope(dimension_type, {
+			restore: true,
+			reset_presentation_if_empty: prev !== dimension_type,
+		});
+	}
+
+	/** @deprecated Global filters never park query predicates. No-op for compatibility. */
+	restore_parked_dimension_filters_to_active_bag() {}
+
+	/** @deprecated */
+	forget_parked_dimension_analysis(dimension_type) {
+		this.clear_dimension_type_ui(dimension_type);
+	}
+
+	/** @deprecated */
+	get_parked_dimension_summary_entries() {
+		return {};
 	}
 
 	_clear_legacy_scope_for_filter_key(key) {
@@ -3769,6 +3877,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const prev_axis = this.analysis_context.view_axis;
 		const prev_level = this.analysis_context.level_sequence;
 		const prev_detail = this.analysis_context.detail_mode;
+		const prev_dimension_type = this.analysis_context.dimension_scope?.dimension_type || null;
 		// Account Level pills are presentation rollups over the same leaf GL measures.
 		// Keep the current execution_id and avoid datatable remount + row clear.
 		const level_only =
@@ -3793,6 +3902,30 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.schedule_workspace_url_update({ push: true });
 			this.refresh_summary({ reason: "level_change" });
 			return;
+		}
+
+		// Intended filter semantics (v5.7.29 global filters):
+		// - Analysis filters are a single global bag shared by every main axis.
+		// - Dimension Type tab is presentation only (which Dimension grid to browse).
+		// - Clear Selection: row-checkbox UI only
+		// - Reset All Axes: grid column preferences only
+		// Global analysis filters are never removed on axis / type switches.
+		const next_dim_hint =
+			view_axis === "dimension"
+				? level_or_dimension ||
+					prev_dimension_type ||
+					this.metadata.default_dimension_type ||
+					this.metadata.default_dimension_field
+				: null;
+		const switching_dimension_type =
+			prev_axis === "dimension" &&
+			view_axis === "dimension" &&
+			prev_dimension_type &&
+			next_dim_hint &&
+			prev_dimension_type !== next_dim_hint;
+		const leaving_dimension_axis = prev_axis === "dimension" && view_axis !== "dimension";
+		if ((switching_dimension_type || leaving_dimension_axis) && prev_dimension_type) {
+			this.park_dimension_type_state(prev_dimension_type);
 		}
 
 		this.analysis_context.view_axis = view_axis;
@@ -3834,10 +3967,22 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 				this.analysis_context.dimension_scope.dimension_type =
 					this.metadata.default_dimension_type || this.metadata.default_dimension_field;
 			}
-			// Do not clear selected_dimension_value here — comes from analysis_filters via payload mapper
+			const next_dimension_type = this.analysis_context.dimension_scope.dimension_type;
+			// Presentation switch only — global Dimension filters stay in the bag.
+			if (
+				next_dimension_type &&
+				(prev_axis !== "dimension" ||
+					!prev_dimension_type ||
+					prev_dimension_type !== next_dimension_type)
+			) {
+				this.activate_dimension_type_scope(next_dimension_type, {
+					restore: true,
+					reset_presentation_if_empty: true,
+				});
+			}
 		} else if (view_axis === "currency") {
 			this.analysis_context.sort_field = "currency";
-		} else 		if (view_axis === "voucher") {
+		} else if (view_axis === "voucher") {
 			this.analysis_context.sort_field = "posting_date";
 			this.analysis_context.sort_order = "desc";
 			this._voucher_column_defaults_applied = false;
@@ -4475,7 +4620,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 								: "",
 			column_widths: { ...(this.grid_column_widths || {}) },
 			on_server_sort: (column_id, column) => this.handle_datatable_server_sort(column_id, column),
-			on_server_column_filters: (filters) => this.handle_datatable_column_filters(filters),
+			on_server_column_filters: (filters, opts) =>
+				this.handle_datatable_column_filters(filters, opts || {}),
 			on_clear_column_filter: (field) => this.clear_single_column_filter(field),
 			on_selection_change: (checked_rows) => this.handle_datatable_selection_change(checked_rows),
 			on_column_removed: () => this.handle_datatable_column_state_changed(),
@@ -4501,7 +4647,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		return net > 0 ? `${compact} ${__("Dr")}` : `${compact} ${__("Cr")}`;
 	}
 
-	handle_datatable_column_filters(filters_by_col_index) {
+	map_datatable_column_filters(filters_by_col_index) {
 		const columns = this.last_summary_columns || this.columns || [];
 		const visible = this.get_summary_visible_columns
 			? this.get_summary_visible_columns(columns)
@@ -4525,10 +4671,27 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			}
 			mapped[field] = value;
 		});
+		return mapped;
+	}
+
+	handle_datatable_column_filters(filters_by_col_index, opts = {}) {
+		const mapped = this.map_datatable_column_filters(filters_by_col_index);
+		this._latest_column_filter_mapped = mapped;
 		clearTimeout(this._column_filter_timer);
-		this._column_filter_timer = setTimeout(() => {
-			this.set_column_filters(mapped, { refresh: true });
-		}, 350);
+		this._column_filter_timer = null;
+		const apply = () => {
+			this._column_filter_timer = null;
+			this._column_filter_seq = (this._column_filter_seq || 0) + 1;
+			const seq = this._column_filter_seq;
+			const latest = this._latest_column_filter_mapped || mapped;
+			this.set_column_filters(latest, { refresh: true, filter_seq: seq });
+		};
+		// v5.7.29: 500 ms after last keystroke; Enter / Clear use immediate: true.
+		if (opts && opts.immediate) {
+			apply();
+			return;
+		}
+		this._column_filter_timer = setTimeout(apply, 500);
 	}
 
 	build_analyze_action_html(row) {
@@ -7305,9 +7468,20 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			};
 		} else if (String(entry.key).startsWith("dimensions.")) {
 			const field = String(entry.key).slice("dimensions.".length);
-			this.analysis_context.dimension_scope = {
-				dimension_type: field,
-				selected_dimension_value: entry.value,
+			// Global filters: Dimension Type tab is presentation-only. Mirroring must
+			// never rewrite presentation type to a sibling filter's field (that made
+			// switch_axis("dimension", "cost_center") snap back to "department").
+			const scope = this.analysis_context.dimension_scope || {};
+			if (scope.dimension_type === field) {
+				this.analysis_context.dimension_scope = {
+					...scope,
+					dimension_type: field,
+					selected_dimension_value: entry.value,
+				};
+			}
+			this.document_scope.accounting_dimensions = {
+				...(this.document_scope.accounting_dimensions || {}),
+				[field]: entry.value,
 			};
 		} else if (entry.key === "item_group") {
 			this.document_scope.inventory = {
@@ -7492,6 +7666,19 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.analyze_party_identity(row);
 			return;
 		}
+		// v5.7.29 global filters: Dimension Analyze upserts this type into the global bag
+		// (AND with siblings). Presentation Dimension Type follows the analyzed type.
+		let analyzed_dimension_type = null;
+		if (this.analysis_context.view_axis === "dimension") {
+			analyzed_dimension_type =
+				row.dimension_type || this.analysis_context.dimension_scope?.dimension_type || null;
+			if (analyzed_dimension_type) {
+				this.analysis_context.dimension_scope = {
+					...(this.analysis_context.dimension_scope || {}),
+					dimension_type: analyzed_dimension_type,
+				};
+			}
+		}
 		const before_crumbs = (this.breadcrumbs || []).length;
 		const before_level = this.analysis_context.level_sequence;
 		const is_account_nav =
@@ -7500,6 +7687,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		// Defer refresh until NestedSet parent + child level are forced, otherwise a
 		// first refresh can race a second one and restore sibling Group rows.
 		this.drill_row(row, "filter", is_account_nav ? { skip_refresh: true } : null);
+		if (analyzed_dimension_type) {
+			this.park_dimension_type_state(analyzed_dimension_type);
+		}
 		if (is_account_nav) {
 			if ((this.breadcrumbs || []).length === before_crumbs) {
 				this.push_breadcrumb({
@@ -8664,44 +8854,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const $pageSize = this.build_page_size_control();
 		$pageSize.attr("data-ae-page-size", "1");
 		$bar.append($pageSize);
-		this.render_column_filter_chips($bar);
+		// v5.7.29: do not duplicate column filters as technical chips beside pagination.
+		// Active values live in the DataTable filter row (with inline clear).
 		this.$pagination.append($bar);
 	}
 
-	render_column_filter_chips($bar) {
-		const filters = this.analysis_context.column_filters || {};
-		const keys = Object.keys(filters);
-		if (!keys.length) {
-			return;
-		}
-		const $chips = $('<div class="ae-column-filter-chips" data-ae-column-filter-chips="1"></div>');
-		keys.forEach((field) => {
-			const value = filters[field];
-			const $chip = $(
-				'<span class="ae-column-filter-chip" data-ae-column-filter-chip="' +
-					frappe.utils.escape_html(field) +
-					'"></span>'
-			);
-			$chip.append(
-				$("<span class='ae-column-filter-chip-label'></span>").text(`${__(field)}: ${value}`)
-			);
-			$chip.append(
-				$('<button type="button" class="ae-column-filter-chip-clear" aria-label="' +
-					frappe.utils.escape_html(__("Clear {0} filter", [__(field)])) +
-					'">×</button>')
-					.attr("data-ae-clear-column-filter", field)
-					.on("click", (event) => {
-						event.preventDefault();
-						event.stopPropagation();
-						this.clear_single_column_filter(field);
-					})
-			);
-			$chips.append($chip);
-		});
-		$bar.append($chips);
-	}
-
 	clear_single_column_filter(field, { refresh = true } = {}) {
+		clearTimeout(this._column_filter_timer);
+		this._column_filter_timer = null;
 		const next = { ...(this.analysis_context.column_filters || {}) };
 		delete next[field];
 		// Also drop aliases for Party Name.
@@ -8711,10 +8871,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (field === "party_name") {
 			delete next.display_title;
 		}
-		this.set_column_filters(next, { refresh });
+		this._latest_column_filter_mapped = next;
+		this._column_filter_seq = (this._column_filter_seq || 0) + 1;
+		this.set_column_filters(next, { refresh, filter_seq: this._column_filter_seq });
 	}
 
-	set_column_filters(filters, { refresh = true } = {}) {
+	set_column_filters(filters, { refresh = true, filter_seq = null } = {}) {
 		const next = {};
 		Object.entries(filters || {}).forEach(([key, value]) => {
 			const field = String(key || "").trim();
@@ -8730,6 +8892,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		this.analysis_context.page = 1;
 		this._sync_store_context?.({ emit: true });
 		if (refresh) {
+			if (filter_seq != null) {
+				this._column_filter_applied_seq = filter_seq;
+			}
 			this.refresh_summary({ new_execution: true, reason: "column_filters" });
 		}
 	}

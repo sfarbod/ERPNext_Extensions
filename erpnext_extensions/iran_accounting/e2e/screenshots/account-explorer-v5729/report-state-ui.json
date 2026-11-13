@@ -1,0 +1,94 @@
+{
+  "version": "5.7.29",
+  "suite": "state_ui",
+  "passed": 3,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "dimension_state_persistence",
+      "ok": true,
+      "detail": {
+        "skipped": false,
+        "afterCC": {
+          "type": "cost_center",
+          "selected": "1110 - تولید بیولوژیک - E",
+          "bag": [
+            "cost_center"
+          ],
+          "uiKeys": [
+            "cost_center"
+          ]
+        },
+        "afterDeptSwitch": {
+          "type": "department",
+          "selected": null,
+          "bag": [
+            "cost_center"
+          ],
+          "column_filters": {},
+          "payloadDims": [
+            "cost_center"
+          ],
+          "uiCC": true
+        },
+        "afterDeptAnalyze": {
+          "type": "department",
+          "selected": "مشترک تولید و بهره برداری - E",
+          "bag": [
+            "cost_center",
+            "department"
+          ],
+          "rowTypes": [
+            "department"
+          ]
+        },
+        "backCC": {
+          "type": "cost_center",
+          "selected": "1110 - تولید بیولوژیک - E",
+          "bag": [
+            "cost_center",
+            "department"
+          ],
+          "column_filters": {
+            "display_code": "ای"
+          },
+          "payloadType": "cost_center"
+        },
+        "backDept": {
+          "type": "department",
+          "selected": "مشترک تولید و بهره برداری - E",
+          "bag": [
+            "cost_center",
+            "department"
+          ]
+        },
+        "ccValue": "1110 - تولید بیولوژیک - E"
+      }
+    },
+    {
+      "name": "column_filter_ui_no_pagination_chips",
+      "ok": true,
+      "detail": {
+        "inputValue": "ای",
+        "inputActive": true,
+        "paginationChipCount": 0,
+        "chipText": [],
+        "clearVisible": true,
+        "headerCount": 8,
+        "filterCellCount": 8,
+        "payloadFilter": "ای",
+        "totalRows": 0
+      }
+    },
+    {
+      "name": "column_filter_clear_restores",
+      "ok": true,
+      "detail": {
+        "inputValue": "",
+        "filters": {},
+        "paginationChips": 0
+      }
+    }
+  ],
+  "generated_at": "2026-11-13T13:28:21.238Z"
+}

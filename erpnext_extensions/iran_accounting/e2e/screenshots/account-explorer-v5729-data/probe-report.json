@@ -1,0 +1,566 @@
+{
+  "listState": {
+    "rowCount": 50,
+    "target": {
+      "value": "ایمنی و بهداشت - E",
+      "period_debit": 5592288032,
+      "period_credit": 1868092078,
+      "debit_balance": 3724195954
+    },
+    "payload": {
+      "document_scope": {
+        "company": "اسپاد فارمد دارو",
+        "fiscal_year": "1405",
+        "from_date": "2026-03-21",
+        "to_date": "2027-03-20",
+        "finance_book": null,
+        "hide_zero_rows": 1,
+        "voucher": {
+          "voucher_type": null,
+          "voucher_no": null,
+          "against_voucher_type": null,
+          "against_voucher_no": null,
+          "reference_no": null
+        },
+        "accounting": {
+          "account": null,
+          "party_type": null,
+          "party": null
+        },
+        "accounting_dimensions": {},
+        "currency": {
+          "currency_type": "account_currency",
+          "currency": null
+        },
+        "inventory": {
+          "item_group": null,
+          "item": null,
+          "warehouse": null,
+          "inventory_account": null
+        },
+        "status": {
+          "include_opening_entries": 1,
+          "include_cancelled_entries": 0,
+          "include_default_finance_book_entries": 1,
+          "include_period_closing_vouchers": 0
+        }
+      },
+      "analysis_context": {
+        "view_axis": "dimension",
+        "level_sequence": 1,
+        "account_scope": {
+          "mode": "tree",
+          "selected_account": null,
+          "virtual_row_key": null,
+          "is_virtual_group": 0,
+          "level_sequence": null,
+          "tree_root_account": null
+        },
+        "party_scope": {
+          "party_type": null,
+          "selected_party": null,
+          "party_name_query": null,
+          "identifier_query": null,
+          "unified_identity": 0,
+          "identity_members": null,
+          "identity_available_members": null,
+          "identity_display_title": null,
+          "identity_identifier": null
+        },
+        "unified_party_scope": {
+          "selected_unified_party": null,
+          "include_unmapped": 0
+        },
+        "dimension_scope": {
+          "dimension_type": "department",
+          "selected_dimension_value": null
+        },
+        "voucher_scope": {
+          "voucher_type": null,
+          "voucher_no": null
+        },
+        "item_group_scope": {
+          "selected_item_group": null
+        },
+        "item_scope": {
+          "selected_item": null
+        },
+        "detail_mode": "summary",
+        "sort_field": "display_code",
+        "sort_order": "asc",
+        "page": 1,
+        "page_size": 50,
+        "column_filters": {}
+      },
+      "execution_id": "37860e6e-e1ba-4b09-9c2b-63b804937b79"
+    }
+  },
+  "afterAnalyze": {
+    "axis": "dimension",
+    "dim": {
+      "dimension_type": "department",
+      "selected_dimension_value": "ایمنی و بهداشت - E"
+    },
+    "bag": {
+      "department": {
+        "key": "dimensions.department",
+        "value": "ایمنی و بهداشت - E",
+        "origin": "drill_graph",
+        "lifetime": "session",
+        "removable": true,
+        "meta": {
+          "dimension_type": "department",
+          "display_label": "ایمنی و بهداشت - E",
+          "source_axis_label": "Dimensions"
+        }
+      }
+    },
+    "docDims": {},
+    "payloadDim": {
+      "dimension_type": "department",
+      "selected_dimension_value": "ایمنی و بهداشت - E"
+    },
+    "payloadDocDims": {
+      "department": "ایمنی و بهداشت - E"
+    },
+    "rows": [
+      {
+        "v": "ایمنی و بهداشت - E",
+        "pd": 5592288032,
+        "pc": 1868092078,
+        "db": 3724195954
+      }
+    ],
+    "totals": {
+      "opening_debit": 0,
+      "opening_credit": 0,
+      "period_debit": 5592288032,
+      "period_credit": 1868092078,
+      "closing_debit": 3724195954,
+      "closing_credit": 0,
+      "net_balance": 3724195954,
+      "debit_balance": 3724195954,
+      "credit_balance": 0
+    }
+  },
+  "vouchers": {
+    "axis": "voucher",
+    "payloadDim": {
+      "dimension_type": "department",
+      "selected_dimension_value": "ایمنی و بهداشت - E"
+    },
+    "payloadDocDims": {
+      "department": "ایمنی و بهداشت - E"
+    },
+    "rowCount": 50,
+    "sample": [
+      {
+        "vt": "Stock Entry",
+        "vn": "MAT-STE-2026-23966"
+      },
+      {
+        "vt": "Stock Entry",
+        "vn": "MAT-STE-2026-23966"
+      },
+      {
+        "vt": "Stock Entry",
+        "vn": "MAT-STE-2026-41294"
+      },
+      {
+        "vt": "Stock Entry",
+        "vn": "MAT-STE-2026-41294"
+      },
+      {
+        "vt": "Stock Entry",
+        "vn": "MAT-STE-2026-03308"
+      }
+    ]
+  },
+  "accounts": {
+    "payloadDim": {
+      "dimension_type": "department",
+      "selected_dimension_value": "ایمنی و بهداشت - E"
+    },
+    "payloadDocDims": {
+      "department": "ایمنی و بهداشت - E"
+    },
+    "rowCount": 4,
+    "sumPD": 5592288032,
+    "sumPC": 1868092078,
+    "codes": [
+      "11",
+      "12",
+      "61",
+      "62"
+    ],
+    "loanish": []
+  },
+  "capturedPayloads": [
+    {
+      "url": "erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "payload": {
+        "document_scope": {
+          "company": "اسپاد فارمد دارو",
+          "fiscal_year": "1405",
+          "from_date": "2026-03-21",
+          "to_date": "2027-03-20",
+          "finance_book": null,
+          "hide_zero_rows": 1,
+          "voucher": {
+            "voucher_type": null,
+            "voucher_no": null,
+            "against_voucher_type": null,
+            "against_voucher_no": null,
+            "reference_no": null
+          },
+          "accounting": {
+            "account": null,
+            "party_type": null,
+            "party": null
+          },
+          "accounting_dimensions": {},
+          "currency": {
+            "currency_type": "account_currency",
+            "currency": null
+          },
+          "inventory": {
+            "item_group": null,
+            "item": null,
+            "warehouse": null,
+            "inventory_account": null
+          },
+          "status": {
+            "include_opening_entries": 1,
+            "include_cancelled_entries": 0,
+            "include_default_finance_book_entries": 1,
+            "include_period_closing_vouchers": 0
+          }
+        },
+        "analysis_context": {
+          "view_axis": "dimension",
+          "level_sequence": 1,
+          "account_scope": {
+            "mode": "tree",
+            "selected_account": null,
+            "virtual_row_key": null,
+            "is_virtual_group": 0,
+            "level_sequence": null,
+            "tree_root_account": null
+          },
+          "party_scope": {
+            "party_type": null,
+            "selected_party": null,
+            "party_name_query": null,
+            "identifier_query": null,
+            "unified_identity": 0,
+            "identity_members": null,
+            "identity_available_members": null,
+            "identity_display_title": null,
+            "identity_identifier": null
+          },
+          "unified_party_scope": {
+            "selected_unified_party": null,
+            "include_unmapped": 0
+          },
+          "dimension_scope": {
+            "dimension_type": "department",
+            "selected_dimension_value": null
+          },
+          "voucher_scope": {
+            "voucher_type": null,
+            "voucher_no": null
+          },
+          "item_group_scope": {
+            "selected_item_group": null
+          },
+          "item_scope": {
+            "selected_item": null
+          },
+          "detail_mode": "summary",
+          "sort_field": "display_code",
+          "sort_order": "asc",
+          "page": 1,
+          "page_size": 50,
+          "column_filters": {}
+        },
+        "execution_id": "37860e6e-e1ba-4b09-9c2b-63b804937b79"
+      }
+    },
+    {
+      "url": "erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
+      "payload": {
+        "document_scope": {
+          "company": "اسپاد فارمد دارو",
+          "fiscal_year": "1405",
+          "from_date": "2026-03-21",
+          "to_date": "2027-03-20",
+          "finance_book": null,
+          "hide_zero_rows": 1,
+          "voucher": {
+            "voucher_type": null,
+            "voucher_no": null,
+            "against_voucher_type": null,
+            "against_voucher_no": null,
+            "reference_no": null
+          },
+          "accounting": {
+            "account": null,
+            "party_type": null,
+            "party": null
+          },
+          "accounting_dimensions": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "currency": {
+            "currency_type": "account_currency",
+            "currency": null
+          },
+          "inventory": {
+            "item_group": null,
+            "item": null,
+            "warehouse": null,
+            "inventory_account": null
+          },
+          "status": {
+            "include_opening_entries": 1,
+            "include_cancelled_entries": 0,
+            "include_default_finance_book_entries": 1,
+            "include_period_closing_vouchers": 0
+          }
+        },
+        "analysis_context": {
+          "view_axis": "dimension",
+          "level_sequence": 1,
+          "account_scope": {
+            "mode": "tree",
+            "selected_account": null,
+            "virtual_row_key": null,
+            "is_virtual_group": 0,
+            "level_sequence": null,
+            "tree_root_account": null
+          },
+          "party_scope": {
+            "party_type": null,
+            "selected_party": null,
+            "party_name_query": null,
+            "identifier_query": null,
+            "unified_identity": 0,
+            "identity_members": null,
+            "identity_available_members": null,
+            "identity_display_title": null,
+            "identity_identifier": null
+          },
+          "unified_party_scope": {
+            "selected_unified_party": null,
+            "include_unmapped": 0
+          },
+          "dimension_scope": {
+            "dimension_type": "department",
+            "selected_dimension_value": "ایمنی و بهداشت - E"
+          },
+          "voucher_scope": {
+            "voucher_type": null,
+            "voucher_no": null
+          },
+          "item_group_scope": {
+            "selected_item_group": null
+          },
+          "item_scope": {
+            "selected_item": null
+          },
+          "detail_mode": "summary",
+          "sort_field": "display_code",
+          "sort_order": "asc",
+          "page": 1,
+          "page_size": 50,
+          "column_filters": {}
+        },
+        "execution_id": "fa469d93-f329-4dd9-b81b-e0f3cd87e066"
+      }
+    },
+    {
+      "url": "erpnext_extensions.iran_accounting.account_explorer.get_voucher_summary",
+      "payload": {
+        "document_scope": {
+          "company": "اسپاد فارمد دارو",
+          "fiscal_year": "1405",
+          "from_date": "2026-03-21",
+          "to_date": "2027-03-20",
+          "finance_book": null,
+          "hide_zero_rows": 1,
+          "voucher": {
+            "voucher_type": null,
+            "voucher_no": null,
+            "against_voucher_type": null,
+            "against_voucher_no": null,
+            "reference_no": null
+          },
+          "accounting": {
+            "account": null,
+            "party_type": null,
+            "party": null
+          },
+          "accounting_dimensions": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "currency": {
+            "currency_type": "account_currency",
+            "currency": null
+          },
+          "inventory": {
+            "item_group": null,
+            "item": null,
+            "warehouse": null,
+            "inventory_account": null
+          },
+          "status": {
+            "include_opening_entries": 1,
+            "include_cancelled_entries": 0,
+            "include_default_finance_book_entries": 1,
+            "include_period_closing_vouchers": 0
+          }
+        },
+        "analysis_context": {
+          "view_axis": "voucher",
+          "level_sequence": 1,
+          "account_scope": {
+            "mode": "tree",
+            "selected_account": null,
+            "virtual_row_key": null,
+            "is_virtual_group": 0,
+            "level_sequence": null,
+            "tree_root_account": null
+          },
+          "party_scope": {
+            "party_type": null,
+            "selected_party": null,
+            "party_name_query": null,
+            "identifier_query": null,
+            "unified_identity": 0,
+            "identity_members": null,
+            "identity_available_members": null,
+            "identity_display_title": null,
+            "identity_identifier": null
+          },
+          "unified_party_scope": {
+            "selected_unified_party": null,
+            "include_unmapped": 0
+          },
+          "dimension_scope": {
+            "dimension_type": "department",
+            "selected_dimension_value": "ایمنی و بهداشت - E"
+          },
+          "voucher_scope": {
+            "voucher_type": null,
+            "voucher_no": null
+          },
+          "item_group_scope": {
+            "selected_item_group": null
+          },
+          "item_scope": {
+            "selected_item": null
+          },
+          "detail_mode": "summary",
+          "sort_field": "posting_date",
+          "sort_order": "asc",
+          "page": 1,
+          "page_size": 50,
+          "column_filters": {}
+        },
+        "execution_id": "ed46ff55-b0a0-46ba-a3e4-7627dd1a82df"
+      }
+    },
+    {
+      "url": "erpnext_extensions.iran_accounting.account_explorer.get_account_summary",
+      "payload": {
+        "document_scope": {
+          "company": "اسپاد فارمد دارو",
+          "fiscal_year": "1405",
+          "from_date": "2026-03-21",
+          "to_date": "2027-03-20",
+          "finance_book": null,
+          "hide_zero_rows": 1,
+          "voucher": {
+            "voucher_type": null,
+            "voucher_no": null,
+            "against_voucher_type": null,
+            "against_voucher_no": null,
+            "reference_no": null
+          },
+          "accounting": {
+            "account": null,
+            "party_type": null,
+            "party": null
+          },
+          "accounting_dimensions": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "currency": {
+            "currency_type": "account_currency",
+            "currency": null
+          },
+          "inventory": {
+            "item_group": null,
+            "item": null,
+            "warehouse": null,
+            "inventory_account": null
+          },
+          "status": {
+            "include_opening_entries": 1,
+            "include_cancelled_entries": 0,
+            "include_default_finance_book_entries": 1,
+            "include_period_closing_vouchers": 0
+          }
+        },
+        "analysis_context": {
+          "view_axis": "account_level",
+          "level_sequence": 1,
+          "account_scope": {
+            "mode": "tree",
+            "selected_account": null,
+            "virtual_row_key": null,
+            "is_virtual_group": 0,
+            "level_sequence": null,
+            "tree_root_account": null
+          },
+          "party_scope": {
+            "party_type": null,
+            "selected_party": null,
+            "party_name_query": null,
+            "identifier_query": null,
+            "unified_identity": 0,
+            "identity_members": null,
+            "identity_available_members": null,
+            "identity_display_title": null,
+            "identity_identifier": null
+          },
+          "unified_party_scope": {
+            "selected_unified_party": null,
+            "include_unmapped": 0
+          },
+          "dimension_scope": {
+            "dimension_type": "department",
+            "selected_dimension_value": "ایمنی و بهداشت - E"
+          },
+          "voucher_scope": {
+            "voucher_type": null,
+            "voucher_no": null
+          },
+          "item_group_scope": {
+            "selected_item_group": null
+          },
+          "item_scope": {
+            "selected_item": null
+          },
+          "detail_mode": "summary",
+          "sort_field": "display_code",
+          "sort_order": "asc",
+          "page": 1,
+          "page_size": 50,
+          "column_filters": {}
+        },
+        "execution_id": "ce5f378a-3231-448b-9408-d207de4b73f1"
+      }
+    }
+  ]
+}

@@ -1,0 +1,531 @@
+{
+  "passed": 9,
+  "failed": 1,
+  "results": [
+    {
+      "name": "A1 delete-on-type then switch",
+      "ok": true,
+      "detail": {
+        "a1_before": {
+          "label": "A1 after analyze department",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "a1_after": {
+          "label": "A1 after delete+CC+Dept",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            },
+            "cost_center": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": true
+          },
+          "chips": [],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "A2 delete parked dept while on CC",
+      "ok": true,
+      "detail": {
+        "a2_on_cc": {
+          "label": "A2 on cost_center with parked dept",
+          "view_axis": "dimension",
+          "dimension_type": "cost_center",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "cost_center"
+        },
+        "a2_after_del": {
+          "label": "A2 after delete dept while on CC",
+          "view_axis": "dimension",
+          "dimension_type": "cost_center",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": true
+          },
+          "chips": [],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "cost_center"
+        },
+        "a2_back": {
+          "label": "A2 back to department",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            },
+            "cost_center": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": true
+          },
+          "chips": [],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "A3 clear_all while on CC then return Dept",
+      "ok": true,
+      "detail": {
+        "label": "A3 after clear_all return dept",
+        "view_axis": "dimension",
+        "dimension_type": "department",
+        "selected": null,
+        "bag_dims": {},
+        "doc_dims": {},
+        "parked": {
+          "department": {
+            "value": null,
+            "cleared_flag": true,
+            "selected": null
+          },
+          "cost_center": {
+            "value": null,
+            "cleared_flag": true,
+            "selected": null
+          }
+        },
+        "cleared": {
+          "department": true
+        },
+        "chips": [],
+        "payload_dims": {},
+        "payload_selected": null,
+        "payload_dim_type": "department"
+      }
+    },
+    {
+      "name": "A4 incomplete-delete resurrects (expect FAIL if bug)",
+      "ok": false,
+      "detail": {
+        "resurrected": true,
+        "a4": {
+          "label": "A4 incomplete delete resurrects?",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            },
+            "cost_center": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "B intentional park preserves dept",
+      "ok": true,
+      "detail": {
+        "b_dept": {
+          "label": "B after dept",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "b_back": {
+          "label": "B return dept",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            },
+            "cost_center": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "C main-axis tour preserves undeleted dept",
+      "ok": true,
+      "detail": {
+        "c_dept": {
+          "label": "C after dept analyze",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "c_back": {
+          "label": "C after axis tour back to dept",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "C2 delete dept chip on Parties then return",
+      "ok": true,
+      "detail": {
+        "c2_party": {
+          "label": "C2 on party with dept chip?",
+          "view_axis": "party",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            }
+          },
+          "cleared": {
+            "department": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "c2_back": {
+          "label": "C2 back after delete on party",
+          "view_axis": "dimension",
+          "dimension_type": "department",
+          "selected": null,
+          "bag_dims": {},
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": null,
+              "cleared_flag": true,
+              "selected": null
+            }
+          },
+          "cleared": {
+            "department": true
+          },
+          "chips": [],
+          "payload_dims": {},
+          "payload_selected": null,
+          "payload_dim_type": "department"
+        }
+      }
+    },
+    {
+      "name": "D isolation summary vs payload on CC",
+      "ok": true,
+      "detail": {
+        "d_cc": {
+          "label": "D on CC after both analyzed",
+          "view_axis": "dimension",
+          "dimension_type": "cost_center",
+          "selected": "1110 - تولید بیولوژیک - E",
+          "bag_dims": {
+            "cost_center": "1110 - تولید بیولوژیک - E"
+          },
+          "doc_dims": {},
+          "parked": {
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            },
+            "cost_center": {
+              "value": "1110 - تولید بیولوژیک - E",
+              "cleared_flag": false,
+              "selected": "1110 - تولید بیولوژیک - E"
+            }
+          },
+          "cleared": {
+            "department": false,
+            "cost_center": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "cost_center": "1110 - تولید بیولوژیک - E"
+          },
+          "payload_selected": "1110 - تولید بیولوژیک - E",
+          "payload_dim_type": "cost_center"
+        },
+        "d_mismatches": []
+      }
+    },
+    {
+      "name": "E Code/Title filter alignment",
+      "ok": true,
+      "detail": {
+        "code": {
+          "col": 1,
+          "headerLeft": 316,
+          "filterLeft": 316,
+          "bodyLeft": null,
+          "deltaHeaderFilter": 0,
+          "deltaHeaderBody": null,
+          "filterPos": "sticky",
+          "filterLeftCss": "34px",
+          "headerWidth": 141,
+          "filterWidth": 141
+        },
+        "title": {
+          "col": 2,
+          "headerLeft": 457,
+          "filterLeft": 457,
+          "bodyLeft": null,
+          "deltaHeaderFilter": 0,
+          "deltaHeaderBody": null,
+          "filterPos": "relative",
+          "filterLeftCss": "0px",
+          "headerWidth": 241,
+          "filterWidth": 241
+        }
+      }
+    },
+    {
+      "name": "F 20 transitions no duplicate chips",
+      "ok": true,
+      "detail": {
+        "sequence": [
+          "dimension:department",
+          "party",
+          "dimension:project",
+          "voucher",
+          "dimension:cost_center",
+          "account_level",
+          "dimension:department",
+          "dimension",
+          "dimension:project",
+          "item",
+          "dimension:cost_center",
+          "currency",
+          "dimension:department",
+          "item_group",
+          "dimension:project",
+          "party",
+          "dimension:cost_center",
+          "voucher",
+          "dimension:department",
+          "account_level"
+        ],
+        "f_end": {
+          "label": "F after 20 transitions",
+          "view_axis": "account_level",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "parked": {
+            "cost_center": {
+              "value": "1110 - تولید بیولوژیک - E",
+              "cleared_flag": false,
+              "selected": "1110 - تولید بیولوژیک - E"
+            },
+            "department": {
+              "value": "ایمنی و بهداشت - E",
+              "cleared_flag": false,
+              "selected": "ایمنی و بهداشت - E"
+            },
+            "project": {
+              "value": "PROJ-0001",
+              "cleared_flag": false,
+              "selected": "PROJ-0001"
+            }
+          },
+          "cleared": {
+            "department": false,
+            "cost_center": false,
+            "project": false
+          },
+          "chips": [],
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
+        },
+        "dupKeys": []
+      }
+    }
+  ],
+  "version": "5.7.29-nav-repro"
+}

@@ -1,0 +1,63 @@
+{
+  "version": "5.7.30",
+  "passed": 2,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "deleted_dimension_filter_stays_gone",
+      "ok": true,
+      "detail": {
+        "skipped": false,
+        "value": "1110 - تولید بیولوژیک - E",
+        "afterRemove": {
+          "bag": [],
+          "selected": null,
+          "parked": null,
+          "cleared": true,
+          "payloadSelected": null,
+          "payloadDims": {}
+        },
+        "afterBack": {
+          "bag": [],
+          "selected": null,
+          "parked": null,
+          "payloadSelected": null,
+          "payloadDims": {},
+          "analysisChips": []
+        },
+        "afterReanalyze": {
+          "bag": [
+            "cost_center"
+          ],
+          "selected": "1110 - تولید بیولوژیک - E",
+          "cleared": false
+        }
+      }
+    },
+    {
+      "name": "filter_header_alignment",
+      "ok": true,
+      "detail": {
+        "display_code": {
+          "colId": "display_code",
+          "position": "sticky",
+          "deltaLeft": 0,
+          "deltaWidth": 0,
+          "deltaBodyLeft": 0,
+          "headerLeft": 316,
+          "filterLeft": 316
+        },
+        "display_title": {
+          "colId": "display_title",
+          "position": "relative",
+          "deltaLeft": 0,
+          "deltaWidth": 0,
+          "deltaBodyLeft": 0,
+          "headerLeft": 457,
+          "filterLeft": 457
+        }
+      }
+    }
+  ],
+  "generated_at": "2026-11-12T19:31:42.451Z"
+}

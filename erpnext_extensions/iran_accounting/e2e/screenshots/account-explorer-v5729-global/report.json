@@ -1,0 +1,157 @@
+{
+  "version": "5.7.29",
+  "suite": "global-cross-axis-filters",
+  "company": "اسپاد فارمد دارو",
+  "department": "ایمنی و بهداشت - E",
+  "expected_period_debit": 5592288032,
+  "expected_period_credit": 1868092078,
+  "passed": 8,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "E2E1 cross-axis department persistence",
+      "ok": true,
+      "detail": {
+        "hops": 8
+      }
+    },
+    {
+      "name": "E2E2 multi-axis filters remain global",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "E2E3 empty intersection stays empty",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "E2E4 individual filter deletion",
+      "ok": true,
+      "detail": {
+        "cc": "1200 - سربار تولید - E",
+        "after": {
+          "label": "E2E4 after delete project",
+          "view_axis": "account_level",
+          "dimension_type": "project",
+          "selected": null,
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E",
+            "cost_center": "1200 - سربار تولید - E"
+          },
+          "bag_keys": [],
+          "payloadDocDims": {
+            "department": "ایمنی و بهداشت - E",
+            "cost_center": "1200 - سربار تولید - E"
+          },
+          "payloadSelected": null,
+          "payloadDimType": "project",
+          "rowCount": 3,
+          "sumPD": 5592288024,
+          "sumPC": 1868092077,
+          "totalsPD": 5592288024,
+          "totalsPC": 1868092077,
+          "chips": [
+            {
+              "key": "dimensions.cost_center",
+              "value": "سربار تولید"
+            },
+            {
+              "key": "dimensions.department",
+              "value": "ایمنی و بهداشت - E"
+            }
+          ],
+          "parkedChipCount": 0
+        }
+      }
+    },
+    {
+      "name": "E2E5 clear all filters",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "E2E6 multi dimension types simultaneous",
+      "ok": true,
+      "detail": {
+        "cc": "1200 - سربار تولید - E"
+      }
+    },
+    {
+      "name": "E2E7 thirty transitions",
+      "ok": true,
+      "detail": {
+        "sequence": [
+          "dim:department",
+          "axis:party",
+          "dim:project",
+          "axis:item",
+          "dim:department",
+          "axis:item_group",
+          "dim:project",
+          "axis:party",
+          "dim:department",
+          "axis:item",
+          "dim:project",
+          "axis:item_group",
+          "dim:department",
+          "axis:party",
+          "dim:project",
+          "axis:item",
+          "dim:department",
+          "axis:item_group",
+          "dim:project",
+          "axis:party",
+          "dim:department",
+          "axis:item",
+          "dim:project",
+          "axis:item_group",
+          "dim:department",
+          "axis:party",
+          "dim:project",
+          "axis:item",
+          "dim:department",
+          "axis:item_group"
+        ]
+      }
+    },
+    {
+      "name": "SQL recon department account totals",
+      "ok": true,
+      "detail": {
+        "label": "SQL recon",
+        "view_axis": "account_level",
+        "dimension_type": "department",
+        "selected": "ایمنی و بهداشت - E",
+        "bag_dims": {
+          "department": "ایمنی و بهداشت - E"
+        },
+        "bag_keys": [],
+        "payloadDocDims": {
+          "department": "ایمنی و بهداشت - E"
+        },
+        "payloadSelected": "ایمنی و بهداشت - E",
+        "payloadDimType": "department",
+        "rowCount": 4,
+        "sumPD": 5592288032,
+        "sumPC": 1868092078,
+        "totalsPD": 5592288032,
+        "totalsPC": 1868092078,
+        "chips": [
+          {
+            "key": "dimensions.department",
+            "value": "ایمنی و بهداشت - E"
+          }
+        ],
+        "parkedChipCount": 0
+      }
+    }
+  ],
+  "semantics": {
+    "global_filters": "Every Analyze filter constrains all axes (AND)",
+    "dimension_type": "Presentation only; never parks/drops query filters",
+    "empty_intersection": "Returns zero rows; never unfiltered fallback",
+    "clear_all": "Removes every global analytical filter"
+  },
+  "generated_at": "2026-11-13T13:22:08.874Z"
+}

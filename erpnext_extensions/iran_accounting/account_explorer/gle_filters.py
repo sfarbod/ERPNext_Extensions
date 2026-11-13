@@ -49,7 +49,7 @@ def apply_document_scope_filters(query, gle, spec: AccountExplorerQuerySpec):
 		document_scope,
 		skip_party_filters=bool(spec.resolved_member_tuples),
 	)
-	query = _apply_document_dimension_filters(query, gle, document_scope)
+	query = _apply_document_dimension_filters(query, gle, document_scope, spec=spec)
 	query = _apply_document_currency_filters(query, gle, document_scope)
 	return query
 
@@ -91,7 +91,21 @@ def _apply_document_accounting_filters(
 	return query
 
 
-def _apply_document_dimension_filters(query, gle, document_scope: DocumentScope):
+def _apply_document_dimension_filters(
+	query,
+	gle,
+	document_scope: DocumentScope,
+	*,
+	spec: AccountExplorerQuerySpec | None = None,
+):
+	"""Apply document accounting_dimensions to GLE.
+
+	v5.7.29 global filters: every accounting dimension in the document scope is an
+	active AND constraint on all axes. Dimension Type tab selection is presentation
+	only and must not suppress sibling dimension predicates.
+	"""
+	# ``spec`` retained for call-site compatibility; global dims ignore active type.
+	_ = spec
 	for fieldname, value in (document_scope.accounting_dimensions or {}).items():
 		if value is None or value == "":
 			continue

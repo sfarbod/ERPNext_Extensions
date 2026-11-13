@@ -44,7 +44,15 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 	};
 
 	Object.assign(AF, {
-		build_summary_rows(bag, { document_scope = null, analysis_context = null, metadata = null } = {}) {
+		build_summary_rows(
+			bag,
+			{
+				document_scope = null,
+				analysis_context = null,
+				metadata = null,
+				parked_dimensions = null,
+			} = {}
+		) {
 			const rows = [];
 			const doc = document_scope || {};
 			const ctx = analysis_context || {};
@@ -123,6 +131,9 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 			if (cint(party_scope.unified_identity) && !filters_has_party_identity(bag)) {
 				push_doc("unified_identity", __("Unified Party / Related Identity"), __("Yes"));
 			}
+			// v5.7.29 global filters: show every document / analysis dimension regardless of
+			// the presentation Dimension Type tab. ``parked_dimensions`` is ignored.
+			void parked_dimensions;
 			Object.entries(doc.accounting_dimensions || {}).forEach(([field, value]) => {
 				if (ae_af_is_empty(value)) {
 					return;
