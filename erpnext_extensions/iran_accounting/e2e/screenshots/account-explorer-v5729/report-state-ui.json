@@ -15,22 +15,27 @@
           "bag": [
             "cost_center"
           ],
-          "parkedKeys": [
+          "uiKeys": [
             "cost_center"
           ]
         },
         "afterDeptSwitch": {
           "type": "department",
           "selected": null,
-          "bag": [],
+          "bag": [
+            "cost_center"
+          ],
           "column_filters": {},
-          "payloadDims": [],
-          "parkedCC": "1110 - تولید بیولوژیک - E"
+          "payloadDims": [
+            "cost_center"
+          ],
+          "uiCC": true
         },
         "afterDeptAnalyze": {
           "type": "department",
-          "selected": "ایمنی و بهداشت - E",
+          "selected": "مشترک تولید و بهره برداری - E",
           "bag": [
+            "cost_center",
             "department"
           ],
           "rowTypes": [
@@ -41,7 +46,8 @@
           "type": "cost_center",
           "selected": "1110 - تولید بیولوژیک - E",
           "bag": [
-            "cost_center"
+            "cost_center",
+            "department"
           ],
           "column_filters": {
             "display_code": "ای"
@@ -50,8 +56,9 @@
         },
         "backDept": {
           "type": "department",
-          "selected": "ایمنی و بهداشت - E",
+          "selected": "مشترک تولید و بهره برداری - E",
           "bag": [
+            "cost_center",
             "department"
           ]
         },
@@ -83,5 +90,5 @@
       }
     }
   ],
-  "generated_at": "2026-11-12T19:13:32.558Z"
+  "generated_at": "2026-11-13T06:10:51.521Z"
 }

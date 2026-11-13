@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Account Explorer 5.7.29 — comprehensive axis / Dimension Type navigation suite.
- * Browser evidence for delete-vs-park, isolation, main-axis tour, summary/payload, alignment.
+ * Browser evidence for global filters, delete, main-axis tour, summary/payload, alignment.
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
 import fs from "fs";
@@ -131,13 +131,48 @@ async function resetSession(page) {
 async function analyzeFirst(page, field) {
 	await page.evaluate((f) => window.cur_ae.switch_axis("dimension", f), field);
 	await waitIdle(page);
-	const ok = await page.evaluate(() => {
+	// Temporarily clear THIS type only so the picker can list candidates under sibling ANDs.
+	await page.evaluate((f) => {
+		const ae = window.cur_ae;
+		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+		let bag = ae.get_analysis_filters();
+		if (!bag.dimensions?.[f]) return;
+		bag = AF.remove_entry(bag, `dimensions.${f}`);
+		ae.set_analysis_filters_bag(bag);
+		ae.analysis_context.dimension_scope = {
+			dimension_type: f,
+			selected_dimension_value: null,
+		};
+		const dims = { ...(ae.document_scope.accounting_dimensions || {}) };
+		delete dims[f];
+		ae.document_scope.accounting_dimensions = dims;
+		ae._sync_scopes_from_analysis_filters?.();
+		ae.refresh_summary({ new_execution: true, reason: "nav_list_reload" });
+	}, field);
+	await waitIdle(page);
+	const ok = await page.evaluate((f) => {
 		const ae = window.cur_ae;
 		const row = (ae.rows || []).find((x) => x.dimension_value);
-		if (!row) return false;
-		ae.analyze_row_as_filter(row);
-		return true;
-	});
+		if (row) {
+			ae.analyze_row_as_filter(row);
+			return true;
+		}
+		// Empty intersection under sibling AND: still plant a global filter value.
+		const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+		const synthetic = `__AE_NAV_${String(f).toUpperCase()}__`;
+		ae.set_analysis_filters_bag(
+			AF.set_entry(ae.get_analysis_filters(), {
+				key: `dimensions.${f}`,
+				value: synthetic,
+				lifetime: "session",
+				origin: "user",
+				removable: true,
+				meta: { dimension_type: f },
+			})
+		);
+		ae._sync_scopes_from_analysis_filters?.();
+		return !!ae.get_analysis_filters().dimensions?.[f];
+	}, field);
 	await waitIdle(page);
 	if (!ok) throw new Error(`no rows for ${field}`);
 }
@@ -188,21 +223,21 @@ async function main() {
 			await shot(page, "T1-fail");
 		}
 
-		// ── Test 1b — Delete parked chip while on Cost Center ──
+		// ── Test 1b — Delete global department chip while on Cost Center ──
 		try {
 			await resetSession(page);
 			await analyzeFirst(page, "department");
 			await page.evaluate(() => window.cur_ae.switch_axis("dimension", "cost_center"));
 			await waitIdle(page);
 			const onCc = await snap(page, "T1b on CC");
-			const parkedChip = onCc.chips.find(
-				(c) => c.key === "dimensions.department" && c.group === "parked_dimension_filters"
+			const deptChip = onCc.chips.find(
+				(c) => c.key === "dimensions.department" && c.group === "analysis_filters"
 			);
-			if (!parkedChip) {
-				throw new Error(`expected parked department chip; chips=${JSON.stringify(onCc.chips)}`);
+			if (!deptChip) {
+				throw new Error(`expected global department chip; chips=${JSON.stringify(onCc.chips)}`);
 			}
-			if (onCc.payload_dims.department) {
-				throw new Error("parked department must not be in payload");
+			if (!onCc.payload_dims.department) {
+				throw new Error("department must remain in payload on CC");
 			}
 			await page.evaluate(() =>
 				window.cur_ae.remove_analysis_filter_chip("dimensions.department")
@@ -212,16 +247,16 @@ async function main() {
 			await waitIdle(page);
 			const back = await snap(page, "T1b back");
 			if (back.bag_dims.department || back.selected != null) {
-				throw new Error("parked delete resurrected on return");
+				throw new Error("deleted department resurrected on return");
 			}
-			passCheck("T1b delete parked chip on CC", { onCc, back });
-			await shot(page, "T1b-parked-chip-delete");
+			passCheck("T1b delete global chip on CC", { onCc, back });
+			await shot(page, "T1b-global-chip-delete");
 		} catch (e) {
-			failCheck("T1b delete parked chip on CC", e);
+			failCheck("T1b delete global chip on CC", e);
 			await shot(page, "T1b-fail");
 		}
 
-		// ── Test 2 — Intentional preservation ──
+		// ── Test 2 — Intentional global preservation ──
 		try {
 			await resetSession(page);
 			await analyzeFirst(page, "department");
@@ -232,15 +267,15 @@ async function main() {
 			await waitIdle(page);
 			const after = await snap(page, "T2 after");
 			if (String(after.bag_dims.department) !== String(before.bag_dims.department)) {
-				throw new Error("parked department not restored");
+				throw new Error("global department not preserved");
 			}
-			passCheck("T2 intentional park preserve", { before, after });
-			await shot(page, "T2-park-preserve");
+			passCheck("T2 intentional global preserve", { before, after });
+			await shot(page, "T2-global-preserve");
 		} catch (e) {
-			failCheck("T2 intentional park preserve", e);
+			failCheck("T2 intentional global preserve", e);
 		}
 
-		// ── Test 3 — Independent Dimension Types ──
+		// ── Test 3 — Multiple Dimension Types remain simultaneous (AND) ──
 		try {
 			await resetSession(page);
 			const values = {};
@@ -254,30 +289,21 @@ async function main() {
 				await waitIdle(page);
 				const s = await snap(page, `T3 at ${f}`);
 				if (String(s.bag_dims[f] || "") !== String(values[f] || "")) {
-					throw new Error(`isolation broke for ${f}: ${JSON.stringify(s.bag_dims)}`);
+					throw new Error(`active type lost for ${f}: ${JSON.stringify(s.bag_dims)}`);
 				}
 				for (const other of need) {
-					if (other === f) continue;
-					if (s.bag_dims[other]) {
-						throw new Error(`${other} leaked into bag while on ${f}`);
+					if (String(s.bag_dims[other] || "") !== String(values[other] || "")) {
+						throw new Error(`${other} not global while on ${f}: ${JSON.stringify(s.bag_dims)}`);
 					}
-					if (s.payload_dims[other]) {
-						throw new Error(`${other} leaked into payload while on ${f}`);
-					}
-					if (
-						s.chips.some(
-							(c) =>
-								c.key === `dimensions.${other}` && c.group === "analysis_filters"
-						)
-					) {
-						throw new Error(`${other} active chip while on ${f}`);
+					if (String(s.payload_dims[other] || "") !== String(values[other] || "")) {
+						throw new Error(`${other} missing from payload while on ${f}: ${JSON.stringify(s.payload_dims)}`);
 					}
 				}
 			}
-			passCheck("T3 independent dimension types", { values });
-			await shot(page, "T3-independent-types");
+			passCheck("T3 simultaneous dimension types", { values });
+			await shot(page, "T3-simultaneous-types");
 		} catch (e) {
-			failCheck("T3 independent dimension types", e);
+			failCheck("T3 simultaneous dimension types", e);
 		}
 
 		// ── Test 4 — Main axis switching ──
@@ -348,14 +374,14 @@ async function main() {
 			const activeDimChips = s.chips.filter(
 				(c) => c.group === "analysis_filters" && String(c.key).startsWith("dimensions.")
 			);
-			if (activeDimChips.some((c) => c.key === "dimensions.department")) {
-				throw new Error("department active chip on cost_center");
+			if (!activeDimChips.some((c) => c.key === "dimensions.department")) {
+				throw new Error("department must stay as global analysis chip on cost_center");
 			}
-			if (s.payload_dims.department) {
-				throw new Error("department in payload on cost_center");
+			if (!s.payload_dims.department) {
+				throw new Error("department missing from payload on cost_center");
 			}
-			if (!s.chips.some((c) => c.key === "dimensions.department" && c.group === "parked_dimension_filters")) {
-				throw new Error("expected parked department chip");
+			if (s.chips.some((c) => c.group === "parked_dimension_filters")) {
+				throw new Error("parked chips must not appear");
 			}
 			if (s.payload_dims.cost_center && String(s.payload_dims.cost_center) !== String(s.bag_dims.cost_center)) {
 				throw new Error("payload/bag cost_center mismatch");
@@ -425,10 +451,10 @@ async function main() {
 			if (s.chips.some((c) => c.key === "dimensions.department")) {
 				throw new Error("department chip after clear_all");
 			}
-			passCheck("T8 clear_all clears parked", s);
+			passCheck("T8 clear_all clears global filters", s);
 			await shot(page, "T8-clear-all");
 		} catch (e) {
-			failCheck("T8 clear_all clears parked", e);
+			failCheck("T8 clear_all clears global filters", e);
 		}
 	} catch (err) {
 		failCheck("fatal", err);

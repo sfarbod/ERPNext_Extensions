@@ -62,6 +62,11 @@
             "text": "Date Range 2026-03-21 → 2027-03-20"
           },
           {
+            "group": "document_scope",
+            "key": "document.document_dim_department",
+            "text": "Department ایمنی و بهداشت - E"
+          },
+          {
             "group": "analysis_filters",
             "key": "dimensions.department",
             "text": "Department ایمنی و بهداشت - E ×"
@@ -84,20 +89,22 @@
       "ok": true,
       "detail": {
         "onCc": {
-          "payloadDocDims": {},
+          "payloadDocDims": {
+            "department": "ایمنی و بهداشت - E"
+          },
           "selected": {
             "dimension_type": "cost_center",
             "selected_dimension_value": null
           },
-          "parkedDept": "ایمنی و بهداشت - E"
+          "bagDept": "ایمنی و بهداشت - E"
         },
         "s": {
           "payloadDocDims": {
             "department": "ایمنی و بهداشت - E"
           },
           "payloadSelected": {
-            "dimension_type": "department",
-            "selected_dimension_value": "ایمنی و بهداشت - E"
+            "dimension_type": "cost_center",
+            "selected_dimension_value": null
           },
           "sumPD": 5592288032,
           "sumPC": 1868092078,
@@ -123,6 +130,11 @@
               "group": "document_scope",
               "key": "document.date_range",
               "text": "Date Range 2026-03-21 → 2027-03-20"
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "text": "Department ایمنی و بهداشت - E"
             },
             {
               "group": "analysis_filters",
@@ -211,11 +223,13 @@
       }
     },
     {
-      "name": "T6 CC isolation while dept parked",
+      "name": "T6 CC keeps global department filter",
       "ok": true,
       "detail": {
-        "payloadDocDims": {},
-        "rowCount": 8,
+        "payloadDocDims": {
+          "department": "ایمنی و بهداشت - E"
+        },
+        "rowCount": 2,
         "selected": {
           "dimension_type": "cost_center",
           "selected_dimension_value": null
@@ -223,5 +237,5 @@
       }
     }
   ],
-  "generated_at": "2026-11-12T21:01:45.648Z"
+  "generated_at": "2026-11-13T05:58:47.695Z"
 }

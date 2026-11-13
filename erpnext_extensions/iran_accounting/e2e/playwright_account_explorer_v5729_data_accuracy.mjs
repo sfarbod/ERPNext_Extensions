@@ -186,19 +186,19 @@ async function main() {
 				return {
 					payloadDocDims: p.document_scope.accounting_dimensions,
 					selected: p.analysis_context.dimension_scope,
-					parkedDept: ae._dimension_type_parked?.department?.analysis_entry?.value || null,
+					bagDept: ae.get_analysis_filters()?.dimensions?.department?.value || null,
 				};
 			});
-			// Isolation on Cost Center: department must NOT be in active payload dims.
-			if (onCc.payloadDocDims.department) {
-				throw new Error("department leaked into Cost Center payload");
+			// Global filters: department stays active on Cost Center tab.
+			if (onCc.payloadDocDims.department !== DEPT) {
+				throw new Error("department missing from Cost Center payload");
 			}
-			if (onCc.parkedDept !== DEPT) throw new Error("department not parked on CC");
+			if (onCc.bagDept !== DEPT) throw new Error("department missing from bag on CC");
 			await page.evaluate(() => window.cur_ae.switch_axis("account_level", 1));
 			await waitIdle(page);
 			const s = await accountSnapshot(page);
 			if (s.payloadDocDims.department !== DEPT) {
-				throw new Error(`department not restored on accounts: ${JSON.stringify(s.payloadDocDims)}`);
+				throw new Error(`department lost on accounts: ${JSON.stringify(s.payloadDocDims)}`);
 			}
 			if (Math.abs(s.sumPD - EXPECTED_PD) > 1) {
 				throw new Error(`unfiltered after CC hop: sumPD=${s.sumPD}`);
@@ -271,7 +271,7 @@ async function main() {
 			failCheck("T5 vouchers/parties keep dept after CC hop", e);
 		}
 
-		// T6: Cost Center tab isolation still holds (no department predicate while on CC)
+		// T6: Cost Center tab keeps department as global AND (CC list may narrow)
 		try {
 			await reset(page);
 			await analyzeDept(page);
@@ -286,12 +286,11 @@ async function main() {
 					selected: p.analysis_context.dimension_scope,
 				};
 			});
-			if (s.payloadDocDims.department) throw new Error("dept active on CC");
-			if (!(s.rowCount > 1)) throw new Error("expected multiple cost centers");
-			passCheck("T6 CC isolation while dept parked", s);
-			await shot(page, "T6-cc-isolation");
+			if (s.payloadDocDims.department !== DEPT) throw new Error("dept not global on CC");
+			passCheck("T6 CC keeps global department filter", s);
+			await shot(page, "T6-cc-global-dept");
 		} catch (e) {
-			failCheck("T6 CC isolation while dept parked", e);
+			failCheck("T6 CC keeps global department filter", e);
 		}
 	} catch (err) {
 		failCheck("fatal", err);

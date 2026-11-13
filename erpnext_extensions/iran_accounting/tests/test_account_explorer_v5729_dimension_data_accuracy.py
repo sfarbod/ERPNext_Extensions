@@ -87,11 +87,11 @@ class TestAccountExplorerV5729DimensionDataAccuracy(unittest.TestCase):
 		self.assertTrue(meta.has_field("department"))
 		self.assertEqual(meta.get_field("department").options, "Department")
 
-	def test_query_spec_strips_cross_dimension_contamination(self):
+	def test_query_spec_keeps_cross_dimension_and_filters(self):
 		spec = AccountExplorerQuerySpec_from_client(
 			{
 				"document_scope": _base_doc(
-					department=DEPT_A, cost_center="SHOULD-NOT-APPLY"
+					department=DEPT_A, cost_center="SHOULD-AND-APPLY"
 				),
 				"analysis_context": {
 					"view_axis": "dimension",
@@ -109,8 +109,10 @@ class TestAccountExplorerV5729DimensionDataAccuracy(unittest.TestCase):
 				},
 			}
 		)
-		self.assertEqual(spec.document_scope.accounting_dimensions, {"department": DEPT_A})
-		self.assertNotIn("cost_center", spec.document_scope.accounting_dimensions)
+		self.assertEqual(
+			spec.document_scope.accounting_dimensions,
+			{"department": DEPT_A, "cost_center": "SHOULD-AND-APPLY"},
+		)
 
 	def test_scoped_gle_matches_independent_sql_for_department(self):
 		indep = _indep_dept_period(DEPT_A)
@@ -285,7 +287,7 @@ class TestAccountExplorerV5729DimensionDataAccuracy(unittest.TestCase):
 			)[0][0]
 			self.assertGreater(int(match), 0, msg=row.get("voucher_no"))
 
-	def test_controller_restores_parked_dims_when_leaving_dimensions_axis(self):
+	def test_controller_keeps_global_filters_on_axis_switch(self):
 		app_root = Path(frappe.get_app_path("erpnext_extensions"))
 		controller = (
 			app_root
@@ -294,10 +296,12 @@ class TestAccountExplorerV5729DimensionDataAccuracy(unittest.TestCase):
 			/ "account_explorer"
 			/ "account_explorer.js"
 		).read_text(encoding="utf-8")
-		self.assertIn("restore_parked_dimension_filters_to_active_bag", controller)
 		self.assertIn("leaving_dimension_axis", controller)
-		# Restore must run when leaving Dimensions, not when switching Dimension Types only.
-		self.assertIn(
+		self.assertIn("Global analysis filters are never removed on axis / type switches", controller)
+		self.assertIn("activate_dimension_type_scope", controller)
+		# Deprecated restore hook may exist as no-op; must not be called on leave.
+		normalized = controller.replace("\r\n", "\n")
+		self.assertNotIn(
 			"if (leaving_dimension_axis) {\n\t\t\tthis.restore_parked_dimension_filters_to_active_bag();",
-			controller.replace("\r\n", "\n"),
+			normalized,
 		)

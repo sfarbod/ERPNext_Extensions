@@ -86,7 +86,7 @@ def _indep(department: str | None = None, **extra_dims) -> dict:
 	"Company / FY fixtures unavailable",
 )
 class TestAccountExplorerV5729CrossAxisMatrix(unittest.TestCase):
-	def test_controller_documents_restore_semantics(self):
+	def test_controller_documents_global_filter_semantics(self):
 		js = (
 			Path(frappe.get_app_path("erpnext_extensions"))
 			/ "erpnext_extensions"
@@ -94,11 +94,11 @@ class TestAccountExplorerV5729CrossAxisMatrix(unittest.TestCase):
 			/ "account_explorer"
 			/ "account_explorer.js"
 		).read_text(encoding="utf-8")
-		self.assertIn("restore_parked_dimension_filters_to_active_bag", js)
 		self.assertIn("Intended filter semantics", js)
 		self.assertIn("Clear Selection: row-checkbox UI only", js)
 		self.assertIn("Reset All Axes: grid column preferences only", js)
 		self.assertIn("leaving_dimension_axis", js)
+		self.assertIn("global bag shared by every main axis", js)
 
 	def test_account_levels_with_department_match_sql(self):
 		indep = _indep(DEPT)
@@ -129,7 +129,7 @@ class TestAccountExplorerV5729CrossAxisMatrix(unittest.TestCase):
 		self.assertAlmostEqual(flt(totals.get("period_debit")), flt(indep.d), places=2)
 		self.assertAlmostEqual(flt(totals.get("period_credit")), flt(indep.c), places=2)
 
-	def test_dimension_axis_isolation_strips_other_types(self):
+	def test_dimension_axis_keeps_all_global_dimension_filters(self):
 		spec = AccountExplorerQuerySpec_from_client(
 			{
 				"document_scope": _doc(department=DEPT, cost_center="X", project="Y"),
@@ -149,10 +149,11 @@ class TestAccountExplorerV5729CrossAxisMatrix(unittest.TestCase):
 				},
 			}
 		)
-		# Active Dimension Type may keep its own document dim; other types are stripped.
-		self.assertEqual(spec.document_scope.accounting_dimensions, {"cost_center": "X"})
-		self.assertNotIn("department", spec.document_scope.accounting_dimensions)
-		self.assertNotIn("project", spec.document_scope.accounting_dimensions)
+		# Presentation Dimension Type does not strip sibling global filters.
+		self.assertEqual(
+			spec.document_scope.accounting_dimensions,
+			{"department": DEPT, "cost_center": "X", "project": "Y"},
+		)
 
 	def test_gl_axes_accept_department_document_filter(self):
 		indep = _indep(DEPT)

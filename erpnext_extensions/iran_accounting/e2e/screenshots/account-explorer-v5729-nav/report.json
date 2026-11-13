@@ -13,21 +13,8 @@
         "selected": null,
         "bag_dims": {},
         "doc_dims": {},
-        "parked": {
-          "department": {
-            "value": null,
-            "cleared_flag": true,
-            "selected": null
-          },
-          "cost_center": {
-            "value": null,
-            "cleared_flag": true,
-            "selected": null
-          }
-        },
-        "cleared": {
-          "department": true
-        },
+        "parked": {},
+        "cleared": {},
         "chips": [
           {
             "group": "document_scope",
@@ -71,7 +58,7 @@
       }
     },
     {
-      "name": "T1b delete parked chip on CC",
+      "name": "T1b delete global chip on CC",
       "ok": true,
       "detail": {
         "onCc": {
@@ -79,18 +66,14 @@
           "view_axis": "dimension",
           "dimension_type": "cost_center",
           "selected": null,
-          "bag_dims": {},
-          "doc_dims": {},
-          "parked": {
-            "department": {
-              "value": "ایمنی و بهداشت - E",
-              "cleared_flag": false,
-              "selected": "ایمنی و بهداشت - E"
-            }
+          "bag_dims": {
+            "department": "ایمنی و بهداشت - E"
           },
-          "cleared": {
-            "department": false
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
           },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -114,9 +97,16 @@
               "removable": false
             },
             {
-              "group": "parked_dimension_filters",
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
+              "removable": false
+            },
+            {
+              "group": "analysis_filters",
               "key": "dimensions.department",
-              "label": "Department (parked)",
+              "label": "Department",
               "value": "ایمنی و بهداشت - E",
               "removable": true
             },
@@ -135,7 +125,9 @@
               "removable": false
             }
           ],
-          "payload_dims": {},
+          "payload_dims": {
+            "department": "ایمنی و بهداشت - E"
+          },
           "payload_selected": null,
           "payload_dim_type": "cost_center"
         },
@@ -146,21 +138,8 @@
           "selected": null,
           "bag_dims": {},
           "doc_dims": {},
-          "parked": {
-            "department": {
-              "value": null,
-              "cleared_flag": true,
-              "selected": null
-            },
-            "cost_center": {
-              "value": null,
-              "cleared_flag": true,
-              "selected": null
-            }
-          },
-          "cleared": {
-            "department": true
-          },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -205,7 +184,7 @@
       }
     },
     {
-      "name": "T2 intentional park preserve",
+      "name": "T2 intentional global preserve",
       "ok": true,
       "detail": {
         "before": {
@@ -216,17 +195,11 @@
           "bag_dims": {
             "department": "ایمنی و بهداشت - E"
           },
-          "doc_dims": {},
-          "parked": {
-            "department": {
-              "value": "ایمنی و بهداشت - E",
-              "cleared_flag": false,
-              "selected": "ایمنی و بهداشت - E"
-            }
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
           },
-          "cleared": {
-            "department": false
-          },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -247,6 +220,13 @@
               "key": "document.date_range",
               "label": "Date Range",
               "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
               "removable": false
             },
             {
@@ -288,21 +268,8 @@
           "doc_dims": {
             "department": "ایمنی و بهداشت - E"
           },
-          "parked": {
-            "department": {
-              "value": "ایمنی و بهداشت - E",
-              "cleared_flag": false,
-              "selected": "ایمنی و بهداشت - E"
-            },
-            "cost_center": {
-              "value": null,
-              "cleared_flag": true,
-              "selected": null
-            }
-          },
-          "cleared": {
-            "department": false
-          },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -363,13 +330,13 @@
       }
     },
     {
-      "name": "T3 independent dimension types",
+      "name": "T3 simultaneous dimension types",
       "ok": true,
       "detail": {
         "values": {
           "department": "ایمنی و بهداشت - E",
-          "cost_center": "1110 - تولید بیولوژیک - E",
-          "project": "PROJ-0001"
+          "cost_center": "1200 - سربار تولید - E",
+          "project": "__AE_NAV_PROJECT__"
         }
       }
     },
@@ -385,17 +352,11 @@
           "bag_dims": {
             "department": "ایمنی و بهداشت - E"
           },
-          "doc_dims": {},
-          "parked": {
-            "department": {
-              "value": "ایمنی و بهداشت - E",
-              "cleared_flag": false,
-              "selected": "ایمنی و بهداشت - E"
-            }
+          "doc_dims": {
+            "department": "ایمنی و بهداشت - E"
           },
-          "cleared": {
-            "department": false
-          },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -416,6 +377,13 @@
               "key": "document.date_range",
               "label": "Date Range",
               "value": "2026-03-21 → 2027-03-20",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_department",
+              "label": "Department",
+              "value": "ایمنی و بهداشت - E",
               "removable": false
             },
             {
@@ -457,16 +425,8 @@
           "doc_dims": {
             "department": "ایمنی و بهداشت - E"
           },
-          "parked": {
-            "department": {
-              "value": "ایمنی و بهداشت - E",
-              "cleared_flag": false,
-              "selected": "ایمنی و بهداشت - E"
-            }
-          },
-          "cleared": {
-            "department": false
-          },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -555,38 +515,20 @@
         "end": {
           "label": "T5 end",
           "view_axis": "account_level",
-          "dimension_type": "project",
-          "selected": "PROJ-0001",
+          "dimension_type": "department",
+          "selected": "ایمنی و بهداشت - E",
           "bag_dims": {
             "department": "ایمنی و بهداشت - E",
-            "cost_center": "1110 - تولید بیولوژیک - E",
-            "project": "PROJ-0001"
+            "cost_center": "1200 - سربار تولید - E",
+            "project": "__AE_NAV_PROJECT__"
           },
           "doc_dims": {
-            "department": "ایمنی و بهداشت - E"
+            "department": "ایمنی و بهداشت - E",
+            "cost_center": "1200 - سربار تولید - E",
+            "project": "__AE_NAV_PROJECT__"
           },
-          "parked": {
-            "department": {
-              "value": "ایمنی و بهداشت - E",
-              "cleared_flag": false,
-              "selected": "ایمنی و بهداشت - E"
-            },
-            "cost_center": {
-              "value": "1110 - تولید بیولوژیک - E",
-              "cleared_flag": false,
-              "selected": "1110 - تولید بیولوژیک - E"
-            },
-            "project": {
-              "value": "PROJ-0001",
-              "cleared_flag": false,
-              "selected": "PROJ-0001"
-            }
-          },
-          "cleared": {
-            "department": false,
-            "cost_center": false,
-            "project": false
-          },
+          "parked": {},
+          "cleared": {},
           "chips": [
             {
               "group": "document_scope",
@@ -617,10 +559,24 @@
               "removable": false
             },
             {
+              "group": "document_scope",
+              "key": "document.document_dim_cost_center",
+              "label": "Cost Center",
+              "value": "1200 - سربار تولید - E",
+              "removable": false
+            },
+            {
+              "group": "document_scope",
+              "key": "document.document_dim_project",
+              "label": "Project",
+              "value": "__AE_NAV_PROJECT__",
+              "removable": false
+            },
+            {
               "group": "analysis_filters",
               "key": "dimensions.cost_center",
               "label": "Cost Center",
-              "value": "تولید بیولوژیک",
+              "value": "سربار تولید",
               "removable": true
             },
             {
@@ -634,7 +590,7 @@
               "group": "analysis_filters",
               "key": "dimensions.project",
               "label": "Project",
-              "value": "کارخانه سیمین دشت",
+              "value": "__AE_NAV_PROJECT__",
               "removable": true
             },
             {
@@ -654,11 +610,11 @@
           ],
           "payload_dims": {
             "department": "ایمنی و بهداشت - E",
-            "cost_center": "1110 - تولید بیولوژیک - E",
-            "project": "PROJ-0001"
+            "cost_center": "1200 - سربار تولید - E",
+            "project": "__AE_NAV_PROJECT__"
           },
-          "payload_selected": "PROJ-0001",
-          "payload_dim_type": "project"
+          "payload_selected": "ایمنی و بهداشت - E",
+          "payload_dim_type": "department"
         }
       }
     },
@@ -669,27 +625,17 @@
         "label": "T6 on CC",
         "view_axis": "dimension",
         "dimension_type": "cost_center",
-        "selected": "1110 - تولید بیولوژیک - E",
+        "selected": "1200 - سربار تولید - E",
         "bag_dims": {
-          "cost_center": "1110 - تولید بیولوژیک - E"
+          "department": "ایمنی و بهداشت - E",
+          "cost_center": "1200 - سربار تولید - E"
         },
-        "doc_dims": {},
-        "parked": {
-          "department": {
-            "value": "ایمنی و بهداشت - E",
-            "cleared_flag": false,
-            "selected": "ایمنی و بهداشت - E"
-          },
-          "cost_center": {
-            "value": "1110 - تولید بیولوژیک - E",
-            "cleared_flag": false,
-            "selected": "1110 - تولید بیولوژیک - E"
-          }
+        "doc_dims": {
+          "department": "ایمنی و بهداشت - E",
+          "cost_center": "1200 - سربار تولید - E"
         },
-        "cleared": {
-          "department": false,
-          "cost_center": false
-        },
+        "parked": {},
+        "cleared": {},
         "chips": [
           {
             "group": "document_scope",
@@ -713,16 +659,30 @@
             "removable": false
           },
           {
+            "group": "document_scope",
+            "key": "document.document_dim_department",
+            "label": "Department",
+            "value": "ایمنی و بهداشت - E",
+            "removable": false
+          },
+          {
+            "group": "document_scope",
+            "key": "document.document_dim_cost_center",
+            "label": "Cost Center",
+            "value": "1200 - سربار تولید - E",
+            "removable": false
+          },
+          {
             "group": "analysis_filters",
             "key": "dimensions.cost_center",
             "label": "Cost Center",
-            "value": "تولید بیولوژیک",
+            "value": "سربار تولید",
             "removable": true
           },
           {
-            "group": "parked_dimension_filters",
+            "group": "analysis_filters",
             "key": "dimensions.department",
-            "label": "Department (parked)",
+            "label": "Department",
             "value": "ایمنی و بهداشت - E",
             "removable": true
           },
@@ -742,9 +702,10 @@
           }
         ],
         "payload_dims": {
-          "cost_center": "1110 - تولید بیولوژیک - E"
+          "department": "ایمنی و بهداشت - E",
+          "cost_center": "1200 - سربار تولید - E"
         },
-        "payload_selected": "1110 - تولید بیولوژیک - E",
+        "payload_selected": "1200 - سربار تولید - E",
         "payload_dim_type": "cost_center"
       }
     },
@@ -769,7 +730,7 @@
       }
     },
     {
-      "name": "T8 clear_all clears parked",
+      "name": "T8 clear_all clears global filters",
       "ok": true,
       "detail": {
         "label": "T8",
@@ -778,13 +739,7 @@
         "selected": null,
         "bag_dims": {},
         "doc_dims": {},
-        "parked": {
-          "cost_center": {
-            "value": null,
-            "cleared_flag": true,
-            "selected": null
-          }
-        },
+        "parked": {},
         "cleared": {},
         "chips": [
           {
@@ -829,5 +784,5 @@
       }
     }
   ],
-  "generated_at": "2026-11-12T20:43:56.686Z"
+  "generated_at": "2026-11-13T06:10:45.859Z"
 }

@@ -111,7 +111,7 @@ async function main() {
 			ae.clear_all_analysis_filters?.({ refresh: false });
 		}, { company: COMPANY });
 
-		// —— Scenario A: Dimension Type isolation ——
+		// —— Scenario A: Global Dimension filters (AND across Dimension Types) ——
 		try {
 			await page.evaluate(() => {
 				window.__ae_v5729_ready_for_cc_shot = false;
@@ -223,57 +223,65 @@ async function main() {
 			const isolation = await isolationPromise;
 
 			if (isolation.skipped) {
-				passCheck("dimension_isolation_skipped", isolation);
+				passCheck("dimension_global_filters_skipped", isolation);
 			} else {
 				if (isolation.afterCC.type !== "cost_center") {
 					throw new Error(`CC type wrong: ${JSON.stringify(isolation.afterCC)}`);
 				}
-				if (isolation.afterCC.bagDims.some((d) => d !== "cost_center")) {
-					throw new Error(`CC bag leak: ${JSON.stringify(isolation.afterCC.bagDims)}`);
+				if (!isolation.afterCC.bagDims.includes("cost_center")) {
+					throw new Error(`CC missing from bag: ${JSON.stringify(isolation.afterCC.bagDims)}`);
 				}
 				if (isolation.afterCC.rowTypes.some((t) => t && t !== "cost_center")) {
 					throw new Error(`CC row type leak: ${JSON.stringify(isolation.afterCC.rowTypes)}`);
 				}
-				if (isolation.afterCC.payloadDims.some((d) => d !== "cost_center")) {
-					throw new Error(`CC payload leak: ${JSON.stringify(isolation.afterCC.payloadDims)}`);
+				if (!isolation.afterCC.payloadDims.includes("cost_center")) {
+					throw new Error(`CC missing from payload: ${JSON.stringify(isolation.afterCC.payloadDims)}`);
 				}
 				if (isolation.afterSwitch.type !== isolation.nextType) {
 					throw new Error(`switch type wrong: ${JSON.stringify(isolation.afterSwitch)}`);
 				}
-				if (isolation.afterSwitch.bagDims.includes("cost_center")) {
-					throw new Error(`stale CC after switch: ${JSON.stringify(isolation.afterSwitch)}`);
+				// Global contract: cost_center remains after switching Dimension Type.
+				if (!isolation.afterSwitch.bagDims.includes("cost_center")) {
+					throw new Error(`CC dropped after switch: ${JSON.stringify(isolation.afterSwitch)}`);
+				}
+				if (!isolation.afterSwitch.payloadDims.includes("cost_center")) {
+					throw new Error(`CC dropped from payload after switch: ${JSON.stringify(isolation.afterSwitch)}`);
 				}
 				if (isolation.afterDept) {
 					if (isolation.afterDept.type !== isolation.nextType) {
 						throw new Error(`dept type wrong: ${JSON.stringify(isolation.afterDept)}`);
 					}
-					if (isolation.afterDept.bagDims.includes("cost_center")) {
-						throw new Error(`CC chip after dept analyze: ${JSON.stringify(isolation.afterDept)}`);
+					if (!isolation.afterDept.bagDims.includes("cost_center")) {
+						throw new Error(`CC lost after dept analyze: ${JSON.stringify(isolation.afterDept)}`);
+					}
+					if (!isolation.afterDept.bagDims.includes(isolation.nextType)) {
+						throw new Error(`new type missing after analyze: ${JSON.stringify(isolation.afterDept)}`);
 					}
 					if (isolation.afterDept.rowTypes.some((t) => t && t !== isolation.nextType)) {
 						throw new Error(`dept row leak: ${JSON.stringify(isolation.afterDept)}`);
 					}
 				}
-				passCheck("dimension_type_isolation", isolation);
+				passCheck("dimension_type_global_filters", isolation);
 			}
 		} catch (err) {
-			failCheck("dimension_type_isolation", err);
+			failCheck("dimension_type_global_filters", err);
 			await shot(page, "01-dimension-isolation-fail");
 		}
 
 		const chips = await chipText(page);
 		try {
-			const chipLeak =
-				chips.some((t) => /cost center/i.test(t)) &&
-				chips.some((t) => /department/i.test(t) && /analysis|filter/i.test(t));
-			// Soft check: when on department, Cost Center analysis chip must not appear.
-			const onDept = await page.evaluate(
-				() => window.cur_ae?.analysis_context?.dimension_scope?.dimension_type === "department"
+			// Global filters: after analyzing CC then Department, both analysis chips may appear.
+			const bag = await page.evaluate(() =>
+				Object.keys(window.cur_ae?.get_analysis_filters?.()?.dimensions || {})
 			);
-			if (onDept && chips.some((t) => /cost\s*center/i.test(t) && !/dimension type/i.test(t))) {
-				throw new Error(`Filter Summary still shows Cost Center: ${JSON.stringify(chips)}`);
+			if (bag.includes("cost_center") && bag.includes("department")) {
+				const hasCC = chips.some((t) => /cost\s*center/i.test(t));
+				const hasDept = chips.some((t) => /department/i.test(t));
+				if (!hasCC || !hasDept) {
+					throw new Error(`Filter Summary missing global dims: chips=${JSON.stringify(chips)} bag=${JSON.stringify(bag)}`);
+				}
 			}
-			passCheck("filter_summary_matches_scope", { chips, chipLeak: !!chipLeak, onDept });
+			passCheck("filter_summary_matches_scope", { chips, bag });
 		} catch (err) {
 			failCheck("filter_summary_matches_scope", err);
 		}

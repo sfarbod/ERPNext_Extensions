@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Account Explorer v5.7.29 — AnalysisFilters + debounce contract unit harness.
+ * Account Explorer v5.7.29 — AnalysisFilters + debounce + global Dimension filters.
  */
 const fs = require("fs");
 const path = require("path");
@@ -37,7 +37,7 @@ function loadAF() {
 			},
 		},
 		cint: (v) => parseInt(v, 10) || 0,
-		__: (s) => s,
+		__: (s, v) => (Array.isArray(v) ? s.replace("{0}", v[0]) : s),
 		console,
 	};
 	sandbox.erpnext_extensions = sandbox.frappe.erpnext_extensions || {};
@@ -95,48 +95,82 @@ function main() {
 			origin: "drill_graph",
 			meta: { dimension_type: "department" },
 		});
-		if (next.dimensions.cost_center) throw new Error("cost_center not cleared");
+		if (!next.dimensions.cost_center || next.dimensions.cost_center.value !== "CC-1") {
+			throw new Error("cost_center not retained (global AND)");
+		}
 		if (!next.dimensions.department || next.dimensions.department.value !== "DEP-1") {
 			throw new Error("department missing");
 		}
-		pass("replace_dimension_clears_other_types");
+		pass("replace_dimension_keeps_sibling_types");
 	} catch (err) {
-		fail("replace_dimension_clears_other_types", err);
+		fail("replace_dimension_keeps_sibling_types", err);
 	}
 
 	try {
 		const bag = AF.normalize_bag({
 			dimensions: {
-				cost_center: { key: "dimensions.cost_center", value: "CC-X", lifetime: "session", origin: "user" },
-				department: { key: "dimensions.department", value: "DEP-X", lifetime: "session", origin: "user" },
+				cost_center: {
+					key: "dimensions.cost_center",
+					value: "CC-X",
+					lifetime: "session",
+					origin: "user",
+				},
+				department: {
+					key: "dimensions.department",
+					value: "DEP-X",
+					lifetime: "session",
+					origin: "user",
+				},
 			},
 		});
 		const projected = AF.build_legacy_scope_payload_from_analysis_filters(
 			bag,
-			{ view_axis: "dimension", dimension_scope: { dimension_type: "department", selected_dimension_value: null } },
-			{ accounting_dimensions: { cost_center: "CC-DOC", project: "PRJ" } }
+			{
+				view_axis: "dimension",
+				dimension_scope: { dimension_type: "department", selected_dimension_value: null },
+			},
+			{ accounting_dimensions: {} }
 		);
 		const dims = projected.document_scope.accounting_dimensions || {};
-		if (dims.cost_center) throw new Error("cost_center leaked into payload");
-		if (dims.project) throw new Error("project leaked into payload");
+		if (dims.cost_center !== "CC-X") throw new Error("cost_center not projected");
+		if (dims.department !== "DEP-X") throw new Error("department not projected");
 		if (projected.analysis_context.dimension_scope.dimension_type !== "department") {
-			throw new Error("dimension_type wrong");
+			throw new Error("presentation dimension_type wrong");
 		}
-		pass("projection_isolates_active_dimension_type", dims);
+		if (projected.analysis_context.dimension_scope.selected_dimension_value !== "DEP-X") {
+			throw new Error("selected_dimension_value should follow presentation type");
+		}
+		pass("projection_keeps_all_dimension_filters", dims);
 	} catch (err) {
-		fail("projection_isolates_active_dimension_type", err);
+		fail("projection_keeps_all_dimension_filters", err);
 	}
 
 	try {
 		const bag = AF.normalize_bag({
 			dimensions: {
-				cost_center: { key: "dimensions.cost_center", value: "CC-1", lifetime: "session", origin: "user" },
-				department: { key: "dimensions.department", value: "DEP-1", lifetime: "session", origin: "user" },
+				cost_center: {
+					key: "dimensions.cost_center",
+					value: "CC-1",
+					lifetime: "session",
+					origin: "user",
+				},
+				department: {
+					key: "dimensions.department",
+					value: "DEP-1",
+					lifetime: "session",
+					origin: "user",
+				},
 			},
 		});
 		const rows = AF.build_summary_rows(bag, {
-			document_scope: { company: "X", accounting_dimensions: { cost_center: "CC-1", department: "DEP-1" } },
-			analysis_context: { view_axis: "dimension", dimension_scope: { dimension_type: "department" } },
+			document_scope: {
+				company: "X",
+				accounting_dimensions: { cost_center: "CC-1", department: "DEP-1" },
+			},
+			analysis_context: {
+				view_axis: "dimension",
+				dimension_scope: { dimension_type: "department" },
+			},
 			metadata: {
 				dimensions: [
 					{ fieldname: "cost_center", label: "Cost Center" },
@@ -145,19 +179,18 @@ function main() {
 			},
 		});
 		const analysis = rows.filter((r) => r.group === "analysis_filters");
-		const docs = rows.filter((r) => String(r.key || "").includes("document_dim_"));
-		if (analysis.some((r) => String(r.key).includes("cost_center"))) {
-			throw new Error("analysis chip shows cost_center");
-		}
-		if (docs.some((r) => String(r.key).includes("cost_center"))) {
-			throw new Error("document chip shows cost_center");
+		if (!analysis.some((r) => String(r.key).includes("cost_center"))) {
+			throw new Error("cost_center analysis chip missing");
 		}
 		if (!analysis.some((r) => String(r.key).includes("department"))) {
 			throw new Error("department analysis chip missing");
 		}
-		pass("filter_summary_hides_other_dimension_types");
+		if (analysis.some((r) => r.group === "parked_dimension_filters")) {
+			throw new Error("parked group must not appear");
+		}
+		pass("filter_summary_shows_all_dimension_types");
 	} catch (err) {
-		fail("filter_summary_hides_other_dimension_types", err);
+		fail("filter_summary_shows_all_dimension_types", err);
 	}
 
 	try {
@@ -195,7 +228,7 @@ function main() {
 		if (calls.length !== 2) throw new Error("enter did not apply immediately");
 		handle({ display_code: "x" });
 		clock.advance(200);
-		handle({}); // clear-like empty
+		handle({});
 		clock.clearTimeout(timer);
 		seq += 1;
 		calls.push({ seq, mapped: {}, at: clock.now, immediate_clear: true });
@@ -217,7 +250,7 @@ function main() {
 			clock.clearTimeout(timer);
 			const mySeq = ++seq;
 			timer = clock.setTimeout(() => {
-				if (mySeq < seq) return; // stale guard
+				if (mySeq < seq) return;
 				appliedSeq = mySeq;
 				applied.push({ seq: mySeq, mapped: { ...latest } });
 			}, 500);

@@ -473,13 +473,10 @@ def AccountExplorerQuerySpec_from_client(
 		if not analysis.dimension_scope.dimension_type:
 			raise AccountExplorerValidationError(_("Dimension type is required for dimension analysis."))
 		validate_dimension_field(analysis.dimension_scope.dimension_type)
-		# v5.7.29: enforce Dimension Type isolation — drop other types from document dims.
-		active_type = analysis.dimension_scope.dimension_type
-		dims = dict(document_scope.accounting_dimensions or {})
-		stale = [field for field in dims if field != active_type]
-		for field in stale:
-			dims.pop(field, None)
-		document_scope.accounting_dimensions = dims
+		# v5.7.29 global filters: Dimension Type is presentation only. Keep every
+		# accounting_dimensions entry (Department AND Cost Center AND …).
+		for fieldname in list((document_scope.accounting_dimensions or {}).keys()):
+			validate_dimension_field(fieldname)
 	if view_axis == "currency":
 		assert_currency_analysis_enabled()
 	if view_axis in {"item_group", "item", "inventory_account"}:

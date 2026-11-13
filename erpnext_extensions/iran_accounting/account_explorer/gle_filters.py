@@ -100,18 +100,14 @@ def _apply_document_dimension_filters(
 ):
 	"""Apply document accounting_dimensions to GLE.
 
-	v5.7.29: on the Dimensions axis, only the active ``dimension_scope.dimension_type``
-	may contribute dimension predicates. Stale Cost Center (or other) document filters
-	must not leak into a Department (or other) analysis result.
+	v5.7.29 global filters: every accounting dimension in the document scope is an
+	active AND constraint on all axes. Dimension Type tab selection is presentation
+	only and must not suppress sibling dimension predicates.
 	"""
-	active_type = None
-	if spec is not None and getattr(spec, "view_axis", None) == "dimension":
-		active_type = getattr(getattr(spec, "dimension_scope", None), "dimension_type", None) or None
-
+	# ``spec`` retained for call-site compatibility; global dims ignore active type.
+	_ = spec
 	for fieldname, value in (document_scope.accounting_dimensions or {}).items():
 		if value is None or value == "":
-			continue
-		if active_type and fieldname != active_type:
 			continue
 		validate_dimension_field(fieldname)
 		dim = gle[fieldname]

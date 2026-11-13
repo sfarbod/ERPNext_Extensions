@@ -112,7 +112,7 @@ async function main() {
 					type: ae.analysis_context.dimension_scope?.dimension_type,
 					selected: ae.analysis_context.dimension_scope?.selected_dimension_value,
 					bag: Object.keys(ae.get_analysis_filters()?.dimensions || {}),
-					parkedKeys: Object.keys(ae._dimension_type_parked || {}),
+					uiKeys: Object.keys(ae._dimension_type_ui || {}),
 				};
 				ae.analysis_context.column_filters = { display_code: "ای" };
 				ae.park_dimension_type_state("cost_center");
@@ -127,7 +127,7 @@ async function main() {
 					payloadDims: Object.keys(
 						ae.build_payload()?.document_scope?.accounting_dimensions || {}
 					),
-					parkedCC: ae._dimension_type_parked?.cost_center?.selected_dimension_value || null,
+					uiCC: !!ae._dimension_type_ui?.cost_center,
 				};
 				const deptRows = (ae.rows || []).filter((r) => r.dimension_value);
 				if (deptRows.length) {
@@ -175,14 +175,14 @@ async function main() {
 				if (state.afterCC.type !== "cost_center" || !state.afterCC.selected) {
 					throw new Error(`CC analyze failed: ${JSON.stringify(state.afterCC)}`);
 				}
-				if (state.afterDeptSwitch.bag.includes("cost_center")) {
-					throw new Error(`CC leaked into Dept bag: ${JSON.stringify(state.afterDeptSwitch)}`);
+				if (!state.afterDeptSwitch.bag.includes("cost_center")) {
+					throw new Error(`CC dropped from Dept bag: ${JSON.stringify(state.afterDeptSwitch)}`);
 				}
-				if (state.afterDeptSwitch.payloadDims.includes("cost_center")) {
-					throw new Error(`CC leaked into Dept payload: ${JSON.stringify(state.afterDeptSwitch)}`);
+				if (!state.afterDeptSwitch.payloadDims.includes("cost_center")) {
+					throw new Error(`CC dropped from Dept payload: ${JSON.stringify(state.afterDeptSwitch)}`);
 				}
-				if (state.afterDeptSwitch.parkedCC !== state.ccValue) {
-					throw new Error(`CC not parked: ${JSON.stringify(state.afterDeptSwitch)}`);
+				if (!state.afterDeptSwitch.uiCC) {
+					throw new Error(`CC UI snapshot missing: ${JSON.stringify(state.afterDeptSwitch)}`);
 				}
 				if (state.backCC.type !== "cost_center" || state.backCC.selected !== state.ccValue) {
 					throw new Error(`CC not restored: ${JSON.stringify(state.backCC)}`);
@@ -190,14 +190,15 @@ async function main() {
 				if (state.backCC.column_filters?.display_code !== "ای") {
 					throw new Error(`CC column filter not restored: ${JSON.stringify(state.backCC)}`);
 				}
-				if (state.backCC.bag.includes("department")) {
-					throw new Error(`Dept leaked after restore CC: ${JSON.stringify(state.backCC)}`);
+				// Global filters: department remains after returning to cost_center.
+				if (state.afterDeptAnalyze?.bag?.includes("department") && !state.backCC.bag.includes("department")) {
+					throw new Error(`Dept dropped after restore CC: ${JSON.stringify(state.backCC)}`);
 				}
 				if (state.backDept.type !== "department") {
 					throw new Error(`Dept not restored: ${JSON.stringify(state.backDept)}`);
 				}
-				if (state.backDept.bag.includes("cost_center")) {
-					throw new Error(`CC leaked on second Dept visit: ${JSON.stringify(state.backDept)}`);
+				if (!state.backDept.bag.includes("cost_center")) {
+					throw new Error(`CC dropped on second Dept visit: ${JSON.stringify(state.backDept)}`);
 				}
 				passCheck("dimension_state_persistence", state);
 			}

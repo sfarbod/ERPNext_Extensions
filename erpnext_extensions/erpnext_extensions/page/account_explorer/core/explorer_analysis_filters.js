@@ -317,10 +317,12 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				if (!fieldname) {
 					return this.set_entry(current, entry, defaults);
 				}
-				// v5.7.29: Analyze one Dimension Type replaces all others — no cross-type chips.
-				next = this.normalize_bag(current);
-				next.dimensions = {};
-				return this.set_entry(next, { ...entry, key: `dimensions.${fieldname}` }, defaults);
+				// v5.7.29 global filters: upsert this Dimension Type only; keep siblings (AND).
+				return this.set_entry(
+					current,
+					{ ...entry, key: `dimensions.${fieldname}` },
+					defaults
+				);
 			}
 			default:
 				if (entry) {
@@ -470,25 +472,19 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 			inventory.inventory_account = filters.inventory_account.value;
 		}
 
-		const view_axis = ctx.view_axis || null;
-		const active_dimension_type = dimension_scope.dimension_type || null;
+		// Preserve presentation Dimension Type (tab). Do not let projection rewrite it
+		// to whichever dimension filter was last iterated.
+		const presentation_dimension_type =
+			(ctx.dimension_scope && ctx.dimension_scope.dimension_type) ||
+			dimension_scope.dimension_type ||
+			null;
 		Object.entries(filters.dimensions || {}).forEach(([fieldname, entry]) => {
 			if (!entry) {
 				return;
 			}
-			const value = typeof entry.value === "object" ? entry.value.dimension_value ?? entry.value : entry.value;
-			// v5.7.29: on Dimensions axis, only the active Dimension Type may project into
-			// dimension_scope / accounting_dimensions — prevents Cost Center↔Department leakage.
-			if (view_axis === "dimension" && active_dimension_type && fieldname !== active_dimension_type) {
-				return;
-			}
-			if (dimension_scope.dimension_type === fieldname || !dimension_scope.selected_dimension_value) {
-				dimension_scope.dimension_type = dimension_scope.dimension_type || fieldname;
-			}
-			if (Object.keys(filters.dimensions).length === 1 || dimension_scope.dimension_type === fieldname) {
-				dimension_scope.dimension_type = fieldname;
-				dimension_scope.selected_dimension_value = value;
-			}
+			const value =
+				typeof entry.value === "object" ? entry.value.dimension_value ?? entry.value : entry.value;
+			// v5.7.29 global filters: every Dimension analysis projects into the query.
 			accounting_dimensions[fieldname] = value;
 			if (
 				doc.accounting_dimensions &&
@@ -502,19 +498,26 @@ erpnext_extensions.account_explorer.core.AnalysisFilters = class AnalysisFilters
 				});
 			}
 		});
-		if (view_axis === "dimension" && active_dimension_type) {
-			// Drop stale document-panel dims of other types while presenting one Dimension Type.
-			Object.keys(accounting_dimensions).forEach((fieldname) => {
-				if (fieldname !== active_dimension_type) {
-					delete accounting_dimensions[fieldname];
-				}
-			});
-			if (
-				dimension_scope.selected_dimension_value != null &&
-				dimension_scope.dimension_type !== active_dimension_type
-			) {
-				dimension_scope.dimension_type = active_dimension_type;
+		if (presentation_dimension_type) {
+			dimension_scope.dimension_type = presentation_dimension_type;
+			const active_entry = filters.dimensions?.[presentation_dimension_type];
+			if (active_entry) {
+				const value =
+					typeof active_entry.value === "object"
+						? active_entry.value.dimension_value ?? active_entry.value
+						: active_entry.value;
+				dimension_scope.selected_dimension_value = value;
+			} else {
+				dimension_scope.selected_dimension_value = null;
 			}
+		} else if (Object.keys(filters.dimensions || {}).length === 1) {
+			const only = Object.keys(filters.dimensions)[0];
+			dimension_scope.dimension_type = only;
+			const only_entry = filters.dimensions[only];
+			dimension_scope.selected_dimension_value =
+				typeof only_entry.value === "object"
+					? only_entry.value.dimension_value ?? only_entry.value
+					: only_entry.value;
 		}
 
 		return {

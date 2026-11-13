@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Account Explorer 5.7.29 — final cross-axis Dimension data-accuracy matrix.
+ * Account Explorer 5.7.29 — cross-axis Dimension data-accuracy matrix (global filters).
  * Every path checks payload dims + returned totals vs independent expectations.
+ * Dimension Type switches must NOT park/drop sibling filters.
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
 import fs from "fs";
@@ -78,6 +79,7 @@ async function reset(page) {
 		if (ae.fy_field?.set_value) await ae.fy_field.set_value("1405");
 		await ae.sync_dates_from_fy({ reason: "fiscal_year_change", force: true });
 		ae.clear_all_analysis_filters?.({ refresh: false });
+		ae._dimension_type_ui = {};
 		ae._dimension_type_parked = {};
 		ae._dimension_type_cleared = {};
 		ae.analysis_context.dimension_scope = {
@@ -274,8 +276,7 @@ async function main() {
 			await analyzeDimensionValue(page, "department", null, DEPT);
 			await hopDim(page, "cost_center");
 			const onCc = await snap(page, "1 on CC");
-			assertDeptAbsent(onCc, "1 CC isolation");
-			if (onCc.parked.department?.value !== DEPT) throw new Error("dept not parked");
+			assertDeptActive(onCc, "1 CC keeps global dept");
 			await hopAxis(page, "account_level", 1);
 			const s = await snap(page, "1 accounts");
 			assertFilteredAccounts(s, "1");
@@ -323,7 +324,7 @@ async function main() {
 			if (available.dims.includes("facility")) {
 				await hopDim(page, "facility");
 				const onFac = await snap(page, "4 on facility");
-				assertDeptAbsent(onFac, "4 facility isolation");
+				assertDeptActive(onFac, "4 facility keeps global dept");
 			}
 			await hopAxis(page, "item");
 			const s = await snap(page, "4 items");
@@ -340,7 +341,7 @@ async function main() {
 			await analyzeDimensionValue(page, "department", null, DEPT);
 			await hopDim(page, "project");
 			const onProj = await snap(page, "5 on project");
-			assertDeptAbsent(onProj, "5 project isolation");
+			assertDeptActive(onProj, "5 project keeps global dept");
 			await hopAxis(page, "account_level", 1);
 			const s = await snap(page, "5 accounts");
 			assertFilteredAccounts(s, "5");
@@ -357,7 +358,7 @@ async function main() {
 			if (!available.dims.includes("bank_dimension")) throw new Error("no bank_dimension");
 			await hopDim(page, "bank_dimension");
 			const onBank = await snap(page, "6 on bank");
-			assertDeptAbsent(onBank, "6 bank isolation");
+			assertDeptActive(onBank, "6 bank keeps global dept");
 			await hopAxis(page, "party");
 			const s = await snap(page, "6 parties");
 			assertDeptActive(s, "6");
@@ -367,21 +368,15 @@ async function main() {
 			failCheck("6 Dept→Bank Dimension→Parties", e);
 		}
 
-		// ── 7. Department → Cost Center → Department (park restore on type) ──
+		// ── 7. Department → Cost Center → Department (global filter persists) ──
 		try {
 			await reset(page);
 			await analyzeDimensionValue(page, "department", null, DEPT);
 			await hopDim(page, "cost_center");
 			await hopDim(page, "department");
 			const s = await snap(page, "7 back dept");
-			if (s.bag_dims.department !== DEPT || s.selected !== DEPT) {
-				throw new Error(`dept not restored on type return: ${JSON.stringify(s)}`);
-			}
-			if (Math.abs(Number(s.sumPD) - EXPECTED_PD) > 1 && s.rowCount === 1) {
-				// single filtered dimension row
-			}
-			if (s.rowCount === 1 && s.codes[0] !== DEPT && s.payloadDocDims.department !== DEPT) {
-				throw new Error("unexpected state");
+			if (s.bag_dims.department !== DEPT || s.payloadDocDims.department !== DEPT) {
+				throw new Error(`dept not global on type return: ${JSON.stringify(s)}`);
 			}
 			passCheck("7 Dept→CC→Department", s);
 			await shot(page, "07-dept-cc-dept");
@@ -438,9 +433,6 @@ async function main() {
 			const s = await snap(page, "10 after reset all filters");
 			assertDeptAbsent(s, "10");
 			if (Object.keys(s.bag_dims).length) throw new Error("bag not empty after reset");
-			if (Object.values(s.parked).some((p) => p?.value)) {
-				throw new Error("parked not cleared after reset");
-			}
 			passCheck("10 Reset All Filters clears layers", s);
 			await shot(page, "10-reset-all-filters");
 		} catch (e) {
@@ -469,20 +461,20 @@ async function main() {
 			const cc = await analyzeDimensionValue(page, "cost_center");
 			await hopDim(page, "department");
 			const onDept = await snap(page, "R1 on dept");
-			if (onDept.payloadDocDims.cost_center) {
-				throw new Error("cost_center leaked into department tab");
+			if (onDept.payloadDocDims.cost_center !== cc) {
+				throw new Error(`cost_center must stay global on department tab: ${JSON.stringify(onDept.payloadDocDims)}`);
 			}
 			await hopAxis(page, "account_level", 1);
 			const s = await snap(page, "R1 accounts");
 			if (s.payloadDocDims.cost_center !== cc) {
-				throw new Error(`CC not restored: ${JSON.stringify(s.payloadDocDims)}`);
+				throw new Error(`CC not global: ${JSON.stringify(s.payloadDocDims)}`);
 			}
 			if (!(s.sumPD > 0)) throw new Error("expected positive filtered turnover");
 			if (s.sumPD > 1e14) throw new Error(`likely unfiltered sumPD=${s.sumPD}`);
-			passCheck("R1 CostCenter→Dept→Accounts restores CC", { cc, onDept, s });
+			passCheck("R1 CostCenter→Dept→Accounts keeps CC global", { cc, onDept, s });
 			await shot(page, "R1-cc-dept-accounts");
 		} catch (e) {
-			failCheck("R1 CostCenter→Dept→Accounts restores CC", e);
+			failCheck("R1 CostCenter→Dept→Accounts keeps CC global", e);
 		}
 
 		// ── Empty department → zero ──
@@ -518,26 +510,27 @@ async function main() {
 			failCheck("N1 empty department zero rows", e);
 		}
 
-		// ── Cross-contamination: analyze dept then analyze CC; on CC tab no dept; leave restores both ──
+		// ── Global AND: analyze dept then analyze CC; both stay active everywhere ──
 		try {
 			await reset(page);
 			await analyzeDimensionValue(page, "department", null, DEPT);
 			await hopDim(page, "cost_center");
 			await waitIdle(page);
-			// Pick a cost center that co-occurs with the department when possible.
-			const cc = await page.evaluate((dept) => {
+			const cc = await page.evaluate(() => {
 				const ae = window.cur_ae;
 				const row = (ae.rows || []).find((r) => r.dimension_value) || null;
 				if (!row) return null;
 				ae.analyze_row_as_filter(row);
 				return row.dimension_value;
-			}, DEPT);
+			});
 			await waitIdle(page);
 			if (!cc) throw new Error("no cost center row to analyze");
 			const onCc = await snap(page, "N2 on cc after both");
-			if (onCc.payloadDocDims.department) throw new Error("dept active on CC after both analyzes");
-			if (onCc.bag_dims.department) throw new Error("dept in bag on CC");
-			if (onCc.parked.department?.value !== DEPT) throw new Error("dept not parked");
+			if (onCc.payloadDocDims.department !== DEPT) {
+				throw new Error("dept must remain global on CC tab");
+			}
+			if (onCc.bag_dims.department !== DEPT) throw new Error("dept missing from bag on CC");
+			if (onCc.payloadDocDims.cost_center !== cc) throw new Error("cc missing on CC tab");
 			await hopAxis(page, "account_level", 1);
 			const s = await snap(page, "N2 accounts both");
 			if (s.payloadDocDims.department !== DEPT || s.payloadDocDims.cost_center !== cc) {
@@ -569,12 +562,11 @@ async function main() {
 			failed,
 			checks,
 			semantics: {
-				dimensions_axis: "Only active Dimension Type analysis constrains the query",
-				leave_dimensions:
-					"Undeleted parked Dimension session analyses re-enter active bag (AND)",
+				dimensions_axis: "All Dimension analyses remain global AND constraints",
+				leave_dimensions: "Axis/type switches never park or drop global filters",
 				clear_selection: "Row checkboxes only",
 				reset_all_axes: "Grid preferences only",
-				reset_all_filters: "Clears bag + parked + cleared maps",
+				reset_all_filters: "Clears every global analytical filter",
 			},
 			generated_at: new Date().toISOString(),
 		};
