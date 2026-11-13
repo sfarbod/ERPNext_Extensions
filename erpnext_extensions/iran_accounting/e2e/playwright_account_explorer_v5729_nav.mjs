@@ -51,14 +51,51 @@ async function resolveAe(page) {
 	});
 }
 
+async function ensureAe(page) {
+	const ok = await page
+		.evaluate(() => {
+			const entry = frappe?.pages?.["account-explorer"];
+			const ae = entry?.account_explorer || entry?.wrapper?.account_explorer;
+			if (ae) {
+				window.cur_ae = ae;
+				return true;
+			}
+			return !!window.cur_ae;
+		})
+		.catch(() => false);
+	if (!ok) {
+		await page.waitForLoadState("domcontentloaded").catch(() => {});
+		await resolveAe(page);
+	}
+}
+
 async function waitIdle(page) {
-	await page.evaluate(async () => {
-		const ae = window.cur_ae;
-		let g = 0;
-		while (ae.store?.get?.("loading")?.summary && g++ < 400) {
-			await new Promise((x) => setTimeout(x, 100));
+	await ensureAe(page);
+	try {
+		await page.evaluate(async () => {
+			const ae = window.cur_ae;
+			if (!ae) return;
+			let g = 0;
+			while (ae.store?.get?.("loading")?.summary && g++ < 400) {
+				await new Promise((x) => setTimeout(x, 100));
+			}
+		});
+	} catch (err) {
+		if (/Execution context was destroyed|Target closed/i.test(String(err))) {
+			await page.waitForLoadState("domcontentloaded").catch(() => {});
+			await resolveAe(page);
+			await page.evaluate(async () => {
+				const ae = window.cur_ae;
+				if (!ae) return;
+				let g = 0;
+				while (ae.store?.get?.("loading")?.summary && g++ < 200) {
+					await new Promise((x) => setTimeout(x, 100));
+				}
+			});
+			return;
 		}
-	});
+		throw err;
+	}
 }
 
 async function shot(page, name) {
@@ -113,19 +150,46 @@ async function snap(page, label) {
 }
 
 async function resetSession(page) {
-	await page.evaluate(async ({ company }) => {
-		const ae = window.cur_ae;
-		ae.document_scope.company = company;
-		ae.document_scope.fiscal_year = "1405";
-		ae._dates_user_override = false;
-		if (ae.company_field?.set_value) await ae.company_field.set_value(company);
-		if (ae.fy_field?.set_value) await ae.fy_field.set_value("1405");
-		await ae.sync_dates_from_fy({ reason: "fiscal_year_change", force: true });
-		ae.clear_all_analysis_filters?.({ refresh: false });
-		ae._dimension_type_parked = {};
-		ae._dimension_type_cleared = {};
-	}, { company: COMPANY });
+	await ensureAe(page);
+	try {
+		await page.evaluate(async ({ company }) => {
+			const ae = window.cur_ae;
+			if (!ae) throw new Error("cur_ae missing in resetSession");
+			ae.document_scope.company = company;
+			ae.document_scope.fiscal_year = "1405";
+			ae._dates_user_override = false;
+			if (ae.company_field?.set_value) await ae.company_field.set_value(company);
+			if (ae.fy_field?.set_value) await ae.fy_field.set_value("1405");
+			await ae.sync_dates_from_fy({ reason: "fiscal_year_change", force: true });
+			ae.clear_all_analysis_filters?.({ refresh: false });
+			ae._dimension_type_ui = {};
+			ae._dimension_type_parked = {};
+			ae._dimension_type_cleared = {};
+		}, { company: COMPANY });
+	} catch (err) {
+		if (/Execution context was destroyed|Target closed|cur_ae missing/i.test(String(err))) {
+			await page.waitForLoadState("domcontentloaded").catch(() => {});
+			await resolveAe(page);
+			await page.evaluate(async ({ company }) => {
+				const ae = window.cur_ae;
+				if (!ae) throw new Error("cur_ae missing after remount");
+				ae.document_scope.company = company;
+				ae.document_scope.fiscal_year = "1405";
+				ae._dates_user_override = false;
+				if (ae.company_field?.set_value) await ae.company_field.set_value(company);
+				if (ae.fy_field?.set_value) await ae.fy_field.set_value("1405");
+				await ae.sync_dates_from_fy({ reason: "fiscal_year_change", force: true });
+				ae.clear_all_analysis_filters?.({ refresh: false });
+				ae._dimension_type_ui = {};
+				ae._dimension_type_parked = {};
+				ae._dimension_type_cleared = {};
+			}, { company: COMPANY });
+		} else {
+			throw err;
+		}
+	}
 	await waitIdle(page);
+	await ensureAe(page);
 }
 
 async function analyzeFirst(page, field) {
@@ -312,11 +376,14 @@ async function main() {
 			await analyzeFirst(page, "department");
 			const before = await snap(page, "T4 before");
 			for (const axis of ["party", "item", "voucher", "currency", "item_group", "account_level"]) {
+				await ensureAe(page);
 				await page.evaluate((ax) => window.cur_ae.switch_axis(ax), axis);
 				await waitIdle(page);
 			}
+			await ensureAe(page);
 			await page.evaluate(() => window.cur_ae.switch_axis("dimension", "department"));
 			await waitIdle(page);
+			await ensureAe(page);
 			const after = await snap(page, "T4 after");
 			if (String(after.bag_dims.department) !== String(before.bag_dims.department)) {
 				throw new Error("department lost after main-axis tour");

@@ -149,123 +149,123 @@
     {
       "url": "http://development.localhost:8000/api/method/frappe.core.doctype.session_default_settings.session_default_settings.get_session_default_values",
       "method": "POST",
-      "t": 1794550252753
+      "t": 1794576470028
     },
     {
-      "url": "http://development.localhost:8000/api/method/frappe.desk.doctype.notification_log.notification_log.get_notification_logs?limit=20&_=1794550252608",
+      "url": "http://development.localhost:8000/api/method/frappe.desk.doctype.notification_log.notification_log.get_notification_logs?limit=20&_=1794576469867",
       "method": "GET",
-      "t": 1794550252753
+      "t": 1794576470028
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_explorer_metadata",
       "method": "POST",
-      "t": 1794550252832
+      "t": 1794576470113
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_explorer_metadata_enrichment",
       "method": "POST",
-      "t": 1794550252879
+      "t": 1794576470160
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_explorer_metadata_enrichment",
       "method": "POST",
-      "t": 1794550253871
+      "t": 1794576471152
     },
     {
-      "url": "http://development.localhost:8000/api/method/frappe.client.get_value?doctype=Fiscal%20Year&fieldname=%5B%22year_start_date%22%2C%22year_end_date%22%5D&filters=1405&_=1794550252609",
+      "url": "http://development.localhost:8000/api/method/frappe.client.get_value?doctype=Fiscal%20Year&fieldname=%5B%22year_start_date%22%2C%22year_end_date%22%5D&filters=1405&_=1794576469868",
       "method": "GET",
-      "t": 1794550253890
+      "t": 1794576471176
     },
     {
-      "url": "http://development.localhost:8000/api/method/frappe.client.get_value?doctype=Fiscal%20Year&fieldname=%5B%22year_start_date%22%2C%22year_end_date%22%5D&filters=1405&_=1794550252610",
+      "url": "http://development.localhost:8000/api/method/frappe.client.get_value?doctype=Fiscal%20Year&fieldname=%5B%22year_start_date%22%2C%22year_end_date%22%5D&filters=1405&_=1794576469869",
       "method": "GET",
-      "t": 1794550253890
+      "t": 1794576471176
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_summary",
       "method": "POST",
-      "t": 1794550253915
+      "t": 1794576471201
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550254638
+      "t": 1794576471951
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550256663
+      "t": 1794576474049
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550256769
+      "t": 1794576474156
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550256872
+      "t": 1794576474258
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_party_summary",
       "method": "POST",
-      "t": 1794550257027
+      "t": 1794576474417
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_party_summary",
       "method": "POST",
-      "t": 1794550258367
+      "t": 1794576475825
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550258839
+      "t": 1794576476316
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550261277
+      "t": 1794576478848
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_item_summary",
       "method": "POST",
-      "t": 1794550263083
+      "t": 1794576480645
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_item_summary",
       "method": "POST",
-      "t": 1794550265054
+      "t": 1794576482646
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_voucher_summary",
       "method": "POST",
-      "t": 1794550266206
+      "t": 1794576483800
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_voucher_summary",
       "method": "POST",
-      "t": 1794550270867
+      "t": 1794576488455
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550275850
+      "t": 1794576493620
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_dimension_summary",
       "method": "POST",
-      "t": 1794550277792
+      "t": 1794576495595
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_account_summary",
       "method": "POST",
-      "t": 1794550277898
+      "t": 1794576495703
     },
     {
       "url": "http://development.localhost:8000/api/method/erpnext_extensions.iran_accounting.account_explorer.get_party_summary",
       "method": "POST",
-      "t": 1794550278003
+      "t": 1794576495809
     }
   ],
-  "generated_at": "2026-11-13T06:11:18.134Z"
+  "generated_at": "2026-11-13T13:28:15.956Z"
 }

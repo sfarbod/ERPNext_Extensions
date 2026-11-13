@@ -82,9 +82,10 @@ onto GL axes. That produced:
 
 ### Version / Git
 
-- `__version__` remains **5.7.29** (strict freeze; not a new release)
-- No publish, no push, no tags
-- Commits land on `develop` only after required tests pass
+- `__version__` remains **5.7.29** (strict freeze; not a new application version)
+- No new release tag unless explicitly requested
+- Publication target: `develop` → `upstream/develop` (fast-forward only; no force-push)
+- Release commit for Global Cross-Axis Filtering: `b9359d33147735ebf987fdf2a378df5815f4fa85`
 
 ### Independent SQL reconciliation (reference)
 
@@ -93,3 +94,17 @@ turnover (non-opening, non-cancelled, excluding Period Closing Voucher):
 
 - period_debit ≈ **5592288032**
 - period_credit ≈ **1868092078**
+
+Account Explorer totals for the same department filter must match these independent
+GL Entry aggregates. Empty intersections (e.g. Department ∧ nonexistent Project)
+must return zero rows / zero turnover on every applicable axis — never company-wide
+fallback data.
+
+### Acceptance (v5.7.29)
+
+- A filter from any axis constrains all other applicable axes.
+- Multiple Dimension Types and entity filters combine with AND semantics.
+- Axis / Dimension Type switches never park or drop global filters.
+- Individual remove and Clear All operate on the authoritative global bag.
+- Filter Summary, client state, request payload, backend SQL, and displayed
+  results remain consistent.
