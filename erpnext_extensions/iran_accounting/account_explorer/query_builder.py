@@ -134,6 +134,14 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	classification_residual = zero_measures()
 	excluded_unclassified_accounts: list[dict] = []
 
+	# Analyze / hierarchy drill: NestedSet is authoritative. Code-prefix rollups can
+	# invent sibling labels when a leaf is mis-parented under another branch
+	# (e.g. account_number 111206 under Group 21 → phantom Group 11).
+	tree_root = spec.account_scope.tree_root_account or (
+		spec.account_scope.selected_account if spec.account_scope.mode == "account" else None
+	)
+	level_code_length = int(level.code_length)
+
 	for account_name in scoped_names:
 		row = _row_by_name(accounts, account_name)
 		normalized = normalize_account_number(row.get("account_number"))
@@ -151,8 +159,16 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 			)
 			continue
 
-		prefix = code_prefix(normalized, int(level.code_length))
+		prefix = code_prefix(normalized, level_code_length)
 		if not prefix:
+			# Terminal / coarser-level codes under an analyzed root are optional L4/L5
+			# absences — not classification integrity failures.
+			if (
+				tree_root
+				and account_name == tree_root
+				and len(normalized) < level_code_length
+			):
+				continue
 			_accumulate_unclassified_residual(
 				classification_residual,
 				excluded_unclassified_accounts,
@@ -195,12 +211,8 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	for row in rows:
 		finalize_measures(row)
 
-	# Analyze / hierarchy drill: NestedSet is authoritative. Code-prefix rollups can
-	# invent sibling labels when a leaf is mis-parented under another branch
-	# (e.g. account_number 111206 under Group 21 → phantom Group 11).
-	tree_root = spec.account_scope.tree_root_account or (
-		spec.account_scope.selected_account if spec.account_scope.mode == "account" else None
-	)
+	hierarchy_empty: dict | None = None
+	had_nested_descendants = False
 	if tree_root:
 		rows = _filter_rows_to_nested_set_subtree(
 			rows,
@@ -218,15 +230,52 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 			)
 			for row in rows:
 				finalize_measures(row)
+		if rows:
+			had_nested_descendants = True
+		elif not direct_child_accounts(accounts, tree_root):
+			# Terminal ledger: own turnover only at the account's actual level.
+			# Deeper optional levels (L4/L5) return an explicit empty state — never
+			# re-present the leaf as if it were a child of itself.
+			root_row = _row_by_name(accounts, tree_root)
+			if _account_matches_presentation_level(root_row, level):
+				terminal = _build_terminal_leaf_row(
+					accounts,
+					tree_root,
+					measures_by_account,
+					level_sequence=int(level.sequence),
+				)
+				if terminal:
+					finalize_measures(terminal)
+					rows = [terminal]
+			else:
+				hierarchy_empty = _hierarchy_empty_no_descendants(
+					tree_root=tree_root,
+					level_sequence=int(level.sequence),
+				)
 
 	if spec.hide_zero_rows:
 		rows = [row for row in rows if row_has_activity(row)]
+
+	if tree_root and not rows and hierarchy_empty is None and had_nested_descendants:
+		# Descendants exist in the chart but none have activity in scope.
+		hierarchy_empty = {
+			"reason": "descendants_no_activity",
+			"message_fa": None,
+			"level_sequence": int(level.sequence),
+			"is_terminal_account": 0,
+			"tree_root_account": tree_root,
+			"has_nested_descendants": 1,
+		}
 
 	rows = sort_rows(rows, spec, SORTABLE_FIELDS)
 	result = paginate_summary_rows(rows, spec)
 	result["warnings"] = sorted(set(warnings))
 	result["level_sequence"] = int(level.sequence)
 	result["level_title"] = level.title
+	if hierarchy_empty:
+		result["hierarchy_empty"] = hierarchy_empty
+	else:
+		result["hierarchy_empty"] = None
 
 	finalize_measures(classification_residual)
 	from erpnext_extensions.iran_accounting.account_explorer.classification_exclusions import (
@@ -410,6 +459,72 @@ def _build_nested_set_child_rows(
 			add_measures(group, measures_by_account.get(name, zero_measures()))
 		rows.append(group)
 	return rows
+
+
+def _account_matches_presentation_level(account_row: dict | None, level) -> bool:
+	"""True when the account's numeric code length equals this presentation level."""
+	if not account_row:
+		return False
+	normalized = normalize_account_number(account_row.get("account_number"))
+	return is_pure_numeric_code(normalized) and len(normalized) == int(level.code_length)
+
+
+def persian_no_turnover_at_level(level_sequence: int) -> str:
+	"""Persian empty-state when a selected account has no descendants at this level."""
+	seq = int(level_sequence or 0)
+	if seq == 4:
+		return "برای این حساب، گردش در سطح ۴ وجود ندارد."
+	if seq == 5:
+		return "برای این حساب، گردش در سطح ۵ وجود ندارد."
+	return f"برای این حساب، گردش در سطح {seq} وجود ندارد."
+
+
+def _hierarchy_empty_no_descendants(*, tree_root: str, level_sequence: int) -> dict:
+	return {
+		"reason": "no_descendants_at_level",
+		"message_fa": persian_no_turnover_at_level(level_sequence),
+		"level_sequence": int(level_sequence),
+		"is_terminal_account": 1,
+		"tree_root_account": tree_root,
+		"has_nested_descendants": 0,
+	}
+
+
+def _build_terminal_leaf_row(
+	accounts: list[dict],
+	tree_root: str,
+	measures_by_account: dict[str, dict],
+	*,
+	level_sequence: int,
+) -> dict | None:
+	"""Own-turnover row when ``tree_root`` has no NestedSet children (terminal ledger).
+
+	Only used at the account's actual presentation level. Deeper optional levels
+	must return ``hierarchy_empty`` instead of re-showing this leaf as a child.
+	"""
+	by_name = accounts_by_name(accounts)
+	root = by_name.get(tree_root)
+	if not root:
+		frappe.throw(
+			_("Account hierarchy node {0} was not found for company scope.").format(tree_root)
+		)
+	if direct_child_accounts(accounts, tree_root):
+		return None
+	measures = measures_by_account.get(tree_root, zero_measures())
+	row = {
+		"row_key": f"{REAL_ACCOUNT_KEY_PREFIX}:{root.name}",
+		"display_code": normalize_account_number(root.account_number) or root.name,
+		"display_title": root.account_name or root.name,
+		"is_virtual_group": 0,
+		"level_sequence": level_sequence,
+		"selected_account": root.name,
+		"is_group": 1 if root.is_group else 0,
+		"is_terminal_account": 1,
+		"has_direct_group_posting": 0,
+		**zero_measures(),
+	}
+	add_measures(row, measures)
+	return row
 
 
 def _finalize_group_rows(groups: dict, level, accounts: list[dict], configured_lengths: set[int]) -> None:

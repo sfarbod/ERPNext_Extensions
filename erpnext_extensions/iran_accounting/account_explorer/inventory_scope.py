@@ -106,6 +106,32 @@ def warehouses_for_inventory_accounts(company: str, accounts: list[str]) -> list
 	)
 
 
+def _accounts_from_gl_cross_filter(spec: AccountExplorerQuerySpec) -> list[str]:
+	"""Account names that constrain GL → SLE when Account is in the filter bag."""
+	accounting = spec.document_scope.accounting
+	doc_accounts = normalize_filter_values(accounting.account)
+	if doc_accounts:
+		return doc_accounts
+	if _has_account_analysis_filter(spec) and spec.included_account_names:
+		return list(spec.included_account_names)[:5000]
+	return []
+
+
+def warehouses_for_account_cross_filter(spec: AccountExplorerQuerySpec) -> list[str] | None:
+	"""Row-level SLE warehouses for inventory Account filters, or None if N/A.
+
+	When the active Account filter maps to warehouse stock accounts, SLE must be
+	constrained by ``sle.warehouse`` (detail-row attribution). Returning ``None``
+	keeps voucher-level EXISTS for non-inventory accounts (Case B discovery).
+	Does **not** feed ``resolve_inventory_scope`` / Case A engine selection.
+	"""
+	accounts = _accounts_from_gl_cross_filter(spec)
+	if not accounts:
+		return None
+	warehouses = warehouses_for_inventory_accounts(spec.company, accounts)
+	return warehouses or None
+
+
 def resolve_inventory_scope(spec: AccountExplorerQuerySpec) -> InventoryScope:
 	inventory = _inventory_filter(spec)
 	item_groups = normalize_filter_values(getattr(inventory, "item_group", None) if inventory else None)
@@ -339,9 +365,19 @@ def apply_inventory_voucher_scope_to_gle(query, gle, spec: AccountExplorerQueryS
 
 
 def apply_gl_cross_filters_to_sle(query, sle, spec: AccountExplorerQuerySpec):
-	"""GL → Inventory: SLE lines on vouchers with scoped GL postings."""
+	"""GL → Inventory: SLE lines related to scoped GL postings.
+
+	Inventory Account filters use warehouse→account mapping so attribution is at
+	the Stock Ledger / Stock Entry Detail row (``sle.warehouse``), not the whole
+	voucher. Non-inventory Account filters keep voucher-level EXISTS (Case B).
+	"""
 	if not has_gl_cross_filters_for_inventory(spec):
 		return query
+
+	# Row-level inventory account attribution (prevents multi-warehouse STE leakage).
+	account_warehouses = warehouses_for_account_cross_filter(spec)
+	if account_warehouses:
+		query = query.where(sle.warehouse.isin(account_warehouses))
 
 	gle = DocType("GL Entry")
 	sub = frappe.qb.from_(gle).select(1)
@@ -353,6 +389,14 @@ def apply_gl_cross_filters_to_sle(query, sle, spec: AccountExplorerQuerySpec):
 
 
 def apply_inventory_scope_to_sle_query(query, sle, spec: AccountExplorerQuerySpec):
-	"""Apply cross-axis filters to an SLE query (reverse direction)."""
+	"""Apply inventory warehouse population + cross-axis filters to an SLE query.
+
+	Item / Item Group document filters are applied by ``stock_sle_filters``.
+	``inventory_account`` resolves to warehouses here so attribution stays
+	row-level (SLE.warehouse), including when Account Analyze drives Items.
+	"""
+	scope = resolve_inventory_scope(spec)
+	if scope.warehouses:
+		query = query.where(sle.warehouse.isin(list(scope.warehouses)))
 	query = apply_sle_voucher_cross_filters(query, sle, spec)
 	return apply_gl_cross_filters_to_sle(query, sle, spec)

@@ -3900,6 +3900,11 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_detail_header();
 			this._sync_store_context({ emit: true });
 			this.schedule_workspace_url_update({ push: true });
+			// Terminal leaf with no NestedSet children: deeper optional levels are
+			// known-empty — paint Persian empty-state without another summary round-trip.
+			if (this._apply_known_terminal_hierarchy_empty(level_or_dimension, prev_level)) {
+				return;
+			}
 			this.refresh_summary({ reason: "level_change" });
 			return;
 		}
@@ -5017,6 +5022,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		if (!this.metadata?.enabled) {
 			return "permission";
 		}
+		const hierarchy = this.hierarchy_empty || {};
+		if (hierarchy.reason === "no_descendants_at_level" && hierarchy.message_fa) {
+			return "hierarchy_no_descendants";
+		}
+		if (hierarchy.reason === "descendants_no_activity") {
+			return "hierarchy_no_activity";
+		}
 		if (
 			this.analysis_context.view_axis === "dimension" &&
 			!(this.metadata?.dimensions || []).length
@@ -5029,9 +5041,89 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		return "no_data";
 	}
 
+	_persian_no_turnover_at_level(level_sequence) {
+		const seq = Number(level_sequence || 0);
+		if (seq === 4) {
+			return "برای این حساب، گردش در سطح ۴ وجود ندارد.";
+		}
+		if (seq === 5) {
+			return "برای این حساب، گردش در سطح ۵ وجود ندارد.";
+		}
+		return `برای این حساب، گردش در سطح ${seq} وجود ندارد.`;
+	}
+
+	_known_terminal_account_scope() {
+		const scope = this.analysis_context.account_scope || {};
+		const root = scope.tree_root_account || scope.selected_account;
+		if (!root || scope.mode === "tree") {
+			return null;
+		}
+		if (this.hierarchy_empty?.reason === "no_descendants_at_level") {
+			return root;
+		}
+		if (
+			(this.rows || []).length === 1 &&
+			cint(this.rows[0].is_terminal_account) &&
+			(this.rows[0].selected_account === root || !this.rows[0].selected_account)
+		) {
+			return root;
+		}
+		return null;
+	}
+
+	_apply_known_terminal_hierarchy_empty(next_level, prev_level) {
+		const root = this._known_terminal_account_scope();
+		if (!root) {
+			return false;
+		}
+		if (!(Number(next_level) > Number(prev_level || 0))) {
+			return false;
+		}
+		const message_fa = this._persian_no_turnover_at_level(next_level);
+		this.hierarchy_empty = {
+			reason: "no_descendants_at_level",
+			message_fa,
+			level_sequence: Number(next_level),
+			is_terminal_account: 1,
+			tree_root_account: root,
+			has_nested_descendants: 0,
+		};
+		this.rows = [];
+		this.totals = {};
+		this.warnings = [];
+		this.classification_residual = null;
+		this.pagination = {
+			...(this.pagination || {}),
+			page: 1,
+			total_rows: 0,
+			total_pages: 0,
+		};
+		this.destroy_summary_datatable();
+		this.render_grid_empty_state("hierarchy_no_descendants");
+		this.render_totals();
+		this.render_warnings();
+		this.render_filter_summary();
+		return true;
+	}
+
 	render_grid_empty_state(reason = "no_data") {
+		const hierarchy = this.hierarchy_empty || {};
 		const states = {
 			no_data: {
+				message: __("No rows exist in the current company and date scope."),
+				action_label: null,
+				action: null,
+			},
+			hierarchy_no_descendants: {
+				message:
+					hierarchy.message_fa ||
+					this._persian_no_turnover_at_level(
+						hierarchy.level_sequence || this.analysis_context.level_sequence
+					),
+				action_label: null,
+				action: null,
+			},
+			hierarchy_no_activity: {
 				message: __("No rows exist in the current company and date scope."),
 				action_label: null,
 				action: null,
@@ -5642,6 +5734,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.commercial_semantics = data.commercial_semantics || null;
 			this.unsupported_filter_combination = data.unsupported_filter_combination || null;
 			this.classification_residual = data.classification_residual || null;
+			this.hierarchy_empty = data.hierarchy_empty || null;
+			this.last_summary = data;
 			this.account_fact_engine = data.account_fact_engine || null;
 			this.construction_meta = {
 				ready: data.construction_ready,
@@ -7510,6 +7604,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const levels = (this.metadata.levels || []).sort((a, b) => a.sequence - b.sequence);
 		const current = row.level_sequence;
 		const next = levels.find((lvl) => lvl.enabled && lvl.sequence > current);
+		// Terminal Subsidiary Ledger / leaf: optional L4/L5 must not auto-advance.
+		const is_terminal_leaf = !cint(row.is_group) && !cint(row.is_virtual_group);
 
 		if (row.selected_account && !row.is_virtual_group) {
 			this.analysis_context.account_scope = {
@@ -7548,7 +7644,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			});
 		}
 
-		if (next) {
+		if (next && !is_terminal_leaf) {
 			this.analysis_context.level_sequence = next.sequence;
 		}
 		this.analysis_context.page = 1;
@@ -7737,7 +7833,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			const next = levels.find(
 				(lvl) => lvl.enabled && Number(lvl.sequence) > Number(row.level_sequence || before_level || 0)
 			);
-			if (next && Number(this.analysis_context.level_sequence) <= Number(row.level_sequence || before_level || 0)) {
+			// Terminal Subsidiary Ledger (is_group=0) has no optional L4/L5 children —
+			// stay at the account's own level so its GL turnover remains visible.
+			const is_terminal_leaf = !cint(row.is_group) && !cint(row.is_virtual_group);
+			if (
+				next &&
+				!is_terminal_leaf &&
+				Number(this.analysis_context.level_sequence) <= Number(row.level_sequence || before_level || 0)
+			) {
 				this.analysis_context.level_sequence = next.sequence;
 			}
 			this.analysis_context.page = 1;

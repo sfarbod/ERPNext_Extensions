@@ -167,8 +167,9 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 		if (axis === "account_level") {
 			const sorted = [...(levels || [])].sort((a, b) => a.sequence - b.sequence);
 			const current = row?.level_sequence;
-			const next = sorted.find((lvl) => lvl.enabled && lvl.sequence > current);
-			if (!next && row?.selected_account && !row?.is_virtual_group) {
+			// Terminal leaf at any presentation level: treat as SubsidiaryLedger so
+			// Analyze applies filter only (no advance_level into optional L4/L5).
+			if (row?.selected_account && !row?.is_virtual_group && !cint(row?.is_group)) {
 				return "SubsidiaryLedger";
 			}
 			if (current != null && sorted.length) {
@@ -179,7 +180,10 @@ erpnext_extensions.account_explorer.core.ExplorerDrillGraph = class ExplorerDril
 				if (index === 1) {
 					return "GeneralLedger";
 				}
+				// L3+ (Subsidiary Ledger and optional deeper tabs)
+				return "SubsidiaryLedger";
 			}
+			const next = sorted.find((lvl) => lvl.enabled && lvl.sequence > current);
 			return next ? "GeneralLedger" : "SubsidiaryLedger";
 		}
 		return "AccountGroup";

@@ -129,8 +129,28 @@ def _inventory_where_clauses(spec: AccountExplorerQuerySpec, *, alias: str = "sl
 	if not spec.include_cancelled_entries:
 		clauses.append(f"`{alias}`.is_cancelled = 0")
 
+	from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
+		has_gl_cross_filters_for_inventory,
+		has_sle_voucher_cross_filters,
+		resolve_inventory_scope,
+		warehouses_for_account_cross_filter,
+	)
+
 	inventory = getattr(spec.document_scope, "inventory", None)
+	# Explicit warehouse filter ∪ inventory_account→warehouse ∪ Account Analyze warehouses.
 	warehouses = normalize_filter_values(getattr(inventory, "warehouse", None) if inventory else None)
+	scope = resolve_inventory_scope(spec)
+	if scope.warehouses:
+		if warehouses:
+			warehouses = sorted(set(warehouses) & set(scope.warehouses))
+		else:
+			warehouses = sorted(scope.warehouses)
+	account_warehouses = warehouses_for_account_cross_filter(spec)
+	if account_warehouses:
+		if warehouses:
+			warehouses = sorted(set(warehouses) & set(account_warehouses))
+		else:
+			warehouses = list(account_warehouses)
 	if warehouses:
 		clauses.append(f"`{alias}`.warehouse in ({', '.join(['%s'] * len(warehouses))})")
 		params.extend(warehouses)
@@ -164,11 +184,6 @@ def _inventory_where_clauses(spec: AccountExplorerQuerySpec, *, alias: str = "sl
 				f"`{alias}`.item_code in (select name from `tabItem` where item_group in ({', '.join(['%s'] * len(expanded))}))"
 			)
 			params.extend(sorted(expanded))
-
-	from erpnext_extensions.iran_accounting.account_explorer.inventory_scope import (
-		has_gl_cross_filters_for_inventory,
-		has_sle_voucher_cross_filters,
-	)
 
 	if has_sle_voucher_cross_filters(spec):
 		voucher = spec.document_scope.voucher
