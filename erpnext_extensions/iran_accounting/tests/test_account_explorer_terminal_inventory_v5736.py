@@ -189,7 +189,11 @@ class TestTerminalSubsidiaryLedgerV5736(unittest.TestCase):
 		self.assertAlmostEqual(flt(row.get("period_credit")), flt(indep["period_credit"]), places=2)
 		self.assertFalse(result.get("warnings"))
 
-	def test_l4_l5_under_terminal_no_false_residual(self):
+	def test_l4_l5_under_terminal_empty_hierarchy_state(self):
+		expected_fa = {
+			4: "برای این حساب، گردش در سطح ۴ وجود ندارد.",
+			5: "برای این حساب، گردش در سطح ۵ وجود ندارد.",
+		}
 		for level in (4, 5):
 			result = get_account_summary(
 				_account_payload(level, selected=ACC_111601, mode="account")
@@ -197,10 +201,42 @@ class TestTerminalSubsidiaryLedgerV5736(unittest.TestCase):
 			residual = result.get("classification_residual") or {}
 			self.assertEqual(int(residual.get("excluded_account_count") or 0), 0, level)
 			self.assertAlmostEqual(flt(residual.get("period_debit")), 0.0, places=2)
-			self.assertTrue(result.get("rows"), f"terminal row expected at L{level}")
-			self.assertEqual(result["rows"][0].get("selected_account"), ACC_111601)
+			self.assertFalse(result.get("rows"), f"no synthetic L{level} row")
+			empty = result.get("hierarchy_empty") or {}
+			self.assertEqual(empty.get("reason"), "no_descendants_at_level", level)
+			self.assertEqual(empty.get("message_fa"), expected_fa[level], level)
+			self.assertEqual(cint_safe(empty.get("is_terminal_account")), 1)
+			self.assertEqual(empty.get("tree_root_account"), ACC_111601)
 			warn = " ".join(result.get("warnings") or [])
 			self.assertNotIn("سلسله", warn)
+
+	def test_non_terminal_subsidiary_still_shows_level4_children(self):
+		parent = frappe.db.sql(
+			"""
+			select p.name
+			from `tabAccount` p
+			inner join `tabAccount` c on c.parent_account = p.name and c.company = p.company
+			where p.company=%s and p.is_group=1
+			  and length(replace(replace(ifnull(p.account_number,''),' ',''),'-',''))=6
+			group by p.name
+			having count(*) > 0
+			order by p.account_number
+			limit 1
+			""",
+			COMPANY,
+		)
+		if not parent:
+			self.skipTest("no Subsidiary Ledger group with children")
+		parent_name = parent[0][0]
+		result = get_account_summary(
+			_account_payload(4, selected=parent_name, mode="account")
+		)
+		self.assertTrue(result.get("rows"), "expected Level 4 descendants")
+		self.assertFalse((result.get("hierarchy_empty") or {}).get("reason"))
+		self.assertNotEqual(
+			{r.get("selected_account") for r in result["rows"]},
+			{parent_name},
+		)
 
 	def test_company_l3_matches_independent_sql(self):
 		indep = _independent_gl(ACC_111601)

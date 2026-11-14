@@ -176,6 +176,183 @@ async function main() {
 			passCheck("no_false_residual_on_terminal", { residual_n: afterAnalyze.residual_n });
 		}
 
+		// Level 4 empty-state for terminal account (no synthetic child row)
+		const level4 = await page.evaluate(() => {
+			const ae = window.cur_ae;
+			ae.switch_axis("account_level", 4);
+			return {
+				level: ae.analysis_context.level_sequence,
+				row_count: (ae.rows || []).length,
+				empty_text: document.querySelector(".ae-grid-state-message")?.textContent || "",
+				hierarchy_empty: ae.hierarchy_empty,
+				account_scope: ae.analysis_context.account_scope,
+			};
+		});
+		await page.waitForTimeout(400);
+		await page.screenshot({ path: path.join(OUT, "02b-level4-empty.png"), fullPage: true });
+		const msg4 = "برای این حساب، گردش در سطح ۴ وجود ندارد.";
+		if (level4.row_count !== 0 || !String(level4.empty_text || "").includes("سطح ۴")) {
+			failCheck("level4_terminal_empty_message", new Error(JSON.stringify(level4)));
+		} else {
+			passCheck("level4_terminal_empty_message", { empty_text: level4.empty_text, msg4 });
+		}
+
+		// Level 5 empty-state
+		const level5 = await page.evaluate(() => {
+			const ae = window.cur_ae;
+			ae.switch_axis("account_level", 5);
+			return {
+				level: ae.analysis_context.level_sequence,
+				row_count: (ae.rows || []).length,
+				empty_text: document.querySelector(".ae-grid-state-message")?.textContent || "",
+				hierarchy_empty: ae.hierarchy_empty,
+			};
+		});
+		await page.waitForTimeout(400);
+		await page.screenshot({ path: path.join(OUT, "02c-level5-empty.png"), fullPage: true });
+		if (level5.row_count !== 0 || !String(level5.empty_text || "").includes("سطح ۵")) {
+			failCheck("level5_terminal_empty_message", new Error(JSON.stringify(level5)));
+		} else {
+			passCheck("level5_terminal_empty_message", { empty_text: level5.empty_text });
+		}
+
+		// Back to Subsidiary Ledger — own turnover restored
+		const backL3 = await page.evaluate(async () => {
+			const ae = window.cur_ae;
+			ae.switch_axis("account_level", 3);
+			await new Promise((resolve) => {
+				const t0 = Date.now();
+				const tick = () => {
+					if (!ae.store?.get?.("loading")?.summary || Date.now() - t0 > 120000) resolve();
+					else setTimeout(tick, 200);
+				};
+				setTimeout(tick, 200);
+			});
+			return {
+				level: ae.analysis_context.level_sequence,
+				rows: (ae.rows || []).map((r) => ({
+					account: r.selected_account,
+					period_debit: r.period_debit,
+					is_terminal: r.is_terminal_account,
+				})),
+			};
+		});
+		await waitSummaryIdle(page, { requireRows: true });
+		await page.screenshot({ path: path.join(OUT, "02d-back-subsidiary.png"), fullPage: true });
+		if (
+			backL3.rows.length !== 1 ||
+			backL3.rows[0].account !== ACC ||
+			!(backL3.rows[0].period_debit > 0)
+		) {
+			failCheck("back_restores_own_turnover", new Error(JSON.stringify(backL3)));
+		} else {
+			passCheck("back_restores_own_turnover", backL3.rows[0]);
+		}
+
+		// Non-terminal SL with L4 children still works
+		const nonTerminal = await page.evaluate(async () => {
+			const ae = window.cur_ae;
+			ae.clear_all_analysis_filters?.({ refresh: false });
+			ae.analysis_context.account_scope = {
+				mode: "tree",
+				selected_account: null,
+				tree_root_account: null,
+				virtual_row_key: null,
+				is_virtual_group: 0,
+				level_sequence: 3,
+			};
+			ae.switch_axis("account_level", 3);
+			await new Promise((resolve) => {
+				ae.refresh_summary({ new_execution: true, reason: "e2e_v5736_l3_reset" });
+				const t0 = Date.now();
+				const tick = () => {
+					if (!ae.store?.get?.("loading")?.summary || Date.now() - t0 > 120000) resolve();
+					else setTimeout(tick, 200);
+				};
+				setTimeout(tick, 200);
+			});
+			const groupRow = (ae.rows || []).find(
+				(r) => cint(r.is_group) && String(r.display_code || "").length === 6
+			);
+			if (!groupRow) {
+				return { error: "no_group_sl", codes: (ae.rows || []).map((r) => r.display_code).slice(0, 20) };
+			}
+			ae.analyze_row_as_filter(groupRow);
+			await new Promise((resolve) => {
+				const t0 = Date.now();
+				const tick = () => {
+					if (!ae.store?.get?.("loading")?.summary || Date.now() - t0 > 120000) resolve();
+					else setTimeout(tick, 200);
+				};
+				setTimeout(tick, 200);
+			});
+			// Analyze may advance to L4 for groups
+			const level = ae.analysis_context.level_sequence;
+			if (Number(level) < 4) {
+				ae.switch_axis("account_level", 4);
+				await new Promise((resolve) => {
+					const t0 = Date.now();
+					const tick = () => {
+						if (!ae.store?.get?.("loading")?.summary || Date.now() - t0 > 120000) resolve();
+						else setTimeout(tick, 200);
+					};
+					setTimeout(tick, 200);
+				});
+			}
+			return {
+				selected: groupRow.selected_account,
+				level: ae.analysis_context.level_sequence,
+				row_count: (ae.rows || []).length,
+				codes: (ae.rows || []).map((r) => r.display_code).slice(0, 10),
+				hierarchy_empty: ae.hierarchy_empty,
+				empty_text: document.querySelector(".ae-grid-state-message")?.textContent || "",
+			};
+		});
+		await waitSummaryIdle(page);
+		await page.screenshot({ path: path.join(OUT, "02e-nonterminal-l4.png"), fullPage: true });
+		if (nonTerminal.error || !(nonTerminal.row_count > 0) || nonTerminal.hierarchy_empty?.reason === "no_descendants_at_level") {
+			failCheck("nonterminal_level4_still_works", new Error(JSON.stringify(nonTerminal)));
+		} else {
+			passCheck("nonterminal_level4_still_works", nonTerminal);
+		}
+
+		// Re-seed terminal account for inventory checks
+		await page.evaluate(
+			async ({ acc }) => {
+				const ae = window.cur_ae;
+				ae.switch_axis("account_level", 3);
+				ae.analysis_context.account_scope = {
+					mode: "account",
+					selected_account: acc,
+					tree_root_account: acc,
+					virtual_row_key: null,
+					is_virtual_group: 0,
+					level_sequence: 3,
+				};
+				const AF = erpnext_extensions.account_explorer.core.AnalysisFilters;
+				let bag = ae.get_analysis_filters();
+				bag = AF.apply_policy(bag, "replace_filter", {
+					key: "account",
+					value: acc,
+					label: acc,
+					lifetime: "session",
+					origin: "e2e",
+				});
+				ae.set_analysis_filters_bag(bag);
+				await new Promise((resolve) => {
+					ae.refresh_summary({ new_execution: true, reason: "e2e_v5736_reseed_terminal" });
+					const t0 = Date.now();
+					const tick = () => {
+						if (!ae.store?.get?.("loading")?.summary || Date.now() - t0 > 120000) resolve();
+						else setTimeout(tick, 200);
+					};
+					setTimeout(tick, 200);
+				});
+			},
+			{ acc: ACC }
+		);
+		await waitSummaryIdle(page, { requireRows: true });
+
 		// Switch to Items with account filter 111601 + STE voucher
 		const itemsA = await page.evaluate(
 			async ({ acc, ste }) => {

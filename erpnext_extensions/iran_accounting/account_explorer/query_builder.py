@@ -211,6 +211,8 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	for row in rows:
 		finalize_measures(row)
 
+	hierarchy_empty: dict | None = None
+	had_nested_descendants = False
 	if tree_root:
 		rows = _filter_rows_to_nested_set_subtree(
 			rows,
@@ -228,26 +230,52 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 			)
 			for row in rows:
 				finalize_measures(row)
-		if not rows:
-			# Terminal Subsidiary Ledger (or any leaf): surface own GL turnover.
-			terminal = _build_terminal_leaf_row(
-				accounts,
-				tree_root,
-				measures_by_account,
-				level_sequence=int(level.sequence),
-			)
-			if terminal:
-				finalize_measures(terminal)
-				rows = [terminal]
+		if rows:
+			had_nested_descendants = True
+		elif not direct_child_accounts(accounts, tree_root):
+			# Terminal ledger: own turnover only at the account's actual level.
+			# Deeper optional levels (L4/L5) return an explicit empty state — never
+			# re-present the leaf as if it were a child of itself.
+			root_row = _row_by_name(accounts, tree_root)
+			if _account_matches_presentation_level(root_row, level):
+				terminal = _build_terminal_leaf_row(
+					accounts,
+					tree_root,
+					measures_by_account,
+					level_sequence=int(level.sequence),
+				)
+				if terminal:
+					finalize_measures(terminal)
+					rows = [terminal]
+			else:
+				hierarchy_empty = _hierarchy_empty_no_descendants(
+					tree_root=tree_root,
+					level_sequence=int(level.sequence),
+				)
 
 	if spec.hide_zero_rows:
 		rows = [row for row in rows if row_has_activity(row)]
+
+	if tree_root and not rows and hierarchy_empty is None and had_nested_descendants:
+		# Descendants exist in the chart but none have activity in scope.
+		hierarchy_empty = {
+			"reason": "descendants_no_activity",
+			"message_fa": None,
+			"level_sequence": int(level.sequence),
+			"is_terminal_account": 0,
+			"tree_root_account": tree_root,
+			"has_nested_descendants": 1,
+		}
 
 	rows = sort_rows(rows, spec, SORTABLE_FIELDS)
 	result = paginate_summary_rows(rows, spec)
 	result["warnings"] = sorted(set(warnings))
 	result["level_sequence"] = int(level.sequence)
 	result["level_title"] = level.title
+	if hierarchy_empty:
+		result["hierarchy_empty"] = hierarchy_empty
+	else:
+		result["hierarchy_empty"] = None
 
 	finalize_measures(classification_residual)
 	from erpnext_extensions.iran_accounting.account_explorer.classification_exclusions import (
@@ -433,6 +461,35 @@ def _build_nested_set_child_rows(
 	return rows
 
 
+def _account_matches_presentation_level(account_row: dict | None, level) -> bool:
+	"""True when the account's numeric code length equals this presentation level."""
+	if not account_row:
+		return False
+	normalized = normalize_account_number(account_row.get("account_number"))
+	return is_pure_numeric_code(normalized) and len(normalized) == int(level.code_length)
+
+
+def persian_no_turnover_at_level(level_sequence: int) -> str:
+	"""Persian empty-state when a selected account has no descendants at this level."""
+	seq = int(level_sequence or 0)
+	if seq == 4:
+		return "برای این حساب، گردش در سطح ۴ وجود ندارد."
+	if seq == 5:
+		return "برای این حساب، گردش در سطح ۵ وجود ندارد."
+	return f"برای این حساب، گردش در سطح {seq} وجود ندارد."
+
+
+def _hierarchy_empty_no_descendants(*, tree_root: str, level_sequence: int) -> dict:
+	return {
+		"reason": "no_descendants_at_level",
+		"message_fa": persian_no_turnover_at_level(level_sequence),
+		"level_sequence": int(level_sequence),
+		"is_terminal_account": 1,
+		"tree_root_account": tree_root,
+		"has_nested_descendants": 0,
+	}
+
+
 def _build_terminal_leaf_row(
 	accounts: list[dict],
 	tree_root: str,
@@ -442,9 +499,8 @@ def _build_terminal_leaf_row(
 ) -> dict | None:
 	"""Own-turnover row when ``tree_root`` has no NestedSet children (terminal ledger).
 
-	Account Levels 4/5 are optional. A Subsidiary Ledger leaf must remain
-	analyzable and must expose its own posted GL measures without inventing
-	children or emitting a false classification residual.
+	Only used at the account's actual presentation level. Deeper optional levels
+	must return ``hierarchy_empty`` instead of re-showing this leaf as a child.
 	"""
 	by_name = accounts_by_name(accounts)
 	root = by_name.get(tree_root)

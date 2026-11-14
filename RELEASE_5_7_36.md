@@ -29,8 +29,13 @@ Account Explorer v5.7.36 fixes three accounting correctness issues:
 
 **Backend (`query_builder.py`)**
 
-- When Analyze `tree_root` has no NestedSet children, emit a terminal leaf row with
-  the account’s own GL measures (`is_terminal_account=1`).
+- When Analyze `tree_root` has no NestedSet children **and** the presentation level
+  matches the account’s code length, emit a terminal leaf row with the account’s own
+  GL measures (`is_terminal_account=1`).
+- When the same terminal account is viewed at a deeper optional level (L4/L5), return
+  **zero rows** plus `hierarchy_empty` with Persian message — never re-show the leaf
+  as a synthetic child.
+- Distinguish `no_descendants_at_level` vs `descendants_no_activity`.
 - Do not accumulate classification residual for an analyzed terminal root whose code
   is shorter than the presentation level (optional L4/L5).
 
@@ -51,6 +56,11 @@ Account Explorer v5.7.36 fixes three accounting correctness issues:
   Analyze (`_apply_account_level_advance`, `analyze_row_as_filter`).
 - Drill-graph node classification treats terminal leaves as `SubsidiaryLedger`
   (filter only; no `advance_level`).
+- Level 4 / 5 empty grid shows:
+  - «برای این حساب، گردش در سطح ۴ وجود ندارد.»
+  - «برای این حساب، گردش در سطح ۵ وجود ندارد.»
+- Known-terminal deeper level switches short-circuit the summary API and paint the
+  empty state locally; returning to Subsidiary Ledger refreshes own turnover.
 
 ### Proven mapping — `MAT-STE-2026-37804-6`
 
