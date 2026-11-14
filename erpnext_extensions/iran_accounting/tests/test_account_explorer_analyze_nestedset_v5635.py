@@ -171,7 +171,7 @@ class TestAnalyzeNestedSetDescendantsV5635(unittest.TestCase):
 		self.assertTrue(child_names.issubset(parent_names) or child_names)
 
 	def test_empty_group_returns_empty_not_company_wide(self):
-		# Pick a leaf under 21 if present; analyzing a leaf at child level yields empty/narrow.
+		# Terminal leaf Analyze surfaces own turnover (v5.7.36) — never company-wide.
 		leaf = frappe.db.get_value(
 			"Account",
 			{"company": COMPANY, "parent_account": GROUP_21, "is_group": 0},
@@ -193,6 +193,9 @@ class TestAnalyzeNestedSetDescendantsV5635(unittest.TestCase):
 		self.assertNotEqual(_codes(result), _codes(company))
 		self.assertNotIn("11", _codes(result))
 		self.assertNotIn("21", _codes(result))
+		self.assertEqual(len(result.get("rows") or []), 1)
+		self.assertEqual(result["rows"][0].get("selected_account"), leaf)
+		self.assertEqual(int(result["rows"][0].get("is_terminal_account") or 0), 1)
 
 	def test_invalid_hierarchy_node_rejected(self):
 		with self.assertRaises(Exception):

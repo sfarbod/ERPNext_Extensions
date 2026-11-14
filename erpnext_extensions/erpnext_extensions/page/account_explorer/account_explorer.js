@@ -7510,6 +7510,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const levels = (this.metadata.levels || []).sort((a, b) => a.sequence - b.sequence);
 		const current = row.level_sequence;
 		const next = levels.find((lvl) => lvl.enabled && lvl.sequence > current);
+		// Terminal Subsidiary Ledger / leaf: optional L4/L5 must not auto-advance.
+		const is_terminal_leaf = !cint(row.is_group) && !cint(row.is_virtual_group);
 
 		if (row.selected_account && !row.is_virtual_group) {
 			this.analysis_context.account_scope = {
@@ -7548,7 +7550,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			});
 		}
 
-		if (next) {
+		if (next && !is_terminal_leaf) {
 			this.analysis_context.level_sequence = next.sequence;
 		}
 		this.analysis_context.page = 1;
@@ -7737,7 +7739,14 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			const next = levels.find(
 				(lvl) => lvl.enabled && Number(lvl.sequence) > Number(row.level_sequence || before_level || 0)
 			);
-			if (next && Number(this.analysis_context.level_sequence) <= Number(row.level_sequence || before_level || 0)) {
+			// Terminal Subsidiary Ledger (is_group=0) has no optional L4/L5 children —
+			// stay at the account's own level so its GL turnover remains visible.
+			const is_terminal_leaf = !cint(row.is_group) && !cint(row.is_virtual_group);
+			if (
+				next &&
+				!is_terminal_leaf &&
+				Number(this.analysis_context.level_sequence) <= Number(row.level_sequence || before_level || 0)
+			) {
 				this.analysis_context.level_sequence = next.sequence;
 			}
 			this.analysis_context.page = 1;
