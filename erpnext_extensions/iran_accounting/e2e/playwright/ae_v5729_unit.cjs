@@ -212,14 +212,14 @@ function main() {
 				apply();
 				return;
 			}
-			timer = clock.setTimeout(apply, 500);
+			timer = clock.setTimeout(apply, 3000);
 		};
 		handle({ display_code: "a" });
 		clock.advance(100);
 		handle({ display_code: "ab" });
 		clock.advance(100);
 		handle({ display_code: "abc" });
-		clock.advance(499);
+		clock.advance(2999);
 		if (calls.length !== 0) throw new Error(`early fire ${calls.length}`);
 		clock.advance(1);
 		if (calls.length !== 1) throw new Error(`expected 1 got ${calls.length}`);
@@ -233,9 +233,9 @@ function main() {
 		seq += 1;
 		calls.push({ seq, mapped: {}, at: clock.now, immediate_clear: true });
 		if (calls[calls.length - 1].immediate_clear !== true) throw new Error("clear path");
-		pass("debounce_500_enter_clear", { calls: calls.length });
+		pass("debounce_3000_enter_clear", { calls: calls.length });
 	} catch (err) {
-		fail("debounce_500_enter_clear", err);
+		fail("debounce_3000_enter_clear", err);
 	}
 
 	try {
@@ -253,13 +253,13 @@ function main() {
 				if (mySeq < seq) return;
 				appliedSeq = mySeq;
 				applied.push({ seq: mySeq, mapped: { ...latest } });
-			}, 500);
+			}, 3000);
 		};
 		handle({ a: "1" });
 		const first = seq;
-		clock.advance(400);
+		clock.advance(2000);
 		handle({ a: "2" });
-		clock.advance(500);
+		clock.advance(3000);
 		if (applied.length !== 1 || applied[0].mapped.a !== "2") {
 			throw new Error(JSON.stringify(applied));
 		}
@@ -267,6 +267,39 @@ function main() {
 		pass("stale_response_guard");
 	} catch (err) {
 		fail("stale_response_guard", err);
+	}
+
+	try {
+		const clock = debounceHarness();
+		const calls = [];
+		let latest = null;
+		let timer = null;
+		const handle = (mapped, opts = {}) => {
+			latest = mapped;
+			clock.clearTimeout(timer);
+			timer = null;
+			const apply = () => {
+				timer = null;
+				calls.push({ mapped: { ...latest }, at: clock.now });
+			};
+			if (opts.immediate) {
+				apply();
+				return;
+			}
+			timer = clock.setTimeout(apply, 3000);
+		};
+		// Timer reset: type, wait 2s, type again, wait 2s → still zero; +1.1s → one.
+		handle({ display_code: "1" });
+		clock.advance(2000);
+		handle({ display_code: "15" });
+		clock.advance(2000);
+		if (calls.length !== 0) throw new Error(`mid fire ${calls.length}`);
+		clock.advance(1100);
+		if (calls.length !== 1) throw new Error(`expected 1 after reset, got ${calls.length}`);
+		if (calls[0].mapped.display_code !== "15") throw new Error("wrong value after reset");
+		pass("debounce_timer_reset_3000", { at: calls[0].at });
+	} catch (err) {
+		fail("debounce_timer_reset_3000", err);
 	}
 
 	const failed = checks.filter((c) => !c.ok).length;
