@@ -8,6 +8,10 @@ import path from "path";
 
 export const SUITE_REGISTRY = [
   {
+    script: "manufacturing_cost_adjustment/e2e/playwright_mca_v5735.mjs",
+    tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "UI_ONLY"],
+  },
+  {
     script: "cheque_management/e2e/playwright_cheque_leaf_void.mjs",
     tags: ["ISOLATED", "SERIAL", "ACCOUNTING", "ROLLBACK"],
   },

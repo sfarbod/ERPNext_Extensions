@@ -1,0 +1,154 @@
+{
+ "actions": [],
+ "creation": "2026-11-13 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "expense_account",
+  "account_currency",
+  "exchange_rate",
+  "description",
+  "col_break",
+  "amount",
+  "base_amount",
+  "has_operating_cost",
+  "has_corrective_cost",
+  "operation_id",
+  "qty",
+  "operating_component",
+  "accounting_dimensions_section",
+  "cost_center",
+  "dimension_col_break",
+  "project",
+  "mapping_section",
+  "se_additional_cost_row"
+ ],
+ "fields": [
+  {
+   "fieldname": "expense_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Expense Account",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "fieldname": "account_currency",
+   "fieldtype": "Link",
+   "label": "Account Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "exchange_rate",
+   "fieldtype": "Float",
+   "label": "Exchange Rate",
+   "precision": "9"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount",
+   "options": "account_currency",
+   "reqd": 1
+  },
+  {
+   "fieldname": "base_amount",
+   "fieldtype": "Currency",
+   "label": "Amount (Company Currency)",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "has_operating_cost",
+   "fieldtype": "Check",
+   "label": "Has Operating Cost"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_corrective_cost",
+   "fieldtype": "Check",
+   "label": "Has Corrective Cost"
+  },
+  {
+   "fieldname": "operation_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Operation ID",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Qty",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "operating_component",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Operating Component"
+  },
+  {
+   "fieldname": "accounting_dimensions_section",
+   "fieldtype": "Section Break",
+   "label": "Accounting Dimensions"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "dimension_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fieldname": "mapping_section",
+   "fieldtype": "Section Break",
+   "label": "Stock Entry Mapping"
+  },
+  {
+   "fieldname": "se_additional_cost_row",
+   "fieldtype": "Data",
+   "label": "SE Additional Cost Row",
+   "no_copy": 1,
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-13 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Manufacturing Cost Adjustment",
+ "name": "Manufacturing Cost Adjustment Cost",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
