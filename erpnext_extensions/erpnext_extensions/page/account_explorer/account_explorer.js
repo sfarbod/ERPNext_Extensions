@@ -153,8 +153,8 @@ function ae_normalize_export_threshold(raw) {
 	return n < 1 ? 5000 : n;
 }
 
-/** Trailing-edge column-filter debounce: 3000 ms after the most recent keystroke (v5.7.37). */
-const AE_COLUMN_FILTER_DEBOUNCE_MS = 3000;
+/** Trailing-edge column-filter debounce: 6000 ms after the most recent keystroke (v5.7.37). */
+const AE_COLUMN_FILTER_DEBOUNCE_MS = 6000;
 
 function ae_trim_compact_decimals(value) {
 	const str = String(value);
@@ -4703,7 +4703,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			const latest = this._latest_column_filter_mapped || mapped;
 			this.set_column_filters(latest, { refresh: true, filter_seq: seq });
 		};
-		// v5.7.37: true trailing-edge debounce — 3000 ms after the LAST keystroke.
+		// v5.7.37: true trailing-edge debounce — 6000 ms after the LAST keystroke.
 		// Enter / Clear pass immediate: true and cancel any pending timer.
 		if (opts && opts.immediate) {
 			apply();

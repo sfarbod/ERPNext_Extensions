@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Account Explorer 5.7.37 — 3000 ms trailing-edge column-filter debounce.
+ * Account Explorer 5.7.37 — 6000 ms trailing-edge column-filter debounce.
  * Real browser; verifies timer reset, Enter/Clear immediacy, axis coverage, stale cancel.
  */
 import { chromium } from "./playwright/node_modules/playwright/index.mjs";
@@ -14,7 +14,7 @@ const USER = process.env.AE_USER || "Administrator";
 const PASS = process.env.AE_PASS || "admin";
 const COMPANY = process.env.AE_COMPANY || "اسپاد فارمد دارو";
 const OUT = path.resolve(__dirname, "screenshots/account-explorer-v5737");
-const DEBOUNCE_MS = 3000;
+const DEBOUNCE_MS = 6000;
 
 const checks = [];
 const passCheck = (name, detail = null) => checks.push({ name, ok: true, detail });
@@ -134,7 +134,7 @@ async function main() {
 					await new Promise((r) => setTimeout(r, 400));
 				}
 				const mid = calls.length;
-				await new Promise((r) => setTimeout(r, 3200));
+				await new Promise((r) => setTimeout(r, 6200));
 				const after = calls.length;
 				const last = calls[calls.length - 1];
 				ae.set_column_filters = orig;
@@ -149,10 +149,10 @@ async function main() {
 			if (a.mid !== 0) throw new Error(`mid calls during typing: ${a.mid}`);
 			if (a.after !== 1) throw new Error(`expected 1 apply, got ${a.after}`);
 			if (String(a.value) !== "15010") throw new Error(`wrong value ${a.value}`);
-			passCheck("test_a_continuous_typing_3000", a);
+			passCheck("test_a_continuous_typing_6000", a);
 			await page.screenshot({ path: path.join(OUT, "02-test-a-typing.png"), fullPage: true });
 		} catch (err) {
-			failCheck("test_a_continuous_typing_3000", err);
+			failCheck("test_a_continuous_typing_6000", err);
 		}
 
 		// —— Test B: Timer reset (2s + type + 2s = no fire; +1.1s = fire) ——
@@ -167,11 +167,11 @@ async function main() {
 					return orig(filters, opts);
 				};
 				ae.handle_datatable_column_filters({ 2: "1" });
-				await new Promise((r) => setTimeout(r, 2000));
+				await new Promise((r) => setTimeout(r, 4000));
 				ae.handle_datatable_column_filters({ 2: "15" });
-				await new Promise((r) => setTimeout(r, 2000));
+				await new Promise((r) => setTimeout(r, 4000));
 				const mid = calls.length;
-				await new Promise((r) => setTimeout(r, 1100));
+				await new Promise((r) => setTimeout(r, 2100));
 				const after = calls.length;
 				const value = after ? Object.values(calls[calls.length - 1].filters || {})[0] : null;
 				ae.set_column_filters = orig;
@@ -201,7 +201,7 @@ async function main() {
 				await new Promise((r) => setTimeout(r, 500));
 				ae.handle_datatable_column_filters({ 2: "nano" }, { immediate: true });
 				const afterEnter = calls.length;
-				await new Promise((r) => setTimeout(r, 3200));
+				await new Promise((r) => setTimeout(r, 6200));
 				const afterWait = calls.length;
 				ae.set_column_filters = orig;
 				ae.clear_column_filters?.({ refresh: false });
@@ -229,7 +229,7 @@ async function main() {
 				await new Promise((r) => setTimeout(r, 400));
 				ae.clear_single_column_filter("display_title");
 				const afterClear = calls.length;
-				await new Promise((r) => setTimeout(r, 3200));
+				await new Promise((r) => setTimeout(r, 6200));
 				const afterWait = calls.length;
 				const revived = calls.some((c) => Object.values(c.filters || {}).includes("stale"));
 				ae.set_column_filters = orig;
@@ -267,9 +267,9 @@ async function main() {
 					ae.handle_datatable_column_filters({ 2: "a" });
 					ae.handle_datatable_column_filters({ 2: "ab" });
 					ae.handle_datatable_column_filters({ 2: "abc" });
-					await new Promise((x) => setTimeout(x, 800));
+					await new Promise((x) => setTimeout(x, 1000));
 					const mid = calls.length;
-					await new Promise((x) => setTimeout(x, 2500));
+					await new Promise((x) => setTimeout(x, 5500));
 					const after = calls.length;
 					ae.set_column_filters = orig;
 					ae.clear_column_filters?.({ refresh: false });
@@ -310,7 +310,7 @@ async function main() {
 				while (ae.store?.get?.("loading")?.summary && g++ < 400) {
 					await new Promise((x) => setTimeout(x, 100));
 				}
-				await new Promise((x) => setTimeout(x, 3200));
+				await new Promise((x) => setTimeout(x, 6200));
 				const staleParty = partyCalls.some((c) =>
 					Object.values(c.filters || {}).includes("partyOnly")
 				);

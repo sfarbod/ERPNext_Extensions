@@ -597,7 +597,7 @@ erpnext_extensions.account_explorer.adapters.AEDataTableAdapter = class AEDataTa
 			options.on_server_column_filters(filters || {}, { immediate: !!immediate });
 		};
 		// Replace client-only page filter with server-side Account Explorer filters.
-		// DataTable's built-in keydown debounce is 300ms; AE owns 3000ms trailing
+		// DataTable's built-in keydown debounce is 300ms; AE owns 6000ms trailing
 		// debounce (AE_COLUMN_FILTER_DEBOUNCE_MS) + Enter/Clear immediate.
 		column_manager.applyFilter = (filters) => {
 			emit(filters || {}, false);
