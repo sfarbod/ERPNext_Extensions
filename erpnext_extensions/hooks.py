@@ -104,6 +104,10 @@ doctype_js = {
 	"Stock Entry": [
 		"consignment_stock/public/js/stock_entry_consignment.js",
 		"consignment_stock/public/js/stock_entry_material_loan.js",
+		"public/js/stock_entry_mca.js",
+	],
+	"Manufacturing Cost Adjustment": [
+		"public/js/manufacturing_cost_adjustment.js",
 	],
 	# v16 hides the stock Corrective Job Card button whenever the card declares
 	# a finished_good, which is every card under semi-finished goods tracking.
@@ -185,6 +189,7 @@ after_migrate = [
 	"erpnext_extensions.patches.post_model_sync.ensure_reassign_job_cards_navigation.execute",
 	"erpnext_extensions.patches.post_model_sync.ensure_job_card_stock_rebuild_navigation.execute",
 	"erpnext_extensions.patches.post_model_sync.ensure_stock_entry_dimension_repair_navigation.execute",
+	"erpnext_extensions.manufacturing_cost_adjustment.custom_fields.after_migrate",
 ]
 
 # ERPNext injects Accounting Dimension custom fields onto these DocTypes (see Accounting Dimension on_update).
@@ -473,9 +478,11 @@ doc_events = {
 			"erpnext_extensions.iran_accounting.stock_entry.on_cancel_stock_entry",
 			"erpnext_extensions.consignment_stock.stock_entry_hooks.on_cancel",
 			"erpnext_extensions.consignment_stock.material_loan.stock_entry_hooks.on_cancel",
+			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.on_stock_entry_cancel",
 		],
 		"on_update_after_submit": [
 			"erpnext_extensions.consignment_stock.material_loan.stock_entry_hooks.on_update_after_submit",
+			"erpnext_extensions.manufacturing_cost_adjustment.stock_entry_hooks.on_update_after_submit",
 		],
 	},
 	"Stock Entry Type": {
@@ -489,11 +496,15 @@ doc_events = {
 		# Worker RIV completes via Document.db_set("status", "Completed"), which
 		# runs on_change — not on_update. on_update / on_update_after_submit only
 		# cover a full save path and miss execute_reposting_entry.
-		"on_change": "erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+		"on_change": [
+			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.on_riv_change",
+		],
 		"on_update": "erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
 		"on_update_after_submit": [
 			"erpnext_extensions.consignment_stock.material_loan.repost_guards.on_repost_completed",
 			"erpnext_extensions.iran_accounting.historical_stock.leftover_ma.on_repost_item_valuation_update",
+			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.on_riv_change",
 		],
 	},
 	"Landed Cost Voucher": {
@@ -667,6 +678,7 @@ scheduler_events = {
 	"cron": {
 		"*/5 * * * *": [
 			"erpnext_extensions.asset_usage_depreciation.services.depr_reset_rebuild_campaign.ensure_all_running_campaigns_live",
+			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.process_pending_mca_reposts",
 		],
 	},
 	"hourly": [

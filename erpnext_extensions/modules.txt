@@ -7,3 +7,4 @@ Extentionhrms
 Consignment Stock
 Asset Usage Depreciation
 Costing
+Manufacturing Cost Adjustment

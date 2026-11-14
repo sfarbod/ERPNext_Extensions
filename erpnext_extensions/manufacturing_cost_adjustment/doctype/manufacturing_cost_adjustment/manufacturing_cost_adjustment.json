@@ -1,0 +1,328 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-11-13 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "company",
+  "stock_entry",
+  "stock_entry_purpose",
+  "work_order",
+  "column_break_main",
+  "posting_date",
+  "remarks",
+  "section_costs",
+  "costs",
+  "total_additional_costs",
+  "section_processing",
+  "processing_status",
+  "checkpoint",
+  "processing_attempt",
+  "idempotency_key",
+  "column_break_proc",
+  "repost_required",
+  "repost_status",
+  "repost_attempt_count",
+  "next_retry_at",
+  "last_repost_attempt_at",
+  "repost_completed_at",
+  "section_riv",
+  "riv_voucher_nos",
+  "last_repost_error",
+  "error_log",
+  "section_snapshots",
+  "valuation_before_json",
+  "valuation_after_json",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "default": "MCA-.YYYY.-",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "MCA-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "stock_entry.purpose",
+   "fieldname": "stock_entry_purpose",
+   "fieldtype": "Data",
+   "label": "Stock Entry Purpose",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "stock_entry.work_order",
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "Work Order",
+   "options": "Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Identification Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  },
+  {
+   "fieldname": "section_costs",
+   "fieldtype": "Section Break",
+   "label": "Additional Costs"
+  },
+  {
+   "fieldname": "costs",
+   "fieldtype": "Table",
+   "label": "Costs",
+   "options": "Manufacturing Cost Adjustment Cost",
+   "reqd": 1
+  },
+  {
+   "fieldname": "total_additional_costs",
+   "fieldtype": "Currency",
+   "label": "Total Additional Costs",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_processing",
+   "fieldtype": "Section Break",
+   "label": "Processing"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "processing_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Processing Status",
+   "options": "Draft\nQueued\nAppending Costs\nAllocating\nRebuilding SLE\nRebuilding GL\nValidating Contract\nPending RIV\nReconciling\nCompleted\nFailed\nVoidedByStockEntryCancel",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "checkpoint",
+   "fieldtype": "Data",
+   "label": "Checkpoint",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "processing_attempt",
+   "fieldtype": "Int",
+   "label": "Processing Attempt",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "idempotency_key",
+   "fieldtype": "Data",
+   "label": "Idempotency Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "column_break_proc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "repost_required",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Repost Required",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "Not Required",
+   "fieldname": "repost_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Repost Status",
+   "options": "Not Required\nRequired\nQueued\nIn Progress\nCompleted\nFailed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "repost_attempt_count",
+   "fieldtype": "Int",
+   "label": "Repost Attempt Count",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "next_retry_at",
+   "fieldtype": "Datetime",
+   "label": "Next Retry At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_repost_attempt_at",
+   "fieldtype": "Datetime",
+   "label": "Last Repost Attempt At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "repost_completed_at",
+   "fieldtype": "Datetime",
+   "label": "Repost Completed At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_riv",
+   "fieldtype": "Section Break",
+   "label": "RIV / Errors"
+  },
+  {
+   "fieldname": "riv_voucher_nos",
+   "fieldtype": "Small Text",
+   "label": "RIV Voucher Nos",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_repost_error",
+   "fieldtype": "Long Text",
+   "label": "Last Repost Error",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Long Text",
+   "label": "Error Log",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_snapshots",
+   "fieldtype": "Section Break",
+   "label": "Valuation Snapshots"
+  },
+  {
+   "fieldname": "valuation_before_json",
+   "fieldtype": "Code",
+   "label": "Valuation Before",
+   "no_copy": 1,
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "valuation_after_json",
+   "fieldtype": "Code",
+   "label": "Valuation After",
+   "no_copy": 1,
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Manufacturing Cost Adjustment",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-11-13 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Manufacturing Cost Adjustment",
+ "name": "Manufacturing Cost Adjustment",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "share": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
