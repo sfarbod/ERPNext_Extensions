@@ -315,9 +315,9 @@ async function main() {
 				ae.handle_datatable_column_filters({ 2: "نا" });
 				ae.handle_datatable_column_filters({ 2: "نان" });
 				ae.handle_datatable_column_filters({ 2: "نانو" });
-				await new Promise((r) => setTimeout(r, 200));
+				await new Promise((r) => setTimeout(r, 1000));
 				const midCalls = calls.length;
-				await new Promise((r) => setTimeout(r, 450));
+				await new Promise((r) => setTimeout(r, 5500));
 				const afterDebounce = calls.length;
 				const last = calls[calls.length - 1];
 				// Enter immediate
@@ -339,7 +339,7 @@ async function main() {
 				};
 			});
 			if (debounce.midCalls !== 0) {
-				throw new Error(`requests before 500ms: ${debounce.midCalls}`);
+				throw new Error(`requests before 6000ms: ${debounce.midCalls}`);
 			}
 			if (debounce.afterDebounce !== 1) {
 				throw new Error(`expected 1 debounced apply, got ${debounce.afterDebounce}`);
@@ -353,10 +353,10 @@ async function main() {
 			if (debounce.page !== 1) {
 				throw new Error(`page not reset: ${debounce.page}`);
 			}
-			passCheck("column_filter_debounce_500", debounce);
+			passCheck("column_filter_debounce_6000", debounce);
 			await shot(page, "03-debounced-column-filter");
 		} catch (err) {
-			failCheck("column_filter_debounce_500", err);
+			failCheck("column_filter_debounce_6000", err);
 			await shot(page, "03-debounce-fail");
 		}
 
@@ -383,9 +383,9 @@ async function main() {
 					ae.handle_datatable_column_filters({ 2: "a" });
 					ae.handle_datatable_column_filters({ 2: "ab" });
 					ae.handle_datatable_column_filters({ 2: "abc" });
-					await new Promise((r) => setTimeout(r, 200));
+					await new Promise((r) => setTimeout(r, 1000));
 					const mid = calls.length;
-					await new Promise((r) => setTimeout(r, 450));
+					await new Promise((r) => setTimeout(r, 5500));
 					const after = calls.length;
 					ae.set_column_filters = orig;
 					ae.clear_column_filters?.({ refresh: false });

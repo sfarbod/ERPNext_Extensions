@@ -153,6 +153,9 @@ function ae_normalize_export_threshold(raw) {
 	return n < 1 ? 5000 : n;
 }
 
+/** Trailing-edge column-filter debounce: 6000 ms after the most recent keystroke (v5.7.37). */
+const AE_COLUMN_FILTER_DEBOUNCE_MS = 6000;
+
 function ae_trim_compact_decimals(value) {
 	const str = String(value);
 	if (!str.includes(".")) {
@@ -3878,6 +3881,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		const prev_level = this.analysis_context.level_sequence;
 		const prev_detail = this.analysis_context.detail_mode;
 		const prev_dimension_type = this.analysis_context.dimension_scope?.dimension_type || null;
+		// Axis / level / Dimension Type navigation invalidates pending debounce so a
+		// stale timer cannot apply an old partial value after the grid context changes.
+		this.cancel_pending_column_filter_debounce();
 		// Account Level pills are presentation rollups over the same leaf GL measures.
 		// Keep the current execution_id and avoid datatable remount + row clear.
 		const level_only =
@@ -4679,11 +4685,17 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 		return mapped;
 	}
 
+	cancel_pending_column_filter_debounce() {
+		if (this._column_filter_timer) {
+			clearTimeout(this._column_filter_timer);
+			this._column_filter_timer = null;
+		}
+	}
+
 	handle_datatable_column_filters(filters_by_col_index, opts = {}) {
 		const mapped = this.map_datatable_column_filters(filters_by_col_index);
 		this._latest_column_filter_mapped = mapped;
-		clearTimeout(this._column_filter_timer);
-		this._column_filter_timer = null;
+		this.cancel_pending_column_filter_debounce();
 		const apply = () => {
 			this._column_filter_timer = null;
 			this._column_filter_seq = (this._column_filter_seq || 0) + 1;
@@ -4691,12 +4703,13 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			const latest = this._latest_column_filter_mapped || mapped;
 			this.set_column_filters(latest, { refresh: true, filter_seq: seq });
 		};
-		// v5.7.29: 500 ms after last keystroke; Enter / Clear use immediate: true.
+		// v5.7.37: true trailing-edge debounce — 6000 ms after the LAST keystroke.
+		// Enter / Clear pass immediate: true and cancel any pending timer.
 		if (opts && opts.immediate) {
 			apply();
 			return;
 		}
-		this._column_filter_timer = setTimeout(apply, 500);
+		this._column_filter_timer = setTimeout(apply, AE_COLUMN_FILTER_DEBOUNCE_MS);
 	}
 
 	build_analyze_action_html(row) {
@@ -8963,8 +8976,7 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	clear_single_column_filter(field, { refresh = true } = {}) {
-		clearTimeout(this._column_filter_timer);
-		this._column_filter_timer = null;
+		this.cancel_pending_column_filter_debounce();
 		const next = { ...(this.analysis_context.column_filters || {}) };
 		delete next[field];
 		// Also drop aliases for Party Name.
@@ -9003,9 +9015,12 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	clear_column_filters({ refresh = true } = {}) {
+		this.cancel_pending_column_filter_debounce();
+		this._latest_column_filter_mapped = {};
 		this.analysis_context.column_filters = {};
 		if (refresh) {
 			this.analysis_context.page = 1;
+			this._column_filter_seq = (this._column_filter_seq || 0) + 1;
 			this.refresh_summary({ new_execution: true, reason: "column_filters_cleared" });
 		}
 	}

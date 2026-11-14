@@ -245,7 +245,7 @@ class TestAccountExplorerV5729GlobalDimensionFilters(unittest.TestCase):
 		self.assertIn("projection_keeps_all_dimension_filters", names)
 		self.assertIn("filter_summary_shows_all_dimension_types", names)
 
-	def test_source_debounce_interval_is_500ms(self):
+	def test_source_debounce_interval_is_6000ms(self):
 		app_root = Path(frappe.get_app_path("erpnext_extensions"))
 		controller = (
 			app_root
@@ -254,10 +254,14 @@ class TestAccountExplorerV5729GlobalDimensionFilters(unittest.TestCase):
 			/ "account_explorer"
 			/ "account_explorer.js"
 		).read_text(encoding="utf-8")
-		self.assertIn("setTimeout(apply, 500)", controller)
+		self.assertIn("AE_COLUMN_FILTER_DEBOUNCE_MS = 6000", controller)
+		self.assertIn("setTimeout(apply, AE_COLUMN_FILTER_DEBOUNCE_MS)", controller)
+		self.assertNotIn("setTimeout(apply, 500)", controller)
+		self.assertNotIn("AE_COLUMN_FILTER_DEBOUNCE_MS = 3000", controller)
 		self.assertIn("opts.immediate", controller)
 		self.assertIn("activate_dimension_type_scope", controller)
 		self.assertIn("Intended filter semantics", controller)
+		self.assertIn("cancel_pending_column_filter_debounce", controller)
 
 
 class TestAccountExplorerV5729DebounceContract(unittest.TestCase):
