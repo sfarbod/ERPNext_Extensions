@@ -3906,11 +3906,8 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 			this.render_detail_header();
 			this._sync_store_context({ emit: true });
 			this.schedule_workspace_url_update({ push: true });
-			// Terminal leaf with no NestedSet children: deeper optional levels are
-			// known-empty — paint Persian empty-state without another summary round-trip.
-			if (this._apply_known_terminal_hierarchy_empty(level_or_dimension, prev_level)) {
-				return;
-			}
+			// v5.7.43: terminal accounts are carried forward by the backend at optional
+			// deeper levels — always refresh so L4/L5 receive the same real account row.
 			this.refresh_summary({ reason: "level_change" });
 			return;
 		}
@@ -5085,38 +5082,9 @@ erpnext_extensions.account_explorer.Controller = class AccountExplorerController
 	}
 
 	_apply_known_terminal_hierarchy_empty(next_level, prev_level) {
-		const root = this._known_terminal_account_scope();
-		if (!root) {
-			return false;
-		}
-		if (!(Number(next_level) > Number(prev_level || 0))) {
-			return false;
-		}
-		const message_fa = this._persian_no_turnover_at_level(next_level);
-		this.hierarchy_empty = {
-			reason: "no_descendants_at_level",
-			message_fa,
-			level_sequence: Number(next_level),
-			is_terminal_account: 1,
-			tree_root_account: root,
-			has_nested_descendants: 0,
-		};
-		this.rows = [];
-		this.totals = {};
-		this.warnings = [];
-		this.classification_residual = null;
-		this.pagination = {
-			...(this.pagination || {}),
-			page: 1,
-			total_rows: 0,
-			total_pages: 0,
-		};
-		this.destroy_summary_datatable();
-		this.render_grid_empty_state("hierarchy_no_descendants");
-		this.render_totals();
-		this.render_warnings();
-		this.render_filter_summary();
-		return true;
+		// v5.7.43: optional deeper levels carry the same terminal account forward
+		// via backend summary — never short-circuit to an empty Persian state.
+		return false;
 	}
 
 	render_grid_empty_state(reason = "no_data") {

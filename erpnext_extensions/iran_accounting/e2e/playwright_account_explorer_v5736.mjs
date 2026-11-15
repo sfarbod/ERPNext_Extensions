@@ -176,44 +176,60 @@ async function main() {
 			passCheck("no_false_residual_on_terminal", { residual_n: afterAnalyze.residual_n });
 		}
 
-		// Level 4 empty-state for terminal account (no synthetic child row)
+		// Level 4 carry-forward for terminal account (v5.7.43)
+		await page.evaluate(() => window.cur_ae.switch_axis("account_level", 4));
+		await waitSummaryIdle(page, { requireRows: true });
 		const level4 = await page.evaluate(() => {
 			const ae = window.cur_ae;
-			ae.switch_axis("account_level", 4);
 			return {
 				level: ae.analysis_context.level_sequence,
-				row_count: (ae.rows || []).length,
-				empty_text: document.querySelector(".ae-grid-state-message")?.textContent || "",
+				rows: (ae.rows || []).map((r) => ({
+					account: r.selected_account,
+					code: r.display_code,
+					is_terminal: r.is_terminal_account,
+					carried: r.is_terminal_carried_forward,
+					period_debit: r.period_debit,
+				})),
 				hierarchy_empty: ae.hierarchy_empty,
-				account_scope: ae.analysis_context.account_scope,
 			};
 		});
-		await page.waitForTimeout(400);
-		await page.screenshot({ path: path.join(OUT, "02b-level4-empty.png"), fullPage: true });
-		const msg4 = "برای این حساب، گردش در سطح ۴ وجود ندارد.";
-		if (level4.row_count !== 0 || !String(level4.empty_text || "").includes("سطح ۴")) {
-			failCheck("level4_terminal_empty_message", new Error(JSON.stringify(level4)));
+		await page.screenshot({ path: path.join(OUT, "02b-level4-carryforward.png"), fullPage: true });
+		if (
+			level4.rows.length !== 1 ||
+			level4.rows[0].account !== ACC ||
+			level4.rows[0].code !== "111601" ||
+			!(Number(level4.rows[0].is_terminal) || Number(level4.rows[0].carried))
+		) {
+			failCheck("level4_terminal_carryforward", new Error(JSON.stringify(level4)));
 		} else {
-			passCheck("level4_terminal_empty_message", { empty_text: level4.empty_text, msg4 });
+			passCheck("level4_terminal_carryforward", level4.rows[0]);
 		}
 
-		// Level 5 empty-state
+		// Level 5 carry-forward
+		await page.evaluate(() => window.cur_ae.switch_axis("account_level", 5));
+		await waitSummaryIdle(page, { requireRows: true });
 		const level5 = await page.evaluate(() => {
 			const ae = window.cur_ae;
-			ae.switch_axis("account_level", 5);
 			return {
 				level: ae.analysis_context.level_sequence,
-				row_count: (ae.rows || []).length,
-				empty_text: document.querySelector(".ae-grid-state-message")?.textContent || "",
+				rows: (ae.rows || []).map((r) => ({
+					account: r.selected_account,
+					code: r.display_code,
+					is_terminal: r.is_terminal_account,
+					carried: r.is_terminal_carried_forward,
+				})),
 				hierarchy_empty: ae.hierarchy_empty,
 			};
 		});
-		await page.waitForTimeout(400);
-		await page.screenshot({ path: path.join(OUT, "02c-level5-empty.png"), fullPage: true });
-		if (level5.row_count !== 0 || !String(level5.empty_text || "").includes("سطح ۵")) {
-			failCheck("level5_terminal_empty_message", new Error(JSON.stringify(level5)));
+		await page.screenshot({ path: path.join(OUT, "02c-level5-carryforward.png"), fullPage: true });
+		if (
+			level5.rows.length !== 1 ||
+			level5.rows[0].account !== ACC ||
+			level5.rows[0].code !== "111601"
+		) {
+			failCheck("level5_terminal_carryforward", new Error(JSON.stringify(level5)));
 		} else {
-			passCheck("level5_terminal_empty_message", { empty_text: level5.empty_text });
+			passCheck("level5_terminal_carryforward", level5.rows[0]);
 		}
 
 		// Back to Subsidiary Ledger — own turnover restored

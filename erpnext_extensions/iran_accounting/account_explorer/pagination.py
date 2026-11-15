@@ -120,7 +120,28 @@ def paginate_summary_rows(rows: list[dict], spec: AccountExplorerQuerySpec) -> d
 		finalize_measures(row)
 
 	if spec.hide_zero_rows:
-		rows = [row for row in rows if row_has_activity(row)]
+		# v5.7.43: keep the analyzed terminal leaf (incl. L4/L5 carry-forward) visible
+		# even when its own scoped GL is zero — never replace identity with an empty grid.
+		tree_root = None
+		try:
+			tree_root = spec.account_scope.tree_root_account or (
+				spec.account_scope.selected_account
+				if getattr(spec.account_scope, "mode", None) == "account"
+				else None
+			)
+		except Exception:
+			tree_root = None
+
+		def _keep_summary_row(row: dict) -> bool:
+			if (
+				tree_root
+				and int(row.get("is_terminal_account") or 0)
+				and row.get("selected_account") == tree_root
+			):
+				return True
+			return row_has_activity(row)
+
+		rows = [row for row in rows if _keep_summary_row(row)]
 
 	# v4.6.2: empty classification is excluded before aggregation/totals/pagination.
 	rows = exclude_empty_classification_rows(rows)

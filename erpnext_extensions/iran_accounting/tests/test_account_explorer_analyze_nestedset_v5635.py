@@ -193,16 +193,12 @@ class TestAnalyzeNestedSetDescendantsV5635(unittest.TestCase):
 		self.assertNotEqual(_codes(result), _codes(company))
 		self.assertNotIn("11", _codes(result))
 		self.assertNotIn("21", _codes(result))
-		# Own-turnover row only when presentation level matches the leaf code length;
-		# otherwise hierarchy_empty (optional deeper level).
-		if result.get("rows"):
-			self.assertEqual(len(result["rows"]), 1)
-			self.assertEqual(result["rows"][0].get("selected_account"), leaf)
-			self.assertEqual(int(result["rows"][0].get("is_terminal_account") or 0), 1)
-		else:
-			empty = result.get("hierarchy_empty") or {}
-			self.assertEqual(empty.get("reason"), "no_descendants_at_level")
-			self.assertEqual(empty.get("tree_root_account"), leaf)
+		# v5.7.43: terminal leaf always surfaces as own-turnover carry-forward
+		# (presentation level may differ from the account's source code length).
+		self.assertEqual(len(result.get("rows") or []), 1)
+		self.assertEqual(result["rows"][0].get("selected_account"), leaf)
+		self.assertEqual(int(result["rows"][0].get("is_terminal_account") or 0), 1)
+		self.assertFalse((result.get("hierarchy_empty") or {}).get("reason"))
 
 	def test_invalid_hierarchy_node_rejected(self):
 		with self.assertRaises(Exception):

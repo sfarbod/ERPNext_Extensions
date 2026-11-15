@@ -6,7 +6,7 @@ import frappe
 from frappe import _
 from frappe.utils.caching import request_cache
 
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from erpnext_extensions.iran_accounting.account_explorer.account_hierarchy import (
 	account_in_subtree,
@@ -233,28 +233,34 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 		if rows:
 			had_nested_descendants = True
 		elif not direct_child_accounts(accounts, tree_root):
-			# Terminal ledger: own turnover only at the account's actual level.
-			# Deeper optional levels (L4/L5) return an explicit empty state — never
-			# re-present the leaf as if it were a child of itself.
-			root_row = _row_by_name(accounts, tree_root)
-			if _account_matches_presentation_level(root_row, level):
-				terminal = _build_terminal_leaf_row(
-					accounts,
-					tree_root,
-					measures_by_account,
-					level_sequence=int(level.sequence),
-				)
-				if terminal:
-					finalize_measures(terminal)
-					rows = [terminal]
-			else:
-				hierarchy_empty = _hierarchy_empty_no_descendants(
-					tree_root=tree_root,
-					level_sequence=int(level.sequence),
-				)
+			# Terminal ledger carry-forward (v5.7.43): when the analyzed account has
+			# no NestedSet children, surface the same real account at optional deeper
+			# presentation levels (L4/L5). Own GL measures only — never invent children
+			# and never double-count via a second account identity.
+			terminal = _build_terminal_leaf_row(
+				accounts,
+				tree_root,
+				measures_by_account,
+				level_sequence=int(level.sequence),
+				enabled_levels=get_enabled_levels(),
+			)
+			if terminal:
+				finalize_measures(terminal)
+				rows = [terminal]
 
 	if spec.hide_zero_rows:
-		rows = [row for row in rows if row_has_activity(row)]
+		# Keep the analyzed terminal leaf visible (incl. L4/L5 carry-forward) even
+		# when its own GL is zero — empty grids must not replace terminal identity.
+		def _keep_row(row: dict) -> bool:
+			if (
+				tree_root
+				and cint(row.get("is_terminal_account"))
+				and row.get("selected_account") == tree_root
+			):
+				return True
+			return row_has_activity(row)
+
+		rows = [row for row in rows if _keep_row(row)]
 
 	if tree_root and not rows and hierarchy_empty is None and had_nested_descendants:
 		# Descendants exist in the chart but none have activity in scope.
@@ -469,8 +475,26 @@ def _account_matches_presentation_level(account_row: dict | None, level) -> bool
 	return is_pure_numeric_code(normalized) and len(normalized) == int(level.code_length)
 
 
+def _source_level_sequence_for_account(account_row: dict | None, enabled_levels: list) -> int | None:
+	"""Configured level sequence matching the account's numeric code length."""
+	if not account_row:
+		return None
+	normalized = normalize_account_number(account_row.get("account_number"))
+	if not is_pure_numeric_code(normalized):
+		return None
+	code_len = len(normalized)
+	for lvl in enabled_levels or []:
+		if int(lvl.code_length) == code_len:
+			return int(lvl.sequence)
+	return None
+
+
 def persian_no_turnover_at_level(level_sequence: int) -> str:
-	"""Persian empty-state when a selected account has no descendants at this level."""
+	"""Persian empty-state when a selected account has no descendants at this level.
+
+	Retained for descendants_no_activity messaging compatibility; terminal accounts
+	are carried forward (v5.7.43) instead of showing this empty state.
+	"""
 	seq = int(level_sequence or 0)
 	if seq == 4:
 		return "برای این حساب، گردش در سطح ۴ وجود ندارد."
@@ -480,6 +504,7 @@ def persian_no_turnover_at_level(level_sequence: int) -> str:
 
 
 def _hierarchy_empty_no_descendants(*, tree_root: str, level_sequence: int) -> dict:
+	"""Legacy helper retained for callers; terminal carry-forward no longer uses it."""
 	return {
 		"reason": "no_descendants_at_level",
 		"message_fa": persian_no_turnover_at_level(level_sequence),
@@ -496,11 +521,14 @@ def _build_terminal_leaf_row(
 	measures_by_account: dict[str, dict],
 	*,
 	level_sequence: int,
+	enabled_levels: list | None = None,
 ) -> dict | None:
 	"""Own-turnover row when ``tree_root`` has no NestedSet children (terminal ledger).
 
-	Only used at the account's actual presentation level. Deeper optional levels
-	must return ``hierarchy_empty`` instead of re-showing this leaf as a child.
+	v5.7.43: the same real account may be carried forward to optional deeper
+	presentation levels (L4/L5). Measures always come from that single account's
+	posted GL — presentation carry-forward never invents children or duplicates
+	GL aggregation.
 	"""
 	by_name = accounts_by_name(accounts)
 	root = by_name.get(tree_root)
@@ -511,15 +539,21 @@ def _build_terminal_leaf_row(
 	if direct_child_accounts(accounts, tree_root):
 		return None
 	measures = measures_by_account.get(tree_root, zero_measures())
+	source_level = _source_level_sequence_for_account(root, enabled_levels or [])
+	carried = bool(source_level is not None and int(level_sequence) > int(source_level))
 	row = {
 		"row_key": f"{REAL_ACCOUNT_KEY_PREFIX}:{root.name}",
 		"display_code": normalize_account_number(root.account_number) or root.name,
 		"display_title": root.account_name or root.name,
 		"is_virtual_group": 0,
 		"level_sequence": level_sequence,
+		"source_level_sequence": source_level,
 		"selected_account": root.name,
 		"is_group": 1 if root.is_group else 0,
 		"is_terminal_account": 1,
+		"is_terminal_carried_forward": 1 if carried else 0,
+		"parent_account": root.parent_account,
+		"root_type": root.root_type,
 		"has_direct_group_posting": 0,
 		**zero_measures(),
 	}
