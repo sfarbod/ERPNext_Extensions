@@ -1,49 +1,120 @@
-# Release 5.7.42 — Multiple Advance Received / Advance Paid Accounts
+# erpnext_extensions 5.7.42
 
-## Summary
+## Multiple Advance Received and Advance Paid Accounts
 
-Implements **Option B′**: Account-level classification (`Account.advance_account_type`) for multi-account separate-party advances, while preserving Company/Party default auto-fill fields and the Company feature master switch.
+Version **5.7.42** allows a company to use **multiple** separate-party Advance Received and Advance Paid accounts, while preserving existing Company and Party default configuration.
 
-## Architecture
+---
 
-| Layer | Role |
-|---|---|
-| `Account.advance_account_type` | Eligibility (None / Advance Received / Advance Paid) |
-| `Company.book_advance_payments_in_separate_party_account` | Feature master switch |
-| Company / Party default advance Links | Auto-fill / compat discovery |
-| PE `book_advance_payments_in_separate_party_account` | Read-only, computed from party-account eligibility |
+## New Features
 
-### Payment Entry (flexible Scenario D)
+### Account-level advance classification
 
-- Receive + classified Advance Received on `paid_from` → flag ON, account preserved
-- Pay + classified Advance Paid on `paid_to` → flag ON, account preserved
-- Normal Debtors/Creditors with feature ON → flag OFF (no overwrite to default)
-- Wrong-direction classified account → rejected
-- Company feature OFF → standard ERPNext behaviour
+Accounts can be classified with **Advance Account Type**:
 
-### Discovery
+| Value | Meaning |
+| --- | --- |
+| *(blank)* | Not a separate-party advance account |
+| Advance Received | Eligible for customer advance receipts |
+| Advance Paid | Eligible for supplier advance payments |
 
-`get_common_query` is patched so invoice Get Advances / Payment Reconciliation find PEs against **all** eligible accounts (classified ∪ configured defaults), not only a single default.
+**Advance Received** accounts must be ledger accounts with Root Type **Liability** and Account Type **Receivable**, enabled, belonging to the company, and in company currency.
 
-### Journal Entry
+**Advance Paid** accounts must be ledger accounts with Root Type **Asset** and Account Type **Payable**, with the same company and currency rules.
 
-Existing `is_advance` on AR/AP unchanged. Warning expanded to all classified separate advance accounts (no hard block — PDC JEs remain allowed).
+Invalid classifications are rejected on save.
 
-## Files
+### Multi-account advance recognition
 
-- `erpnext_extensions/advance_accounts/` — module (eligibility, PE/JE/PR mixins, discovery patch, custom field, bootstrap)
-- Patch: `patches/post_model_sync/seed_advance_account_types_v5742.py`
-- PDC: `post_dated_cheque.py`, `pdc_invoice_advance_application.py`, `pdc_settlement_summary.py`
-- Hooks / JS / tests / Playwright smoke
+Any correctly classified advance account can be used on Payment Entry. Advances booked to different eligible accounts remain discoverable for invoice allocation and Payment Reconciliation (not limited to a single Company default).
 
-## Migration
+---
 
-1. Custom Field `advance_account_type` on Account
-2. Seed configured Company/Party advance accounts (sets missing `account_type` when safe)
-3. No GL / submitted voucher rewrites
+## Improvements
 
-## Test evidence
+### Payment Entry
 
-- Unit/integration: `test_advance_accounts_v5742` — 9/9 OK
-- E2E execute: `e2e_advance_accounts_v5742.run` — 3 Received + 3 Paid advances, GL credit/debit OK, multi-account discovery OK
-- Playwright: `advance-accounts-v5742.spec.ts` — Account field + PE checkbox values OK
+When **Book Advance Payments in Separate Party Account** is enabled on Company:
+
+| Scenario | Party account field | Account used | Advance checkbox |
+| --- | --- | --- | --- |
+| Customer receipt (normal) | Paid From | Ordinary Receivable (e.g. Debtors) | Off |
+| Customer advance | Paid From | Advance Received | On (automatic) |
+| Supplier payment (normal) | Paid To | Ordinary Payable (e.g. Creditors) | Off |
+| Supplier advance | Paid To | Advance Paid | On (automatic) |
+
+- The Payment Entry advance checkbox remains **read-only** and is computed by the server.
+- An eligible advance account selected by the user is **not** overwritten by the Company default during validation.
+- Using an Advance Paid account on a Receive entry (or Advance Received on a Pay entry) is rejected.
+- With the Company feature **off**, standard ERPNext behaviour is unchanged.
+
+### Invoice advance allocation
+
+- Sales Invoice can discover advances from **multiple** Advance Received accounts for the same customer.
+- Purchase Invoice can discover advances from **multiple** Advance Paid accounts for the same supplier.
+- Order-linked advances, partial allocation, and existing advance GL reclassification paths are preserved (ERPNext’s separate-party advance mechanism is reused; no parallel GL engine).
+
+### Payment Reconciliation
+
+Payment Reconciliation can consider all eligible classified advance accounts for the party/company, in addition to the manually selected default advance account field where applicable.
+
+---
+
+## Compatibility
+
+- **Company defaults** (`Default Advance Received Account`, `Default Advance Paid Account`) remain supported and continue to act as the preferred defaults.
+- **Party / Party Group** advance accounts remain supported.
+- **Journal Entry** advances continue to use `Is Advance` on normal Receivable/Payable party accounts. Posting Journal Entries against separate-party advance accounts still shows a warning and is not treated as the Payment Entry advance workflow. The warning now covers all classified separate advance accounts. Hard blocking is not applied, so Post Dated Cheque (PDC) Journal Entries that use advance accounts continue to work.
+- **PDC** helpers validate document-level advance account overrides against classification where present, and settlement / application validation can consider the set of eligible advance accounts rather than only a single Company default.
+
+---
+
+## Technical Changes
+
+- Custom Field `advance_account_type` on **Account**
+- Runtime helpers for eligible-account resolution (classified accounts ∪ configured Company/Party defaults for backward compatibility)
+- Payment Entry, Journal Entry, and Payment Reconciliation behaviour extensions via supported hooks
+- Widened advance Payment Entry discovery query for multi-account eligibility
+- Install/migrate seed for existing configured Company and Party advance accounts (sets classification when empty and structurally valid; does not silently overwrite conflicting classifications)
+- Client scripts for Account and Payment Entry UX hints
+
+---
+
+## Migration Notes
+
+1. Run `bench migrate` (and clear cache) so the Account field, seed patch, and runtime hooks are applied.
+2. Review Chart of Accounts: set **Advance Account Type** on any additional advance ledgers that should participate in separate-party advances.
+3. Confirm Company default advance accounts remain set when the Company feature is enabled.
+4. No historical General Ledger or submitted voucher data is rewritten by this release.
+
+---
+
+## Examples (fictional)
+
+| Role | Example |
+| --- | --- |
+| Company | Example Company |
+| Customer | Example Customer |
+| Supplier | Example Supplier |
+| Advance Received ledger | ADV-RECEIVED-001 |
+| Advance Paid ledger | ADV-PAID-001 |
+| Ordinary receivable | Debtors |
+| Ordinary payable | Creditors |
+
+---
+
+## Known Limitations
+
+- Journal Entry is **not** converted to the Payment Entry separate-party advance workflow; JE advances remain the classic `Is Advance` model on AR/AP.
+- Full interactive Payment Reconciliation multi-account allocation in the Desk UI should be verified in the target environment after upgrade.
+- End-to-end Sales Invoice / Purchase Invoice allocate → unreconcile → cancel cycles should be verified in the target environment after upgrade (automated coverage focused on classification, Payment Entry flag behaviour, account preservation, GL posting for advances, and multi-account discovery).
+
+---
+
+## Upgrade Checklist
+
+1. Upgrade to **erpnext_extensions 5.7.42**
+2. `bench migrate` and clear cache
+3. Classify additional advance accounts as needed
+4. Spot-check: Receive with Advance Received, Pay with Advance Paid, normal Debtors/Creditors with Company feature on
+5. Spot-check: Get Advances on Example Sales Invoice / Example Purchase Invoice when multiple advance Payment Entries exist
