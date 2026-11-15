@@ -29,12 +29,18 @@ def company_requires_whole_ads(company: str | None) -> bool:
 
 
 def authoritative_depreciable_total(asset_doc, fb_row) -> int:
-	"""Whole-IRR depreciable total from authoritative Asset economics."""
-	raw = (
-		flt(asset_doc.net_purchase_amount)
-		- flt(asset_doc.opening_accumulated_depreciation)
-		- flt(fb_row.expected_value_after_useful_life)
-	)
+	"""Whole-IRR depreciable total aligned with ERPNext schedule economics.
+
+	ERPNext sizes ADS rows from Finance Book ``value_after_depreciation`` minus
+	salvage (see StraightLineMethod / daily prorata). After Asset Value
+	Adjustment the carrying value diverges from ``net_purchase_amount``, so the
+	legacy purchase-cost formula undershoots upward revaluations and produces a
+	negative life-final balancing installment.
+
+	At inception ``value_after_depreciation == net_purchase - opening``, so this
+	equals the historical ``net_purchase - opening - salvage`` identity.
+	"""
+	raw = flt(fb_row.value_after_depreciation) - flt(fb_row.expected_value_after_useful_life)
 	return to_depr_amount(raw)
 
 
@@ -204,10 +210,6 @@ def normalize_ads_document(doc) -> None:
 	if not schedule:
 		return
 
-	# Skip if any row already posted — usage/replace paths handle tails explicitly.
-	if any(getattr(r, "journal_entry", None) for r in schedule):
-		return
-
 	asset = frappe.get_doc("Asset", asset_name)
 	fb = None
 	for row in asset.get("finance_books") or []:
@@ -231,12 +233,27 @@ def normalize_ads_document(doc) -> None:
 		}
 		for r in schedule
 	]
-	total = authoritative_depreciable_total(asset, fb)
-	normalize_full_schedule_amounts(
-		rows,
-		depreciable_total=total,
-		opening_accumulated=flt(asset.opening_accumulated_depreciation),
-	)
+
+	opening = flt(asset.opening_accumulated_depreciation)
+	if any(item.get("journal_entry") for item in rows):
+		# Posted prefix kept (e.g. AVA reschedule): balance only the unposted tail
+		# against remaining carrying value after salvage.
+		remaining = to_depr_amount(
+			flt(fb.value_after_depreciation) - flt(fb.expected_value_after_useful_life)
+		)
+		normalize_unposted_tail(
+			rows,
+			remaining_depreciable=remaining,
+			opening_accumulated=opening,
+		)
+	else:
+		total = authoritative_depreciable_total(asset, fb)
+		normalize_full_schedule_amounts(
+			rows,
+			depreciable_total=total,
+			opening_accumulated=opening,
+		)
+
 	for item in rows:
 		row = item["_row"]
 		row.depreciation_amount = item["depreciation_amount"]

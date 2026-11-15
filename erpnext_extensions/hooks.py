@@ -264,6 +264,12 @@ override_doctype_class = {
 	"Leave Application": (
 		"erpnext_extensions.extentionhrms.leave_application_override.LeaveApplicationWithHourlyLeave"
 	),
+	# Non-depreciating assets: skip ADS rebuild on AVA submit/cancel while
+	# preserving JE + carrying-value updates. See
+	# ``asset_usage_depreciation/asset_value_adjustment_override.py``.
+	"Asset Value Adjustment": (
+		"erpnext_extensions.asset_usage_depreciation.asset_value_adjustment_override.AssetValueAdjustment"
+	),
 }
 
 # Compose exclusive-relieving payment-day rules onto Salary Slip without
