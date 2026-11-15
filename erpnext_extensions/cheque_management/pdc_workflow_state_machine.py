@@ -51,9 +51,12 @@ See also: ``pdc_workflow_to_cheque_status.py`` (operational ``cheque_status``), 
 
 from __future__ import annotations
 
+import re
 from typing import Final, Protocol
 
 import frappe
+
+_WORKFLOW_STATE_WHITESPACE_RE = re.compile(r"\s+")
 
 # --- Cheque direction (DocType `cheque_direction`) ---
 
@@ -426,11 +429,25 @@ def is_workflow_transition_allowed(cheque_direction: str, from_state: str, to_st
 
 
 def normalize_workflow_state_value(value: str | None) -> str:
-	"""Normalize stored/user input so blank and new rows compare equal to **Draft** (implicit first state)."""
+	"""Normalize stored/user input to a canonical workflow state label.
+
+	* Blank / ``None`` → **Draft** (implicit first state).
+	* Collapse internal whitespace and match :data:`ALL_WORKFLOW_STATES` **case-insensitively**
+	  so Excel/import values such as ``assigned to bank for debt purchase`` resolve to
+	  **Assigned to Bank for Debt Purchase**.
+	* Unknown labels are returned after whitespace collapse (callers still reject via membership /
+	  graph checks — arbitrary strings are not accepted as valid states).
+	"""
 	if value is None:
 		return WORKFLOW_DRAFT
-	s = str(value).strip()
-	return s if s else WORKFLOW_DRAFT
+	s = _WORKFLOW_STATE_WHITESPACE_RE.sub(" ", str(value).strip())
+	if not s:
+		return WORKFLOW_DRAFT
+	folded = s.casefold()
+	for canonical in ALL_WORKFLOW_STATES:
+		if canonical.casefold() == folded:
+			return canonical
+	return s
 
 
 def is_terminal_workflow_state(workflow_state: str | None) -> bool:
