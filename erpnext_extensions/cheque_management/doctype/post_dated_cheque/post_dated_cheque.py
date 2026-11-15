@@ -370,12 +370,54 @@ def _validate_advance_account_override(doc) -> None:
 		)
 
 	root_type = (row.get("root_type") or "").strip()
-	if not root_type:
-		return
-
 	direction = (getattr(doc, "cheque_direction", None) or "").strip()
 	# Only validate alignment for advance mode; non-advance flows ignore this field.
 	if (getattr(doc, "allocation_mode", None) or "").strip() != ALLOCATION_MODE_ADVANCE:
+		return
+
+	# Prefer Account.advance_account_type when present (v5.7.42+).
+	try:
+		from erpnext_extensions.advance_accounts.constants import (
+			ADVANCE_PAID,
+			ADVANCE_RECEIVED,
+			CF_ADVANCE_ACCOUNT_TYPE,
+		)
+		from erpnext_extensions.advance_accounts.eligibility import (
+			DIRECTION_PAID,
+			DIRECTION_RECEIVED,
+			is_eligible_advance_account,
+			is_wrong_direction_advance,
+		)
+
+		if frappe.db.has_column("Account", CF_ADVANCE_ACCOUNT_TYPE):
+			adv_dir = (
+				DIRECTION_RECEIVED
+				if direction == CHEQUE_DIRECTION_RECEIVABLE
+				else DIRECTION_PAID
+				if direction == CHEQUE_DIRECTION_PAYABLE
+				else None
+			)
+			if adv_dir and is_wrong_direction_advance(acc, adv_dir):
+				frappe.throw(
+					frappe._(
+						"Advance / Prepayment Account {0} is classified for the opposite advance direction."
+					).format(acc),
+					title=frappe._("Account"),
+				)
+			if adv_dir and not is_eligible_advance_account(acc, company, adv_dir):
+				# Keep tolerant for unclassified structurally-valid accounts (compat).
+				classified = (frappe.db.get_value("Account", acc, CF_ADVANCE_ACCOUNT_TYPE) or "").strip()
+				if classified in (ADVANCE_RECEIVED, ADVANCE_PAID):
+					frappe.throw(
+						frappe._("Advance / Prepayment Account {0} is not eligible for this cheque direction.").format(
+							acc
+						),
+						title=frappe._("Account"),
+					)
+	except ImportError:
+		pass
+
+	if not root_type:
 		return
 
 	if direction == CHEQUE_DIRECTION_RECEIVABLE and root_type not in ("Liability",):

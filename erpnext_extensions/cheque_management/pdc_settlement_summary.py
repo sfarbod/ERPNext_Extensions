@@ -53,17 +53,34 @@ def _sum_net_pdc_advance_applied_on_invoice(
 		except Exception:
 			co = ""
 
-	# Company default advance accounts (same ones used by posting service).
-	adv = ""
-	if dt == "Purchase Invoice":
-		adv = (frappe.db.get_value("Company", co, "default_advance_paid_account") or "").strip() if co else ""
-	else:
-		adv = (
-			(frappe.db.get_value("Company", co, "default_advance_received_account") or "").strip()
-			if co
-			else ""
+	# Eligible advance accounts (classified ∪ Company defaults) — v5.7.42 multi-account.
+	adv_accounts: list[str] = []
+	try:
+		from erpnext_extensions.advance_accounts.eligibility import (
+			DIRECTION_PAID,
+			DIRECTION_RECEIVED,
+			get_eligible_advance_accounts,
 		)
-	if not adv:
+
+		direction = DIRECTION_PAID if dt == "Purchase Invoice" else DIRECTION_RECEIVED
+		adv_accounts = get_eligible_advance_accounts(co, direction) if co else []
+	except Exception:
+		adv_accounts = []
+
+	if not adv_accounts:
+		if dt == "Purchase Invoice":
+			adv = (
+				(frappe.db.get_value("Company", co, "default_advance_paid_account") or "").strip() if co else ""
+			)
+		else:
+			adv = (
+				(frappe.db.get_value("Company", co, "default_advance_received_account") or "").strip()
+				if co
+				else ""
+			)
+		if adv:
+			adv_accounts = [adv]
+	if not adv_accounts:
 		return 0.0
 
 	apply_remark = f"Apply Advance Post Dated Cheque to {dt} {nm}"
@@ -80,13 +97,13 @@ def _sum_net_pdc_advance_applied_on_invoice(
 		FROM `tabJournal Entry Account` a
 		INNER JOIN `tabJournal Entry` je ON je.name = a.parent
 		WHERE je.docstatus = 1
-		  AND a.account = %s
+		  AND a.account IN %s
 		  AND (
 			je.user_remark LIKE %s
 			OR je.user_remark LIKE %s
 		  )
 		""",
-		(adv, f"{apply_remark}%", f"{rev_remark}%"),
+		(tuple(adv_accounts), f"{apply_remark}%", f"{rev_remark}%"),
 		as_dict=True,
 	)
 	r = (rows[0] if rows else {}) or {}

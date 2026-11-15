@@ -123,7 +123,11 @@ doctype_js = {
 	"PM Request": "public/js/pm_desk_workflow_actions.js",
 	"PM Clearance": "public/js/pm_desk_workflow_actions.js",
 	# v4.6.7: append PM Request to ignore_doctypes_on_cancel_all (Desk Cancel All).
-	"Payment Entry": "public/js/payment_entry_pm_request_cancel.js",
+	"Payment Entry": [
+		"public/js/payment_entry_pm_request_cancel.js",
+		"public/js/payment_entry_advance_accounts.js",
+	],
+	"Account": "public/js/account_advance_type.js",
 	# Recalculate net/purchase amount when Asset Quantity changes after PR/PI select.
 	"Asset": "asset_usage_depreciation/public/js/asset_purchase_amount_qty.js",
 	# v5.7.26: regenerate Draft accrual JE when no active (Draft/Submitted) JE exists.
@@ -190,6 +194,7 @@ after_migrate = [
 	"erpnext_extensions.patches.post_model_sync.ensure_job_card_stock_rebuild_navigation.execute",
 	"erpnext_extensions.patches.post_model_sync.ensure_stock_entry_dimension_repair_navigation.execute",
 	"erpnext_extensions.manufacturing_cost_adjustment.custom_fields.after_migrate",
+	"erpnext_extensions.advance_accounts.custom_fields.after_migrate",
 ]
 
 # ERPNext injects Accounting Dimension custom fields onto these DocTypes (see Accounting Dimension on_update).
@@ -277,6 +282,16 @@ override_doctype_class = {
 extend_doctype_class = {
 	"Salary Slip": [
 		"erpnext_extensions.extentionhrms.payroll.salary_slip_relieving.SalarySlipExclusiveRelieving"
+	],
+	# v5.7.42: account-driven separate-party advance flag (flexible Scenario D).
+	"Payment Entry": [
+		"erpnext_extensions.advance_accounts.payment_entry_override.PaymentEntryAdvanceAccounts"
+	],
+	"Journal Entry": [
+		"erpnext_extensions.advance_accounts.journal_entry_override.JournalEntryAdvanceAccounts"
+	],
+	"Payment Reconciliation": [
+		"erpnext_extensions.advance_accounts.payment_reconciliation_override.PaymentReconciliationAdvanceAccounts"
 	],
 }
 
@@ -525,7 +540,25 @@ doc_events = {
 		"validate": "erpnext_extensions.iran_accounting.buying_selling.validate_purchase_order",
 	},
 	"Company": {
-		"validate": "erpnext_extensions.iran_accounting.company_round_off_defaults.validate_company_round_off_dimension_defaults",
+		"validate": [
+			"erpnext_extensions.iran_accounting.company_round_off_defaults.validate_company_round_off_dimension_defaults",
+			"erpnext_extensions.advance_accounts.account_validation.validate_company_default_advance_accounts",
+		],
+	},
+	"Account": {
+		"validate": "erpnext_extensions.advance_accounts.account_validation.validate_account_advance_type",
+	},
+	"Customer": {
+		"validate": "erpnext_extensions.advance_accounts.account_validation.validate_party_advance_account",
+	},
+	"Supplier": {
+		"validate": "erpnext_extensions.advance_accounts.account_validation.validate_party_advance_account",
+	},
+	"Customer Group": {
+		"validate": "erpnext_extensions.advance_accounts.account_validation.validate_party_advance_account",
+	},
+	"Supplier Group": {
+		"validate": "erpnext_extensions.advance_accounts.account_validation.validate_party_advance_account",
 	},
 	"Purchase Receipt": {
 		"validate": "erpnext_extensions.iran_accounting.buying_selling.validate_purchase_receipt",
@@ -607,6 +640,7 @@ ignore_links_on_delete = ["PM Request"]
 # apply_monkey_patches is idempotent (guarded), so calling it on requests is safe.
 before_request = [
 	"erpnext_extensions.iran_accounting.integration.bootstrap.apply",
+	"erpnext_extensions.advance_accounts.bootstrap.apply",
 ]
 # after_request = ["erpnext_extensions.utils.after_request"]
 
@@ -625,6 +659,7 @@ regional_overrides = {
 # ----------
 before_job = [
 	"erpnext_extensions.iran_accounting.integration.bootstrap.apply",
+	"erpnext_extensions.advance_accounts.bootstrap.apply",
 ]
 # after_job = ["erpnext_extensions.utils.after_job"]
 

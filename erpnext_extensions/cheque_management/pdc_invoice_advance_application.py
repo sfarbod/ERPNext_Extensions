@@ -102,13 +102,28 @@ def _validate_existing_je_matches_expected_total(
 	ref_amt = flt(((row[0] or {}) if row else {}).get("ref_amt"))
 	if ref_amt <= 1e-9:
 		# Reversal JE may intentionally omit invoice reference fields (cancelled-doc restriction).
-		# Fallback: validate by net movement on the company advance account.
+		# Fallback: validate by net movement on eligible advance accounts (v5.7.42 multi-account).
 		company = (frappe.db.get_value(dt, invoice_name, "company") or "").strip()
-		if dt == "Purchase Invoice":
-			adv = _company_default_advance_paid_account(company) or ""
-		else:
-			adv = _company_default_advance_received_account(company) or ""
-		if not adv:
+		adv_accounts: list[str] = []
+		try:
+			from erpnext_extensions.advance_accounts.eligibility import (
+				DIRECTION_PAID,
+				DIRECTION_RECEIVED,
+				get_eligible_advance_accounts,
+			)
+
+			direction = DIRECTION_PAID if dt == "Purchase Invoice" else DIRECTION_RECEIVED
+			adv_accounts = get_eligible_advance_accounts(company, direction) if company else []
+		except Exception:
+			adv_accounts = []
+		if not adv_accounts:
+			if dt == "Purchase Invoice":
+				adv = _company_default_advance_paid_account(company) or ""
+			else:
+				adv = _company_default_advance_received_account(company) or ""
+			if adv:
+				adv_accounts = [adv]
+		if not adv_accounts:
 			# If accounts are missing we cannot validate; fail safe.
 			frappe.throw(
 				_(
@@ -123,9 +138,9 @@ def _validate_existing_je_matches_expected_total(
 			  SUM(COALESCE(credit_in_account_currency, 0)) AS cr
 			FROM `tabJournal Entry Account`
 			WHERE parent = %s
-			  AND account = %s
+			  AND account IN %s
 			""",
-			(je_name, adv),
+			(je_name, tuple(adv_accounts)),
 			as_dict=True,
 		)
 		r = (acc[0] if acc else {}) or {}
