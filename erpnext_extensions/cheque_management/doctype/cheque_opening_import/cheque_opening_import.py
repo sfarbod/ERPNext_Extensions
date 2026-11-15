@@ -582,7 +582,16 @@ def _prepare_state_dates(pdc: Document, to_state: str, row: dict[str, Any]) -> N
 		if rdt:
 			pdc.returned_date = rdt
 
-	# Assigned DP: no dedicated event date; received_date already applied on Register hop.
+	if ts == normalize_workflow_state_value("Assigned to Bank for Debt Purchase"):
+		# Authoritative: debt_purchase_assignment_date column. Opening-import fallback uses
+		# received_date from the same row only when the dedicated column is omitted (never today()).
+		ad = _parse_date(row.get("debt_purchase_assignment_date"))
+		if ad:
+			pdc.debt_purchase_assignment_date = ad
+		elif not getattr(pdc, "debt_purchase_assignment_date", None):
+			rd_fallback = _parse_date(row.get("received_date")) or getattr(pdc, "received_date", None)
+			if rd_fallback:
+				pdc.debt_purchase_assignment_date = rd_fallback
 
 
 def import_row(row_no: int, row: dict[str, Any]) -> str:
@@ -924,6 +933,7 @@ TEMPLATE_HEADERS: list[str] = [
 	"handover_date",
 	"cleared_date",
 	"bounced_date",
+	"debt_purchase_assignment_date",
 	"returned_date",
 	"sayad_code",
 	"sayad_registered",

@@ -444,6 +444,15 @@ frappe.ui.form.on("Post Dated Cheque", {
 		pdc_warn_if_future_date(frm, "bounced_date", __("Bounced Date"));
 	},
 
+	debt_purchase_assignment_date(frm) {
+		pdc_validate_lifecycle_dates(frm);
+		pdc_warn_if_future_date(
+			frm,
+			"debt_purchase_assignment_date",
+			__("Debt Purchase Assignment Date")
+		);
+	},
+
 	returned_date(frm) {
 		pdc_validate_lifecycle_dates(frm);
 		pdc_warn_if_future_date(frm, "returned_date", __("Returned Date"));
@@ -455,6 +464,7 @@ frappe.ui.form.on("Post Dated Cheque", {
 		frm.refresh_field("cleared_date");
 		frm.refresh_field("sent_to_bank_date");
 		frm.refresh_field("bounced_date");
+		frm.refresh_field("debt_purchase_assignment_date");
 		frm.refresh_field("return_reason");
 		frm.refresh_field("returned_date");
 		frm.refresh_field("sayad_code");
