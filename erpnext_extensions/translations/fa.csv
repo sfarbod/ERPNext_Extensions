@@ -46,6 +46,11 @@ Debt Purchase Facility Repayment,بازپرداخت تسهیلات خرید دی
 Assign for Debt Purchase,واگذاری جهت خرید دین
 Return Debt Purchase Cheque,عودت چک خرید دین
 Debt Purchase Assignment,واگذاری خرید دین
+Debt Purchase Assignment Date,تاریخ واگذاری جهت خرید دین
+Missing Debt Purchase Assignment Date,تاریخ واگذاری جهت خرید دین الزامی است
+Invalid Debt Purchase Assignment Date,تاریخ واگذاری جهت خرید دین نامعتبر است
+Debt Purchase Assignment Date is mandatory when Workflow State is Assigned to Bank for Debt Purchase. Enter تاریخ واگذاری جهت خرید دین before assigning — do not leave blank (today is not substituted).,تاریخ واگذاری جهت خرید دین هنگام وضعیت «واگذار به بانک جهت خرید دین» الزامی است. قبل از واگذاری این تاریخ را وارد کنید — خالی نگذارید (تاریخ امروز جایگزین نمی‌شود).
+Debt Purchase Assignment Date is mandatory before Assign for Debt Purchase. Enter تاریخ واگذاری جهت خرید دین on the PDC and save if needed — today is not substituted.,تاریخ واگذاری جهت خرید دین قبل از «واگذاری جهت خرید دین» الزامی است. این تاریخ را روی چک وارد کنید و در صورت نیاز ذخیره کنید — تاریخ امروز جایگزین نمی‌شود.
 Debt Purchase Settlement,تسویه خرید دین
 Item Groups,گروه‌های کالا
 Items,کالاها

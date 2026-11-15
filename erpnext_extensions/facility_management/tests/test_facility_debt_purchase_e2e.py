@@ -177,12 +177,12 @@ class DebtPurchaseDbFixtureMixin:
 			raise unittest.SkipTest("No Customer")
 		cls.bank_account = frappe.db.get_value(
 			"Bank Account",
-			{"company": cls.company, "disabled": 0},
+			{"company": cls.company, "disabled": 0, "is_company_account": 1},
 			"name",
 			order_by="modified desc",
 		)
 		if not cls.bank_account:
-			raise unittest.SkipTest("No Bank Account")
+			raise unittest.SkipTest("No company Bank Account")
 		settings = _get_pdc_settings_for_company(cls.company)
 		if not settings or not settings.default_cheques_in_hand_account:
 			raise unittest.SkipTest("PDC Settings / Cheques in Hand missing")
@@ -231,6 +231,11 @@ class DebtPurchaseDbFixtureMixin:
 		self.assertEqual(int(doc.docstatus or 0), 1)
 		self.assertEqual(normalize_workflow_state_value(doc.workflow_state), WORKFLOW_REGISTERED)
 		frappe.db.commit()
+
+		doc.debt_purchase_assignment_date = today()
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()
+		doc = frappe.get_doc("Post Dated Cheque", doc.name)
 
 		doc = self._apply_workflow(doc, "Assign for Debt Purchase")
 		doc.reload()

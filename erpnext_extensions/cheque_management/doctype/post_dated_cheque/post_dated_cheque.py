@@ -2499,6 +2499,7 @@ class PostDatedCheque(Document):
 			("handover_date", "Handover / Endorsement Date"),
 			("bounced_date", "Bounced Date"),
 			("returned_from_bank_date", "Returned from Bank Date"),
+			("debt_purchase_assignment_date", "Debt Purchase Assignment Date"),
 		]
 
 		for fieldname, label in date_fields:
@@ -2878,6 +2879,7 @@ class PostDatedCheque(Document):
 		self._append_holder_history_on_endorsement()
 		self._validate_issued_workflow_state()
 		self._validate_sent_to_bank_workflow_state()
+		self._validate_debt_purchase_assignment_date()
 		self._validate_receivable_resend_sent_vs_returned_from_bank()
 		self._validate_receivable_resend_sent_vs_bounced_date()
 		self._validate_bank_account_for_workflow_state()
@@ -3071,6 +3073,7 @@ class PostDatedCheque(Document):
 		# - Any → Returned: use returned_date only
 		# - Any → Bounced: use bounced_date only (bank rejection after Sent to Bank)
 		# - Receivable → Sent to Bank: use sent_to_bank_date only (bank handover for collection)
+		# - Receivable → Assigned to Bank for Debt Purchase: use debt_purchase_assignment_date only
 		# - Receivable Sent to Bank → Registered (Return from Bank): use returned_from_bank_date only
 		# - Payable Draft→Registered: use received_date (register / settlement event)
 		# - Receivable → Endorsed: use handover_date only (endorsement / transfer)
@@ -3082,6 +3085,11 @@ class PostDatedCheque(Document):
 			posting_date = getattr(self, "returned_date", None)
 		elif curr_norm == WORKFLOW_BOUNCED:
 			posting_date = getattr(self, "bounced_date", None)
+		elif (
+			curr_norm == WORKFLOW_ASSIGNED_DEBT_PURCHASE
+			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE
+		):
+			posting_date = getattr(self, "debt_purchase_assignment_date", None)
 		elif (
 			curr_norm == WORKFLOW_SENT_TO_BANK
 			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE
@@ -3099,17 +3107,19 @@ class PostDatedCheque(Document):
 			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE
 		):
 			# Return from Debt Purchase is an operational unassign — never reuse received_date
-			# (would back-date before the assignment JE). Prefer assignment JE posting date,
-			# else today.
-			for r in reversed(list(self.journal_references or [])):
-				if (getattr(r, "purpose", None) or "").strip() != "Debt Purchase Assignment":
-					continue
-				je_name = _strip_link_name_or_none(getattr(r, "journal_entry", None))
-				if not je_name:
-					continue
-				posting_date = frappe.db.get_value("Journal Entry", je_name, "posting_date")
-				if posting_date:
-					break
+			# (would back-date before the assignment JE). Prefer the PDC assignment date field,
+			# then the assignment JE posting date, else today.
+			posting_date = getattr(self, "debt_purchase_assignment_date", None)
+			if not posting_date:
+				for r in reversed(list(self.journal_references or [])):
+					if (getattr(r, "purpose", None) or "").strip() != "Debt Purchase Assignment":
+						continue
+					je_name = _strip_link_name_or_none(getattr(r, "journal_entry", None))
+					if not je_name:
+						continue
+					posting_date = frappe.db.get_value("Journal Entry", je_name, "posting_date")
+					if posting_date:
+						break
 			if not posting_date:
 				posting_date = getdate()
 		elif (
@@ -3163,6 +3173,20 @@ class PostDatedCheque(Document):
 						"Enter the date the cheque was delivered to the bank for collection — do not use workflow time or today."
 					),
 					title=frappe._("Missing Sent to Bank Date"),
+				)
+		elif (
+			curr_norm == WORKFLOW_ASSIGNED_DEBT_PURCHASE
+			and (self.cheque_direction or "").strip() == CHEQUE_DIRECTION_RECEIVABLE
+		):
+			if not posting_date:
+				frappe.throw(
+					frappe._(
+						"Debt Purchase Assignment Date is mandatory when Workflow State is "
+						"Assigned to Bank for Debt Purchase. "
+						"Enter تاریخ واگذاری جهت خرید دین on the PDC — do not use cheque due date, "
+						"received date, or today's server date."
+					),
+					title=frappe._("Missing Debt Purchase Assignment Date"),
 				)
 		elif (
 			curr_norm == WORKFLOW_REGISTERED
@@ -3606,6 +3630,34 @@ class PostDatedCheque(Document):
 					"Set Post Dated Cheque → Cheques in Clearing Account or configure Default Cheques in Clearing Account in PDC Settings."
 				),
 				title=frappe._("Clearing account required"),
+			)
+
+	def _validate_debt_purchase_assignment_date(self):
+		"""**Assigned to Bank for Debt Purchase** requires ``debt_purchase_assignment_date``.
+
+		Does **not** fall back to ``today()``, ``cheque_due_date``, or ``received_date``.
+		Supported entry paths: Registered → Assigned DP and Bounced → Assigned DP.
+		"""
+		if normalize_workflow_state_value(self.workflow_state) != WORKFLOW_ASSIGNED_DEBT_PURCHASE:
+			return
+		if (self.cheque_direction or "").strip() != CHEQUE_DIRECTION_RECEIVABLE:
+			return
+		if not getattr(self, "debt_purchase_assignment_date", None):
+			frappe.throw(
+				frappe._(
+					"Debt Purchase Assignment Date is mandatory when Workflow State is "
+					"Assigned to Bank for Debt Purchase. "
+					"Enter تاریخ واگذاری جهت خرید دین before assigning — "
+					"do not leave blank (today is not substituted)."
+				),
+				title=frappe._("Missing Debt Purchase Assignment Date"),
+			)
+		try:
+			getdate(self.debt_purchase_assignment_date)
+		except Exception:
+			frappe.throw(
+				frappe._("Debt Purchase Assignment Date is invalid."),
+				title=frappe._("Invalid Debt Purchase Assignment Date"),
 			)
 
 	def _set_default_bank_account_for_receivable(self) -> None:

@@ -132,12 +132,12 @@ class TestDebtPurchaseAssignedTransitions(unittest.TestCase):
 			raise unittest.SkipTest("No Customer")
 		cls.bank_account = frappe.db.get_value(
 			"Bank Account",
-			{"company": cls.company, "disabled": 0},
+			{"company": cls.company, "disabled": 0, "is_company_account": 1},
 			"name",
 			order_by="modified desc",
 		)
 		if not cls.bank_account:
-			raise unittest.SkipTest("No Bank Account")
+			raise unittest.SkipTest("No company Bank Account")
 		cls.settings = _get_pdc_settings_for_company(cls.company)
 		if not cls.settings or not cls.settings.default_cheques_in_hand_account:
 			raise unittest.SkipTest("PDC Settings / Cheques in Hand missing")
@@ -195,6 +195,11 @@ class TestDebtPurchaseAssignedTransitions(unittest.TestCase):
 		self.assertEqual(normalize_workflow_state_value(doc.workflow_state), WORKFLOW_REGISTERED)
 		frappe.db.commit()
 
+		doc.debt_purchase_assignment_date = today()
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()
+		doc = frappe.get_doc("Post Dated Cheque", doc.name)
+
 		doc = self._apply_action(doc, "Assign for Debt Purchase")
 		doc.reload()
 		self.assertEqual(
@@ -239,8 +244,9 @@ class TestDebtPurchaseAssignedTransitions(unittest.TestCase):
 		self.assertIn(WORKFLOW_REGISTERED, targets)
 		self.assertIn(WORKFLOW_DRAFT, targets)
 
-		# Desk workflow still forbids Assigned → Registered; dedicated rollback is separate.
-		self.assertIsNotNone(
+		# Desk may expose Return from Debt Purchase (Assigned → Registered); controlled
+		# rollback remains available for accounting-safe reversal of the assignment JE.
+		self.assertIsNone(
 			get_pdc_workflow_transition_validation_error(
 				"Receivable", WORKFLOW_ASSIGNED_DEBT_PURCHASE, WORKFLOW_REGISTERED
 			)
@@ -401,9 +407,16 @@ class TestDebtPurchaseAssignedTransitions(unittest.TestCase):
 		frappe.db.commit()
 
 	def test_assigned_forbidden_desk_transitions(self):
-		"""Registered / Returned / Cleared / Settled rejected from Assigned DP via Desk."""
+		"""Returned / Cleared / Settled rejected from Assigned DP via Desk.
+
+		Assigned → Registered (Return from Debt Purchase) is an allowed controlled edge.
+		"""
+		self.assertIsNone(
+			get_pdc_workflow_transition_validation_error(
+				"Receivable", WORKFLOW_ASSIGNED_DEBT_PURCHASE, WORKFLOW_REGISTERED
+			)
+		)
 		for target in (
-			WORKFLOW_REGISTERED,
 			WORKFLOW_RETURNED,
 			WORKFLOW_CLEARED,
 			WORKFLOW_DEBT_PURCHASE_SETTLED,
@@ -414,15 +427,16 @@ class TestDebtPurchaseAssignedTransitions(unittest.TestCase):
 			self.assertIsNotNone(err, target)
 
 	def test_assigned_dp_workflow_action_visibility(self):
-		"""Desk actions from Assigned DP: Bounce only; rollback is a separate controlled API."""
+		"""Desk actions from Assigned DP: Bounce + Return from Debt Purchase; rollback remains separate."""
 		pdc_name, _je = self._new_assigned_pdc(amount=1100.0)
 		pdc = frappe.get_doc("Post Dated Cheque", pdc_name)
 		actions = self._workflow_actions(pdc)
 		next_states = self._workflow_next_states(pdc)
 
 		self.assertIn("Bounce Cheque", actions)
-		self.assertEqual(actions, {"Bounce Cheque"}, actions)
-		self.assertEqual(next_states, {WORKFLOW_BOUNCED}, next_states)
+		self.assertIn("Return from Debt Purchase", actions)
+		self.assertEqual(actions, {"Bounce Cheque", "Return from Debt Purchase"}, actions)
+		self.assertEqual(next_states, {WORKFLOW_BOUNCED, WORKFLOW_REGISTERED}, next_states)
 
 		forbidden_actions = {
 			"Return Cheque",
@@ -434,10 +448,10 @@ class TestDebtPurchaseAssignedTransitions(unittest.TestCase):
 			"Rollback Workflow",
 		}
 		self.assertFalse(actions & forbidden_actions, actions)
-		for state in (WORKFLOW_REGISTERED, WORKFLOW_RETURNED, WORKFLOW_CLEARED, WORKFLOW_DEBT_PURCHASE_SETTLED):
+		for state in (WORKFLOW_RETURNED, WORKFLOW_CLEARED, WORKFLOW_DEBT_PURCHASE_SETTLED):
 			self.assertNotIn(state, next_states)
 
-		# Controlled Rollback Workflow State may target Registered (not a Desk Workflow action).
+		# Controlled Rollback Workflow State may also target Registered.
 		self.assertIn(WORKFLOW_REGISTERED, get_rollback_target_states(pdc_name))
 
 	def test_sent_to_bank_still_exposes_bounce_cheque(self):

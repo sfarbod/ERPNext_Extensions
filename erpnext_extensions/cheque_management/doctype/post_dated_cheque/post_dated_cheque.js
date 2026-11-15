@@ -329,6 +329,7 @@ frappe.ui.form.on("Post Dated Cheque", {
 		pdc_apply_payable_bank_account_lock_ui(frm);
 		pdc_apply_cheque_leaf_behaviour(frm);
 		pdc_schedule_cheque_leaf_ui_enforcement(frm);
+		pdc_apply_debt_purchase_assignment_date_ui(frm);
 		pdc_normalize_prefilled_allocations(frm);
 		pdc_sync_allocation_summary_client(frm);
 		pdc_lock_journal_references_grid(frm);
@@ -339,10 +340,15 @@ frappe.ui.form.on("Post Dated Cheque", {
 		pdc_set_party_description(frm);
 	},
 
+	before_workflow_action(frm) {
+		return pdc_guard_debt_purchase_assignment_date_before_workflow(frm);
+	},
+
 	after_workflow_action(frm) {
 		// Toolbar may re-show standard Cancel after workflow xcall; hide again and restore rollback button.
 		hide_standard_cancel_for_pdc(frm);
 		pdc_add_workflow_rollback_button(frm);
+		pdc_apply_debt_purchase_assignment_date_ui(frm);
 	},
 
 	cheque_amount(frm) {
@@ -444,6 +450,15 @@ frappe.ui.form.on("Post Dated Cheque", {
 		pdc_warn_if_future_date(frm, "bounced_date", __("Bounced Date"));
 	},
 
+	debt_purchase_assignment_date(frm) {
+		pdc_validate_lifecycle_dates(frm);
+		pdc_warn_if_future_date(
+			frm,
+			"debt_purchase_assignment_date",
+			__("Debt Purchase Assignment Date")
+		);
+	},
+
 	returned_date(frm) {
 		pdc_validate_lifecycle_dates(frm);
 		pdc_warn_if_future_date(frm, "returned_date", __("Returned Date"));
@@ -455,12 +470,76 @@ frappe.ui.form.on("Post Dated Cheque", {
 		frm.refresh_field("cleared_date");
 		frm.refresh_field("sent_to_bank_date");
 		frm.refresh_field("bounced_date");
+		frm.refresh_field("debt_purchase_assignment_date");
 		frm.refresh_field("return_reason");
 		frm.refresh_field("returned_date");
 		frm.refresh_field("sayad_code");
 		frm.refresh_field("sayad_registered");
+		pdc_apply_debt_purchase_assignment_date_ui(frm);
 	},
 });
+
+/**
+ * Debt Purchase Assignment Date UI:
+ * - Visible for Receivable only (depends_on + JS).
+ * - Editable in Registered / Bounced (enter before Assign) and while Assigned.
+ * - Mandatory star only when already Assigned (DocType mandatory_depends_on); Assign is
+ *   blocked client-side by before_workflow_action when empty (Registered/Bounced saves OK).
+ */
+function pdc_apply_debt_purchase_assignment_date_ui(frm) {
+	if (!frm || !frm.doc) return;
+	const rec = (frm.doc.cheque_direction || "") === "Receivable";
+	const ws = (frm.doc.workflow_state || "").trim();
+	if (!rec) {
+		frm.toggle_display("debt_purchase_assignment_date", false);
+		frm.toggle_reqd("debt_purchase_assignment_date", false);
+		frm.toggle_enable("debt_purchase_assignment_date", false);
+		return;
+	}
+	frm.toggle_display("debt_purchase_assignment_date", true);
+	const editable =
+		ws === "Draft" ||
+		ws === "Registered" ||
+		ws === "Bounced" ||
+		ws === "Assigned to Bank for Debt Purchase";
+	frm.toggle_enable("debt_purchase_assignment_date", editable);
+	frm.toggle_reqd("debt_purchase_assignment_date", ws === "Assigned to Bank for Debt Purchase");
+	frm.set_df_property(
+		"debt_purchase_assignment_date",
+		"description",
+		__(
+			"تاریخ واگذاری جهت خرید دین — enter before Assign for Debt Purchase. Used as the Debt Purchase Assignment Journal Entry posting date (not cheque due date, received date, or today)."
+		)
+	);
+	frm.refresh_field("debt_purchase_assignment_date");
+}
+
+/**
+ * Client guard: block Assign for Debt Purchase when debt_purchase_assignment_date is empty.
+ * Rejects the workflow action Promise so apply_workflow is not called.
+ */
+function pdc_guard_debt_purchase_assignment_date_before_workflow(frm) {
+	const action = (frm.selected_workflow_action || "").trim();
+	if (action !== "Assign for Debt Purchase") {
+		return Promise.resolve();
+	}
+	if ((frm.doc.cheque_direction || "") !== "Receivable") {
+		return Promise.resolve();
+	}
+	if (frm.doc.debt_purchase_assignment_date) {
+		return Promise.resolve();
+	}
+	const msg = __(
+		"Debt Purchase Assignment Date is mandatory before Assign for Debt Purchase. Enter تاریخ واگذاری جهت خرید دین on the PDC and save if needed — today is not substituted."
+	);
+	frappe.msgprint({
+		title: __("Missing Debt Purchase Assignment Date"),
+		message: msg,
+		indicator: "red",
+	});
+	frappe.dom.unfreeze();
+	return Promise.reject(msg);
+}
 
 frappe.ui.form.on("PDC Allocation", {
 	amount(frm, cdt, cdn) {

@@ -59,6 +59,8 @@ HEADER_ALIASES = {
 	"sayad_reg": "sayad_registered",
 	"purpose": "cheque_purpose",
 	"cheque_purpose": "cheque_purpose",
+	"debt_purchase_assignment_date": "debt_purchase_assignment_date",
+	"assignment_date": "debt_purchase_assignment_date",
 }
 
 # Exact header text (Persian / mixed) → canonical field name.
@@ -70,6 +72,8 @@ HEADER_ALIASES_EXACT: dict[str, str] = {
 	"وضعیت ثبت صیاد": "sayad_registered",
 	"بابت": "cheque_purpose",
 	"Cheque Purpose": "cheque_purpose",
+	"تاریخ واگذاری جهت خرید دین": "debt_purchase_assignment_date",
+	"Debt Purchase Assignment Date": "debt_purchase_assignment_date",
 }
 
 _SAYAD_REGISTERED_TRUE = frozenset(
@@ -539,6 +543,20 @@ def _validate_row_preview(row: dict[str, Any], row_no: int) -> str | None:
 		except Exception as e:
 			return f"Row {row_no}: sayad_registered — {e!s}"
 
+	# Opening Import into Assigned DP requires the dedicated assignment-date column.
+	# Do NOT invent today() / cheque_due_date / received_date. Omitting the column when
+	# targeting Registered/Bounced/etc. is fine — later Assign is blocked until the PDC field is set.
+	if (
+		d == CHEQUE_DIRECTION_RECEIVABLE
+		and target == normalize_workflow_state_value("Assigned to Bank for Debt Purchase")
+		and not _parse_date(row.get("debt_purchase_assignment_date"))
+	):
+		return (
+			f"Row {row_no}: debt_purchase_assignment_date is required when workflow_state is "
+			"Assigned to Bank for Debt Purchase (تاریخ واگذاری جهت خرید دین). "
+			"Do not leave blank — received_date / cheque due date / today are not substituted."
+		)
+
 	return None
 
 
@@ -582,7 +600,11 @@ def _prepare_state_dates(pdc: Document, to_state: str, row: dict[str, Any]) -> N
 		if rdt:
 			pdc.returned_date = rdt
 
-	# Assigned DP: no dedicated event date; received_date already applied on Register hop.
+	if ts == normalize_workflow_state_value("Assigned to Bank for Debt Purchase"):
+		# Authoritative column only — never today() / cheque_due_date / received_date.
+		ad = _parse_date(row.get("debt_purchase_assignment_date"))
+		if ad:
+			pdc.debt_purchase_assignment_date = ad
 
 
 def import_row(row_no: int, row: dict[str, Any]) -> str:
@@ -654,6 +676,11 @@ def import_row(row_no: int, row: dict[str, Any]) -> str:
 		pdc.received_date = rd0
 	elif len(path) > 1:
 		pdc.received_date = pdc.cheque_due_date
+
+	# Optional: pre-populate for later Assign; never invent when column is absent.
+	ad0 = _parse_date(row.get("debt_purchase_assignment_date"))
+	if ad0:
+		pdc.debt_purchase_assignment_date = ad0
 
 	prev_suppress = getattr(frappe.flags, "in_cheque_opening_import", None)
 	try:
@@ -924,6 +951,7 @@ TEMPLATE_HEADERS: list[str] = [
 	"handover_date",
 	"cleared_date",
 	"bounced_date",
+	"debt_purchase_assignment_date",
 	"returned_date",
 	"sayad_code",
 	"sayad_registered",
@@ -968,6 +996,7 @@ def download_import_template():
 			None,
 			None,
 			None,
+			None,  # debt_purchase_assignment_date (optional unless target is Assigned DP)
 			None,
 			None,
 			None,
@@ -994,6 +1023,7 @@ def download_import_template():
 			None,
 			None,
 			None,
+			None,  # debt_purchase_assignment_date (Receivable Assigned DP only)
 			None,
 			None,
 			None,
@@ -1021,6 +1051,8 @@ def download_import_template():
 		"If Sayad Registered is blank: when Sayad Code is filled, registered defaults to 1; when code is empty, registered defaults to 0. A non-empty registered value always wins over the default.",
 		"",
 		"Cheque Purpose (cheque_purpose): optional free-text business purpose / subject of the cheque. Aliases: purpose, بابت, Cheque Purpose. Omit the column entirely for older files — import still works and leaves the field empty.",
+		"",
+		"Debt Purchase Assignment Date (debt_purchase_assignment_date / تاریخ واگذاری جهت خرید دین): optional for Draft/Registered/Bounced/etc. Required when workflow_state is Assigned to Bank for Debt Purchase. Never invent today / cheque due date / received_date. Aliases: assignment_date, Debt Purchase Assignment Date, تاریخ واگذاری جهت خرید دین.",
 		"",
 		"Replace all __REPLACE_*__ placeholders with real values from your site (Company, Bank Account, Customer/Supplier, Cheque Book, Drawer Bank, etc.) before Preview / Execute.",
 	]
@@ -1056,6 +1088,12 @@ def download_import_template():
 		[
 			"sayad_registered / Sayad Registered",
 			"Optional. 1/0, yes/no, true/false, y/n, checked/unchecked, بله/خیر, درست/نادرست, ثبت شده/ثبت نشده. Blank: default 1 if sayad_code set, else 0.",
+		]
+	)
+	ws_allow.append(
+		[
+			"debt_purchase_assignment_date / تاریخ واگذاری جهت خرید دین",
+			"Optional unless workflow_state is Assigned to Bank for Debt Purchase. No silent today/received_date/due-date substitution.",
 		]
 	)
 

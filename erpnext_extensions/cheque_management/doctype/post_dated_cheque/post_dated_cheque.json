@@ -81,6 +81,7 @@
   "cleared_date",
   "column_break_dates_primary_row2_col2",
   "bounced_date",
+  "debt_purchase_assignment_date",
   "section_break_dates_outcome",
   "returned_date",
   "return_reason",
@@ -590,6 +591,15 @@
    "label": "Bounced Date",
    "description": "Bank rejection / dishonour date.",
    "mandatory_depends_on": "eval:doc.workflow_state===\"Bounced\"",
+   "allow_on_submit": 1
+  },
+  {
+   "fieldname": "debt_purchase_assignment_date",
+   "fieldtype": "Date",
+   "label": "Debt Purchase Assignment Date",
+   "description": "تاریخ واگذاری جهت خرید دین — enter before Assign for Debt Purchase (Registered or Bounced). Used as the Debt Purchase Assignment Journal Entry posting date (not cheque due date, received date, or server today).",
+   "mandatory_depends_on": "eval:doc.cheque_direction===\"Receivable\" && doc.workflow_state===\"Assigned to Bank for Debt Purchase\"",
+   "depends_on": "eval:doc.cheque_direction===\"Receivable\"",
    "allow_on_submit": 1
   },
   {
