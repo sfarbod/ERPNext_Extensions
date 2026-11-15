@@ -300,6 +300,144 @@ def find_workflow_path(cheque_direction: str, target_raw: str) -> list[str]:
 	)
 
 
+def _collapse_ws(value: Any) -> str:
+	return re.sub(r"\s+", " ", cstr(value or "").strip())
+
+
+def _unique_nonempty(values: list[str]) -> list[str]:
+	out: list[str] = []
+	for v in values:
+		if v and v not in out:
+			out.append(v)
+	return out
+
+
+def _resolve_bank_account_name(raw: Any, company: str | None = None) -> str | None:
+	"""Map Excel bank_account text to a Bank Account document name.
+
+	Spreadsheets often carry ``account_name`` (with padding spaces) or a truncated
+	label instead of the Link ``name`` (which may append `` - {bank}``).
+	"""
+	text = cstr(raw or "")
+	if not text.strip():
+		return None
+
+	variants = _unique_nonempty([text, text.strip(), _collapse_ws(text)])
+	for cand in variants:
+		if frappe.db.exists("Bank Account", cand):
+			return cand
+
+	company_s = cstr(company or "").strip()
+	conds = ["IFNULL(disabled, 0) = 0"]
+	vals: list[Any] = []
+	if company_s:
+		conds.append("company = %s")
+		vals.append(company_s)
+
+	or_parts: list[str] = []
+	for cand in variants:
+		or_parts.append("name = %s")
+		vals.append(cand)
+		or_parts.append("account_name = %s")
+		vals.append(cand)
+		or_parts.append("TRIM(name) = %s")
+		vals.append(cand.strip())
+		or_parts.append("TRIM(account_name) = %s")
+		vals.append(cand.strip())
+
+	# Internal whitespace often differs (e.g. Excel "593 - Bank" vs name "593  - Bank").
+	collapsed = _collapse_ws(text)
+	or_parts.append(
+		"REPLACE(REPLACE(REPLACE(TRIM(name), '\\t', ' '), '  ', ' '), '  ', ' ') = %s"
+	)
+	vals.append(collapsed)
+	or_parts.append(
+		"REPLACE(REPLACE(REPLACE(TRIM(IFNULL(account_name, '')), '\\t', ' '), '  ', ' '), '  ', ' ') = %s"
+	)
+	vals.append(collapsed)
+
+	sql = f"""
+		SELECT name
+		FROM `tabBank Account`
+		WHERE {" AND ".join(conds)}
+		  AND ({" OR ".join(or_parts)})
+		ORDER BY IFNULL(is_company_account, 0) DESC, modified DESC
+	"""
+	rows = frappe.db.sql(sql, tuple(vals), as_list=True) or []
+	names = _unique_nonempty([cstr(r[0]) for r in rows])
+	if len(names) == 1:
+		return names[0]
+	if len(names) > 1:
+		frappe.throw(
+			frappe._(
+				"Ambiguous Bank Account {0!r} matched: {1}. Use the exact Bank Account name."
+			).format(text.strip(), ", ".join(names[:5])),
+			title=frappe._("Cheque Opening Import"),
+		)
+	return None
+
+
+def _resolve_drawer_bank_name(raw: Any) -> str | None:
+	"""Map Excel drawer_bank_name to a Bank master name (e.g. خاورمیانه → بانک خاورمیانه)."""
+	text = cstr(raw or "").strip()
+	if not text:
+		return None
+	if frappe.db.exists("Bank", text):
+		return text
+
+	prefixed = f"بانک {text}"
+	if frappe.db.exists("Bank", prefixed):
+		return prefixed
+
+	rows = frappe.db.sql(
+		"""
+		SELECT name FROM `tabBank`
+		WHERE name = %s OR name = %s OR name LIKE %s
+		ORDER BY CHAR_LENGTH(name) ASC, name ASC
+		""",
+		(text, prefixed, f"%{text}%"),
+		as_list=True,
+	) or []
+	names = _unique_nonempty([cstr(r[0]) for r in rows])
+	if len(names) == 1:
+		return names[0]
+	if prefixed in names:
+		return prefixed
+	if len(names) > 1:
+		frappe.throw(
+			frappe._(
+				"Ambiguous Drawer Bank {0!r} matched: {1}. Use the exact Bank name."
+			).format(text, ", ".join(names[:5])),
+			title=frappe._("Cheque Opening Import"),
+		)
+	return None
+
+
+def _normalize_row_link_fields(row: dict[str, Any]) -> str | None:
+	"""Resolve bank_account / drawer_bank_name in-place. Return error message or None."""
+	company = cstr(row.get("company") or "").strip()
+	raw_bank = cstr(row.get("bank_account") or "")
+	if raw_bank.strip():
+		try:
+			resolved_ba = _resolve_bank_account_name(raw_bank, company)
+		except Exception as e:
+			return cstr(e)
+		if not resolved_ba:
+			return f"Bank Account not found: {raw_bank.strip()}"
+		row["bank_account"] = resolved_ba
+
+	raw_drawer = cstr(row.get("drawer_bank_name") or "")
+	if raw_drawer.strip():
+		try:
+			resolved_drawer = _resolve_drawer_bank_name(raw_drawer)
+		except Exception as e:
+			return cstr(e)
+		if not resolved_drawer:
+			return f"Drawer Bank not found: {raw_drawer.strip()}"
+		row["drawer_bank_name"] = resolved_drawer
+	return None
+
+
 def _resolve_cheque_leaf(row: dict[str, Any]) -> str | None:
 	if (row.get("cheque_direction") or "").strip() != CHEQUE_DIRECTION_PAYABLE:
 		return None
@@ -363,7 +501,8 @@ def _validate_row_preview(row: dict[str, Any], row_no: int) -> str | None:
 	if d == CHEQUE_DIRECTION_PAYABLE and not bank:
 		return f"Row {row_no}: bank_account is required"
 
-	# Receivable: bank_account is required only when "Sent to Bank or later".
+	# Receivable: bank_account is required only when "Sent to Bank or later" / Debt Purchase
+	# assignment (instrument is with the bank or in a bank Debt Purchase pool).
 	# Keep this aligned with PDC runtime behavior.
 	receivable_needs_bank_states_raw = {
 		"Sent to Bank",
@@ -374,6 +513,8 @@ def _validate_row_preview(row: dict[str, Any], row_no: int) -> str | None:
 		"Cancelled",
 		"Replaced",
 		"Under Legal Action",
+		"Assigned to Bank for Debt Purchase",
+		"Debt Purchase Settled",
 	}
 	receivable_needs_bank = {
 		normalize_workflow_state_value(s)
@@ -382,6 +523,11 @@ def _validate_row_preview(row: dict[str, Any], row_no: int) -> str | None:
 	}
 	if d == CHEQUE_DIRECTION_RECEIVABLE and target in receivable_needs_bank and not bank:
 		return f"Row {row_no}: bank_account required for this workflow state"
+
+	# Resolve Link fields so Preview matches Execute (LinkValidation on insert).
+	link_err = _normalize_row_link_fields(row)
+	if link_err:
+		return f"Row {row_no}: {link_err}"
 
 	leaf = _resolve_cheque_leaf(row)
 	if d == CHEQUE_DIRECTION_PAYABLE and cstr(row.get("cheque_book") or "").strip() and not leaf:
@@ -436,12 +582,19 @@ def _prepare_state_dates(pdc: Document, to_state: str, row: dict[str, Any]) -> N
 		if rdt:
 			pdc.returned_date = rdt
 
+	# Assigned DP: no dedicated event date; received_date already applied on Register hop.
+
 
 def import_row(row_no: int, row: dict[str, Any]) -> str:
 	"""Create PDC, walk workflow, optionally submit. Caller wraps in savepoint."""
 	direction = (row.get("cheque_direction") or "").strip()
 	target = normalize_workflow_state_value(row.get("workflow_state"))
 	path = find_workflow_path(direction, target)
+
+	# Resolve Link fields even if caller skipped preview normalize.
+	link_err = _normalize_row_link_fields(row)
+	if link_err:
+		frappe.throw(frappe._("Row {0}: {1}").format(row_no, link_err), title=frappe._("Cheque Opening Import"))
 
 	leaf = _resolve_cheque_leaf(row)
 	chq_num = cstr(row.get("cheque_number") or "").strip()
