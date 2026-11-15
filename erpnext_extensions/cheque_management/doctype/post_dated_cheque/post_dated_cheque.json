@@ -597,8 +597,9 @@
    "fieldname": "debt_purchase_assignment_date",
    "fieldtype": "Date",
    "label": "Debt Purchase Assignment Date",
-   "description": "تاریخ واگذاری جهت خرید دین — date the receivable cheque was assigned to the bank for Debt Purchase. Required before Assigned to Bank for Debt Purchase. Used as the Debt Purchase Assignment Journal Entry posting date (not cheque due date, received date, or server today).",
+   "description": "تاریخ واگذاری جهت خرید دین — enter before Assign for Debt Purchase (Registered or Bounced). Used as the Debt Purchase Assignment Journal Entry posting date (not cheque due date, received date, or server today).",
    "mandatory_depends_on": "eval:doc.cheque_direction===\"Receivable\" && doc.workflow_state===\"Assigned to Bank for Debt Purchase\"",
+   "depends_on": "eval:doc.cheque_direction===\"Receivable\"",
    "allow_on_submit": 1
   },
   {

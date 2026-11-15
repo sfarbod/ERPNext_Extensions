@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.utils import getdate, today
+from frappe.utils import cint, getdate, today
 
 from erpnext_extensions.cheque_management.doctype.post_dated_cheque import post_dated_cheque as pdc_mod
 from erpnext_extensions.cheque_management.pdc_workflow_state_machine import (
@@ -76,6 +76,28 @@ class TestDebtPurchaseAssignmentDateUnit(unittest.TestCase):
 		with self.assertRaises(Exception) as ctx:
 			doc._validate_debt_purchase_assignment_date()
 		self.assertIn("invalid", str(ctx.exception).lower())
+
+	def test_prepare_state_dates_no_received_fallback(self):
+		from erpnext_extensions.cheque_management.doctype.cheque_opening_import.cheque_opening_import import (
+			_prepare_state_dates,
+		)
+
+		pdc = MagicMock()
+		pdc.debt_purchase_assignment_date = None
+		pdc.received_date = date(2026, 1, 1)
+		_prepare_state_dates(
+			pdc,
+			WORKFLOW_ASSIGNED_DEBT_PURCHASE,
+			{"received_date": "2026-01-01"},
+		)
+		self.assertIsNone(pdc.debt_purchase_assignment_date)
+
+		_prepare_state_dates(
+			pdc,
+			WORKFLOW_ASSIGNED_DEBT_PURCHASE,
+			{"debt_purchase_assignment_date": "2026-03-15", "received_date": "2026-01-01"},
+		)
+		self.assertEqual(getdate(pdc.debt_purchase_assignment_date), date(2026, 3, 15))
 
 
 class TestDebtPurchaseAssignmentDateIntegration(unittest.TestCase):
@@ -239,6 +261,70 @@ class TestDebtPurchaseAssignmentDateIntegration(unittest.TestCase):
 		)
 		self.assertEqual(len(refs), 1)
 		self.assertEqual(getdate(refs[0].posting_date), getdate(today()))
+
+	def test_opening_import_registered_without_assignment_date_ok(self):
+		"""Opening Import to Registered succeeds with empty assignment date."""
+		from erpnext_extensions.cheque_management.doctype.cheque_opening_import.cheque_opening_import import (
+			import_row,
+		)
+		from frappe.utils import random_string
+
+		row = {
+			"cheque_direction": "Receivable",
+			"company": self.company,
+			"bank_account": self.bank_account,
+			"cheque_number": f"OI-REG-{random_string(6)}",
+			"cheque_due_date": getdate(today()) + timedelta(days=40),
+			"cheque_amount": 321,
+			"party_type": "Customer",
+			"party": self.customer,
+			"workflow_state": "Registered",
+			"drawer_bank_name": frappe.db.get_value("Bank", {}, "name", order_by="modified desc"),
+			"received_date": getdate(today()) - timedelta(days=2),
+			"sayad_code": f"S-{random_string(6)}"[:32],
+			"sayad_registered": 1,
+		}
+		name = import_row(1, row)
+		doc = frappe.get_doc("Post Dated Cheque", name)
+		self.assertEqual(normalize_workflow_state_value(doc.workflow_state), WORKFLOW_REGISTERED)
+		self.assertFalse(doc.debt_purchase_assignment_date)
+		with self.assertRaises(Exception) as ctx:
+			self._apply(doc, "Assign for Debt Purchase")
+		self.assertIn("Debt Purchase Assignment Date", str(ctx.exception))
+
+	def test_opening_import_assigned_dp_without_date_blocked_in_preview(self):
+		from erpnext_extensions.cheque_management.doctype.cheque_opening_import.cheque_opening_import import (
+			_validate_row_preview,
+		)
+
+		err = _validate_row_preview(
+			{
+				"cheque_direction": "Receivable",
+				"company": self.company,
+				"bank_account": self.bank_account,
+				"cheque_number": "OI-DP-X",
+				"cheque_due_date": "2026-06-01",
+				"cheque_amount": "100",
+				"party_type": "Customer",
+				"party": self.customer,
+				"workflow_state": "Assigned to Bank for Debt Purchase",
+				"drawer_bank_name": frappe.db.get_value("Bank", {}, "name", order_by="modified desc"),
+			},
+			2,
+		)
+		self.assertIsNotNone(err)
+		self.assertIn("debt_purchase_assignment_date", err or "")
+
+	def test_meta_field_visible_receivable_editable_flags(self):
+		meta = frappe.get_meta("Post Dated Cheque")
+		f = meta.get_field("debt_purchase_assignment_date")
+		self.assertIsNotNone(f)
+		self.assertEqual(f.fieldtype, "Date")
+		self.assertEqual(f.label, "Debt Purchase Assignment Date")
+		self.assertIn("Receivable", f.depends_on or "")
+		self.assertEqual(cint(f.allow_on_submit), 1)
+		self.assertEqual(cint(f.read_only), 0)
+		self.assertEqual(cint(f.hidden), 0)
 
 	def test_bounced_path_uses_same_field(self):
 		# received_date is today-10 from _draft; keep later event dates in order.

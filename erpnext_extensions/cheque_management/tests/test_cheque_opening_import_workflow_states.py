@@ -226,6 +226,7 @@ class TestOpeningImportLinkResolution(unittest.TestCase):
 			workflow_state="Assigned to Bank for Debt Purchase",
 			bank_account=" BA-RAW ",
 			drawer_bank_name="خاورمیانه",
+			debt_purchase_assignment_date="2026-04-01",
 		)
 		mod = "erpnext_extensions.cheque_management.doctype.cheque_opening_import.cheque_opening_import"
 		with (
@@ -271,15 +272,33 @@ class TestOpeningImportPreviewValidation(unittest.TestCase):
 			self._validate(_row(workflow_state="Bounced", bounced_date="2026-04-06"))
 		)
 
-	def test_assigned_dp_ok(self):
+	def test_assigned_dp_requires_assignment_date(self):
+		err = self._validate(_row(workflow_state="Assigned to Bank for Debt Purchase"))
+		self.assertIsNotNone(err)
+		self.assertIn("debt_purchase_assignment_date", err or "")
+
+	def test_assigned_dp_ok_with_assignment_date(self):
 		self.assertIsNone(
-			self._validate(_row(workflow_state="Assigned to Bank for Debt Purchase"))
+			self._validate(
+				_row(
+					workflow_state="Assigned to Bank for Debt Purchase",
+					debt_purchase_assignment_date="2026-04-01",
+				)
+			)
 		)
 
-	def test_assigned_dp_lowercase_ok(self):
+	def test_assigned_dp_lowercase_ok_with_assignment_date(self):
 		self.assertIsNone(
-			self._validate(_row(workflow_state="assigned to bank for debt purchase"))
+			self._validate(
+				_row(
+					workflow_state="assigned to bank for debt purchase",
+					debt_purchase_assignment_date="2026-04-01",
+				)
+			)
 		)
+
+	def test_registered_ok_without_assignment_date(self):
+		self.assertIsNone(self._validate(_row(workflow_state="Registered")))
 
 	def test_assigned_dp_requires_bank(self):
 		err = self._validate(

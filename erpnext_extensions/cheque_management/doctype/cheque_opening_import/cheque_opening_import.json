@@ -27,7 +27,7 @@
    "fieldname": "import_file",
    "fieldtype": "Attach",
    "label": "CSV or Excel",
-   "description": "Headers: cheque_direction, company, bank_account, cheque_number, cheque_due_date, cheque_amount, party_type, party, workflow_state. Optional: cheque_book, drawer_bank_name, received_date, sent_to_bank_date, handover_date, cleared_date, bounced_date, returned_date, sayad_code, sayad_registered (aliases: Sayad Code, Sayad Registered, Persian headers in template)."
+   "description": "Headers: cheque_direction, company, bank_account, cheque_number, cheque_due_date, cheque_amount, party_type, party, workflow_state. Optional: cheque_book, drawer_bank_name, received_date, sent_to_bank_date, handover_date, cleared_date, bounced_date, debt_purchase_assignment_date, returned_date, sayad_code, sayad_registered (aliases: Sayad Code, Sayad Registered, تاریخ واگذاری جهت خرید دین, Persian headers in template)."
   },
   {
    "fieldname": "column_break_1",
