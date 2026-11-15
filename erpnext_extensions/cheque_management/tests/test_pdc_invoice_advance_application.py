@@ -128,6 +128,7 @@ class TestPDCInvoiceAdvanceApplication(unittest.TestCase):
 
 	def test_cancel_reverses_rows(self) -> None:
 		row = SimpleNamespace(
+			name="ROW-CANCEL-1",
 			post_dated_cheque="PDC-1",
 			order_doctype="Sales Order",
 			order_name="SO-1",
@@ -201,8 +202,9 @@ class TestPDCInvoiceAdvanceApplication(unittest.TestCase):
 			if "FROM `tabJournal Entry`" in q:
 				return [{"name": "JV-REV-EXIST"}]
 			if "FROM `tabJournal Entry Account`" in q:
-				# validation fallback: net movement on advance account
-				if "AND account =" in q:
+				# validation fallback: net movement on eligible advance account(s)
+				# v5.7.42 uses IN (...); older single-account path used account =
+				if "AND account IN" in q or "AND account =" in q:
 					return [{"dr": 50.0, "cr": 0.0}]
 				return [{"ref_amt": 0.0}]
 			return []

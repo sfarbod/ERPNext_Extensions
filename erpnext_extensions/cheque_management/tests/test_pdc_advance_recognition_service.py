@@ -121,12 +121,9 @@ class TestPDCAdvanceRecognitionService(unittest.TestCase):
 					side_effect=AssertionError,
 				)
 			)
-			stack.enter_context(
-				patch(
-					"erpnext_extensions.cheque_management.pdc_journal_entry_service.frappe.flags",
-					SimpleNamespace(),
-				)
-			)
+			# Do not replace frappe.flags wholesale — it is a shared process object used by
+			# ERPNext helpers (accounting dimensions / DocType cache). The JE service only
+			# needs to set skip_pdc_allocation_capacity_validation_for_pdc on the real flags.
 			stack.enter_context(
 				patch(
 					"erpnext_extensions.cheque_management.pdc_journal_entry_service.get_existing_journal_entry_for_transition",
