@@ -133,6 +133,12 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 	# v5.1.1: never materialize __UNCLASSIFIED__ as a grid row. Track residual only.
 	classification_residual = zero_measures()
 	excluded_unclassified_accounts: list[dict] = []
+	# v5.7.43 global carry-forward: terminal accounts whose numeric code is coarser
+	# than the presentation level (e.g. 6-digit leaf at L4/L5, 8-digit leaf at L5).
+	carry_forward_names: list[str] = []
+	parents_with_children = {
+		row.parent_account for row in accounts if row.parent_account
+	}
 
 	# Analyze / hierarchy drill: NestedSet is authoritative. Code-prefix rollups can
 	# invent sibling labels when a leaf is mis-parented under another branch
@@ -141,6 +147,7 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 		spec.account_scope.selected_account if spec.account_scope.mode == "account" else None
 	)
 	level_code_length = int(level.code_length)
+	enabled_levels = get_enabled_levels()
 
 	for account_name in scoped_names:
 		row = _row_by_name(accounts, account_name)
@@ -161,13 +168,14 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 
 		prefix = code_prefix(normalized, level_code_length)
 		if not prefix:
-			# Terminal / coarser-level codes under an analyzed root are optional L4/L5
-			# absences — not classification integrity failures.
-			if (
-				tree_root
-				and account_name == tree_root
-				and len(normalized) < level_code_length
-			):
+			# Code shorter than presentation level:
+			# - NestedSet parents are represented by descendants (not residual).
+			# - NestedSet terminals are carried forward at this presentation level
+			#   (global L4/L5 and Analyze), never treated as classification failures.
+			if len(normalized) < level_code_length:
+				if account_name in parents_with_children:
+					continue
+				carry_forward_names.append(account_name)
 				continue
 			_accumulate_unclassified_residual(
 				classification_residual,
@@ -232,21 +240,30 @@ def build_account_level_summary(spec: AccountExplorerQuerySpec) -> dict:
 				finalize_measures(row)
 		if rows:
 			had_nested_descendants = True
-		elif not direct_child_accounts(accounts, tree_root):
-			# Terminal ledger carry-forward (v5.7.43): when the analyzed account has
-			# no NestedSet children, surface the same real account at optional deeper
-			# presentation levels (L4/L5). Own GL measures only — never invent children
-			# and never double-count via a second account identity.
+		elif tree_root not in parents_with_children:
+			# Terminal ledger Analyze carry-forward (same identity, own GL only).
 			terminal = _build_terminal_leaf_row(
 				accounts,
 				tree_root,
 				measures_by_account,
 				level_sequence=int(level.sequence),
-				enabled_levels=get_enabled_levels(),
+				enabled_levels=enabled_levels,
 			)
 			if terminal:
 				finalize_measures(terminal)
 				rows = [terminal]
+
+	# Global + Analyze subtree: surface coarser terminals that code-prefix grouping
+	# cannot represent at this level (e.g. 111601 at L4/L5 without Analyze).
+	rows = _append_coarser_terminal_carry_forwards(
+		rows,
+		accounts=accounts,
+		carry_forward_names=carry_forward_names,
+		measures_by_account=measures_by_account,
+		level_sequence=int(level.sequence),
+		tree_root=tree_root,
+		enabled_levels=enabled_levels,
+	)
 
 	if spec.hide_zero_rows:
 		# Keep the analyzed terminal leaf visible (incl. L4/L5 carry-forward) even
@@ -513,6 +530,52 @@ def _hierarchy_empty_no_descendants(*, tree_root: str, level_sequence: int) -> d
 		"tree_root_account": tree_root,
 		"has_nested_descendants": 0,
 	}
+
+
+def _append_coarser_terminal_carry_forwards(
+	rows: list[dict],
+	*,
+	accounts: list[dict],
+	carry_forward_names: list[str],
+	measures_by_account: dict[str, dict],
+	level_sequence: int,
+	tree_root: str | None,
+	enabled_levels: list | None = None,
+) -> list[dict]:
+	"""Append presentation carry-forward rows for NestedSet terminals with short codes.
+
+	Used for global L4/L5 (and Analyze subtrees) so turnover does not disappear into
+	classification residual when ``code_prefix`` cannot form a level-length key.
+	"""
+	if not carry_forward_names:
+		return rows
+	existing = {row.get("selected_account") for row in rows if row.get("selected_account")}
+	existing_keys = {row.get("row_key") for row in rows if row.get("row_key")}
+	by_name = accounts_by_name(accounts)
+	out = list(rows)
+	for account_name in carry_forward_names:
+		if account_name in existing:
+			continue
+		if tree_root and not account_in_subtree(
+			by_name, account_name, tree_root, include_root=True
+		):
+			continue
+		terminal = _build_terminal_leaf_row(
+			accounts,
+			account_name,
+			measures_by_account,
+			level_sequence=level_sequence,
+			enabled_levels=enabled_levels,
+		)
+		if not terminal:
+			continue
+		if terminal.get("row_key") in existing_keys:
+			continue
+		finalize_measures(terminal)
+		out.append(terminal)
+		existing.add(account_name)
+		existing_keys.add(terminal.get("row_key"))
+	return out
 
 
 def _build_terminal_leaf_row(

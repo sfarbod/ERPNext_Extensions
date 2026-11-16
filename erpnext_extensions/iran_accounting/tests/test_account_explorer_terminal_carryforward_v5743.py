@@ -385,5 +385,6 @@ class TestTerminalCarryForwardSourceGuardsV5743(unittest.TestCase):
 			/ "account_explorer"
 			/ "query_builder.py"
 		).read_text(encoding="utf-8")
-		self.assertIn("Terminal ledger carry-forward (v5.7.43)", qb)
+		self.assertIn("_append_coarser_terminal_carry_forwards", qb)
 		self.assertIn("is_terminal_carried_forward", qb)
+		self.assertIn("carry_forward_names", qb)
