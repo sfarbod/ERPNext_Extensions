@@ -48,14 +48,14 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 		self.assertNotIn("cmd", restore_args)
 		self.assertEqual(restore_args.get("asset_name"), "2854")
 
-	def test_rpc_style_frappe_call_does_not_forward_cmd_to_native_scrap(self):
-		"""Desk/RPC path: wrapper receives filtered kwargs; native never sees cmd."""
-		native_calls = []
+	def test_rpc_style_frappe_call_does_not_forward_cmd_to_scrap_accounting(self):
+		"""Desk/RPC path: wrapper receives filtered kwargs; accounting never sees cmd."""
+		scrap_calls = []
 		reapply_calls = []
 
-		def fake_native(asset_name, scrap_date=None):
-			native_calls.append({"asset_name": asset_name, "scrap_date": scrap_date})
-			return "ok-scrap"
+		def fake_scrap(asset_name, scrap_date=None):
+			scrap_calls.append({"asset_name": asset_name, "scrap_date": scrap_date})
+			return {"asset": asset_name, "scrap_date": scrap_date}
 
 		def fake_reapply(asset_name, trigger_doc=None):
 			reapply_calls.append(asset_name)
@@ -68,8 +68,8 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 
 		with (
 			patch(
-				"erpnext.assets.doctype.asset.depreciation.scrap_asset",
-				side_effect=fake_native,
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.scrap_asset_accounting",
+				side_effect=fake_scrap,
 			),
 			patch(
 				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
@@ -79,26 +79,26 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 		):
 			result = frappe.call(integration_hooks.scrap_asset, **form_dict)
 
-		self.assertEqual(result, "ok-scrap")
-		self.assertEqual(len(native_calls), 1, "native scrap must run exactly once")
-		self.assertEqual(native_calls[0]["asset_name"], "2854")
-		self.assertEqual(native_calls[0]["scrap_date"], "2026-09-23")
-		self.assertNotIn("cmd", native_calls[0])
+		self.assertEqual(result["asset"], "2854")
+		self.assertEqual(len(scrap_calls), 1, "scrap accounting must run exactly once")
+		self.assertEqual(scrap_calls[0]["asset_name"], "2854")
+		self.assertEqual(scrap_calls[0]["scrap_date"], "2026-09-23")
+		self.assertNotIn("cmd", scrap_calls[0])
 		self.assertEqual(reapply_calls, ["2854"])
 
 	def test_scrap_without_cmd_still_works(self):
 		"""Direct/non-RPC calls without cmd must keep working."""
-		native_calls = []
+		scrap_calls = []
 		reapply_calls = []
 
-		def fake_native(asset_name, scrap_date=None):
-			native_calls.append((asset_name, scrap_date))
-			return None
+		def fake_scrap(asset_name, scrap_date=None):
+			scrap_calls.append((asset_name, scrap_date))
+			return {"asset": asset_name}
 
 		with (
 			patch(
-				"erpnext.assets.doctype.asset.depreciation.scrap_asset",
-				side_effect=fake_native,
+				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.scrap_asset_accounting",
+				side_effect=fake_scrap,
 			),
 			patch(
 				"erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad.sync_asset_vad_from_finance_book",
@@ -112,7 +112,7 @@ class TestScrapRestoreRpcBoundary(unittest.TestCase):
 		):
 			integration_hooks.scrap_asset("ASSET-1", "2026-01-15")
 
-		self.assertEqual(native_calls, [("ASSET-1", "2026-01-15")])
+		self.assertEqual(scrap_calls, [("ASSET-1", "2026-01-15")])
 		self.assertEqual(reapply_calls, ["ASSET-1"])
 
 	def test_rpc_style_frappe_call_does_not_forward_cmd_to_restore_accounting(self):

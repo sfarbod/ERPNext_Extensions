@@ -77,11 +77,10 @@ def _disposed_assets_on_sales_invoice(doc) -> list[str]:
 
 @frappe.whitelist()
 def scrap_asset(asset_name: str, scrap_date=None):
-	"""Whitelist wrapper: run core scrap, then re-apply usage factors.
+	"""Whitelist wrapper: scrap with IRR residual cleanup, then usage replan.
 
 	Uses ``override_whitelisted_methods`` (same pattern as other modules in this
-	app). Imports the original function from the ERPNext module object so this
-	is not a monkey patch of the module attribute.
+	app).
 
 	Signature mirrors ERPNext ``depreciation.scrap_asset`` on purpose. Frappe
 	RPC (``handler.execute_cmd`` → ``frappe.call(..., **form_dict)``) includes
@@ -91,15 +90,20 @@ def scrap_asset(asset_name: str, scrap_date=None):
 	this wrapper and out of the core call, while still forwarding the business
 	arguments ``asset_name`` / ``scrap_date``.
 
-	After scrap, Asset and Finance Book VAD must remain in parity (core JE submit
-	normally keeps them aligned; we re-sync as a safety net).
+	After disposal-day depreciation, Iran whole-IRR ADS normalization can leave
+	a sub-rial VAD residual. Core scrap JE generation then emits a disposal P&L
+	row that rounds to zero and fails validation. ``scrap_asset_accounting``
+	clears that residual before the Asset Disposal JE is created.
+
+	After scrap, Asset and Finance Book VAD must remain in parity (re-sync as a
+	safety net).
 	"""
-	from erpnext.assets.doctype.asset import depreciation as depr_mod
 	from erpnext_extensions.asset_usage_depreciation.services.scrap_restore_vad import (
+		scrap_asset_accounting,
 		sync_asset_vad_from_finance_book,
 	)
 
-	result = depr_mod.scrap_asset(asset_name, scrap_date)
+	result = scrap_asset_accounting(asset_name, scrap_date)
 	sync_asset_vad_from_finance_book(asset_name)
 	_reapply_for_asset(asset_name)
 	return result

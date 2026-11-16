@@ -641,6 +641,8 @@ ignore_links_on_delete = ["PM Request"]
 before_request = [
 	"erpnext_extensions.iran_accounting.integration.bootstrap.apply",
 	"erpnext_extensions.advance_accounts.bootstrap.apply",
+	# AVA-adjusted disposal gross for scrap/sale/regain GL
+	"erpnext_extensions.asset_usage_depreciation.disposal_patch.apply",
 ]
 # after_request = ["erpnext_extensions.utils.after_request"]
 
@@ -660,6 +662,7 @@ regional_overrides = {
 before_job = [
 	"erpnext_extensions.iran_accounting.integration.bootstrap.apply",
 	"erpnext_extensions.advance_accounts.bootstrap.apply",
+	"erpnext_extensions.asset_usage_depreciation.disposal_patch.apply",
 ]
 # after_job = ["erpnext_extensions.utils.after_job"]
 
