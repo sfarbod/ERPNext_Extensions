@@ -123,3 +123,47 @@ def validate_campaign_results(campaign=None):
 	if not campaign:
 		frappe.throw("campaign is required")
 	return svc.validate_campaign_results(campaign=campaign)
+
+
+@frappe.whitelist(methods=["POST"])
+def clone_campaign_manifest(source="HRC-00016", target="HRC-00017", confirm=None):
+	"""Dev-only clone of a verified campaign manifest into a new campaign id."""
+	return svc.clone_campaign_manifest(source=source, target=target, confirm=confirm)
+
+
+@frappe.whitelist(methods=["POST"])
+def start_staggered_campaign(
+	campaign=None,
+	confirm=None,
+	max_identities=None,
+	async_dispatch=0,
+	stage_a_only=0,
+):
+	"""Start staggered bulk-queue + controlled parallel RIV for a campaign."""
+	if not campaign:
+		frappe.throw("campaign is required")
+	return svc.start_staggered_campaign(
+		campaign=campaign,
+		confirm=confirm,
+		max_identities=max_identities,
+		async_dispatch=async_dispatch,
+		stage_a_only=stage_a_only,
+	)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_staggered_status(campaign=None):
+	"""Read-only staggered session / ledger / metrics status."""
+	if not campaign:
+		frappe.throw("campaign is required")
+	return svc.get_staggered_status_api(campaign=campaign)
+
+
+@frappe.whitelist(methods=["POST"])
+def request_staggered_stop(campaign=None, session_id=None, reason="operator"):
+	"""Request staggered dispatcher stop (does not cancel in-flight RIVs)."""
+	if not campaign:
+		frappe.throw("campaign is required")
+	return svc.request_staggered_stop(
+		campaign=campaign, session_id=session_id, reason=reason or "operator"
+	)
