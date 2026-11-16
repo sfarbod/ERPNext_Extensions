@@ -99,3 +99,20 @@ Bank,بانک
 Amount,مبلغ
 Status,وضعیت
 Facility PDC Allocation,تخصیص چک خرید دین تسهیلات
+Facility Number,شماره تسهیلات
+Opening Principal Balance,مبلغ افتتاحیه اصل
+Opening Profit Balance,مبلغ افتتاحیه فرع
+Profit Paid During Period,پرداخت شده طی دوره فرع جمع
+Principal Paid During Period,پرداخت شده طی دوره اصل جمع
+Last Payment Date,تاریخ آخرین پرداخت
+Remaining Installments,تعداد اقساط مانده
+From Date,از تاریخ
+To Date,تا تاریخ
+As On Date,تا تاریخ (مانده)
+Facility Name,نام تسهیلات
+Facility Principal Amount,مبلغ اصل
+Facility Profit Amount,مبلغ فرع
+Facility Remaining Principal,مانده اصل
+Facility Remaining Profit,مانده فرع
+Facility Remaining Total,مانده کل
+Facility Maturity Date,تاریخ سررسید وام
