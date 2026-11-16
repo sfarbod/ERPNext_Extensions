@@ -237,15 +237,20 @@ class TestScrapRestoreVadV5553(unittest.TestCase):
 		self._ready()
 		from collections import defaultdict
 
-		def scrap_cycle_net():
-			legit = {
-				"ACC-JV-1405-166537",
-				"ACC-JV-1405-166538",
-				"ACC-JV-1405-166539",
-				"ACC-JV-1405-166540",
-				"ACC-JV-1405-166541",
-				"ACC-JV-1405-166542",
+		def _submitted_asset_jes():
+			return {
+				r[0]
+				for r in frappe.db.sql(
+					"""
+					select distinct je.name from `tabJournal Entry` je
+					inner join `tabJournal Entry Account` jea on jea.parent=je.name
+					where jea.reference_type='Asset' and jea.reference_name=%s and je.docstatus=1
+					""",
+					ASSET,
+				)
 			}
+
+		def scrap_cycle_net(legit):
 			all_sub = frappe.db.sql(
 				"""
 				select distinct je.name, je.voucher_type, je.reversal_of, je.creation
@@ -267,6 +272,8 @@ class TestScrapRestoreVadV5553(unittest.TestCase):
 					net[g.account] += flt(g.debit) - flt(g.credit)
 			return cycle, net
 
+		# Snapshot pre-existing submitted JEs (site may already have orphans).
+		legit = _submitted_asset_jes()
 		baseline_a, _ = _vad_pair(ASSET)
 		for i in range(3):
 			integration_hooks.scrap_asset(ASSET, SCRAP_DATE)
@@ -276,8 +283,8 @@ class TestScrapRestoreVadV5553(unittest.TestCase):
 			ra, rf = _vad_pair(ASSET)
 			self.assertAlmostEqual(ra, baseline_a, places=2, msg=f"cycle {i+1} asset vad")
 			self.assertAlmostEqual(rf, baseline_a, places=2, msg=f"cycle {i+1} fb vad")
-			cycle, net = scrap_cycle_net()
-			# After cancel-based restore, no submitted scrap-cycle JEs should remain
+			cycle, net = scrap_cycle_net(legit)
+			# After cancel-based restore, no *new* submitted scrap-cycle JEs remain
 			self.assertEqual(
 				[c.name for c in cycle],
 				[],

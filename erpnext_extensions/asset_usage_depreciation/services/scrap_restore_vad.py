@@ -214,6 +214,23 @@ def cancel_or_reverse_disposal_day_depreciation(asset) -> list[dict]:
 						None,
 						update_modified=False,
 					)
+				# JE cancel updates Asset / Finance Book VAD in the database.
+				# Core ``restore_asset`` keeps the in-memory Asset doc and passes
+				# its Finance Book rows into ``reschedule_depreciation``. Refresh
+				# those values so ADS rebuild uses the restored carrying value
+				# (otherwise pending depreciation stays 0 after a full write-off
+				# scrap and Iran ADS normalize throws on remaining vs unposted).
+				fb_vad = flt(
+					frappe.db.get_value(
+						"Asset Finance Book", row.name, "value_after_depreciation"
+					)
+				)
+				row.value_after_depreciation = fb_vad
+				asset_vad = flt(
+					frappe.db.get_value("Asset", asset.name, "value_after_depreciation")
+				)
+				if hasattr(asset, "value_after_depreciation"):
+					asset.value_after_depreciation = asset_vad
 			except frappe.PermissionError:
 				raise
 			except Exception as exc:
@@ -280,6 +297,120 @@ def cancel_scrap_day_depreciation_entries(asset) -> dict:
 					update_modified=False,
 				)
 	return {"cancelled": cancelled, "skipped": skipped}
+
+
+def _scrap_vad_residual_threshold(company: str) -> float:
+	"""Amounts below this cannot survive Journal Entry currency rounding."""
+	from erpnext_extensions.iran_accounting.domain.currency import (
+		get_company_currency,
+		get_currency_precision,
+	)
+
+	precision = get_currency_precision(get_company_currency(company))
+	# One half-unit of currency precision (IRR precision 0 → 0.5).
+	return 0.5 * (10 ** (-int(precision or 0)))
+
+
+def clear_sub_precision_scrap_vad_residual(asset_name: str) -> dict:
+	"""Zero sub-currency VAD left after disposal-day depreciation (IRR scrap).
+
+	Iran whole-IRR ADS normalization posts the disposal-day depreciation as a
+	whole rial. When Asset VAD still carries a fractional residual from
+	revaluation / prior floats (e.g. 0.44), core scrap JE generation builds a
+	disposal P&L row for that residual. Journal Entry then rounds the row to
+	zero (currency precision 0) and throws::
+
+	    Row N: Both Debit and Credit values cannot be zero
+
+	Clearing Asset + Finance Book VAD below the currency threshold before the
+	scrap Asset Disposal JE is built yields the standard fully-written-off
+	two-line scrap entry (Cr Fixed Asset / Dr Accumulated Depreciation) with
+	no zero P&L row.
+	"""
+	if not asset_name or not frappe.db.exists("Asset", asset_name):
+		return {"asset": asset_name, "skipped": "missing_asset"}
+
+	asset = frappe.get_doc("Asset", asset_name)
+	threshold = _scrap_vad_residual_threshold(asset.company)
+	before = flt(asset.value_after_depreciation)
+	if abs(before) < 1e-12:
+		return {
+			"asset": asset_name,
+			"cleared": False,
+			"reason": "already_zero",
+			"vad": before,
+			"threshold": threshold,
+		}
+	if abs(before) >= threshold:
+		return {
+			"asset": asset_name,
+			"cleared": False,
+			"reason": "above_threshold",
+			"vad": before,
+			"threshold": threshold,
+		}
+
+	asset.db_set("value_after_depreciation", 0, update_modified=False)
+	fb_cleared = []
+	for row in asset.get("finance_books") or []:
+		fb_before = flt(
+			frappe.db.get_value("Asset Finance Book", row.name, "value_after_depreciation")
+		)
+		if abs(fb_before) > 1e-12 and abs(fb_before) < threshold:
+			frappe.db.set_value(
+				"Asset Finance Book",
+				row.name,
+				"value_after_depreciation",
+				0,
+				update_modified=False,
+			)
+			fb_cleared.append({"finance_book_row": row.name, "before": fb_before})
+
+	return {
+		"asset": asset_name,
+		"cleared": True,
+		"vad_before": before,
+		"vad_after": 0,
+		"threshold": threshold,
+		"finance_books_cleared": fb_cleared,
+	}
+
+
+def scrap_asset_accounting(asset_name: str, scrap_date=None) -> dict:
+	"""Core scrap sequence with IRR sub-precision VAD residual cleanup.
+
+	Runs the same steps as ERPNext ``scrap_asset``, inserting
+	``clear_sub_precision_scrap_vad_residual`` after disposal-day depreciation
+	and before the Asset Disposal Journal Entry is created.
+	"""
+	from frappe.utils import getdate, today
+
+	from erpnext.assets.doctype.asset import depreciation as depr_mod
+
+	if not asset_name:
+		frappe.throw(_("Asset name is required"))
+	if not frappe.db.exists("Asset", asset_name):
+		frappe.throw(_("Asset {0} not found").format(frappe.bold(asset_name)))
+
+	frappe.has_permission("Asset", "write", asset_name, throw=True)
+	asset = frappe.get_doc("Asset", asset_name)
+	scrap_date = getdate(scrap_date) or getdate(today())
+	asset.db_set("disposal_date", scrap_date)
+	depr_mod.validate_asset_for_scrap(asset, scrap_date)
+
+	depr_mod.depreciate_asset(asset, scrap_date, depr_mod.get_note_for_scrap(asset))
+	asset.reload()
+
+	residual = clear_sub_precision_scrap_vad_residual(asset_name)
+	asset.reload()
+
+	depr_mod.create_journal_entry_for_scrap(asset, scrap_date)
+	return {
+		"asset": asset_name,
+		"scrap_date": str(scrap_date),
+		"residual_cleanup": residual,
+		"journal_entry_for_scrap": frappe.db.get_value("Asset", asset_name, "journal_entry_for_scrap"),
+	}
 
 
 def restore_asset_accounting(asset_name: str) -> dict:
