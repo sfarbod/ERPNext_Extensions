@@ -255,9 +255,16 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 		mocked.assert_called_once()
 
 	# --- TEST I ---
-	def test_i_sales_invoice_delegates(self):
+	def test_i_sales_invoice_inconsistent_pattern_a_fails_closed(self):
+		"""FX SI with hybrid headers is Pattern A but must fail closed (not delegate)."""
 		import frappe
 		from erpnext.accounts.doctype.sales_invoice.sales_invoice import SalesInvoice
+
+		from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+			is_pattern_a_fx_invoice,
+			is_pattern_a_fx_purchase_invoice,
+			is_pattern_a_fx_sales_invoice,
+		)
 
 		si = frappe.new_doc("Sales Invoice")
 		si.company = self.company
@@ -265,11 +272,17 @@ class TestPatternAPrecisionLossFailClosed(unittest.TestCase):
 		si.conversion_rate = CONV_01345
 		si.net_total = 100
 		si.base_net_total = 100
+		si.base_total = 100
+		si.base_grand_total = 100
 		self.assertFalse(is_pattern_a_fx_purchase_invoice(si))
+		self.assertTrue(is_pattern_a_fx_sales_invoice(si))
+		self.assertTrue(is_pattern_a_fx_invoice(si))
 		self.assertTrue(getattr(SalesInvoice.make_precision_loss_gl_entry, "_iran_pattern_a_skip", False))
 		with self._spy_orig() as mocked:
-			si.make_precision_loss_gl_entry([])
-		mocked.assert_called_once()
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				si.make_precision_loss_gl_entry([])
+		mocked.assert_not_called()
+		self.assertIn("RATE-FIRST", str(ctx.exception))
 
 	# --- TEST J ---
 	def test_j_balanced_fx_00615_skips(self):
