@@ -376,12 +376,74 @@ def clear_sub_precision_scrap_vad_residual(asset_name: str) -> dict:
 	}
 
 
-def scrap_asset_accounting(asset_name: str, scrap_date=None) -> dict:
-	"""Core scrap sequence with IRR sub-precision VAD residual cleanup.
+def create_journal_entry_for_scrap_adjusted(asset, scrap_date) -> dict:
+	"""Asset Disposal JE: Cr adjusted gross FA / Dr matching Accum only.
 
-	Runs the same steps as ERPNext ``scrap_asset``, inserting
-	``clear_sub_precision_scrap_vad_residual`` after disposal-day depreciation
-	and before the Asset Disposal Journal Entry is created.
+	Revaluation surplus is **not** transferred here (kept on AVA history).
+	Depreciation through scrap date is posted by ``depreciate_asset`` before
+	this JE. Passes ``selling_amount=0`` and ``date=scrap_date`` explicitly.
+	"""
+	from frappe.utils import get_link_to_form
+
+	from erpnext.assets.doctype.asset.depreciation import add_asset_activity
+	from erpnext_extensions.asset_usage_depreciation.services.disposal_revalued_gross import (
+		get_adjusted_asset_disposal_values,
+		get_gl_entries_on_asset_disposal_adjusted,
+	)
+
+	disposal_values = get_adjusted_asset_disposal_values(asset)
+	gl_entries = get_gl_entries_on_asset_disposal_adjusted(
+		asset,
+		selling_amount=0,
+		date=scrap_date,
+		disposal_values=disposal_values,
+		include_surplus_transfer=False,
+	)
+
+	depreciation_series = frappe.get_cached_value(
+		"Company", asset.company, "series_for_depreciation_entry"
+	)
+	je = frappe.new_doc("Journal Entry")
+	je.voucher_type = "Asset Disposal"
+	je.naming_series = depreciation_series
+	je.posting_date = scrap_date
+	je.company = asset.company
+	je.remark = f"Scrap Entry for asset {asset.name}"
+
+	for entry in gl_entries:
+		entry.update({"reference_type": "Asset", "reference_name": asset.name})
+		je.append("accounts", entry)
+
+	je.flags.ignore_permissions = True
+	je.save()
+	if not je.meta.get_workflow():
+		je.submit()
+
+	add_asset_activity(asset.name, _("Asset scrapped"))
+	frappe.msgprint(
+		_("Asset scrapped via Journal Entry {0}").format(get_link_to_form("Journal Entry", je.name))
+	)
+	return {
+		"journal_entry": je.name,
+		"disposal_values": {
+			"gross_asset_value": disposal_values.get("gross_asset_value"),
+			"value_after_depreciation": disposal_values.get("value_after_depreciation"),
+			"original_purchase_cost": disposal_values.get("original_purchase_cost"),
+			"ava_difference_total": disposal_values.get("ava_difference_total"),
+			"additional_asset_cost": disposal_values.get("additional_asset_cost"),
+			"ava_names": disposal_values.get("ava_names"),
+		},
+	}
+
+
+def scrap_asset_accounting(asset_name: str, scrap_date=None) -> dict:
+	"""Core scrap sequence with residual cleanup + adjusted-gross disposal JE.
+
+	Order:
+	1. validate
+	2. disposal-day depreciate
+	3. clear sub-precision VAD residual (v5.7.46)
+	4. scrap JE with adjusted gross (FA / Accum only; no surplus transfer)
 	"""
 	from frappe.utils import getdate, today
 
@@ -391,6 +453,11 @@ def scrap_asset_accounting(asset_name: str, scrap_date=None) -> dict:
 		frappe.throw(_("Asset name is required"))
 	if not frappe.db.exists("Asset", asset_name):
 		frappe.throw(_("Asset {0} not found").format(frappe.bold(asset_name)))
+
+	# Ensure sale/disposal helpers see adjusted gross in this process too.
+	from erpnext_extensions.asset_usage_depreciation.disposal_patch import apply as apply_disposal_patch
+
+	apply_disposal_patch()
 
 	frappe.has_permission("Asset", "write", asset_name, throw=True)
 	asset = frappe.get_doc("Asset", asset_name)
@@ -404,11 +471,12 @@ def scrap_asset_accounting(asset_name: str, scrap_date=None) -> dict:
 	residual = clear_sub_precision_scrap_vad_residual(asset_name)
 	asset.reload()
 
-	depr_mod.create_journal_entry_for_scrap(asset, scrap_date)
+	scrap_je = create_journal_entry_for_scrap_adjusted(asset, scrap_date)
 	return {
 		"asset": asset_name,
 		"scrap_date": str(scrap_date),
 		"residual_cleanup": residual,
+		"disposal_values": scrap_je.get("disposal_values"),
 		"journal_entry_for_scrap": frappe.db.get_value("Asset", asset_name, "journal_entry_for_scrap"),
 	}
 
