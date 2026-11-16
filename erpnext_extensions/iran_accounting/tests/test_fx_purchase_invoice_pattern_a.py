@@ -438,13 +438,20 @@ class TestPatternARateFirstMath(unittest.TestCase):
 		self.assertEqual(flt(doc.grand_total), 2220.0)
 		self.assertEqual(flt(doc.discount_amount), 322.0)
 
-	def test_sales_invoice_does_not_reaggregate_headers(self):
+	def test_sales_invoice_reaggregates_headers_pattern_a(self):
+		"""v5.7.45: FX SI Pattern A reaggregates IRR headers like PI."""
+		from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+			is_pattern_a_fx_sales_invoice,
+		)
+
 		row = _row()
 		doc = _Doc([row], doctype="Sales Invoice")
 		with _patches():
+			self.assertTrue(is_pattern_a_fx_sales_invoice(doc))
 			round_irr_invoice_totals(doc)
 		self.assertEqual(flt(row.base_amount), BASE_AMOUNT_01345)
-		self.assertEqual(flt(doc.base_grand_total), PRODUCT_FIRST_01345)
+		self.assertEqual(flt(doc.base_grand_total), BASE_AMOUNT_01345)
+		self.assertEqual(flt(doc.grand_total), AMOUNT_01345)
 
 	def test_submitted_document_not_rewritten(self):
 		row = _row()

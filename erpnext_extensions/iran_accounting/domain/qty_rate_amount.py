@@ -366,10 +366,11 @@ def invoice_has_distributed_discount(doc) -> bool:
 	)
 
 
-def is_pattern_a_fx_purchase_invoice(doc) -> bool:
-	"""FX Purchase Invoice on an IRR company with no additional/distributed discount."""
-	if getattr(doc, "doctype", None) != "Purchase Invoice":
-		return False
+_PATTERN_A_FX_INVOICE_DOCTYPES = frozenset({"Purchase Invoice", "Sales Invoice"})
+
+
+def _is_pattern_a_fx_invoice_candidate(doc) -> bool:
+	"""Shared FX + IRR + no Pattern-B-discount gate (doctype-agnostic)."""
 	if not rounding.is_irr_company(doc.company):
 		return False
 	company_currency = rounding.get_company_currency(doc.company)
@@ -379,6 +380,27 @@ def is_pattern_a_fx_purchase_invoice(doc) -> bool:
 	if invoice_has_distributed_discount(doc):
 		return False
 	return True
+
+
+def is_pattern_a_fx_invoice(doc) -> bool:
+	"""FX Purchase or Sales Invoice on an IRR company without additional/distributed discount."""
+	if getattr(doc, "doctype", None) not in _PATTERN_A_FX_INVOICE_DOCTYPES:
+		return False
+	return _is_pattern_a_fx_invoice_candidate(doc)
+
+
+def is_pattern_a_fx_purchase_invoice(doc) -> bool:
+	"""FX Purchase Invoice on an IRR company with no additional/distributed discount."""
+	if getattr(doc, "doctype", None) != "Purchase Invoice":
+		return False
+	return _is_pattern_a_fx_invoice_candidate(doc)
+
+
+def is_pattern_a_fx_sales_invoice(doc) -> bool:
+	"""FX Sales Invoice on an IRR company with no additional/distributed discount."""
+	if getattr(doc, "doctype", None) != "Sales Invoice":
+		return False
+	return _is_pattern_a_fx_invoice_candidate(doc)
 
 
 def _pattern_a_amounts_equal(actual, expected, company_currency: str) -> bool:
@@ -410,11 +432,12 @@ def _raise_pattern_a_invariant_failure(doc, invariant: str, expected, actual) ->
 	import frappe
 	from frappe import _
 
+	doctype = getattr(doc, "doctype", None) or _("Invoice")
 	frappe.throw(
 		_(
-			"RATE-FIRST accounting invariant failed for Purchase Invoice {0}: {1}. "
-			"Expected {2}, got {3}. Refusing to apply FX precision-loss override."
-		).format(doc.get("name") or _("(new)"), invariant, expected, actual),
+			"RATE-FIRST accounting invariant failed for {0} {1}: {2}. "
+			"Expected {3}, got {4}. Refusing to apply FX precision-loss override."
+		).format(doctype, doc.get("name") or _("(new)"), invariant, expected, actual),
 		title=_("RATE-FIRST Invariant Failed"),
 	)
 
@@ -422,7 +445,7 @@ def _raise_pattern_a_invariant_failure(doc, invariant: str, expected, actual) ->
 def validate_pattern_a_rate_first_invariants(doc) -> None:
 	"""Fail-closed: Pattern A docs must already satisfy RATE-FIRST header/item invariants.
 
-	Called only when ``is_pattern_a_fx_purchase_invoice(doc)`` is True, immediately before
+	Called only when ``is_pattern_a_fx_invoice(doc)`` is True, immediately before
 	skipping ERPNext product-first ``make_precision_loss_gl_entry``. Does not repair the
 	document and does not inspect in-progress GL (taxes / invoice rounding GLE may follow).
 	"""
@@ -643,15 +666,16 @@ def align_purchase_order_item_amounts(doc) -> None:
 		_align_po_pi_si_row(row, ccy, tx, conversion_rate=conversion_rate)
 
 
-def reaggregate_fx_purchase_invoice_base_totals(doc) -> None:
+def reaggregate_fx_invoice_base_totals(doc) -> None:
 	"""Derive IRR header totals from aligned RATE-FIRST item bases (Pattern A only).
 
-	Must not run on Sales Invoice, same-currency IRR invoices, submitted docs, or
-	Pattern B additional-discount invoices.
+	Applies to FX Purchase Invoice and FX Sales Invoice. Skips same-currency IRR
+	invoices, submitted docs (except save/submit action), and Pattern B
+	additional/distributed-discount invoices.
 	"""
 	if cint(doc.get("docstatus")) == 1 and getattr(doc, "_action", None) not in ("save", "submit"):
 		return
-	if not is_pattern_a_fx_purchase_invoice(doc):
+	if not is_pattern_a_fx_invoice(doc):
 		return
 
 	company_currency = rounding.get_company_currency(doc.company)
@@ -703,6 +727,11 @@ def reaggregate_fx_purchase_invoice_base_totals(doc) -> None:
 	_update_outstanding_after_rate_first(doc, company_currency)
 	if callable(getattr(doc, "set_total_in_words", None)):
 		doc.set_total_in_words()
+
+
+def reaggregate_fx_purchase_invoice_base_totals(doc) -> None:
+	"""Backward-compatible alias for ``reaggregate_fx_invoice_base_totals``."""
+	reaggregate_fx_invoice_base_totals(doc)
 
 
 def _update_payment_schedule_base(doc, authoritative_base, company_currency: str) -> None:

@@ -1100,7 +1100,7 @@ def assert_pattern_a_precision_loss_patch_supported(original_fn) -> None:
 
 
 def _patch_pattern_a_precision_loss():
-	"""Skip ERPNext product-first precision-loss GLE for RATE-FIRST Pattern A PIs.
+	"""Skip ERPNext product-first precision-loss GLE for RATE-FIRST Pattern A PI/SI.
 
 	ERPNext posts Round Off when base_net_total != net_total × conversion_rate.
 	Under Pattern A that difference is the composition policy, not a precision loss.
@@ -1109,37 +1109,41 @@ def _patch_pattern_a_precision_loss():
 	throws — never delegates to vanilla (vanilla would glue the hybrid residual).
 	"""
 	from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import PurchaseInvoice
+	from erpnext.accounts.doctype.sales_invoice.sales_invoice import SalesInvoice
 	from erpnext.controllers.accounts_controller import AccountsController
 
 	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
-		is_pattern_a_fx_purchase_invoice,
+		is_pattern_a_fx_invoice,
 		validate_pattern_a_rate_first_invariants,
 	)
 
-	# Already on the fail-closed wrapper — idempotent no-op.
-	if getattr(PurchaseInvoice.make_precision_loss_gl_entry, "_iran_pattern_a_fail_closed", False):
+	# Already on the fail-closed wrapper covering PI+SI — idempotent no-op.
+	if getattr(AccountsController.make_precision_loss_gl_entry, "_iran_pattern_a_fail_closed_v5745", False):
 		return
 
 	_orig = AccountsController.make_precision_loss_gl_entry
-	# Unwrap any prior Pattern A skip (identity-only 5.2.24) to the true original.
+	# Unwrap any prior Pattern A skip (identity-only 5.2.24 / PI-only 5.2.x) to the true original.
 	if getattr(_orig, "_iran_pattern_a_skip", False):
 		_orig = getattr(AccountsController, "_iran_original_precision_loss", _orig)
 
 	assert_pattern_a_precision_loss_patch_supported(_orig)
 
 	def make_precision_loss_gl_entry(self, gl_entries):
-		if not is_pattern_a_fx_purchase_invoice(self):
+		if not is_pattern_a_fx_invoice(self):
 			return AccountsController._iran_original_precision_loss(self, gl_entries)
 		validate_pattern_a_rate_first_invariants(self)
 		return
 
 	make_precision_loss_gl_entry._iran_pattern_a_skip = True
 	make_precision_loss_gl_entry._iran_pattern_a_fail_closed = True
+	make_precision_loss_gl_entry._iran_pattern_a_fail_closed_v5745 = True
 	AccountsController._iran_original_precision_loss = _orig
 	AccountsController.make_precision_loss_gl_entry = make_precision_loss_gl_entry
 	PurchaseInvoice.make_precision_loss_gl_entry = make_precision_loss_gl_entry
+	SalesInvoice.make_precision_loss_gl_entry = make_precision_loss_gl_entry
 	AccountsController._iran_patched_precision_loss = True
 	PurchaseInvoice._iran_patched_precision_loss = True
+	SalesInvoice._iran_patched_precision_loss = True
 
 
 def _patch_stock_ledger_engine():

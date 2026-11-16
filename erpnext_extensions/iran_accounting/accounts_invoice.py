@@ -5,7 +5,7 @@ from __future__ import annotations
 from erpnext_extensions.iran_accounting.qty_rate_amount import (
 	align_purchase_invoice_item_amounts,
 	align_sales_invoice_item_amounts,
-	reaggregate_fx_purchase_invoice_base_totals,
+	reaggregate_fx_invoice_base_totals,
 )
 from erpnext_extensions.iran_accounting.rounding import (
 	get_company_currency,
@@ -50,8 +50,9 @@ def round_irr_invoice_totals(doc, method=None) -> None:
 		for field in IRR_TAX_BASE_FIELDS:
 			if row.get(field) is not None:
 				row.set(field, round_currency(row.get(field), currency))
-	if doc.doctype == "Purchase Invoice":
-		reaggregate_fx_purchase_invoice_base_totals(doc)
+	# Pattern A FX PI/SI: re-derive IRR headers from RATE-FIRST item bases so
+	# receivable/payable GL matches income/expense GL (v5.7.45 SI parity with PI).
+	reaggregate_fx_invoice_base_totals(doc)
 	for field in IRR_INVOICE_BASE_FIELDS:
 		if doc.meta.has_field(field) and doc.get(field) is not None:
 			doc.set(field, round_currency(doc.get(field), currency))
