@@ -232,6 +232,10 @@ def get_rebuild_api_status(*, company: str | None = None) -> dict[str, Any]:
 			"get_campaign_status": True,
 			"request_campaign_stop": True,
 			"validate_campaign_results": True,
+			"clone_campaign_manifest": True,
+			"start_staggered_campaign": True,
+			"get_staggered_status": True,
+			"request_staggered_stop": True,
 			"prepare_clean_start_exposed": False,
 			"site_wide_riv_exposed": False,
 		},
@@ -827,7 +831,114 @@ def get_campaign_status(*, campaign: str) -> dict[str, Any]:
 
 	out["executor_lock"] = frappe.cache().get_value(_executor_lock_key(campaign))
 	out["session_id_from_remarks"] = parse_campaign_session_id(campaign)
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv import (
+			get_staggered_status,
+		)
+
+		out["staggered"] = get_staggered_status(campaign)
+	except Exception as exc:
+		out["staggered"] = {"ok": False, "error": str(exc)[:200]}
 	return out
+
+
+def clone_campaign_manifest(
+	*,
+	source: str = "HRC-00016",
+	target: str = "HRC-00017",
+	confirm: str | None = None,
+) -> dict[str, Any]:
+	"""Dev-only: clone verified manifest into a new campaign id (HRC-00017)."""
+	require_repair()
+	from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv import (
+		clone_campaign_manifest as _clone,
+	)
+
+	result = _clone(source=source, target=target, confirm=confirm)
+	append_api_audit(
+		target,
+		f"clone_campaign_manifest source={source} items={result.get('item_count')}",
+	)
+	result["api_version"] = API_VERSION
+	return result
+
+
+def start_staggered_campaign(
+	*,
+	campaign: str,
+	confirm: str | None = None,
+	max_identities: int | None = None,
+	async_dispatch: int | bool = 0,
+	stage_a_only: int | bool = 0,
+) -> dict[str, Any]:
+	"""Start staggered Stage A (+ optional Stage B) for an approved campaign."""
+	require_repair()
+	if confirm != "START_STAGGERED":
+		frappe.throw("confirm must equal START_STAGGERED", frappe.ValidationError)
+	if not frappe.db.exists(CAMPAIGN_DOCTYPE, campaign):
+		frappe.throw(f"campaign missing: {campaign}", frappe.ValidationError)
+	from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv import (
+		run_staggered_campaign,
+		stage_a_bulk_create,
+		start_staggered_session,
+	)
+
+	mi = cint(max_identities) if max_identities not in (None, "") else None
+	if cint(stage_a_only):
+		sess = start_staggered_session(campaign, max_identities=mi)
+		a = stage_a_bulk_create(campaign, session_id=sess["session_id"], max_identities=mi)
+		append_api_audit(campaign, f"stage_a_only session={sess['session_id']} created={a.get('created')}")
+		return {"ok": True, "stage_a": a, "session_id": sess["session_id"], "api_version": API_VERSION}
+
+	result = run_staggered_campaign(
+		campaign,
+		max_identities=mi,
+		async_dispatch=bool(cint(async_dispatch)),
+	)
+	append_api_audit(
+		campaign,
+		f"start_staggered session={result.get('session_id')} async={bool(cint(async_dispatch))}",
+	)
+	result["api_version"] = API_VERSION
+	return result
+
+
+def get_staggered_status_api(*, campaign: str) -> dict[str, Any]:
+	require_read()
+	from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv import (
+		get_staggered_status,
+	)
+
+	out = get_staggered_status(campaign)
+	out["ok"] = True
+	out["api_version"] = API_VERSION
+	return out
+
+
+def request_staggered_stop(
+	*,
+	campaign: str,
+	session_id: str | None = None,
+	reason: str = "operator",
+) -> dict[str, Any]:
+	require_repair()
+	from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv import (
+		get_stagger_session,
+		parse_stagger_session_id,
+		request_staggered_stop as _stop,
+	)
+
+	active = parse_stagger_session_id(campaign) or (get_stagger_session(campaign) or {}).get(
+		"session_id"
+	)
+	if session_id and active and str(session_id) != str(active):
+		frappe.throw(
+			f"session_id mismatch: provided={session_id} active={active}",
+			frappe.ValidationError,
+		)
+	res = _stop(reason=reason or "operator")
+	append_api_audit(campaign, f"stagger_stop reason={reason} session={active}")
+	return {"ok": True, "campaign": campaign, "session_id": active, "stop": res}
 
 
 def request_campaign_stop(
