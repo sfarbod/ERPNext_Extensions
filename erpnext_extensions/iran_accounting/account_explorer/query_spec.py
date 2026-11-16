@@ -358,14 +358,22 @@ def build_item_scope(raw: dict) -> ItemScope:
 def build_analysis_context(raw: dict, defaults: dict) -> AnalysisContext:
 	view_axis = raw.get("view_axis") or "account_level"
 	detail_mode = (raw.get("detail_mode") or "summary").lower()
-	page = max(cint(raw.get("page") or 1), 1)
-	page_size = cint(raw.get("page_size") or defaults["page_size"]) or 50
+	# UI sends page/page_size/sort_* on analysis_context; some tests nest under pagination.
+	pagination_raw = raw.get("pagination") if isinstance(raw.get("pagination"), dict) else {}
+	page = max(cint(raw.get("page", pagination_raw.get("page")) or 1), 1)
+	page_size = cint(raw.get("page_size", pagination_raw.get("page_size")) or defaults["page_size"]) or 50
 	page_size = min(
 		page_size, cint(frappe.get_single_value("Iran Accounting Settings", "server_page_size")) or 200
 	)
 	level_sequence = raw.get("level_sequence")
 	if level_sequence is not None:
 		level_sequence = cint(level_sequence) or None
+	sort_field = (
+		raw.get("sort_field")
+		or pagination_raw.get("sort_field")
+		or _default_sort_field(view_axis, detail_mode)
+	)
+	sort_order = (raw.get("sort_order") or pagination_raw.get("sort_order") or "asc").lower()
 
 	from erpnext_extensions.iran_accounting.account_explorer.column_filters import (
 		normalize_column_filters,
@@ -385,8 +393,8 @@ def build_analysis_context(raw: dict, defaults: dict) -> AnalysisContext:
 		pagination=PaginationState(
 			page=page,
 			page_size=page_size,
-			sort_field=(raw.get("sort_field") or _default_sort_field(view_axis, detail_mode)),
-			sort_order=(raw.get("sort_order") or "asc").lower(),
+			sort_field=sort_field,
+			sort_order=sort_order,
 		),
 		column_filters=normalize_column_filters(raw.get("column_filters")),
 	)

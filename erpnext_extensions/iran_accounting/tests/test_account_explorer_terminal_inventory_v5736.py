@@ -189,11 +189,9 @@ class TestTerminalSubsidiaryLedgerV5736(unittest.TestCase):
 		self.assertAlmostEqual(flt(row.get("period_credit")), flt(indep["period_credit"]), places=2)
 		self.assertFalse(result.get("warnings"))
 
-	def test_l4_l5_under_terminal_empty_hierarchy_state(self):
-		expected_fa = {
-			4: "برای این حساب، گردش در سطح ۴ وجود ندارد.",
-			5: "برای این حساب، گردش در سطح ۵ وجود ندارد.",
-		}
+	def test_l4_l5_under_terminal_carry_forward(self):
+		"""v5.7.43: terminal L3 leaf is carried forward at L4 and L5 with same identity."""
+		indep = _independent_gl(ACC_111601)
 		for level in (4, 5):
 			result = get_account_summary(
 				_account_payload(level, selected=ACC_111601, mode="account")
@@ -201,12 +199,18 @@ class TestTerminalSubsidiaryLedgerV5736(unittest.TestCase):
 			residual = result.get("classification_residual") or {}
 			self.assertEqual(int(residual.get("excluded_account_count") or 0), 0, level)
 			self.assertAlmostEqual(flt(residual.get("period_debit")), 0.0, places=2)
-			self.assertFalse(result.get("rows"), f"no synthetic L{level} row")
-			empty = result.get("hierarchy_empty") or {}
-			self.assertEqual(empty.get("reason"), "no_descendants_at_level", level)
-			self.assertEqual(empty.get("message_fa"), expected_fa[level], level)
-			self.assertEqual(cint_safe(empty.get("is_terminal_account")), 1)
-			self.assertEqual(empty.get("tree_root_account"), ACC_111601)
+			rows = result.get("rows") or []
+			self.assertEqual(len(rows), 1, f"exactly one carry-forward row at L{level}")
+			row = rows[0]
+			self.assertEqual(row.get("selected_account"), ACC_111601)
+			self.assertEqual(row.get("display_code"), "111601")
+			self.assertEqual(cint_safe(row.get("is_terminal_account")), 1)
+			self.assertEqual(cint_safe(row.get("is_terminal_carried_forward")), 1)
+			self.assertEqual(int(row.get("source_level_sequence") or 0), 3)
+			self.assertEqual(int(row.get("level_sequence") or 0), level)
+			self.assertAlmostEqual(flt(row.get("period_debit")), flt(indep["period_debit"]), places=2)
+			self.assertAlmostEqual(flt(row.get("period_credit")), flt(indep["period_credit"]), places=2)
+			self.assertFalse((result.get("hierarchy_empty") or {}).get("reason"), level)
 			warn = " ".join(result.get("warnings") or [])
 			self.assertNotIn("سلسله", warn)
 
