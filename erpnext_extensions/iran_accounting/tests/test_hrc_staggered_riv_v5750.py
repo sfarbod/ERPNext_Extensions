@@ -179,7 +179,15 @@ class TestStaggeredSessionLedgerV5750(unittest.TestCase):
 		)
 
 		with mock.patch.object(sr, "get_stagger_session", return_value=sess), mock.patch.object(
-			sr, "_assert_dev"
+			sr, "assert_staggered_site_allowed", return_value={"ok": True}
+		), mock.patch.object(
+			sr, "sequential_still_active", return_value={"active": False}
+		), mock.patch.object(
+			sr, "acquire_campaign_execution_lock", return_value={"ok": True}
+		), mock.patch.object(
+			sr, "refresh_campaign_execution_lock", return_value=True
+		), mock.patch.object(
+			sr, "_assert_staggered_allowed", return_value={"ok": True}
 		), mock.patch.object(
 			frappe.db, "get_value", return_value="Queued"
 		), mock.patch.object(
@@ -254,7 +262,13 @@ class TestStaggeredDispatchV5750(unittest.TestCase):
 				return status
 			return None
 
-		with mock.patch.object(sr, "_assert_dev"), mock.patch.object(
+		with mock.patch.object(
+			sr, "assert_staggered_site_allowed", return_value={"ok": True}
+		), mock.patch.object(
+			sr, "sequential_still_active", return_value={"active": False}
+		), mock.patch.object(
+			sr, "refresh_campaign_execution_lock", return_value=True
+		), mock.patch.object(
 			sr, "get_stagger_session", return_value=sess
 		), mock.patch.object(
 			sr, "_refresh_dispatcher_lock", return_value=True
@@ -337,7 +351,13 @@ class TestStaggeredDispatchV5750(unittest.TestCase):
 				return "Queued"
 			return None
 
-		with mock.patch.object(sr, "_assert_dev"), mock.patch.object(
+		with mock.patch.object(
+			sr, "assert_staggered_site_allowed", return_value={"ok": True}
+		), mock.patch.object(
+			sr, "sequential_still_active", return_value={"active": False}
+		), mock.patch.object(
+			sr, "refresh_campaign_execution_lock", return_value=True
+		), mock.patch.object(
 			sr, "get_stagger_session", return_value=sess
 		), mock.patch.object(
 			sr, "_refresh_dispatcher_lock", return_value=True
@@ -366,7 +386,7 @@ class TestStaggeredDispatchV5750(unittest.TestCase):
 
 class TestCloneConfirmGateV5750(unittest.TestCase):
 	def test_clone_requires_confirm(self):
-		with mock.patch.object(sr, "_assert_dev"), self.assertRaises(Exception):
+		with mock.patch.object(sr, "assert_dev_only_clone"), self.assertRaises(Exception):
 			sr.clone_campaign_manifest(source="HRC-00016", target="HRC-00017", confirm=None)
 
 

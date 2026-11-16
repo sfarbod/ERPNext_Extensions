@@ -1,8 +1,11 @@
 # Copyright (c) 2026, ERPNext Extensions contributors
-"""Staggered HRC RIV orchestration — Stage A bulk create + Stage B dispatch (v5.7.50).
+"""Staggered HRC RIV orchestration — Stage A bulk create + Stage B dispatch (v5.7.51).
 
 Separates fast RIV document creation from controlled long-queue execution.
 Does not replace sequential_rebuild; used by HRC-00017 STRATEGY=STAGGERED_RIV.
+
+v5.7.51: Production authorization gate, Sequential↔Staggered mutual exclusion,
+and identity-level RIV adoption to prevent duplicate Stage A creates.
 """
 
 from __future__ import annotations
@@ -28,6 +31,33 @@ from erpnext_extensions.iran_accounting.historical_rebuild.constants import (
 )
 from erpnext_extensions.iran_accounting.historical_rebuild.sequential_rebuild import (
 	chronological_identities,
+)
+from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_adopt import (
+	DISPOSITION_ADOPT_COMPLETED,
+	DISPOSITION_ADOPT_IN_PROGRESS,
+	DISPOSITION_ADOPT_QUEUED,
+	DISPOSITION_CREATE,
+	DISPOSITION_FAILED_NEEDS_RECOVERY,
+	DISPOSITION_LEDGER_REUSE,
+	DISPOSITION_NEEDS_REVIEW,
+	disposition_to_ledger_fields,
+	empty_reconciliation,
+	record_reconciliation,
+	resolve_identity_riv_disposition,
+)
+from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_auth import (
+	assert_dev_only_clone,
+	assert_staggered_execution_allowed,
+	assert_staggered_site_allowed,
+	production_authorization_state,
+)
+from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_campaign_lock import (
+	MODE_STAGGERED,
+	acquire_campaign_execution_lock,
+	assert_campaign_free_for_mode,
+	refresh_campaign_execution_lock,
+	release_campaign_execution_lock,
+	sequential_still_active,
 )
 from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_locks import (
 	clear_riv_scopes,
@@ -83,20 +113,43 @@ def retry_limit() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Dev gate / paths
+# Authorization / paths
 # ---------------------------------------------------------------------------
 
 
 def _assert_dev() -> None:
-	site = frappe.local.site or ""
-	if "espadpharmed.com" in site and "development" not in site:
-		frappe.throw(f"Refused staggered HRC on production-like site: {site}")
-	if not (
-		frappe.conf.get("developer_mode")
-		or frappe.conf.get("e2e_marker")
-		or frappe.conf.get("restored_from_backup")
-	):
-		frappe.throw("Refused: site not marked as development/test")
+	"""Back-compat: Development/restored clone gate (never authorizes Production)."""
+	assert_dev_only_clone()
+
+
+def _assert_staggered_allowed(*, confirm: str | None = None, for_start: bool = False) -> dict[str, Any]:
+	return assert_staggered_execution_allowed(confirm=confirm, for_start=for_start)
+
+
+def _owner_token_for_session(session_id: str) -> str:
+	return f"stagger:{session_id}"
+
+
+def _append_stagger_audit(campaign: str, event: str, detail: dict[str, Any] | None = None) -> None:
+	"""Append a compact audit line to campaign remarks (no SLE/Bin/GL writes)."""
+	try:
+		line = f"STAGGER_AUDIT {now_datetime()} {event}"
+		if detail:
+			line += " " + json.dumps(detail, ensure_ascii=False, default=str)[:1500]
+		remarks = frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "remarks") or ""
+		lines = str(remarks).splitlines()
+		lines.append(line)
+		# Keep remarks bounded
+		if len(lines) > 200:
+			lines = lines[-200:]
+		frappe.db.set_value(
+			CAMPAIGN_DOCTYPE,
+			campaign,
+			{"remarks": "\n".join(lines), "last_activity": now_datetime()},
+			update_modified=False,
+		)
+	except Exception:
+		pass
 
 
 def _session_dir() -> str:
@@ -282,7 +335,7 @@ def clone_campaign_manifest(
 	Idempotent when target already exists with matching checksum.
 	Never mutates ``source``.
 	"""
-	_assert_dev()
+	assert_dev_only_clone()
 	if confirm != "CLONE_CAMPAIGN_MANIFEST":
 		frappe.throw("confirm must equal CLONE_CAMPAIGN_MANIFEST")
 	if source == target:
@@ -421,12 +474,29 @@ def start_staggered_session(
 	*,
 	max_identities: int | None = None,
 	identity_offset: int = 0,
+	confirm: str | None = None,
 ) -> dict[str, Any]:
-	_assert_dev()
+	gate = _assert_staggered_allowed(confirm=confirm, for_start=True)
 	if not frappe.db.exists(CAMPAIGN_DOCTYPE, campaign):
 		frappe.throw(f"Campaign missing: {campaign}")
+	seq = sequential_still_active(campaign)
+	if seq.get("active"):
+		frappe.throw(
+			f"Refuse staggered start: sequential still active for {campaign} "
+			f"(status={seq.get('seq_status')} lock={seq.get('executor_lock')}). "
+			"Call request_campaign_stop and wait for terminal RIV + lock release.",
+			frappe.ValidationError,
+		)
+	assert_campaign_free_for_mode(campaign, MODE_STAGGERED)
 	clear_staggered_stop()
 	session_id = _new_session_id()
+	owner_token = _owner_token_for_session(session_id)
+	acquire_campaign_execution_lock(
+		campaign,
+		mode=MODE_STAGGERED,
+		session_id=session_id,
+		owner_token=owner_token,
+	)
 	idents = chronological_identities(campaign)
 	offset = max(0, cint(identity_offset))
 	if offset:
@@ -463,10 +533,26 @@ def start_staggered_session(
 		"stage_a": {},
 		"stage_b": {},
 		"errors": {"deadlock_1020": 0, "timeout": 0, "worker_timeout": 0, "duplicate_exec": 0},
+		"owner_token": owner_token,
+		"auth": {
+			"environment": gate.get("environment"),
+			"site": gate.get("site"),
+			"confirm": gate.get("confirm"),
+		},
 	}
 	_save_session(payload)
 	save_ledger(session_id, {"entries": {}, "order": []})
 	_write_campaign_stagger_remarks(campaign, session_id)
+	_append_stagger_audit(
+		campaign,
+		"session_start",
+		{
+			"session_id": session_id,
+			"environment": gate.get("environment"),
+			"plan_size": len(plan),
+			"confirm": gate.get("confirm"),
+		},
+	)
 	frappe.db.set_value(
 		CAMPAIGN_DOCTYPE,
 		campaign,
@@ -478,11 +564,7 @@ def start_staggered_session(
 
 
 def _find_existing_riv(item_code, warehouse, posting_date, posting_time, company) -> str | None:
-	"""Reuse submitted open RIV for same identity+posting if already campaign-owned in ledger.
-
-	Does not adopt unrelated site Queued RIVs (vot*).
-	"""
-	# Only match exact posting identity among recently created staggered RIVs via ledger.
+	"""Deprecated stub — adoption uses resolve_identity_riv_disposition (v5.7.51)."""
 	return None
 
 
@@ -528,25 +610,51 @@ def stage_a_bulk_create(
 	session_id: str | None = None,
 	chunk_commit: int = 25,
 	max_identities: int | None = None,
+	confirm: str | None = None,
 ) -> dict[str, Any]:
-	"""Create all plan RIVs without waiting for execution."""
-	_assert_dev()
+	"""Adopt existing RIVs / create missing plan RIVs without waiting for execution."""
+	assert_staggered_site_allowed()
+	seq = sequential_still_active(campaign)
+	if seq.get("active"):
+		frappe.throw(
+			f"Refuse Stage A: sequential still active for {campaign}",
+			frappe.ValidationError,
+		)
 	sess = get_stagger_session(campaign)
 	if not sess:
-		sess = start_staggered_session(campaign, max_identities=max_identities)
+		sess = start_staggered_session(
+			campaign, max_identities=max_identities, confirm=confirm
+		)
+	else:
+		# Existing session: refresh site gate; confirm only required on brand-new start.
+		_assert_staggered_allowed(confirm=None, for_start=False)
+		owner = sess.get("owner_token") or _owner_token_for_session(sess["session_id"])
+		acquire_campaign_execution_lock(
+			campaign,
+			mode=MODE_STAGGERED,
+			session_id=sess["session_id"],
+			owner_token=owner,
+		)
 	if session_id and sess.get("session_id") != session_id:
 		frappe.throw("session_id mismatch")
 	sid = sess["session_id"]
+	owner_token = sess.get("owner_token") or _owner_token_for_session(sid)
 	ledger = load_ledger(sid)
 	entries: dict = ledger.setdefault("entries", {})
 	order: list = ledger.setdefault("order", [])
 	company = sess.get("company") or frappe.db.get_value(CAMPAIGN_DOCTYPE, campaign, "company")
 	plan = sess.get("plan") or []
+	recon = empty_reconciliation()
+	recon["counts"]["plan_size"] = len(plan)
 	t0 = time.time()
 	created = 0
 	reused = 0
+	adopted = 0
 	sess["status"] = "StageA"
 	_save_session(sess)
+	refresh_campaign_execution_lock(
+		campaign, mode=MODE_STAGGERED, session_id=sid, owner_token=owner_token
+	)
 
 	for i, row in enumerate(plan):
 		if _stop_requested():
@@ -555,21 +663,77 @@ def stage_a_bulk_create(
 				"stopped": True,
 				"processed": i,
 				"duration_s": round(time.time() - t0, 3),
+				"reconciliation": recon,
 			}
 			_save_session(sess)
 			save_ledger(sid, ledger)
-			return {"ok": False, "stopped": True, "session_id": sid, "created": created}
+			return {
+				"ok": False,
+				"stopped": True,
+				"session_id": sid,
+				"created": created,
+				"reconciliation": recon,
+			}
 
 		ikey = identity_key(row["item_code"], row["warehouse"])
 		existing = entries.get(ikey)
 		if existing and existing.get("riv_name"):
-			# Idempotent resume
+			# Idempotent resume — already ledgered
 			riv = existing["riv_name"]
 			st = frappe.db.get_value("Repost Item Valuation", riv, "status")
 			if st and riv:
 				reused += 1
+				record_reconciliation(recon, DISPOSITION_LEDGER_REUSE, ikey, riv)
 				continue
 
+		disp = resolve_identity_riv_disposition(
+			campaign=campaign,
+			item_code=row["item_code"],
+			warehouse=row["warehouse"],
+			posting_date=row["posting_date"],
+			posting_time=row.get("posting_time"),
+			company=company,
+		)
+		disposition = disp["disposition"]
+
+		if disposition != DISPOSITION_CREATE:
+			fields = disposition_to_ledger_fields(disp)
+			try:
+				vouchers = sorted(
+					fetch_future_voucher_keys(
+						row["item_code"],
+						row["warehouse"],
+						row["posting_date"],
+						row.get("posting_time"),
+						limit=500,
+					)
+				)
+			except Exception:
+				vouchers = []
+			entry = {
+				**fields,
+				"created_at": str(now_datetime()),
+				"dispatched_at": None
+				if fields.get("dispatch_status") != "dispatched"
+				else str(now_datetime()),
+				"job_id": None,
+				"queue": None,
+				"retries": 0,
+				"conflict_scopes": scope_keys_for_identity(row["item_code"], row["warehouse"]),
+				"voucher_keys": vouchers,
+			}
+			entries[ikey] = entry
+			if ikey not in order:
+				order.append(ikey)
+			adopted += 1
+			record_reconciliation(recon, disposition, ikey, disp.get("riv_name"))
+			if disposition == DISPOSITION_ADOPT_COMPLETED:
+				sess["riv_completed"] = cint(sess.get("riv_completed")) + 1
+			elif disposition == DISPOSITION_ADOPT_IN_PROGRESS:
+				sess["riv_dispatched"] = cint(sess.get("riv_dispatched")) + 1
+			continue
+
+		# CREATE — no proven existing RIV
 		riv_name = _create_riv_for_identity(
 			item_code=row["item_code"],
 			warehouse=row["warehouse"],
@@ -577,7 +741,6 @@ def stage_a_bulk_create(
 			posting_time=row["posting_time"],
 			company=company,
 		)
-		# Precompute overlap sample once at create-time (avoid per-tick SLE scans).
 		try:
 			vouchers = sorted(
 				fetch_future_voucher_keys(
@@ -603,6 +766,7 @@ def stage_a_bulk_create(
 			"queue": None,
 			"status": "created",
 			"dispatch_status": "pending",
+			"adoption_disposition": DISPOSITION_CREATE,
 			"retries": 0,
 			"conflict_scopes": scope_keys_for_identity(row["item_code"], row["warehouse"]),
 			"voucher_keys": vouchers,
@@ -612,6 +776,7 @@ def stage_a_bulk_create(
 			order.append(ikey)
 		created += 1
 		sess["riv_created"] = cint(sess.get("riv_created")) + 1
+		record_reconciliation(recon, DISPOSITION_CREATE, ikey, riv_name)
 
 		if created % max(1, cint(chunk_commit)) == 0:
 			frappe.db.set_value(
@@ -627,6 +792,17 @@ def stage_a_bulk_create(
 			frappe.db.commit()
 			save_ledger(sid, ledger)
 			_save_session(sess)
+			refresh_campaign_execution_lock(
+				campaign, mode=MODE_STAGGERED, session_id=sid, owner_token=owner_token
+			)
+
+	# Every plan identity must appear in reconciliation
+	if cint(recon["counts"]["reconciled"]) != len(plan):
+		frappe.throw(
+			f"Stage A reconciliation incomplete: reconciled="
+			f"{recon['counts']['reconciled']} plan={len(plan)}",
+			frappe.ValidationError,
+		)
 
 	frappe.db.set_value(
 		CAMPAIGN_DOCTYPE,
@@ -634,6 +810,7 @@ def stage_a_bulk_create(
 		{
 			"riv_created": cint(sess.get("riv_created")),
 			"riv_queued": cint(sess.get("riv_created")),
+			"riv_completed": cint(sess.get("riv_completed")),
 			"last_activity": now_datetime(),
 		},
 		update_modified=False,
@@ -644,9 +821,11 @@ def stage_a_bulk_create(
 	sess["stage_a"] = {
 		"created": created,
 		"reused": reused,
+		"adopted": adopted,
 		"duration_s": duration,
 		"riv_total": len(entries),
 		"completed_at": str(now_datetime()),
+		"reconciliation": recon,
 	}
 	_save_session(sess)
 	save_ledger(sid, ledger)
@@ -656,16 +835,25 @@ def stage_a_bulk_create(
 			"stage_a_duration_s": duration,
 			"stage_a_created": created,
 			"stage_a_reused": reused,
+			"stage_a_adopted": adopted,
 			"plan_size": len(plan),
+			"reconciliation_counts": recon.get("counts"),
 		},
+	)
+	_append_stagger_audit(
+		campaign,
+		"stage_a_complete",
+		{"session_id": sid, "counts": recon.get("counts"), "duration_s": duration},
 	)
 	return {
 		"ok": True,
 		"session_id": sid,
 		"created": created,
 		"reused": reused,
+		"adopted": adopted,
 		"riv_total": len(entries),
 		"duration_s": duration,
+		"reconciliation": recon,
 	}
 
 
@@ -791,7 +979,7 @@ def _reconcile_terminals(sess: dict, ledger: dict) -> dict[str, int]:
 
 def dispatch_once(campaign: str, *, session_id: str | None = None) -> dict[str, Any]:
 	"""Single dispatcher tick: reconcile, maybe enqueue one eligible RIV."""
-	_assert_dev()
+	assert_staggered_site_allowed()
 	# End any open REPEATABLE READ snapshot so we see worker-committed RIV
 	# status changes (Completed/Failed). Without this, wait_capacity ticks can
 	# permanently observe stale In Progress/Queued and stall the drain.
@@ -802,12 +990,25 @@ def dispatch_once(campaign: str, *, session_id: str | None = None) -> dict[str, 
 			frappe.db.rollback()
 		except Exception:
 			pass
+	if sequential_still_active(campaign).get("active"):
+		return {"ok": False, "reason": "sequential_active"}
 	sess = get_stagger_session(campaign)
 	if not sess:
 		frappe.throw("No staggered session for campaign")
 	sid = sess["session_id"]
 	if session_id and session_id != sid:
 		frappe.throw("session_id mismatch")
+	owner_token = sess.get("owner_token") or _owner_token_for_session(sid)
+	if not refresh_campaign_execution_lock(
+		campaign, mode=MODE_STAGGERED, session_id=sid, owner_token=owner_token
+	):
+		# Try re-acquire only if free for staggered
+		try:
+			acquire_campaign_execution_lock(
+				campaign, mode=MODE_STAGGERED, session_id=sid, owner_token=owner_token
+			)
+		except Exception:
+			return {"ok": False, "reason": "campaign_lock_lost"}
 	if not _refresh_dispatcher_lock(campaign, sid):
 		return {"ok": False, "reason": "lock_lost"}
 
@@ -844,7 +1045,13 @@ def dispatch_once(campaign: str, *, session_id: str | None = None) -> dict[str, 
 	blocked = 0
 	for ikey in ledger.get("order") or []:
 		e = ledger["entries"].get(ikey)
-		if not e or e.get("dispatch_status") in ("dispatched", "terminal"):
+		if not e:
+			continue
+		# Never enqueue blocked / review / recovery / already terminal or in-flight adopted
+		if e.get("dispatch_status") in ("dispatched", "terminal", "blocked"):
+			continue
+		if e.get("adopted_in_flight"):
+			# Monitor only — do not enqueue another execution
 			continue
 		if e.get("dispatch_status") == "pending" and e.get("riv_name"):
 			cached = e.get("voucher_keys")
@@ -867,9 +1074,16 @@ def dispatch_once(campaign: str, *, session_id: str | None = None) -> dict[str, 
 				e["last_block_reason"] = "acquire_failed"
 				continue
 			remember_riv_scopes(e["riv_name"], scopes, vouchers, token)
-			# Ensure RIV still Queued before enqueue
+			# Ensure RIV still Queued before enqueue; In Progress means already running
 			st = frappe.db.get_value("Repost Item Valuation", e["riv_name"], "status")
-			if st not in ("Queued", "In Progress"):
+			if st == "In Progress":
+				clear_riv_scopes(e["riv_name"])
+				e["dispatch_status"] = "dispatched"
+				e["adopted_in_flight"] = True
+				e["riv_status"] = st
+				blocked += 1
+				continue
+			if st != "Queued":
 				clear_riv_scopes(e["riv_name"])
 				e["last_block_reason"] = f"unexpected_status:{st}"
 				blocked += 1
@@ -925,14 +1139,29 @@ def run_dispatcher_loop(
 	session_id: str | None = None,
 	max_ticks: int | None = None,
 	poll_terminal_s: float | None = None,
+	confirm: str | None = None,
 ) -> dict[str, Any]:
 	"""Run Stage B until plan done, stopped, or max_ticks."""
-	_assert_dev()
+	_assert_staggered_allowed(confirm=confirm, for_start=True)
+	if sequential_still_active(campaign).get("active"):
+		frappe.throw(
+			f"Refuse Stage B: sequential still active for {campaign}",
+			frappe.ValidationError,
+		)
 	sess = get_stagger_session(campaign)
 	if not sess:
 		frappe.throw("No staggered session")
 	sid = sess["session_id"]
+	owner_token = sess.get("owner_token") or _owner_token_for_session(sid)
+	acquire_campaign_execution_lock(
+		campaign, mode=MODE_STAGGERED, session_id=sid, owner_token=owner_token
+	)
 	_acquire_dispatcher_lock(campaign, sid)
+	_append_stagger_audit(
+		campaign,
+		"stage_b_start",
+		{"session_id": sid, "confirm": confirm, "async": False},
+	)
 	t0 = time.time()
 	ticks = 0
 	interval = dispatch_interval_seconds()
@@ -958,17 +1187,26 @@ def run_dispatcher_loop(
 			# Reload session counters after reconcile
 			sess = get_stagger_session(campaign) or sess
 			save_ledger(sid, ledger)
+			# Done when nothing left to dispatch and no active workers.
+			# blocked (needs_review / failed recovery) do not keep the loop alive forever.
 			if not pending and active == 0:
-				sess["status"] = "Completed"
+				blocked_left = [
+					e
+					for e in (ledger.get("entries") or {}).values()
+					if e.get("dispatch_status") == "blocked"
+				]
+				sess["status"] = "Completed" if not blocked_left else "CompletedWithBlocked"
+				sess.setdefault("stage_b", {})
 				sess["stage_b"]["completed_at"] = str(now_datetime())
 				sess["stage_b"]["duration_s"] = round(time.time() - t0, 3)
+				sess["stage_b"]["blocked_remaining"] = len(blocked_left)
 				_save_session(sess)
 				frappe.db.set_value(
 					CAMPAIGN_DOCTYPE,
 					campaign,
 					{
-						"status": "Completed",
-						"completed_at": now_datetime(),
+						"status": "Completed" if not blocked_left else STATUS_PAUSED,
+						"completed_at": now_datetime() if not blocked_left else None,
 						"last_activity": now_datetime(),
 					},
 					update_modified=False,
@@ -1002,27 +1240,53 @@ def run_dispatcher_loop(
 		prev.update(metrics)
 		metrics = prev
 	save_metrics(sid, metrics)
+	_append_stagger_audit(
+		campaign,
+		"stage_b_end",
+		{"session_id": sid, "ticks": ticks, "status": sess.get("status")},
+	)
 	return {"ok": True, "session_id": sid, "ticks": ticks, "metrics": metrics, "last": actions[-1] if actions else None}
 
 
-def enqueue_dispatcher(campaign: str, *, async_run: bool = True) -> dict[str, Any]:
+def enqueue_dispatcher(
+	campaign: str,
+	*,
+	async_run: bool = True,
+	confirm: str | None = None,
+) -> dict[str, Any]:
 	"""Enqueue Stage B loop on short queue (orchestration)."""
-	_assert_dev()
+	_assert_staggered_allowed(confirm=confirm, for_start=True)
+	if sequential_still_active(campaign).get("active"):
+		frappe.throw(
+			f"Refuse Stage B enqueue: sequential still active for {campaign}",
+			frappe.ValidationError,
+		)
 	sess = get_stagger_session(campaign)
 	if not sess:
 		frappe.throw("Start session / Stage A first")
+	sid = sess["session_id"]
+	owner_token = sess.get("owner_token") or _owner_token_for_session(sid)
+	acquire_campaign_execution_lock(
+		campaign, mode=MODE_STAGGERED, session_id=sid, owner_token=owner_token
+	)
+	_append_stagger_audit(
+		campaign,
+		"stage_b_enqueue",
+		{"session_id": sid, "confirm": confirm, "async": bool(async_run)},
+	)
 	if async_run:
 		frappe.enqueue(
 			"erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv.run_dispatcher_loop",
 			campaign=campaign,
-			session_id=sess["session_id"],
+			session_id=sid,
+			confirm=confirm,
 			queue="short",
 			timeout=60 * 60 * 12,
-			job_id=f"hrc_stagger_dispatch:{campaign}:{sess['session_id']}",
+			job_id=f"hrc_stagger_dispatch:{campaign}:{sid}",
 			deduplicate=True,
 		)
-		return {"ok": True, "async": True, "queue": "short", "session_id": sess["session_id"]}
-	return run_dispatcher_loop(campaign, session_id=sess["session_id"])
+		return {"ok": True, "async": True, "queue": "short", "session_id": sid}
+	return run_dispatcher_loop(campaign, session_id=sid, confirm=confirm)
 
 
 def run_staggered_campaign(
@@ -1031,18 +1295,22 @@ def run_staggered_campaign(
 	max_identities: int | None = None,
 	async_dispatch: bool = False,
 	max_ticks: int | None = None,
+	confirm: str | None = None,
 ) -> dict[str, Any]:
-	"""Full Stage A then Stage B for a campaign (Dev)."""
-	_assert_dev()
-	sess = start_staggered_session(campaign, max_identities=max_identities)
-	a = stage_a_bulk_create(campaign, session_id=sess["session_id"], max_identities=max_identities)
+	"""Full Stage A then Stage B for an authorized campaign."""
+	sess = start_staggered_session(
+		campaign, max_identities=max_identities, confirm=confirm
+	)
+	a = stage_a_bulk_create(
+		campaign, session_id=sess["session_id"], max_identities=max_identities
+	)
 	if not a.get("ok"):
 		return {"ok": False, "stage_a": a, "session_id": sess["session_id"]}
 	if async_dispatch:
-		b = enqueue_dispatcher(campaign, async_run=True)
+		b = enqueue_dispatcher(campaign, async_run=True, confirm=confirm)
 		return {"ok": True, "stage_a": a, "stage_b": b, "session_id": sess["session_id"]}
 	b = run_dispatcher_loop(
-		campaign, session_id=sess["session_id"], max_ticks=max_ticks
+		campaign, session_id=sess["session_id"], max_ticks=max_ticks, confirm=confirm
 	)
 	return {"ok": True, "stage_a": a, "stage_b": b, "session_id": sess["session_id"]}
 
@@ -1108,4 +1376,6 @@ def get_staggered_status(campaign: str) -> dict[str, Any]:
 			"max_global_concurrent_riv": max_global_concurrent_riv(),
 			"retry_limit": retry_limit(),
 		},
+		"authorization": production_authorization_state(),
+		"sequential_probe": sequential_still_active(campaign),
 	}
