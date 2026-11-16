@@ -139,7 +139,11 @@ def start_staggered_campaign(
 	async_dispatch=0,
 	stage_a_only=0,
 ):
-	"""Start staggered bulk-queue + controlled parallel RIV for a campaign."""
+	"""Start staggered bulk-queue + controlled dispatch for a campaign.
+
+	Dev confirm: START_STAGGERED.
+	Production confirm: START_STAGGERED_PRODUCTION (plus site authorization flags).
+	"""
 	if not campaign:
 		frappe.throw("campaign is required")
 	return svc.start_staggered_campaign(

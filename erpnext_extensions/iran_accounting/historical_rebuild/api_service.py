@@ -871,10 +871,20 @@ def start_staggered_campaign(
 	async_dispatch: int | bool = 0,
 	stage_a_only: int | bool = 0,
 ) -> dict[str, Any]:
-	"""Start staggered Stage A (+ optional Stage B) for an approved campaign."""
+	"""Start staggered Stage A (+ optional Stage B) for an approved campaign.
+
+	Development confirm: ``START_STAGGERED``.
+	Production confirm: ``START_STAGGERED_PRODUCTION`` plus site authorization flags.
+	"""
 	require_repair()
-	if confirm != "START_STAGGERED":
-		frappe.throw("confirm must equal START_STAGGERED", frappe.ValidationError)
+	from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_auth import (
+		CONFIRM_DEV,
+		CONFIRM_PRODUCTION,
+		assert_staggered_execution_allowed,
+		is_production_like_site,
+	)
+
+	gate = assert_staggered_execution_allowed(confirm=confirm, for_start=True)
 	if not frappe.db.exists(CAMPAIGN_DOCTYPE, campaign):
 		frappe.throw(f"campaign missing: {campaign}", frappe.ValidationError)
 	from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv import (
@@ -884,22 +894,40 @@ def start_staggered_campaign(
 	)
 
 	mi = cint(max_identities) if max_identities not in (None, "") else None
+	token = gate.get("confirm") or (
+		CONFIRM_PRODUCTION if is_production_like_site() else CONFIRM_DEV
+	)
 	if cint(stage_a_only):
-		sess = start_staggered_session(campaign, max_identities=mi)
-		a = stage_a_bulk_create(campaign, session_id=sess["session_id"], max_identities=mi)
-		append_api_audit(campaign, f"stage_a_only session={sess['session_id']} created={a.get('created')}")
-		return {"ok": True, "stage_a": a, "session_id": sess["session_id"], "api_version": API_VERSION}
+		sess = start_staggered_session(campaign, max_identities=mi, confirm=token)
+		a = stage_a_bulk_create(
+			campaign, session_id=sess["session_id"], max_identities=mi
+		)
+		append_api_audit(
+			campaign,
+			f"stage_a_only session={sess['session_id']} created={a.get('created')} "
+			f"env={gate.get('environment')} adopted={a.get('adopted')}",
+		)
+		return {
+			"ok": True,
+			"stage_a": a,
+			"session_id": sess["session_id"],
+			"api_version": API_VERSION,
+			"authorization": gate,
+		}
 
 	result = run_staggered_campaign(
 		campaign,
 		max_identities=mi,
 		async_dispatch=bool(cint(async_dispatch)),
+		confirm=token,
 	)
 	append_api_audit(
 		campaign,
-		f"start_staggered session={result.get('session_id')} async={bool(cint(async_dispatch))}",
+		f"start_staggered session={result.get('session_id')} "
+		f"async={bool(cint(async_dispatch))} env={gate.get('environment')}",
 	)
 	result["api_version"] = API_VERSION
+	result["authorization"] = gate
 	return result
 
 

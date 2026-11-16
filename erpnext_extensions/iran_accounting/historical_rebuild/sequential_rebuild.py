@@ -287,6 +287,34 @@ def _executor_lock_key(campaign: str) -> str:
 
 def _acquire_executor_lock(campaign: str, session_id: str) -> None:
 	"""Only one sequential executor may operate on a campaign at a time."""
+	# Mutual exclusion vs staggered ownership (v5.7.51).
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_campaign_lock import (
+			MODE_SEQUENTIAL,
+			acquire_campaign_execution_lock,
+			assert_campaign_free_for_mode,
+			get_campaign_execution_lock,
+		)
+
+		held_camp = get_campaign_execution_lock(campaign)
+		if held_camp and held_camp.get("mode") != MODE_SEQUENTIAL:
+			frappe.throw(
+				f"Campaign {campaign} owned by staggered session "
+				f"{held_camp.get('session_id')}; refuse sequential start",
+			)
+		assert_campaign_free_for_mode(campaign, MODE_SEQUENTIAL)
+		acquire_campaign_execution_lock(
+			campaign,
+			mode=MODE_SEQUENTIAL,
+			session_id=session_id,
+			owner_token=f"sequential:{session_id}",
+		)
+	except Exception as exc:
+		# Re-raise ValidationError / throw messages; wrap unexpected
+		if isinstance(exc, frappe.ValidationError) or "owned by" in str(exc) or "refuse" in str(exc).lower():
+			raise
+		frappe.throw(f"Campaign execution lock error: {exc}")
+
 	key = _executor_lock_key(campaign)
 	held = frappe.cache().get_value(key)
 	if held and held != session_id:
@@ -302,6 +330,20 @@ def _release_executor_lock(campaign: str, session_id: str) -> None:
 	held = frappe.cache().get_value(key)
 	if held == session_id:
 		frappe.cache().delete_value(key)
+	try:
+		from erpnext_extensions.iran_accounting.historical_rebuild.staggered_riv_campaign_lock import (
+			MODE_SEQUENTIAL,
+			release_campaign_execution_lock,
+		)
+
+		release_campaign_execution_lock(
+			campaign,
+			mode=MODE_SEQUENTIAL,
+			session_id=session_id,
+			owner_token=f"sequential:{session_id}",
+		)
+	except Exception:
+		pass
 
 
 def _executor_lock_owned(campaign: str, session_id: str) -> bool:
