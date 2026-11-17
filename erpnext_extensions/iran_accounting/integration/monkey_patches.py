@@ -27,6 +27,7 @@ def apply_monkey_patches():
 		_patch_stock_entry()
 		_patch_stock_entry_mr_alternative()
 		_patch_stock_entry_jc_component_return()
+		_patch_job_card_alternative_transfer()
 		_patch_general_ledger()
 		_patch_accounts_controller()
 		_patch_stock_ledger_report()
@@ -47,6 +48,8 @@ def apply_monkey_patches():
 	_patch_stock_entry_pre_core_bridge()
 	# Idempotent: Job Card component return while WO In Process (v5.4.2).
 	_patch_stock_entry_jc_component_return()
+	# Idempotent: Job Card original+substitute material fulfillment (v5.7.52).
+	_patch_job_card_alternative_transfer()
 	# Idempotent: ERPNext #59476 compat — PR Additional Discount × PI landed cost.
 	_patch_pr_pi_landed_cost_compat()
 	# Idempotent: FA PR GL debit includes amount_difference_with_purchase_invoice.
@@ -218,6 +221,12 @@ def _patch_stock_entry_mr_alternative():
 
 def _patch_stock_entry_jc_component_return():
 	from erpnext_extensions.stock_extensions.job_card_component_return.patch import apply_patch
+
+	apply_patch()
+
+
+def _patch_job_card_alternative_transfer():
+	from erpnext_extensions.stock_extensions.job_card_alternative_transfer.patch import apply_patch
 
 	apply_patch()
 
