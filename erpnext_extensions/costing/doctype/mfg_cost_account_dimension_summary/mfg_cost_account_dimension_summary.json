@@ -10,6 +10,8 @@
   "revision",
   "account",
   "account_name",
+  "account_control",
+  "account_control_name",
   "cost_center",
   "department",
   "expense_pool",
@@ -51,6 +53,23 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Account Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "account_control",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Account Control",
+   "options": "Account",
+   "search_index": 1
+  },
+  {
+   "fetch_from": "account_control.account_name",
+   "fieldname": "account_control_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Control Name",
    "read_only": 1
   },
   {

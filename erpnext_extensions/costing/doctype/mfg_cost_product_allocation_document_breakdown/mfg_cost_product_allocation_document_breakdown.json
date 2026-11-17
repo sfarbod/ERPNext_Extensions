@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "creation": "2026-11-17 20:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_document_type",
+  "source_document",
+  "quantity",
+  "overhead_amount",
+  "labor_amount",
+  "total_allocated_amount",
+  "currency"
+ ],
+ "fields": [
+  {
+   "columns": 1,
+   "default": "Stock Entry",
+   "fieldname": "source_document_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "نوع سند مبنا",
+   "options": "DocType",
+   "read_only": 1,
+   "width": "100"
+  },
+  {
+   "columns": 3,
+   "fieldname": "source_document",
+   "fieldtype": "Dynamic Link",
+   "in_list_view": 1,
+   "label": "سند مبنا",
+   "options": "source_document_type",
+   "read_only": 1,
+   "reqd": 1,
+   "width": "200"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "مقدار",
+   "precision": "9",
+   "read_only": 1,
+   "width": "80"
+  },
+  {
+   "columns": 2,
+   "default": "0",
+   "description": "Allocated amount for Account Control 211237 (کنترل سربار).",
+   "fieldname": "overhead_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "کنترل سربار",
+   "options": "currency",
+   "read_only": 1,
+   "width": "145"
+  },
+  {
+   "columns": 2,
+   "default": "0",
+   "description": "Allocated amount for Account Control 211238 (کنترل دستمزد).",
+   "fieldname": "labor_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "کنترل دستمزد",
+   "options": "currency",
+   "read_only": 1,
+   "width": "145"
+  },
+  {
+   "columns": 2,
+   "default": "0",
+   "description": "جمع = کنترل سربار + کنترل دستمزد",
+   "fieldname": "total_allocated_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "جمع",
+   "options": "currency",
+   "read_only": 1,
+   "width": "145"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-17 20:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "MFG Cost Product Allocation Document Breakdown",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

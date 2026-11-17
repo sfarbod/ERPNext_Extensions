@@ -45,6 +45,13 @@
   "gross_margin_pct",
   "price_status",
   "currency",
+  "section_document_breakdown",
+  "document_account_control_breakdown",
+  "breakdown_totals_html",
+  "breakdown_total_qty",
+  "breakdown_total_overhead",
+  "breakdown_total_labor",
+  "breakdown_total_amount",
   "section_trace",
   "material_allocation_method",
   "material_source",
@@ -91,6 +98,64 @@
   {"default": "0", "description": "Gross Margin % = (Selling Price − Unit Cost on Normalized) / Selling Price × 100", "fieldname": "gross_margin_pct", "fieldtype": "Percent", "label": "Gross Margin %", "read_only": 1},
   {"fieldname": "price_status", "fieldtype": "Select", "in_standard_filter": 1, "label": "Price Status", "options": "Available\nMissing\nUnavailable", "read_only": 1},
   {"fieldname": "currency", "fieldtype": "Link", "label": "Currency", "options": "Currency", "read_only": 1},
+  {
+   "fieldname": "section_document_breakdown",
+   "fieldtype": "Section Break",
+   "label": "Document Account Control Breakdown"
+  },
+  {
+   "fieldname": "document_account_control_breakdown",
+   "fieldtype": "Table",
+   "label": "جزئیات اسناد",
+   "options": "MFG Cost Product Allocation Document Breakdown",
+   "read_only": 1
+  },
+  {
+   "fieldname": "breakdown_totals_html",
+   "fieldtype": "HTML",
+   "hidden": 1,
+   "label": "جمع سند مبنا"
+  },
+  {
+   "bold": 1,
+   "default": "0",
+   "fieldname": "breakdown_total_qty",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "جمع مقدار",
+   "precision": "9",
+   "read_only": 1
+  },
+  {
+   "bold": 1,
+   "default": "0",
+   "fieldname": "breakdown_total_overhead",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع کنترل سربار",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "bold": 1,
+   "default": "0",
+   "fieldname": "breakdown_total_labor",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع کنترل دستمزد",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "bold": 1,
+   "default": "0",
+   "fieldname": "breakdown_total_amount",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع کل",
+   "options": "currency",
+   "read_only": 1
+  },
   {"fieldname": "section_trace", "fieldtype": "Section Break", "label": "Source Traceability", "collapsible": 1},
   {"fieldname": "material_allocation_method", "fieldtype": "Small Text", "label": "Material Allocation Method", "read_only": 1},
   {"fieldname": "material_source", "fieldtype": "Data", "label": "Material Source", "read_only": 1},
@@ -101,7 +166,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-12 14:00:00.000000",
+ "modified": "2026-11-17 20:45:00.000000",
  "modified_by": "Administrator",
  "module": "Costing",
  "name": "MFG Cost Product Allocation",

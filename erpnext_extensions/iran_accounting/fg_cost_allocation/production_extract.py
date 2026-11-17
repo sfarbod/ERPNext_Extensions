@@ -47,6 +47,8 @@ class ProductBucket:
 	work_orders: set[str] = field(default_factory=set)
 	stock_entries: set[str] = field(default_factory=set)
 	stock_entry_details: set[str] = field(default_factory=set)
+	# Finished-goods qty contributed by each Manufacture Stock Entry (source document).
+	stock_entry_qtys: dict[str, Decimal] = field(default_factory=dict)
 	posting_dates: list = field(default_factory=list)
 	normalization_factor: Decimal | None = None
 	normalization_uom: str = ""
@@ -200,6 +202,9 @@ def consolidate_products(
 		bucket.work_orders.add(row.work_order)
 		bucket.stock_entries.add(row.stock_entry)
 		bucket.stock_entry_details.add(row.stock_entry_detail)
+		bucket.stock_entry_qtys[row.stock_entry] = (
+			bucket.stock_entry_qtys.get(row.stock_entry, Decimal("0")) + row.qty
+		)
 		bucket.posting_dates.append(row.posting_date)
 		if not bucket.uom:
 			bucket.uom = row.stock_uom or row.uom

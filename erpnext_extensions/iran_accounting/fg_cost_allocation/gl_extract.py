@@ -35,6 +35,7 @@ class RuleSpec:
 	department: str
 	enabled: int = 1
 	description: str = ""
+	account_control: str = ""
 
 
 @dataclass
@@ -63,6 +64,7 @@ class ExpensePoolSnapshot:
 	monthly_net_expense: Decimal = Decimal("0")
 	gl_entry_count: int = 0
 	lines: list[GLLineSnapshot] = field(default_factory=list)
+	account_control: str = ""
 
 
 @dataclass
@@ -213,10 +215,13 @@ def assign_gl_lines_to_rules(
 
 
 def load_enabled_rules(settings_name: str) -> list[RuleSpec]:
+	fields = ["name", "account", "cost_center", "department", "enabled", "description"]
+	if frappe.get_meta("Expense Account Dimension Rule").has_field("account_control"):
+		fields.append("account_control")
 	rows = frappe.get_all(
 		"Expense Account Dimension Rule",
 		filters={"parent": settings_name, "enabled": 1},
-		fields=["name", "account", "cost_center", "department", "enabled", "description"],
+		fields=fields,
 		order_by="idx asc",
 	)
 	return [
@@ -227,6 +232,7 @@ def load_enabled_rules(settings_name: str) -> list[RuleSpec]:
 			department=r.department or "",
 			enabled=1,
 			description=r.description or "",
+			account_control=_norm(getattr(r, "account_control", None) or ""),
 		)
 		for r in rows
 		if r.account
@@ -318,6 +324,7 @@ def extract_pools_for_rules(
 			department=rule.department or "",
 			lines=list(lines),
 			gl_entry_count=len(lines),
+			account_control=rule.account_control or "",
 		)
 		for line in lines:
 			pool.monthly_debit += line.debit
