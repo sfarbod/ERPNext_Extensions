@@ -10,7 +10,45 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 	const core = erpnext_extensions.account_explorer.core;
 	const AE_WORKSPACE_SETTINGS_SECTION = core.AE_WORKSPACE_SETTINGS_SECTION;
 	const AE_WORKSPACE_TOKEN_LIMIT = core.AE_WORKSPACE_TOKEN_LIMIT;
+	const AE_WORKSPACE_TOKEN_BYTE_BUDGET =
+		core.AE_WORKSPACE_TOKEN_BYTE_BUDGET || 48000;
 	const codec = () => core.AEWorkspaceCodec;
+
+	function encoded_byte_length(settings) {
+		try {
+			return new TextEncoder().encode(JSON.stringify(settings)).length;
+		} catch (_error) {
+			return JSON.stringify(settings || {}).length;
+		}
+	}
+
+	function prune_tokens_fifo(section, keep_limit) {
+		const keys = Object.keys(section.tokens || {});
+		if (keys.length <= keep_limit) {
+			return;
+		}
+		keys
+			.sort((a, b) =>
+				String(section.tokens[a]._stored_at).localeCompare(String(section.tokens[b]._stored_at))
+			)
+			.slice(0, keys.length - keep_limit)
+			.forEach((old_key) => delete section.tokens[old_key]);
+	}
+
+	function prune_tokens_to_byte_budget(current, section, budget) {
+		while (
+			Object.keys(section.tokens || {}).length &&
+			encoded_byte_length(current) > budget
+		) {
+			const oldest = Object.keys(section.tokens).sort((a, b) =>
+				String(section.tokens[a]._stored_at).localeCompare(String(section.tokens[b]._stored_at))
+			)[0];
+			if (!oldest) {
+				break;
+			}
+			delete section.tokens[oldest];
+		}
+	}
 
 	function payload_fingerprint(workspace) {
 		const clean = codec().clone(workspace || {});
@@ -51,18 +89,10 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 				_stored_at: frappe.datetime?.now_datetime?.() || Date.now(),
 			};
 
-			// FIFO prune by _stored_at when over AE_WORKSPACE_TOKEN_LIMIT.
-			const keys = Object.keys(section.tokens);
-			if (keys.length > AE_WORKSPACE_TOKEN_LIMIT) {
-				keys
-					.sort((a, b) =>
-						String(section.tokens[a]._stored_at).localeCompare(String(section.tokens[b]._stored_at))
-					)
-					.slice(0, keys.length - AE_WORKSPACE_TOKEN_LIMIT)
-					.forEach((old_key) => delete section.tokens[old_key]);
-			}
-
-			// Only set Workspace.tokens; leave Grid (and other sections) intact.
+			// FIFO prune by count, then by soft byte budget (preserves Grid).
+			prune_tokens_fifo(section, AE_WORKSPACE_TOKEN_LIMIT);
+			current[AE_WORKSPACE_SETTINGS_SECTION] = section;
+			prune_tokens_to_byte_budget(current, section, AE_WORKSPACE_TOKEN_BYTE_BUDGET);
 			current[AE_WORKSPACE_SETTINGS_SECTION] = section;
 			frappe.model.user_settings["Account Explorer"] = current;
 			await Promise.resolve(frappe.model.user_settings.update("Account Explorer", current));

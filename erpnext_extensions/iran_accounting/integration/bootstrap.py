@@ -19,6 +19,9 @@ def apply() -> None:
 	# and the execute-guard contract.
 	apply_monkey_patches()
 	apply_safe_error_transport()
+	from erpnext_extensions.user_settings_compat import apply as apply_user_settings_compat
+
+	apply_user_settings_compat()
 	from erpnext_extensions.asset_usage_depreciation.services.depr_posting_guard import (
 		install_depreciation_idempotency_patch,
 	)
