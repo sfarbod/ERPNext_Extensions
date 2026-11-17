@@ -114,6 +114,8 @@ doctype_js = {
 	"Job Card": [
 		"stock_extensions/public/js/job_card_corrective_operation.js",
 		"stock_extensions/public/js/job_card_reassign.js",
+		# v5.7.52: Move Materials / Submit use original+substitute attribution
+		"stock_extensions/public/js/job_card_alternative_transfer.js",
 	],
 	"Stock Entry Type": [
 		"consignment_stock/public/js/stock_entry_type_consignment.js",
@@ -320,6 +322,8 @@ doc_events = {
 	"Job Card": {
 		"after_insert": "erpnext_extensions.stock_extensions.job_card_semi_fg.after_insert",
 		"validate": "erpnext_extensions.stock_extensions.job_card_semi_fg.validate",
+		# v5.7.52: expose original+substitute fulfillment on __onload for Desk JS
+		"onload": "erpnext_extensions.stock_extensions.job_card_alternative_transfer.api.onload",
 	},
 	"GL Entry": {
 		"after_insert": "erpnext_extensions.iran_accounting.account_explorer.cache_revision.bump_accounting_revision",
