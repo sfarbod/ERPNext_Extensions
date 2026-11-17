@@ -17,6 +17,9 @@
   "column_break_meta",
   "expense_pool",
   "account",
+  "account_name",
+  "account_control",
+  "account_control_name",
   "cost_center",
   "department",
   "section_amounts",
@@ -85,8 +88,30 @@
   {
    "fieldname": "account",
    "fieldtype": "Link",
-   "label": "Account",
+   "in_standard_filter": 1,
+   "label": "Original Account",
    "options": "Account"
+  },
+  {
+   "fetch_from": "account.account_name",
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "label": "Account Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "account_control",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Account Control",
+   "options": "Account"
+  },
+  {
+   "fetch_from": "account_control.account_name",
+   "fieldname": "account_control_name",
+   "fieldtype": "Data",
+   "label": "Account Control Name",
+   "read_only": 1
   },
   {
    "fieldname": "cost_center",
@@ -156,7 +181,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-11 00:00:00.000000",
+ "modified": "2026-11-17 16:00:00.000000",
  "modified_by": "Administrator",
  "description": "Historical / derived Product × Expense Pool rows. Primary costing uses Batch × Expense Pool Allocation. New revisions do not write independent Product × Expense costing rows.",
  "module": "Costing",

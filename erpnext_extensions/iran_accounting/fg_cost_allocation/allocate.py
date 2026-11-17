@@ -61,6 +61,7 @@ class BatchExpenseAlloc:
 	residual_applied: bool = False
 	work_order: str = ""
 	is_manual_override: bool = False
+	account_control: str = ""
 
 
 @dataclass
@@ -78,6 +79,7 @@ class ProductExpenseAlloc:
 	batch_pool_allocated_amount: Decimal
 	product_pool_allocated_amount: Decimal
 	residual_applied: bool = False
+	account_control: str = ""
 
 
 def build_batches(
@@ -220,6 +222,7 @@ def allocate_pools_to_batches(
 					residual_applied=residual,
 					work_order=next(iter(b.work_orders), "") if b.work_orders else "",
 					is_manual_override=b.is_manual_override,
+					account_control=getattr(pool, "account_control", "") or "",
 				)
 			)
 		# Update batch totals
@@ -312,6 +315,7 @@ def allocate_products(
 						batch_pool_allocated_amount=bx.allocated_amount,
 						product_pool_allocated_amount=final,
 						residual_applied=residual,
+						account_control=getattr(bx, "account_control", "") or "",
 					)
 				)
 

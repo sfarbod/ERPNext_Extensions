@@ -635,14 +635,16 @@ def generate_excel_rules(
 	created = updated = reused = 0
 	deleted_before = len(doc.expense_account_dimension_rules or [])
 
-	# Index existing
+	# Index existing (preserve Account Control across Excel rebuilds; never auto-fill it).
 	existing_by_key = {}
 	manual_rows = []
+	account_control_by_key = {}
 	for r in list(doc.expense_account_dimension_rules or []):
 		key = ((r.account or "").strip(), (r.cost_center or "").strip(), (r.department or "").strip())
 		src = (getattr(r, "source", None) or "").strip() or (
 			"Manual" if "manual" in (r.description or "").lower() else "Generated"
 		)
+		account_control_by_key[key] = getattr(r, "account_control", None) or ""
 		if src == "Manual" and not cint(replace_all):
 			manual_rows.append(r)
 			existing_by_key[key] = r
@@ -666,6 +668,7 @@ def generate_excel_rules(
 			# Cost Center always exact-blank for Excel Generated rules
 			key = (acc["account"], "", mp["department"])
 			planned_keys.add(key)
+			preserved_control = account_control_by_key.get(key) or ""
 			if key in existing_by_key:
 				row = existing_by_key[key]
 				row.cost_center = ""
@@ -677,12 +680,15 @@ def generate_excel_rules(
 						row.generation_batch = batch_id
 				if hasattr(row, "company"):
 					row.company = doc.company
+				if hasattr(row, "account_control") and preserved_control and not (row.account_control or ""):
+					row.account_control = preserved_control
 				row.enabled = 1
 				reused += 1
 			else:
 				payload = {
 					"account": acc["account"],
 					"account_name": acc.get("account_name"),
+					"account_control": preserved_control or None,
 					"cost_center": "",
 					"department": mp["department"],
 					"company": doc.company,

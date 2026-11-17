@@ -88,19 +88,32 @@ class FinishedGoodsCostAllocationSettings(Document):
 		if not self.company:
 			return
 		for row in self.expense_account_dimension_rules or []:
-			if not row.account:
-				continue
-			account_company = frappe.db.get_value("Account", row.account, "company")
-			if account_company and account_company != self.company:
-				frappe.throw(
-					_("Row {0}: Account {1} belongs to Company {2}, not {3}.").format(
-						row.idx,
-						frappe.bold(row.account),
-						frappe.bold(account_company),
-						frappe.bold(self.company),
-					),
-					title=_("Company Mismatch"),
-				)
+			for fieldname, label in (
+				("account", _("Account")),
+				("account_control", _("Account Control")),
+			):
+				account = getattr(row, fieldname, None)
+				if not account:
+					continue
+				if not frappe.db.exists("Account", account):
+					frappe.throw(
+						_("Row {0}: {1} {2} does not exist.").format(
+							row.idx, label, frappe.bold(account)
+						),
+						title=_("Invalid Account"),
+					)
+				account_company = frappe.db.get_value("Account", account, "company")
+				if account_company and account_company != self.company:
+					frappe.throw(
+						_("Row {0}: {1} {2} belongs to Company {3}, not {4}.").format(
+							row.idx,
+							label,
+							frappe.bold(account),
+							frappe.bold(account_company),
+							frappe.bold(self.company),
+						),
+						title=_("Company Mismatch"),
+					)
 
 	def _validate_unique_item_primary_uom(self):
 		seen = set()

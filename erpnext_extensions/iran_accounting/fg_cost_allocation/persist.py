@@ -80,6 +80,24 @@ def _bulk(doctype: str, fields: list[str], rows: list[list]):
 		frappe.db.bulk_insert(doctype, fields=fields, values=rows[i : i + chunk])
 
 
+def _account_name_map(accounts: set[str] | list[str]) -> dict[str, str]:
+	"""Batch-resolve Account.account_name to avoid N+1 lookups during persist."""
+	names = sorted({(a or "").strip() for a in accounts if (a or "").strip()})
+	if not names:
+		return {}
+	out: dict[str, str] = {}
+	chunk = 500
+	for i in range(0, len(names), chunk):
+		part = names[i : i + chunk]
+		for row in frappe.get_all(
+			"Account",
+			filters={"name": ["in", part]},
+			fields=["name", "account_name"],
+		):
+			out[row.name] = row.account_name or ""
+	return out
+
+
 def persist_all(
 	*,
 	monthly_name: str,
@@ -118,6 +136,9 @@ def persist_all(
 		"end_date",
 		"settings_rule",
 		"account",
+		"account_name",
+		"account_control",
+		"account_control_name",
 		"cost_center",
 		"department",
 		"monthly_debit",
@@ -147,6 +168,9 @@ def persist_all(
 		"voucher_no",
 		"posting_date",
 		"account",
+		"account_name",
+		"account_control",
+		"account_control_name",
 		"cost_center",
 		"department",
 		"debit",
@@ -160,12 +184,21 @@ def persist_all(
 	for bx in batch_expenses:
 		alloc_by_rule[bx.settings_rule] = alloc_by_rule.get(bx.settings_rule, Decimal("0")) + bx.allocated_amount
 
+	acct_names = _account_name_map(
+		{
+			*(p.account for p in pools),
+			*(getattr(p, "account_control", "") or "" for p in pools),
+			*(line.account for p in pools for line in p.lines),
+		}
+	)
+
 	for idx, pool in enumerate(pools, start=1):
 		pname = _name()
 		key = (pool.account, pool.cost_center or "", pool.department or "", pool.settings_rule)
 		pool_map[key] = pname
 		pool_map[(pool.account, pool.cost_center or "", pool.department or "")] = pname
 		allocated = alloc_by_rule.get(pool.settings_rule, Decimal("0"))
+		pool_ac = getattr(pool, "account_control", "") or ""
 		pool_rows.append(
 			[
 				pname,
@@ -184,6 +217,9 @@ def persist_all(
 				period.end_date,
 				pool.settings_rule,
 				pool.account,
+				acct_names.get(pool.account, ""),
+				pool_ac or None,
+				acct_names.get(pool_ac, "") if pool_ac else "",
 				pool.cost_center or None,
 				pool.department or None,
 				_f(pool.monthly_debit),
@@ -214,6 +250,9 @@ def persist_all(
 					line.voucher_no,
 					line.posting_date,
 					line.account,
+					acct_names.get(line.account, ""),
+					pool_ac or None,
+					acct_names.get(pool_ac, "") if pool_ac else "",
 					line.cost_center or None,
 					line.department or None,
 					_f(line.debit),
@@ -315,6 +354,9 @@ def persist_all(
 		"work_order",
 		"expense_pool",
 		"account",
+		"account_name",
+		"account_control",
+		"account_control_name",
 		"cost_center",
 		"department",
 		"pool_monthly_net_expense",
@@ -326,11 +368,18 @@ def persist_all(
 		"residual_applied",
 		"is_manual_override",
 	]
+	bx_acct_names = _account_name_map(
+		{
+			*(bx.account for bx in batch_expenses),
+			*(getattr(bx, "account_control", "") or "" for bx in batch_expenses),
+		}
+	)
 	bx_rows = []
 	for idx, bx in enumerate(batch_expenses, start=1):
 		pool_name = pool_map.get((bx.account, bx.cost_center, bx.department, bx.settings_rule)) or pool_map.get(
 			(bx.account, bx.cost_center, bx.department)
 		)
+		bx_ac = getattr(bx, "account_control", "") or ""
 		bx_rows.append(
 			[
 				_name(),
@@ -347,6 +396,10 @@ def persist_all(
 				bx.work_order or None,
 				pool_name,
 				bx.account,
+				bx_acct_names.get(bx.account, ""),
+				bx_ac or None,
+				bx_acct_names.get(bx_ac, "") if bx_ac else "",
+
 				bx.cost_center or None,
 				bx.department or None,
 				_f(bx.pool_monthly_net_expense),
@@ -556,6 +609,8 @@ def persist_all(
 		"revision",
 		"account",
 		"account_name",
+		"account_control",
+		"account_control_name",
 		"cost_center",
 		"department",
 		"expense_pool",
@@ -571,11 +626,13 @@ def persist_all(
 		pool_name = pool_map.get((bx.account, bx.cost_center, bx.department, bx.settings_rule)) or pool_map.get(
 			(bx.account, bx.cost_center, bx.department)
 		)
-		key = (bx.account, bx.cost_center or "", bx.department or "", pool_name or "")
+		bx_ac = getattr(bx, "account_control", "") or ""
+		key = (bx.account, bx_ac, bx.cost_center or "", bx.department or "", pool_name or "")
 		g = grouped.setdefault(
 			key,
 			{
 				"account": bx.account,
+				"account_control": bx_ac or None,
 				"cost_center": bx.cost_center or None,
 				"department": bx.department or None,
 				"expense_pool": pool_name,
@@ -589,9 +646,16 @@ def persist_all(
 		g["share"] += bx.applied_batch_share
 		g["amount"] += bx.allocated_amount
 
+	ads_acct_names = _account_name_map(
+		{
+			*(g["account"] for g in grouped.values()),
+			*((g.get("account_control") or "") for g in grouped.values()),
+		}
+	)
 	ads_rows = []
 	for idx, g in enumerate(grouped.values(), start=1):
-		acct_name = frappe.db.get_value("Account", g["account"], "account_name") or ""
+		acct_name = ads_acct_names.get(g["account"], "")
+		ac = g.get("account_control") or ""
 		status = "OK"
 		if abs(g["share"] - Decimal("1")) > Decimal("0.0001") and g["pool_net"] != 0:
 			status = "Share variance"
@@ -608,6 +672,8 @@ def persist_all(
 				rev,
 				g["account"],
 				acct_name,
+				ac or None,
+				ads_acct_names.get(ac, "") if ac else "",
 				g["cost_center"],
 				g["department"],
 				g["expense_pool"],
