@@ -14,7 +14,10 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 	const AE_URL_MAX_LENGTH = 1800;
 	const AE_URL_DEBOUNCE_MS = 250;
 	const AE_WORKSPACE_SETTINGS_SECTION = "Workspace";
-	const AE_WORKSPACE_TOKEN_LIMIT = 24;
+	// Keep token count + byte budget under legacy TEXT (65,535) so User Settings
+	// sync during DocType rename cannot hit MySQL 1406 (v5.7.56).
+	const AE_WORKSPACE_TOKEN_LIMIT = 8;
+	const AE_WORKSPACE_TOKEN_BYTE_BUDGET = 48000;
 	const AE_DEFAULT_AXIS = "account_level";
 	const AE_DEFAULT_DETAIL = "summary";
 	const AE_DEFAULT_CURRENCY_TYPE = "account_currency";
@@ -45,6 +48,7 @@ frappe.provide("erpnext_extensions.account_explorer.core");
 	core.AE_URL_DEBOUNCE_MS = AE_URL_DEBOUNCE_MS;
 	core.AE_WORKSPACE_SETTINGS_SECTION = AE_WORKSPACE_SETTINGS_SECTION;
 	core.AE_WORKSPACE_TOKEN_LIMIT = AE_WORKSPACE_TOKEN_LIMIT;
+	core.AE_WORKSPACE_TOKEN_BYTE_BUDGET = AE_WORKSPACE_TOKEN_BYTE_BUDGET;
 	core.AE_PARAM_ORDER = AE_PARAM_ORDER;
 	core.AE_STATUS_DEFAULTS = AE_STATUS_DEFAULTS;
 	core.AE_DEFAULT_AXIS = AE_DEFAULT_AXIS;

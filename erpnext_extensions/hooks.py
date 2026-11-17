@@ -197,6 +197,8 @@ after_migrate = [
 	"erpnext_extensions.patches.post_model_sync.ensure_stock_entry_dimension_repair_navigation.execute",
 	"erpnext_extensions.manufacturing_cost_adjustment.custom_fields.after_migrate",
 	"erpnext_extensions.advance_accounts.custom_fields.after_migrate",
+	# v5.7.56: keep __UserSettings.data at MEDIUMTEXT so Account rename sync cannot 1406.
+	"erpnext_extensions.user_settings_compat.ensure_user_settings_data_mediumtext",
 ]
 
 # ERPNext injects Accounting Dimension custom fields onto these DocTypes (see Accounting Dimension on_update).
