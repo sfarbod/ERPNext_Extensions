@@ -33,6 +33,8 @@ DETAIL_TYPES = [
 	DETAIL_DOCTYPE_MAP["expense_pool"],
 ]
 
+PRODUCT_BREAKDOWN_CHILD = "MFG Cost Product Allocation Document Breakdown"
+
 
 def clear_details(monthly_name: str, revision: int | None = None) -> None:
 	"""Bulk-delete detail rows. Uses raw DELETE to avoid QB lock churn on large sets.
@@ -41,6 +43,8 @@ def clear_details(monthly_name: str, revision: int | None = None) -> None:
 	``MFG Cost Calculation Revision`` audit rows for that monthly so deletes
 	leave no orphans. Per-revision clears keep revision logs for history.
 	"""
+	# Child breakdown rows hang off Product Allocation; delete by parent scope first.
+	_clear_product_document_breakdowns(monthly_name, revision)
 	for dt in DETAIL_TYPES:
 		table = f"tab{dt}"
 		if revision is not None:
@@ -96,6 +100,50 @@ def _account_name_map(accounts: set[str] | list[str]) -> dict[str, str]:
 		):
 			out[row.name] = row.account_name or ""
 	return out
+
+
+def _clear_product_document_breakdowns(monthly_name: str, revision: int | None = None) -> None:
+	"""Delete Document Account Control Breakdown children for Product Allocations in scope."""
+	if not frappe.db.exists("DocType", PRODUCT_BREAKDOWN_CHILD):
+		return
+	if revision is not None:
+		frappe.db.sql(
+			f"""
+			DELETE c FROM `tab{PRODUCT_BREAKDOWN_CHILD}` c
+			INNER JOIN `tabMFG Cost Product Allocation` p ON p.name = c.parent
+			WHERE p.monthly_calculation = %s AND p.revision = %s
+			""",
+			(monthly_name, cint(revision)),
+		)
+	else:
+		frappe.db.sql(
+			f"""
+			DELETE c FROM `tab{PRODUCT_BREAKDOWN_CHILD}` c
+			INNER JOIN `tabMFG Cost Product Allocation` p ON p.name = c.parent
+			WHERE p.monthly_calculation = %s
+			""",
+			(monthly_name,),
+		)
+
+
+def _batch_account_control_totals(
+	batch_expenses: list[BatchExpenseAlloc],
+) -> dict[str, tuple[Decimal, Decimal]]:
+	"""batch_no -> (overhead_211237, labor_211238) from explicit account_control."""
+	from erpnext_extensions.iran_accounting.fg_cost_allocation.document_breakdown import (
+		classify_account_control,
+	)
+
+	out: dict[str, list[Decimal]] = {}
+	for bx in batch_expenses:
+		slot = out.setdefault(bx.batch_no, [Decimal("0"), Decimal("0")])
+		kind = classify_account_control(getattr(bx, "account_control", "") or "")
+		amt = Decimal(str(bx.allocated_amount or 0))
+		if kind == "overhead":
+			slot[0] += amt
+		elif kind == "labor":
+			slot[1] += amt
+	return {k: (v[0], v[1]) for k, v in out.items()}
 
 
 def persist_all(
@@ -494,8 +542,37 @@ def persist_all(
 		"selling_price_source",
 		"item_price",
 		"missing_uom_factor",
+		"breakdown_total_qty",
+		"breakdown_total_overhead",
+		"breakdown_total_labor",
+		"breakdown_total_amount",
 	]
+	from erpnext_extensions.iran_accounting.fg_cost_allocation.document_breakdown import (
+		build_document_breakdown,
+	)
+
+	batch_ac_totals = _batch_account_control_totals(batch_expenses)
 	prod_rows = []
+	breakdown_rows = []
+	breakdown_fields = [
+		"name",
+		"creation",
+		"modified",
+		"owner",
+		"modified_by",
+		"docstatus",
+		"idx",
+		"parent",
+		"parentfield",
+		"parenttype",
+		"source_document_type",
+		"source_document",
+		"quantity",
+		"overhead_amount",
+		"labor_amount",
+		"total_allocated_amount",
+		"currency",
+	]
 	for idx, (batch, product, product_share, product_allocated) in enumerate(product_rows, start=1):
 		pname = _name()
 		product_map[(batch.batch_no, product.item_code)] = pname
@@ -513,6 +590,30 @@ def persist_all(
 				gross_pct = (gross_diff / Decimal(str(selling))) * Decimal("100")
 			else:
 				gross_pct = Decimal("0")
+		batch_oh, batch_lab = batch_ac_totals.get(batch.batch_no, (Decimal("0"), Decimal("0")))
+		breakdown = build_document_breakdown(
+			stock_entry_qtys=getattr(product, "stock_entry_qtys", None) or {
+				se: Decimal("0") for se in (product.stock_entries or [])
+			},
+			batch_overhead=batch_oh,
+			batch_labor=batch_lab,
+			product_share=Decimal(str(product_share or 0)),
+			currency=currency,
+		)
+		# If stock_entry_qtys missing (legacy bucket), fall back to equal split forbidden —
+		# instead load qty=0 rows skipped; prefer reconstructing from actual_qty when single SE.
+		if not breakdown.rows and product.stock_entries:
+			se_qtys = dict(getattr(product, "stock_entry_qtys", None) or {})
+			if not se_qtys and len(product.stock_entries) == 1:
+				only = next(iter(product.stock_entries))
+				se_qtys = {only: Decimal(str(product.actual_qty or 0))}
+			breakdown = build_document_breakdown(
+				stock_entry_qtys=se_qtys,
+				batch_overhead=batch_oh,
+				batch_labor=batch_lab,
+				product_share=Decimal(str(product_share or 0)),
+				currency=currency,
+			)
 		prod_rows.append(
 			[
 				pname,
@@ -559,9 +660,37 @@ def persist_all(
 				price.get("reason") or (f"Item Price {price.get('item_price')}" if price.get("item_price") else ""),
 				price.get("item_price"),
 				1 if product.missing_uom_factor else 0,
+				_f(breakdown.total_quantity),
+				_f(breakdown.total_overhead),
+				_f(breakdown.total_labor),
+				_f(breakdown.total_allocated_amount),
 			]
 		)
+		for j, brow in enumerate(breakdown.rows, start=1):
+			breakdown_rows.append(
+				[
+					_name(),
+					ts,
+					ts,
+					user,
+					user,
+					0,
+					j,
+					pname,
+					"document_account_control_breakdown",
+					"MFG Cost Product Allocation",
+					brow.source_document_type,
+					brow.source_document,
+					_f(brow.quantity),
+					_f(brow.overhead_amount),
+					_f(brow.labor_amount),
+					_f(brow.total_allocated_amount),
+					currency,
+				]
+			)
 	_bulk(DETAIL_DOCTYPE_MAP["product"], prod_fields, prod_rows)
+	if frappe.db.exists("DocType", PRODUCT_BREAKDOWN_CHILD):
+		_bulk(PRODUCT_BREAKDOWN_CHILD, breakdown_fields, breakdown_rows)
 
 	# --- product x expense ---
 	px_fields = [

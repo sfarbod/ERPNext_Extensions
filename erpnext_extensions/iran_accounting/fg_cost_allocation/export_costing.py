@@ -269,6 +269,99 @@ def export_settings_child_table(
 
 
 @frappe.whitelist()
+def export_product_document_breakdown(product_allocation: str):
+	"""Download Document Account Control Breakdown as a real .xlsx (no recalc, no save).
+
+	Uses stored child-row values and parent total fields for the جمع کل row.
+	Numeric cells are written as numbers with thousands-separator formats.
+	"""
+	from io import BytesIO
+
+	from openpyxl import Workbook
+	from openpyxl.styles import Font
+	from openpyxl.utils import get_column_letter
+
+	name = (product_allocation or "").strip()
+	if not name:
+		frappe.throw(_("product_allocation is required"))
+
+	frappe.has_permission("MFG Cost Product Allocation", "read", throw=True)
+	if not frappe.db.exists("MFG Cost Product Allocation", name):
+		frappe.throw(_("MFG Cost Product Allocation {0} not found").format(name))
+
+	doc = frappe.get_doc("MFG Cost Product Allocation", name)
+	doc.check_permission("read")
+
+	headers = [
+		"نوع سند مبنا",
+		"سند مبنا",
+		"مقدار",
+		"کنترل سربار",
+		"کنترل دستمزد",
+		"جمع",
+	]
+	qty_format = "#,##0.###"
+	amount_format = "#,##0"
+
+	wb = Workbook()
+	ws = wb.active
+	ws.title = "Document Breakdown"
+
+	ws.append(headers)
+	for cell in ws[1]:
+		cell.font = Font(bold=True)
+
+	rows = list(doc.get("document_account_control_breakdown") or [])
+	# Export all stored child rows in idx order (already ordered on the doc)
+	rows = sorted(rows, key=lambda r: cint(getattr(r, "idx", 0) or 0))
+
+	for row in rows:
+		qty = flt(row.get("quantity"))
+		overhead = flt(row.get("overhead_amount"))
+		labor = flt(row.get("labor_amount"))
+		total = flt(row.get("total_allocated_amount"))
+		ws.append(
+			[
+				row.get("source_document_type") or "",
+				row.get("source_document") or "",
+				qty,
+				overhead,
+				labor,
+				total,
+			]
+		)
+
+	# Final totals from parent fields — do not recalculate from children.
+	total_qty = flt(doc.get("breakdown_total_qty"))
+	total_overhead = flt(doc.get("breakdown_total_overhead"))
+	total_labor = flt(doc.get("breakdown_total_labor"))
+	total_amount = flt(doc.get("breakdown_total_amount"))
+	ws.append(["جمع کل", "", total_qty, total_overhead, total_labor, total_amount])
+	for cell in ws[ws.max_row]:
+		cell.font = Font(bold=True)
+
+	# Apply numeric formats (skip header row)
+	for row_idx in range(2, ws.max_row + 1):
+		ws.cell(row=row_idx, column=3).number_format = qty_format
+		for col_idx in (4, 5, 6):
+			ws.cell(row=row_idx, column=col_idx).number_format = amount_format
+
+	widths = [18, 28, 14, 18, 18, 18]
+	for idx, width in enumerate(widths, start=1):
+		ws.column_dimensions[get_column_letter(idx)].width = width
+
+	bio = BytesIO()
+	wb.save(bio)
+	content = bio.getvalue()
+
+	fname = f"MFG-Cost-Product-Allocation-{_safe_filename_part(name)}.xlsx"
+	frappe.local.response.filename = fname
+	frappe.local.response.filecontent = content
+	frappe.local.response.type = "download"
+	return {"row_count": len(rows), "filename": fname}
+
+
+@frappe.whitelist()
 def get_detail_counts(monthly_name: str, revision: int | str | None = None) -> dict:
 	"""Accurate status counts for Monthly form summary panels (not limited to 30)."""
 	if not monthly_name:

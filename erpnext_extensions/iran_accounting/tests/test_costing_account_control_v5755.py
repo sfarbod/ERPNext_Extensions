@@ -191,22 +191,32 @@ class TestPersianDeskCleanup(unittest.TestCase):
 			cleanup_persian_desk()
 
 
-class TestExistingRulesBlankAccountControl(unittest.TestCase):
-	def test_existing_rules_remain_blank_and_intact(self):
+class TestExistingRulesAccountControlIntegrity(unittest.TestCase):
+	def test_existing_rules_intact_with_optional_account_control(self):
 		if not frappe.db.exists("DocType", "Expense Account Dimension Rule"):
 			self.skipTest("Expense Account Dimension Rule missing")
 		if not frappe.db.has_column("Expense Account Dimension Rule", "account_control"):
 			self.skipTest("account_control column not migrated yet")
 		total = frappe.db.count("Expense Account Dimension Rule")
-		blank = frappe.db.sql(
+		self.assertEqual(total, 3026)
+		# No duplicate Account × Cost Center × Department keys.
+		dups = frappe.db.sql(
 			"""
-			SELECT COUNT(*) FROM `tabExpense Account Dimension Rule`
-			WHERE IFNULL(account_control, '') = ''
+			SELECT account, IFNULL(cost_center,''), IFNULL(department,''), COUNT(*) c
+			FROM `tabExpense Account Dimension Rule`
+			GROUP BY 1,2,3 HAVING c > 1
+			"""
+		)
+		self.assertEqual(len(dups), 0)
+		# Account Control, when set, must resolve to an Account (never orphaned).
+		unresolved = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabExpense Account Dimension Rule` r
+			LEFT JOIN `tabAccount` a ON a.name = r.account_control
+			WHERE IFNULL(r.account_control,'') != '' AND a.name IS NULL
 			"""
 		)[0][0]
-		# Development site expected ~3026; assert blank == total (no auto-fill).
-		self.assertEqual(blank, total)
-		self.assertGreaterEqual(total, 1)
+		self.assertEqual(unresolved, 0)
 
 
 if __name__ == "__main__":
