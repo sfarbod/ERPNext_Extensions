@@ -470,6 +470,17 @@ def _patch_stock_controller():
 				)
 
 				if is_irr_company(self.company) and gl_entries is not None:
+					# SCR: Core divisional_loss mirrors Δ onto expense/clearing while
+					# SVD−service already embeds Iran integer Δ → 2Δ clearing imbalance.
+					# Normalize clearing debit/credit to document amounts; keep SA = Δ.
+					from erpnext_extensions.iran_accounting.domain.subcontracting_receipt_gl_balance import (
+						normalize_subcontracting_receipt_gl_entries,
+						uses_scr_clearing_balance_gl,
+					)
+
+					if uses_scr_clearing_balance_gl(self):
+						gl_entries = normalize_subcontracting_receipt_gl_entries(self, gl_entries)
+
 					apply_irr_rate_rounding_residual_gl(self, gl_entries)
 					from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
 						apply_sabe_localization_sa_gl,
