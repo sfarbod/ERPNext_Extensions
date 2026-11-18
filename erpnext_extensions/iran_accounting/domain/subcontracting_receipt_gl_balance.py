@@ -24,7 +24,10 @@ Inventory must stay at SLE SVD. Clearing must net to zero (RM debit =
 document material credit). The single Δ residual is a **valuation gain**:
 
 * Credit Stock Adjustment Δ (not debit).
-* Debit / credit clearing with ``amount − service`` / RM amounts only.
+* Align clearing debit/credit to document amounts, then **drop** the
+  net-zero clearing row(s) via the established
+  ``drop_net_zero_merged_gl_rows`` helper (same convention as Manufacture /
+  Repack — economically a no-op must not persist).
 
 When SVD < amount the residual is a valuation loss (debit SA |Δ|).
 
@@ -41,6 +44,9 @@ import frappe
 from frappe.utils import flt
 
 from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+from erpnext_extensions.iran_accounting.domain.manufacture_expense_account import (
+	drop_net_zero_merged_gl_rows,
+)
 
 SCR_GL_BALANCE_MARKER = "_irr_scr_clearing_balance"
 TOL = 0.51
@@ -310,9 +316,43 @@ def normalize_subcontracting_receipt_gl_entries(doc, gl_entries: list | None) ->
 		touched = True
 
 	_strip_markers(gl_entries)
+
+	# Balanced clearing is a no-op movement. Reuse Manufacture/Repack convention:
+	# drop net-zero merged rows (debit==credit or both ~0). Also remove unmerged
+	# one-sided clearing pairs that cancel across the same expense account.
+	before_len = len(gl_entries)
+	gl_entries = _drop_balanced_clearing_accounts(doc, gl_entries, list(doc_credit_by_exp.keys()))
+	gl_entries = drop_net_zero_merged_gl_rows(doc, gl_entries)
+	if len(gl_entries) != before_len:
+		touched = True
+
 	if touched and flags is not None:
 		flags.irr_scr_clearing_balanced = True
 	return gl_entries
+
+
+def _drop_balanced_clearing_accounts(doc, gl_entries: list, clearing_accounts: list[str]) -> list:
+	"""Remove all legs for SCR clearing accounts whose debit total equals credit total.
+
+	Covers unmerged debit+credit pairs that ``drop_net_zero_merged_gl_rows`` would
+	not see (each row is one-sided). Merged equal debit/credit rows are handled by
+	``drop_net_zero_merged_gl_rows`` afterward.
+	"""
+	_ = doc
+	if not gl_entries or not clearing_accounts:
+		return gl_entries or []
+
+	drop_accounts = set()
+	for acc in clearing_accounts:
+		debit = sum(flt(_g(e, "debit")) for e in gl_entries if _g(e, "account") == acc)
+		credit = sum(flt(_g(e, "credit")) for e in gl_entries if _g(e, "account") == acc)
+		if abs(debit - credit) <= TOL:
+			drop_accounts.add(acc)
+
+	if not drop_accounts:
+		return gl_entries
+
+	return [e for e in gl_entries if _g(e, "account") not in drop_accounts]
 
 
 def expected_scr_sa_delta(doc) -> float:
@@ -335,3 +375,7 @@ def clearing_account_net(gl_entries: list, account: str) -> float:
 			continue
 		net += flt(_g(e, "debit")) - flt(_g(e, "credit"))
 	return flt(net)
+
+
+def clearing_account_present(gl_entries: list, account: str) -> bool:
+	return any(_g(e, "account") == account for e in (gl_entries or []))
