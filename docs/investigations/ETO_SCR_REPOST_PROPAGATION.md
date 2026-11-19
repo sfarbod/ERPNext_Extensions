@@ -92,3 +92,29 @@ Outward Serial and Batch Entry rows of the transfer and Manufacture carry a stal
 `incoming_rate` / `stock_value_difference`; `apply_integer_sabe_policy_to_sle`
 preferred `outgoing_rate` for outward rows and rewrote the old rate. 5.8.1 makes
 the policy use Core's rate for outward rows during ETO-scoped reposts.
+
+## Additional root cause (5.8.3) — empty-warehouse MA residual
+
+For batches that empty Quarantine (MAT-SCR-2026-00011 / MAT-STE-2026-26674),
+Iran consume-to-zero policy kept warehouse MA residual as SLE authority and
+refused to stamp batch SABE onto SLE. SABE stayed at the SCR batch rate while
+SLE/SED absorbed the understated warehouse layer (e.g. 352,317 vs 583,416).
+
+5.8.3: during ETO-scoped repost, `should_align_empty_warehouse_sle_from_batch_sabe`
+aligns SLE/SED from batch SABE for ETO finished goods emptying a warehouse.
+
+## Orchestration API (5.8.3)
+
+`erpnext_extensions.iran_accounting.eto_scr_valuation_propagation`:
+
+- `inspect_scr_eto_valuation_chain` / `plan_scr_eto_valuation_propagation`
+- `propagate_scr_eto_valuation` (confirm token; optional service-cost phase;
+  supported stock RIV only; no LCV recreation)
+
+## Development acceptance (2026-11-20)
+
+| SCR | Result |
+|---|---|
+| MAT-SCR-2026-00016 | Service cost corrected; SLE/Transfer/Manufacture 2,216,580; FG ≈ 2,431,545 |
+| MAT-SCR-2026-00011 | Service cost corrected; empty-warehouse drift cleared; chain @ 536,809 |
+| MAT-SCR-2026-00023 | LCV deleted; chain consistent @ 607,745; LCV not recreated |

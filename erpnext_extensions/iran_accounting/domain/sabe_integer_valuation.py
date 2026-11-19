@@ -396,6 +396,74 @@ def apply_integer_sabe_policy_to_sle(
 		}
 
 	if consume_to_zero:
+		from erpnext_extensions.iran_accounting.domain.eto_scr_repost_scope import (
+			should_align_empty_warehouse_sle_from_batch_sabe,
+		)
+
+		# v5.8.3 ETO: when emptying Quarantine for an ETO FG batch, warehouse MA
+		# residual must not override batch SABE (00011 SLE/SABE drift).
+		if prefer_core_outward_rate and should_align_empty_warehouse_sle_from_batch_sabe(
+			sle, engine
+		):
+			from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+				align_sed_from_native_outgoing_sle,
+			)
+
+			new_svd = float(round_currency(total_new_svd, ccy))
+			sle.stock_value_difference = new_svd
+			sle.stock_value = 0.0
+			qty = abs(actual_qty)
+			rate = (
+				float(round_monetary_rate(abs(new_svd) / qty, ccy)) if qty > 1e-9 else 0.0
+			)
+			sle.valuation_rate = rate
+			sle.outgoing_rate = rate
+			detail_no = (
+				sle.get("voucher_detail_no")
+				if hasattr(sle, "get")
+				else getattr(sle, "voucher_detail_no", None)
+			)
+			if detail_no and voucher_no:
+				row = frappe.db.get_value(
+					"Stock Entry Detail",
+					detail_no,
+					[
+						"qty",
+						"transfer_qty",
+						"basic_rate",
+						"basic_amount",
+						"additional_cost",
+						"landed_cost_voucher_amount",
+						"valuation_rate",
+						"amount",
+						"allow_zero_valuation_rate",
+						"set_basic_rate_manually",
+						"parent",
+						"serial_and_batch_bundle",
+						"s_warehouse",
+						"t_warehouse",
+					],
+					as_dict=True,
+				)
+				if row:
+					align_sed_from_native_outgoing_sle(sle, row, rate, new_svd, ccy)
+			if engine is not None and getattr(engine, "wh_data", None) is not None:
+				engine.wh_data.stock_value = 0.0
+				engine.wh_data.valuation_rate = 0.0
+				engine.wh_data.prev_stock_value = 0.0
+			return {
+				"bundle": bundle,
+				"changed": len(changed),
+				"total_new_svd": new_svd,
+				"localization_difference": 0.0,
+				"sle_adjusted": True,
+				"consume_to_zero": True,
+				"align_sle": True,
+				"eto_batch_empty_warehouse": True,
+				"document_amount_authority": document_amount_authority,
+				"transfer_inward_conservation": transfer_inward_conservation,
+			}
+
 		# Warehouse clear remains Core/ABSORB authority — do not stamp batch SVD onto SLE.
 		return {
 			"bundle": bundle,

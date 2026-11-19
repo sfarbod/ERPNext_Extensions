@@ -19,6 +19,29 @@ import frappe
 
 from erpnext_extensions.iran_accounting.domain import eto_scr_repost_scope as scope
 
+
+class TestEtoEmptyWarehouseBatchAlign(unittest.TestCase):
+	"""v5.8.3 — empty-warehouse ETO FG must prefer batch SABE over MA residual."""
+
+	def test_helper_requires_eto_repost_and_bundle(self):
+		sle = frappe._dict(
+			{
+				"item_code": "30600001",
+				"actual_qty": -1854.0,
+				"qty_after_transaction": 0.0,
+				"serial_and_batch_bundle": "bundle-1",
+			}
+		)
+		with patch.object(scope, "is_eto_repost_in_progress", return_value=False):
+			self.assertFalse(scope.should_align_empty_warehouse_sle_from_batch_sabe(sle))
+		with patch.object(scope, "is_eto_repost_in_progress", return_value=True), patch.object(
+			scope, "is_eto_finished_good", return_value=True
+		):
+			self.assertTrue(scope.should_align_empty_warehouse_sle_from_batch_sabe(sle))
+			sle2 = frappe._dict(sle)
+			sle2.serial_and_batch_bundle = None
+			self.assertFalse(scope.should_align_empty_warehouse_sle_from_batch_sabe(sle2))
+
 ETO_SERVICE_ITEM = "23000001"
 ETO_FG_ITEM = "30600001"
 

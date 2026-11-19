@@ -147,6 +147,30 @@ def is_eto_repost_in_progress(engine: Any = None) -> bool:
 	return cache[key]
 
 
+def should_align_empty_warehouse_sle_from_batch_sabe(sle: Any, engine: Any = None) -> bool:
+	"""True when ETO repost must stamp batch SABE onto an empty-warehouse outward SLE.
+
+	Default Iran policy keeps consume-to-zero warehouse MA residual as SLE
+	authority (do not stamp batch SVD). For ETO finished goods that empties a
+	quarantine warehouse, that residual is often understated relative to the
+	batch layer (MAT-SCR-2026-00011 pattern): SABE stays at the batch rate while
+	SLE/SED absorb the warehouse residual. During an ETO-scoped repost, prefer
+	the batch SABE movement so Transfer / Manufacture carry the SCR rate.
+	"""
+	if not is_eto_repost_in_progress(engine):
+		return False
+	item_code = _get(sle, "item_code")
+	if not is_eto_finished_good(item_code):
+		return False
+	if not _get(sle, "serial_and_batch_bundle"):
+		return False
+	actual_qty = flt(_get(sle, "actual_qty"))
+	qty_after = flt(_get(sle, "qty_after_transaction"))
+	if actual_qty >= 0 or abs(qty_after) > 1e-9:
+		return False
+	return True
+
+
 def select_sabe_raw_rate(row: Any, *, prefer_core_outward_rate: bool = False) -> float:
 	"""Raw rate the integer SABE policy localizes for one Serial and Batch Entry.
 
