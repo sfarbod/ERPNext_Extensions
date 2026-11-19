@@ -381,6 +381,9 @@ _SUPPORTED_ERPNEXT_MINOR = frozenset(
 		"16.51",
 		"16.52",
 		"16.53",
+		"16.54",
+		"16.55",
+		"16.60",
 	}
 )
 _SUPPORTED_FRAPPE_MINOR = frozenset(
@@ -396,6 +399,7 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 		"16.52",
 		"16.53",
 		"16.54",
+		"16.60",
 	}
 )
 
@@ -415,10 +419,13 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 # cache for transfer+additional_costs (``167d6d18``); update_rate discards the
 # voucher before writing basic_rate. Iran IRR recalculate wrapper still replaces
 # the vanilla body for IRR companies (early-return does not apply on that path).
+# ERPNext 16.54.0–16.55.0 / 16.60.0: guarded RIV bodies identical to 16.53.0
+# (same fingerprints; revalidated on live 16.60.0). Intermediate Frappe
+# 16.55–16.59 not allow-listed.
 _FN_FINGERPRINTS = {
 	"update_rate_on_stock_entry": {
 		"signature": "(self, sle, outgoing_rate)",
-		# ERPNext 16.53.0 — discard from recalculated_stock_entries before rate write
+		# ERPNext 16.53.0–16.60.0 — discard from recalculated_stock_entries before rate write
 		"source_sha256": "26fc34437cf03df8d4d224966e0ac2b26987022b8a3038461d00c9ce392baabd",
 		"source_sha256_alternates": (
 			# ERPNext 16.51.1–16.52.x — sle_id gate; no sabb / has_bundle helper
@@ -430,7 +437,7 @@ _FN_FINGERPRINTS = {
 	},
 	"recalculate_amounts_in_stock_entry": {
 		"signature": "(self, voucher_no, voucher_detail_no)",
-		# ERPNext 16.53.0 — once-per-repost cache for transfer+additional_costs
+		# ERPNext 16.53.0–16.60.0 — once-per-repost cache for transfer+additional_costs
 		"source_sha256": "94a9334aa95c733351a31d3366b3f5fbe17e0509369655165eb88f28e6b38bb2",
 		"source_sha256_alternates": (
 			# ERPNext 16.51.1–16.52.x — flags.via_repost = True before calculate

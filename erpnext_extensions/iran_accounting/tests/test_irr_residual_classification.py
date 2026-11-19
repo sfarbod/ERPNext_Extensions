@@ -390,6 +390,30 @@ class TestPurchaseReceiptStockValuationAuth(unittest.TestCase):
 		self.assertEqual(purchase_receipt_valuation_stock_qty(row), 20.0)
 		self.assertEqual(purchase_receipt_stock_valuation_amount(row), 2150025.0)
 
+	def test_helpers_prefer_get_valued_stock_qty_when_doc_exposes_it(self):
+		"""ERPNext 16.60 UVR divisor starts with BuyingController.get_valued_stock_qty."""
+		row = self._row(qty=2, conversion_factor=10, rejected_qty=1)
+		doc = self._doc(row)
+		doc.get_valued_stock_qty = lambda r: 25.0
+		self.assertEqual(purchase_receipt_valuation_stock_qty(row, doc), 25.0)
+		# Without doc helper, legacy qty × conversion_factor path remains.
+		self.assertEqual(purchase_receipt_valuation_stock_qty(row), 20.0)
+
+	def test_rejected_valuation_prefers_base_net_rate(self):
+		"""ERPNext 16.54+ rejected UVR numerator uses base_net_rate (not net_rate)."""
+		row = self._row(
+			qty=0,
+			base_net_amount=0,
+			rejected_qty=3,
+			net_rate=100,
+			base_net_rate=250,
+		)
+		with mock.patch(
+			"erpnext_extensions.iran_accounting.domain.irr_residual_classification.frappe.get_single_value",
+			return_value=1,
+		):
+			self.assertEqual(purchase_receipt_stock_valuation_amount(row), 750.0)
+
 	def test_excluded_vat_total_only_not_class_b(self):
 		# Gross amount may equal net; VR = net/qty. Category Total tax not in item_tax_amount.
 		row = self._row(

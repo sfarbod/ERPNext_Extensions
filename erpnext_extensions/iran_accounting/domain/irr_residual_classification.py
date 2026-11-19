@@ -295,18 +295,31 @@ def enrich_candidate_dimensions(candidate: dict, row) -> dict:
 	return candidate
 
 
-def purchase_receipt_valuation_stock_qty(row) -> float:
+def purchase_receipt_valuation_stock_qty(row, doc=None) -> float:
 	"""Stock-UOM qty used as the divisor in BuyingController.update_valuation_rate.
 
 	ERPNext 16.51+ uses ``get_stock_qty(row, qty)`` which rounds to
 	``row.precision("stock_qty")`` (the ledger posting quantum). Prefer that
 	helper when present; fall back to the same rounding formula for stubs.
 	Rejected-qty fallback matches Core UVR when qty rounds to zero.
+
+	ERPNext 16.60+ prefers ``BuyingController.get_valued_stock_qty(row)`` (accepted
+	+ billed rejected stock qty) before the rejected-only / conversion fallbacks.
+	When ``doc`` exposes that method, call it first so Class A mirrors Core.
 	"""
 	try:
 		from erpnext.controllers.buying_controller import get_stock_qty as _core_get_stock_qty
 	except ImportError:
 		_core_get_stock_qty = None
+
+	# 16.60+: Core UVR divisor starts with get_valued_stock_qty(item).
+	if doc is not None and callable(getattr(doc, "get_valued_stock_qty", None)):
+		try:
+			valued = flt(doc.get_valued_stock_qty(row))
+			if valued:
+				return valued
+		except Exception:
+			pass
 
 	def _stock_qty(qty) -> float:
 		conversion_factor = flt(
@@ -443,7 +456,31 @@ def purchase_receipt_stock_valuation_amount(row, doc=None) -> float:
 	# accidentally select the internal-transfer or rejected branches.
 	sir = row.get("sales_incoming_rate")
 	if sir not in (None, "") and flt(sir):
-		net_rate = flt(row.get("qty")) * flt(sir)
+		# ERPNext 16.60+: get_transit_amount(item, get_internal_transfer_qty(item))
+		# (stock-qty × transit rate / conversion_factor). Prefer Core helpers
+		# when available; else pre-16.60 qty × sales_incoming_rate.
+		net_rate = None
+		try:
+			from erpnext.controllers.buying_controller import get_transit_amount as _get_transit_amount
+		except ImportError:
+			_get_transit_amount = None
+		if _get_transit_amount is not None and doc is not None and callable(
+			getattr(doc, "get_internal_transfer_qty", None)
+		):
+			try:
+				xfer_qty = doc.get_internal_transfer_qty(row)
+				net_rate = flt(_get_transit_amount(row, xfer_qty))
+			except Exception:
+				net_rate = None
+		if net_rate is None:
+			if doc is not None and callable(getattr(doc, "get_internal_transfer_qty", None)):
+				try:
+					xfer_qty = flt(doc.get_internal_transfer_qty(row))
+				except Exception:
+					xfer_qty = flt(row.get("qty"))
+			else:
+				xfer_qty = flt(row.get("qty"))
+			net_rate = xfer_qty * flt(sir)
 	else:
 		net_rate = flt(row.get("base_net_amount"))
 		rejected_qty = flt(row.get("rejected_qty"))
@@ -456,7 +493,12 @@ def purchase_receipt_stock_valuation_amount(row, doc=None) -> float:
 			except Exception:
 				allow_rejected = 0
 			if allow_rejected:
-				net_rate = rejected_qty * flt(row.get("net_rate"))
+				# ERPNext 16.54+: rejected_qty × base_net_rate; older minors used net_rate.
+				base_net_rate = row.get("base_net_rate")
+				if base_net_rate not in (None, ""):
+					net_rate = rejected_qty * flt(base_net_rate)
+				else:
+					net_rate = rejected_qty * flt(row.get("net_rate"))
 
 	item_tax_amount = flt(row.get("item_tax_amount"))
 	lcv = flt(row.get("landed_cost_voucher_amount"))
@@ -506,7 +548,7 @@ def classify_document_residuals(doc) -> tuple[list[dict], list[dict]]:
 		for row in doc.get("items") or []:
 			if not is_purchase_receipt_row_stock_valuation_eligible(row, eligible):
 				continue
-			qty = purchase_receipt_valuation_stock_qty(row)
+			qty = purchase_receipt_valuation_stock_qty(row, doc)
 			auth = purchase_receipt_stock_valuation_amount(row, doc)
 			rate = row.get("valuation_rate")
 			classified = classify_amount_rate_residual(

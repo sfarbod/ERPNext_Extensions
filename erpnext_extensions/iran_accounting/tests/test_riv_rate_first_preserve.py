@@ -112,6 +112,9 @@ class TestRivRateGuardUnit(unittest.TestCase):
 				"16.51",
 				"16.52",
 				"16.53",
+				"16.54",
+				"16.55",
+				"16.60",
 			},
 		)
 		self.assertIn(
@@ -128,6 +131,7 @@ class TestRivRateGuardUnit(unittest.TestCase):
 				"16.52",
 				"16.53",
 				"16.54",
+				"16.60",
 			},
 		)
 		for name, expected in _FN_FINGERPRINTS.items():
@@ -177,16 +181,23 @@ class TestRivRateGuardUnit(unittest.TestCase):
 				"16.51",
 				"16.52",
 				"16.53",
+				"16.54",
+				"16.55",
+				"16.60",
 			}.issubset(_SUPPORTED_ERPNEXT_MINOR)
 		)
 		self.assertIn("16.51", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertIn("16.53", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertIn("16.60", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertNotIn("16.38", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertNotIn("16.50", _SUPPORTED_ERPNEXT_MINOR)
+		self.assertNotIn("16.56", _SUPPORTED_ERPNEXT_MINOR)
 		self.assertIn("16.52", _SUPPORTED_FRAPPE_MINOR)
 		self.assertIn("16.54", _SUPPORTED_FRAPPE_MINOR)
+		self.assertIn("16.60", _SUPPORTED_FRAPPE_MINOR)
 		self.assertNotIn("16.37", _SUPPORTED_FRAPPE_MINOR)
 		self.assertNotIn("16.51", _SUPPORTED_FRAPPE_MINOR)
+		self.assertNotIn("16.55", _SUPPORTED_FRAPPE_MINOR)
 
 		with mock.patch.object(erpnext, "__version__", "16.51.1"), mock.patch.object(
 			frappe, "__version__", "16.52.0"

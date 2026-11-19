@@ -52,6 +52,12 @@ from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
 # regional stub + hook call site unchanged. Intermediate 16.38–16.50 not listed.
 # ERPNext 16.52.x–16.53.0 / Frappe 16.53.x–16.54.0: UVR + regional stub
 # fingerprints unchanged vs 16.51.1 (revalidated on live 16.53.0 / 16.54.0).
+# ERPNext 16.54.0–16.55.0: rejected valuation uses base_net_rate (not net_rate);
+# regional stub + hook call site unchanged. Fingerprint measured from tagged
+# sources (not a separate live canary). Intermediate Frappe 16.55–16.59 not listed.
+# ERPNext 16.60.0 / Frappe 16.60.x: internal transfer uses get_transit_amount;
+# qty divisor prefers get_valued_stock_qty; regional stub unchanged. Revalidated
+# on live ERPNext 16.60.0 / Frappe 16.60.2.
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_ERPNEXT_MINOR = frozenset(
@@ -68,6 +74,9 @@ _SUPPORTED_ERPNEXT_MINOR = frozenset(
 		"16.51",
 		"16.52",
 		"16.53",
+		"16.54",
+		"16.55",
+		"16.60",
 	}
 )
 _SUPPORTED_FRAPPE_MINOR = frozenset(
@@ -83,23 +92,26 @@ _SUPPORTED_FRAPPE_MINOR = frozenset(
 		"16.52",
 		"16.53",
 		"16.54",
+		"16.60",
 	}
 )
 
 _FN_FINGERPRINTS = {
 	"update_valuation_rate": {
 		"signature": "(self, reset_outgoing_rate=True)",
-		# 16.31.x–16.35.x normalized source (identical on 16.35.0). Older minors
-		# keep passing when their digest matches this table or the legacy
-		# alternate below.
-		"source_sha256": "a09fe875f076df168c16faaf18a281da824c052160672dcf44c163c6f1166f63",
+		# ERPNext 16.60.0 — get_transit_amount + get_valued_stock_qty
+		"source_sha256": "d7f82c31e181a4bf62068a8ac76e1f8f6715acce4b3ab15c8a6f878c8f4ff88a",
 		"source_sha256_alternates": (
 			# ERPNext 16.29 / 16.30 (round_floats_in without do_not_round_fields)
 			"5e898d6e97ff7b39f56c0f710b83b9e69a7c0ae08a97dae10eaf32f0c12c7bac",
+			# ERPNext 16.31.x–16.35.x (do_not_round_fields for conversion_factor)
+			"a09fe875f076df168c16faaf18a281da824c052160672dcf44c163c6f1166f63",
 			# ERPNext 16.36.x–16.37.0 (get_internal_transfer_qty for internal PR)
 			"8d254a90a2c0db491abada5742dfd5dfab2b6f847745d15cb052951e6dadca3e",
-			# ERPNext 16.51.1 (get_stock_qty for stock-UOM qty in UVR)
+			# ERPNext 16.51.1–16.53.0 (get_stock_qty for stock-UOM qty in UVR)
 			"a50a2116d80a2cbdf85cb228120a6eaa7169bbf4baafc376edb5e1c341f1c505",
+			# ERPNext 16.54.0–16.55.0 (rejected materials use base_net_rate)
+			"20f9bb9617d1b44171819b5fa52df7ed61b9d798971080f8d0fc459c35234d15",
 		),
 		"must_contain": ("update_regional_item_valuation_rate",),
 	},
