@@ -814,7 +814,7 @@ def _align_purchase_valuation_rate_amount_preserving(row, doc) -> None:
 		purchase_receipt_valuation_stock_qty,
 	)
 
-	qty_stock = purchase_receipt_valuation_stock_qty(row) or flt(row.qty)
+	qty_stock = purchase_receipt_valuation_stock_qty(row, doc) or flt(row.qty)
 	if not qty_stock:
 		return
 	currency = rounding.get_company_currency(doc.company)

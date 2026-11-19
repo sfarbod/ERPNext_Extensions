@@ -56,6 +56,9 @@ def apply_monkey_patches():
 	_patch_fa_pr_gl_amount_difference()
 	# Idempotent: Core get_reposting_data must not JSONDecodeError on empty/shared files.
 	_patch_reposting_data_json_safety()
+	# Idempotent: GL make_entry must forward from_reversal (ERPNext 16.54+ / 16.60).
+	# Rebind on every apply so long-lived workers pick up the corrective wrapper.
+	_patch_general_ledger()
 	# RIV bootstrap: do NOT wrap execute_reposting_entry with a nested function.
 	# pickle-safe module-level ``riv_execute_guard.execute_reposting_entry`` already
 	# calls ``_ensure_iran_runtime_for_riv`` → ``bootstrap.apply`` on every public
@@ -936,7 +939,14 @@ def _bind_iran_general_ledger_entry_filters(gl):
 
 	gl.save_entries = save_entries
 
-	def make_entry(args, adv_adj, update_outstanding, from_repost=False):
+	def make_entry(args, adv_adj, update_outstanding, from_repost=False, *, from_reversal=False):
+		"""Iran zero-value / currency prep + Core make_entry.
+
+		ERPNext 16.54+ adds keyword-only ``from_reversal`` (set on
+		``gle.flags.from_reversal`` inside Core). Forward it explicitly; do not
+		swallow unknown kwargs. On pre-16.54 Core (no param), only the legacy
+		positional call is used — ``from_reversal=True`` then fails closed.
+		"""
 		round_gl_entry_amounts(args)
 		company = args.get("company") if isinstance(args, dict) else getattr(args, "company", None)
 		if company:
@@ -978,10 +988,104 @@ def _bind_iran_general_ledger_entry_filters(gl):
 				_set("debit_in_transaction_currency", debit)
 			if credit and not flt(_get("credit_in_transaction_currency")):
 				_set("credit_in_transaction_currency", credit)
-		return gl._iran_original_make_entry(args, adv_adj, update_outstanding, from_repost)
 
+		orig = gl._iran_original_make_entry
+		if "from_reversal" in inspect.signature(orig).parameters:
+			return orig(
+				args, adv_adj, update_outstanding, from_repost, from_reversal=from_reversal
+			)
+		if from_reversal:
+			raise TypeError(
+				"Iran make_entry: from_reversal=True but Core make_entry has no "
+				"from_reversal parameter (pre-16.54). Refusing to drop the flag."
+			)
+		return orig(args, adv_adj, update_outstanding, from_repost)
+
+	make_entry._iran_make_entry_from_reversal = True
 	gl.make_entry = make_entry
 	gl._iran_zero_value_filters_bound = True
+
+
+# Fail-closed fingerprint of vanilla general_ledger.make_entry.
+# Primary: ERPNext 16.54.0–16.60.x (keyword-only from_reversal).
+# Alternate: ERPNext ≤16.53.x (no from_reversal) — still allow-listed for
+# previously supported minors on the RIV/UVR version table.
+_MAKE_ENTRY_FINGERPRINT = {
+	"signatures": (
+		# ERPNext 16.54.0+ / 16.60.x
+		"(args, adv_adj, update_outstanding, from_repost=False, *, from_reversal=False)",
+		# ERPNext ≤16.53.x
+		"(args, adv_adj, update_outstanding, from_repost=False)",
+	),
+	# ERPNext 16.54.0–16.60.0 (sets gle.flags.from_reversal)
+	"source_sha256": "60cc26d9e2b3905c368fdbc438ae420f4767a0442251ab7efa8e5a92714e078b",
+	"source_sha256_alternates": (
+		# ERPNext ≤16.53.0 (no from_reversal)
+		"7e293a47c497bd709a343eadaed6cd1ba2555a86c0ae8c3d844fe9d11915239e",
+	),
+	"must_contain": ("GL Entry", "from_repost"),
+}
+
+
+def assert_make_entry_patch_supported(original_fn) -> None:
+	"""Fail-closed: only wrap a known ERPNext general_ledger.make_entry body."""
+	from erpnext_extensions.iran_accounting.domain.riv_rate_guard import (
+		_SUPPORTED_ERPNEXT_MINOR,
+		_SUPPORTED_FRAPPE_MINOR,
+		major_minor,
+		normalize_callable_signature,
+		normalize_function_source,
+		source_sha256,
+	)
+
+	erp_ver = getattr(erpnext, "__version__", "")
+	fr_ver = getattr(frappe, "__version__", "")
+	erp_mm, fr_mm = major_minor(erp_ver), major_minor(fr_ver)
+	if erp_mm not in _SUPPORTED_ERPNEXT_MINOR:
+		raise RuntimeError(
+			f"GL make_entry guard: ERPNext {erp_ver} is not on the explicit support "
+			f"allow-list ({', '.join(sorted(_SUPPORTED_ERPNEXT_MINOR))}). "
+			"Wrapper not installed."
+		)
+	if fr_mm not in _SUPPORTED_FRAPPE_MINOR:
+		raise RuntimeError(
+			f"GL make_entry guard: Frappe {fr_ver} is not on the explicit support "
+			f"allow-list ({', '.join(sorted(_SUPPORTED_FRAPPE_MINOR))}). "
+			"Wrapper not installed."
+		)
+
+	sig = normalize_callable_signature(original_fn)
+	accepted_sigs = set(_MAKE_ENTRY_FINGERPRINT["signatures"])
+	if sig not in accepted_sigs:
+		raise RuntimeError(
+			"GL make_entry guard: signature "
+			f"{sig!r} is not in allow-list {sorted(accepted_sigs)}. "
+			"Incompatible Core parameter set — wrapper not installed (fail-closed)."
+		)
+	digest = source_sha256(original_fn)
+	accepted = {
+		_MAKE_ENTRY_FINGERPRINT["source_sha256"],
+		*(_MAKE_ENTRY_FINGERPRINT.get("source_sha256_alternates") or ()),
+	}
+	if digest not in accepted:
+		raise RuntimeError(
+			"GL make_entry guard: source fingerprint "
+			f"{digest} != allow-list {sorted(accepted)}. "
+			"Wrapper not installed (fail-closed)."
+		)
+	norm = normalize_function_source(original_fn)
+	for token in _MAKE_ENTRY_FINGERPRINT["must_contain"]:
+		if token not in norm:
+			raise RuntimeError(
+				"GL make_entry guard: normalized source missing required token "
+				f"{token!r}. Wrapper not installed."
+			)
+	# 16.54+ bodies must expose from_reversal end-to-end.
+	if "from_reversal" in sig and "from_reversal" not in norm:
+		raise RuntimeError(
+			"GL make_entry guard: signature declares from_reversal but normalized "
+			"source does not reference it. Wrapper not installed."
+		)
 
 
 def _patch_general_ledger():
@@ -989,10 +1093,14 @@ def _patch_general_ledger():
 
 	if getattr(gl, "_iran_patched", None):
 		# Upgrade path: rebind debit/credit + zero-value filters so workers pick
-		# up A2 account-currency / 0/0 strip without requiring a full restart.
+		# up A2 account-currency / 0/0 strip / from_reversal forwarding without
+		# requiring a full restart.
 		_install_iran_process_debit_credit_difference(gl)
 		_bind_iran_general_ledger_entry_filters(gl)
 		return
+
+	# Fingerprint vanilla Core before wrapping (fail-closed).
+	assert_make_entry_patch_supported(gl.make_entry)
 
 	gl._iran_original_merge_similar_entries = gl.merge_similar_entries
 	gl._iran_original_save_entries = gl.save_entries
