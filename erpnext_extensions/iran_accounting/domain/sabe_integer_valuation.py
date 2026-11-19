@@ -245,15 +245,21 @@ def apply_integer_sabe_policy_to_sle(
 	if should_seed_sabe_from_document_sle(sle, rows):
 		seed_sabe_rows_from_sle(sle, rows)
 
+	# v5.8.1 ETO scope: inside a repost started for an ETO Subcontracting Receipt
+	# (or ETO finished good), trust Core's fresh outward rate over a stale
+	# SABE.outgoing_rate so corrected SCR cost propagates downstream.
+	from erpnext_extensions.iran_accounting.domain.eto_scr_repost_scope import (
+		is_eto_repost_in_progress,
+		select_sabe_raw_rate,
+	)
+
+	prefer_core_outward_rate = is_eto_repost_in_progress(engine)
+
 	changed = []
 	total_new_svd = 0.0
 	total_diff = 0.0
 	for row in rows:
-		raw_rate = (
-			flt(row.outgoing_rate)
-			if flt(row.qty) < 0 and flt(row.outgoing_rate)
-			else flt(row.incoming_rate) or flt(row.outgoing_rate) or 0.0
-		)
+		raw_rate = select_sabe_raw_rate(row, prefer_core_outward_rate=prefer_core_outward_rate)
 		loc = localize_sabe_row_values(
 			qty=row.qty,
 			raw_rate=raw_rate,
