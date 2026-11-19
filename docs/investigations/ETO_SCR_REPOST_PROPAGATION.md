@@ -1,6 +1,6 @@
 # Investigation: ETO Subcontracting Receipt cost does not propagate on repost
 
-Status: **open — needs developer debugging on staging**
+Status: **root cause found — fixed in 5.8.1 (see RELEASE_5_8_1.md), pending staging acceptance**
 Scope: ETO outsourcing (service item `23000001` "برون سپاری ETO", FG `30600001`)
 Observed on: erpnext 16.53.0, erpnext_extensions 5.7.26 (staging) and 5.7.56 (production)
 
@@ -84,3 +84,11 @@ GL balanced on every voucher.
   resume over multiple runs. Production has a backlog of ~3,800 RIVs.
 * Landed Cost Vouchers on SCR (production MAT-LCV-2026-00010…00051) show the same
   non-propagation: the added cost stays in the Quarantine warehouse value pool.
+
+## Root cause (5.8.1)
+
+Outward Serial and Batch Entry rows of the transfer and Manufacture carry a stale
+`outgoing_rate` = 1,744,604. Core writes the fresh batch rate only to
+`incoming_rate` / `stock_value_difference`; `apply_integer_sabe_policy_to_sle`
+preferred `outgoing_rate` for outward rows and rewrote the old rate. 5.8.1 makes
+the policy use Core's rate for outward rows during ETO-scoped reposts.
