@@ -314,6 +314,13 @@ doc_events = {
 	"Employee Checkin": {
 		"before_insert": "erpnext_extensions.extentionhrms.employee_checkin_manual_limit.before_insert",
 	},
+	# Iran SCR: keep supplied RM expense_account on the FG clearing account
+	# (e.g. 111421). Server Script Before Submit alone is insufficient for
+	# RIV/repost and can be bypassed when Item Group defaults fill RM expense.
+	"Subcontracting Receipt": {
+		"validate": "erpnext_extensions.iran_accounting.domain.subcontracting_receipt_gl_balance.enforce_scr_clearing_expense_accounts",
+		"before_submit": "erpnext_extensions.iran_accounting.domain.subcontracting_receipt_gl_balance.enforce_scr_clearing_expense_accounts",
+	},
 	"HR Settings": {
 		"validate": "erpnext_extensions.extentionhrms.employee_checkin_manual_limit.validate_hr_settings_manual_limit",
 		"on_update": "erpnext_extensions.extentionhrms.employee_checkin_manual_limit.clear_manual_checkin_policy_cache",

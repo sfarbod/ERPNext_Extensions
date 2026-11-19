@@ -31,6 +31,16 @@ document material credit). The single Δ residual is a **valuation gain**:
 
 When SVD < amount the residual is a valuation loss (debit SA |Δ|).
 
+RM / FG expense mismatch
+------------------------
+Core debits ``supplied_items.expense_account`` for RM and credits FG
+``expense_account`` for material. Iran clearing policy requires those accounts
+to be the **same** clearing account (e.g. 111421). When RM was resolved from an
+Item Group default (e.g. 611233) while FG uses clearing, the voucher shows an
+orphan clearing credit. ``enforce_scr_clearing_expense_accounts`` aligns the
+document fields on validate/before_submit; the normalizer remaps mismatched RM
+expense GL debits onto clearing before drop so RIV/repost is also safe.
+
 ``SubcontractingReceipt.get_gl_entries`` runs ``process_gl_map`` before return,
 so Iran's ``StockController.make_gl_entries`` often sees **merged** expense
 rows. This module handles merged and unmerged maps. Idempotent under repost.
@@ -58,6 +68,46 @@ def uses_scr_clearing_balance_gl(doc) -> bool:
 	if int(doc.get("is_return") or 0):
 		return False
 	return bool(is_irr_company(doc.get("company")))
+
+
+def enforce_scr_clearing_expense_accounts(doc, method=None) -> list[dict[str, str]]:
+	"""Align supplied RM expense_account to FG clearing for Iran SCR policy.
+
+	Scoped to Iran-company non-return Subcontracting Receipts. Does not touch
+	non-Iran companies or change service / valuation amounts.
+	"""
+	_ = method
+	if not uses_scr_clearing_balance_gl(doc):
+		return []
+
+	fg_items = _fg_items(doc)
+	if not fg_items:
+		return []
+
+	fg_by_name = {item.name: item for item in fg_items}
+	default_fg = fg_items[0] if len(fg_items) == 1 else None
+	changed: list[dict[str, str]] = []
+
+	for rm in doc.get("supplied_items") or []:
+		fg = fg_by_name.get(rm.get("reference_name")) or default_fg
+		if not fg:
+			continue
+		clearing = fg.get("expense_account")
+		if not clearing:
+			continue
+		current = rm.get("expense_account")
+		if current == clearing:
+			continue
+		rm.expense_account = clearing
+		changed.append(
+			{
+				"supplied_item": rm.get("name") or "",
+				"rm_item_code": rm.get("rm_item_code") or "",
+				"before": current or "",
+				"after": clearing,
+			}
+		)
+	return changed
 
 
 def _g(entry: Any, key: str, default=None):
@@ -248,13 +298,30 @@ def normalize_subcontracting_receipt_gl_entries(doc, gl_entries: list | None) ->
 	touched = False
 	marked = []
 
+	# Policy correction: move RM expense debits that landed off-clearing onto the
+	# FG clearing account so debit can equal credit and rows can be dropped.
+	if _remap_mismatched_rm_expense_debits_to_clearing(
+		gl_entries, doc_credit_by_exp, rm_debit_by_exp
+	):
+		touched = True
+
 	for exp, doc_credit in doc_credit_by_exp.items():
 		core_credit = core_credit_by_exp.get(exp, doc_credit)
-		rm_debit = rm_debit_by_exp.get(exp, doc_credit)
+		# After remap, RM debit belongs on clearing even if the document field
+		# still pointed at an Item-Group expense (RIV / stale submitted docs).
+		rm_debit = rm_debit_by_exp.get(exp)
+		if rm_debit is None:
+			rm_debit = doc_credit
 		delta = delta_by_exp.get(exp, 0.0)
 
 		cur_debit = sum(flt(_g(e, "debit")) for e in gl_entries if _g(e, "account") == exp)
 		cur_credit = sum(flt(_g(e, "credit")) for e in gl_entries if _g(e, "account") == exp)
+		# Post-LCV Core maps often fold the LCV clearing leg so debit==credit
+		# already (material = RM), while amount−service still reflects pre-LCV
+		# service. Never rewrite a net-zero clearing back to pre-LCV doc_credit.
+		if abs(cur_debit - cur_credit) <= TOL:
+			continue
+
 		clearing_ok = _approx(cur_debit, rm_debit, tol=1e-6) and _approx(cur_credit, doc_credit, tol=1e-6)
 
 		if not clearing_ok:
@@ -283,12 +350,24 @@ def normalize_subcontracting_receipt_gl_entries(doc, gl_entries: list | None) ->
 				for e in extras:
 					gl_entries.remove(e)
 			else:
+				# Unmerged Core maps credit clearing at (SVD−service)=doc+Δ.
+				# After process_gl_map / Iran RM-on-separate-account hooks, the
+				# divisional mirror can already be folded in → credit = doc+2Δ.
+				# Match either shape so we still rewrite to document material.
+				doubled_core_credit = flt(core_credit) + flt(delta)
 				for entry in gl_entries:
 					if _g(entry, "account") != exp:
 						continue
 					credit = flt(_g(entry, "credit"))
 					debit = flt(_g(entry, "debit"))
-					if credit > 0 and debit == 0 and _approx(credit, core_credit):
+					if (
+						credit > 0
+						and debit == 0
+						and (
+							_approx(credit, core_credit)
+							or _approx(credit, doubled_core_credit)
+						)
+					):
 						_set_amount_fields(entry, debit=0.0, credit=doc_credit)
 						_s(entry, SCR_GL_BALANCE_MARKER, 1)
 						marked.append(entry)
@@ -321,14 +400,97 @@ def normalize_subcontracting_receipt_gl_entries(doc, gl_entries: list | None) ->
 	# drop net-zero merged rows (debit==credit or both ~0). Also remove unmerged
 	# one-sided clearing pairs that cancel across the same expense account.
 	before_len = len(gl_entries)
-	gl_entries = _drop_balanced_clearing_accounts(doc, gl_entries, list(doc_credit_by_exp.keys()))
+	clearing_accounts = list(doc_credit_by_exp.keys())
+	gl_entries = _drop_balanced_clearing_accounts(doc, gl_entries, clearing_accounts)
 	gl_entries = drop_net_zero_merged_gl_rows(doc, gl_entries)
 	if len(gl_entries) != before_len:
 		touched = True
 
+	_guard_clearing_zero_net_or_throw(gl_entries, clearing_accounts)
+
 	if touched and flags is not None:
 		flags.irr_scr_clearing_balanced = True
 	return gl_entries
+
+
+def _remap_mismatched_rm_expense_debits_to_clearing(
+	gl_entries: list,
+	doc_credit_by_exp: dict[str, float],
+	rm_debit_by_exp: dict[str, float],
+) -> bool:
+	"""Remap orphan RM expense debits onto FG clearing when amounts match.
+
+	Live failure mode: Cr clearing (material) with Dr Item-Group expense (e.g.
+	611233) and Cr RM warehouse. Moving the RM expense debit onto clearing
+	restores debit==credit so ``_drop_balanced_clearing_accounts`` can remove
+	the no-op clearing movement.
+	"""
+	if not gl_entries or not doc_credit_by_exp:
+		return False
+
+	clearing_set = set(doc_credit_by_exp.keys())
+	touched = False
+
+	for clearing, doc_credit in doc_credit_by_exp.items():
+		cur_debit = sum(flt(_g(e, "debit")) for e in gl_entries if _g(e, "account") == clearing)
+		cur_credit = sum(flt(_g(e, "credit")) for e in gl_entries if _g(e, "account") == clearing)
+		if abs(cur_debit - cur_credit) <= TOL:
+			continue
+
+		needed = flt(doc_credit) - flt(cur_debit)
+		if needed <= TOL:
+			continue
+
+		# Prefer accounts that Core used for supplied RM expense.
+		candidate_accounts = [
+			acc for acc, amt in rm_debit_by_exp.items() if acc not in clearing_set and _approx(amt, needed)
+		]
+		if not candidate_accounts:
+			# Fall back: any one-sided debit of the needed amount off clearing.
+			seen = set()
+			for e in gl_entries:
+				acc = _g(e, "account")
+				if not acc or acc in clearing_set or acc in seen:
+					continue
+				if flt(_g(e, "credit")) == 0 and _approx(flt(_g(e, "debit")), needed):
+					candidate_accounts.append(acc)
+					seen.add(acc)
+
+		for acc in candidate_accounts:
+			for e in gl_entries:
+				if _g(e, "account") != acc:
+					continue
+				if flt(_g(e, "credit")) != 0:
+					continue
+				if not _approx(flt(_g(e, "debit")), needed):
+					continue
+				_s(e, "account", clearing)
+				_s(e, SCR_GL_BALANCE_MARKER, 1)
+				touched = True
+				needed = 0.0
+				break
+			if needed <= TOL:
+				break
+
+	return touched
+
+
+def _guard_clearing_zero_net_or_throw(gl_entries: list, clearing_accounts: list[str]) -> None:
+	"""Reject orphan clearing movements after normalization."""
+	for acc in clearing_accounts or []:
+		debit = sum(flt(_g(e, "debit")) for e in gl_entries if _g(e, "account") == acc)
+		credit = sum(flt(_g(e, "credit")) for e in gl_entries if _g(e, "account") == acc)
+		if abs(debit - credit) <= TOL:
+			continue
+		frappe.throw(
+			(
+				"Iran Subcontracting Receipt clearing account {0} must net to zero "
+				"after GL normalization (debit={1}, credit={2}). Align supplied-item "
+				"expense_account with the finished-good clearing expense_account "
+				"before submit/repost."
+			).format(frappe.bold(acc), debit, credit),
+			title="SCR Clearing Account Imbalance",
+		)
 
 
 def _drop_balanced_clearing_accounts(doc, gl_entries: list, clearing_accounts: list[str]) -> list:

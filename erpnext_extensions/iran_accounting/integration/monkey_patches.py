@@ -28,6 +28,7 @@ def apply_monkey_patches():
 		_patch_stock_entry_mr_alternative()
 		_patch_stock_entry_jc_component_return()
 		_patch_job_card_alternative_transfer()
+		_patch_subcontracting_receipt_get_gl_entries()
 		_patch_general_ledger()
 		_patch_accounts_controller()
 		_patch_stock_ledger_report()
@@ -36,6 +37,8 @@ def apply_monkey_patches():
 		_patch_repost_compatibility()
 		_patch_buying_regional_valuation_rate()
 		_patch_standalone_return_foc_valuation()
+	# Idempotent: SCR get_gl_entries must return Iran-normalized clearing for RIV compare.
+	_patch_subcontracting_receipt_get_gl_entries()
 	# Always (re)ensure stock-ledger engine patches — idempotent + fail-closed upgrade guard.
 	_patch_stock_ledger_engine()
 	# Idempotent: standalone FOC return must not post zero incoming_rate when warehouse VR exists.
@@ -400,6 +403,44 @@ def _preview_gl_columns(get_columns, columns, fields, filters):
 	if len(inspect.signature(get_columns).parameters) >= 3:
 		return get_columns(columns, fields, erpnext.get_company_currency(filters.company))
 	return get_columns(columns, fields)
+
+
+def _patch_subcontracting_receipt_get_gl_entries():
+	"""Normalize SCR GL in get_gl_entries so Transaction RIV compares/posts Iran map.
+
+	``repost_gle_for_stock_vouchers`` builds ``expected_gle`` from ``get_gl_entries``
+	and skips repost when it matches existing rows. Without this wrap, RIV compares
+	the raw Core map (orphan 111421 / SA debit Δ) against a previously normalized
+	voucher and either skips or re-posts the unnormalized map before
+	``make_gl_entries`` can repair it.
+	"""
+	from erpnext.subcontracting.doctype.subcontracting_receipt.subcontracting_receipt import (
+		SubcontractingReceipt,
+	)
+
+	if getattr(SubcontractingReceipt.get_gl_entries, "_iran_scr_gl_normalize", False):
+		return
+
+	original = SubcontractingReceipt.get_gl_entries
+
+	def get_gl_entries(self, inventory_account_map=None):
+		gl_entries = original(self, inventory_account_map)
+		from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+		from erpnext_extensions.iran_accounting.domain.subcontracting_receipt_gl_balance import (
+			normalize_subcontracting_receipt_gl_entries,
+			uses_scr_clearing_balance_gl,
+		)
+
+		if is_irr_company(self.company) and uses_scr_clearing_balance_gl(self) and gl_entries is not None:
+			# Fresh normalize for each get_gl_entries call (RIV compare + posting).
+			flags = getattr(self, "flags", None)
+			if flags is not None:
+				flags.pop("irr_scr_clearing_balanced", None)
+			gl_entries = normalize_subcontracting_receipt_gl_entries(self, gl_entries)
+		return gl_entries
+
+	get_gl_entries._iran_scr_gl_normalize = True
+	SubcontractingReceipt.get_gl_entries = get_gl_entries
 
 
 def _patch_stock_controller():

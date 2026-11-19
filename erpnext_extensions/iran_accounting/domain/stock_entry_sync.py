@@ -517,6 +517,9 @@ def _preserve_native_outgoing_and_align_sed(sle, row, ccy: str) -> None:
 
 
 def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
+	from erpnext_extensions.iran_accounting.domain.eto_scr_repost_scope import (
+		should_align_empty_warehouse_sle_from_batch_sabe,
+	)
 	from erpnext_extensions.iran_accounting.domain.historical_valuation_residual import (
 		ABSORB_INTO_MOVEMENT,
 		apply_zero_qty_movement_contract,
@@ -526,6 +529,9 @@ def _absorb_native_zero_qty_historical_residual(sle, row, ccy: str) -> None:
 		is_final_zero_qty_consume_state,
 	)
 
+	# v5.8.3: ETO batch empty-warehouse — leave SLE for SABE align, do not absorb MA residual.
+	if should_align_empty_warehouse_sle_from_batch_sabe(sle):
+		return
 	if not is_final_zero_qty_consume_state(sle):
 		return
 	# Shared resolver: chronological previous wins over sv−svd fiction when
@@ -581,6 +587,13 @@ def _repair_empty_warehouse_valuation_continuity(
 	if abs(flt(sle.qty_after_transaction)) > 1e-9:
 		return False
 	if abs(flt(sle.stock_value)) > 1.0:
+		return False
+	from erpnext_extensions.iran_accounting.domain.eto_scr_repost_scope import (
+		should_align_empty_warehouse_sle_from_batch_sabe,
+	)
+
+	# v5.8.3: do not cap ETO batch outward SLE to understated warehouse residual.
+	if should_align_empty_warehouse_sle_from_batch_sabe(sle):
 		return False
 	true_prev = _resolve_consume_to_zero_previous_stock_value(sle)
 	expected_sv = flt(true_prev) + flt(sle.stock_value_difference)
