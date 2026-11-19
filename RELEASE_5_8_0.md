@@ -159,3 +159,102 @@ separately.
 Implemented and validated on the development bench against **ERPNext 16.60.0**
 and **Frappe 16.60.2**. Items listed under “Not run / not claimed” are **not**
 asserted complete.
+
+---
+
+## Post-audit corrective update — ERPNext 16.60 GL wrapper compatibility
+
+**Date:** 2026-11-19  
+**Version remains:** `5.8.0` (no 5.8.1)  
+**Base release commit:** `66efac2`  
+**Corrective commit:** (see git log; new commit on top of `66efac2`)
+
+### Audit outcome (historical)
+
+The pre-production audit of `66efac2` returned **NOT APPROVED**. Root cause:
+
+- ERPNext **16.54.0+** added keyword-only `from_reversal` to
+  `erpnext.accounts.general_ledger.make_entry` and passes
+  `from_reversal=True` from `make_reverse_gl_entries`.
+- Iran wrapper still declared
+  `make_entry(args, adv_adj, update_outstanding, from_repost=False)` and
+  forwarded only positional args → `TypeError` on reverse/repost paths.
+- Observed impact on live 16.60.0:
+  - LCV submit failed (`test_lcv_integerizes_valuation_rate`).
+  - RIV left GL cancelled with no replacement (`gl_debit → 0`) while SLE
+    stayed correct (`test_fixture_large_qty_rate_preserved_through_riv`,
+    `test_fixture_03766_pattern_riv_x2`).
+
+That audit failure is **not** rewritten as a pass. This section documents the
+corrective fix and revalidation.
+
+### Root cause
+
+Signature drift between Core (16.54+) and Iran
+`_bind_iran_general_ledger_entry_filters` `make_entry` monkey patch.
+Opening allow-lists for 16.54/16.55/16.60 without forwarding `from_reversal`
+activated the latent break.
+
+### Wrapper signature correction
+
+In `iran_accounting/integration/monkey_patches.py`:
+
+```python
+def make_entry(args, adv_adj, update_outstanding, from_repost=False, *, from_reversal=False):
+    ...
+    if "from_reversal" in inspect.signature(orig).parameters:
+        return orig(..., from_repost, from_reversal=from_reversal)
+    if from_reversal:
+        raise TypeError(...)  # fail closed on pre-16.54 Core
+    return orig(..., from_repost)
+```
+
+- Positional `from_repost` preserved.
+- `from_reversal` keyword-only; forwarded to Core (sets `gle.flags.from_reversal`).
+- `_patch_general_ledger()` re-invoked on every `apply_monkey_patches()` so
+  long-lived workers rebind the corrective wrapper.
+
+### Compatibility guard
+
+`assert_make_entry_patch_supported` + `_MAKE_ENTRY_FINGERPRINT`:
+
+- Version allow-list reused from RIV/UVR tables.
+- Accepts Core signatures with and without `from_reversal`.
+- Primary fingerprint: 16.54–16.60 body
+  `60cc26d9e2b3905c368fdbc438ae420f4767a0442251ab7efa8e5a92714e078b`.
+- Alternate: ≤16.53 body
+  `7e293a47c497bd709a343eadaed6cd1ba2555a86c0ae8c3d844fe9d11915239e`.
+- Fail-closed on unsupported versions / unknown signatures / digests.
+
+### Regression tests and results (revalidation)
+
+New: `iran_accounting/tests/test_gl_make_entry_from_reversal_v580.py`
+
+| Suite | Ran | Pass | Fail | Err | Skip |
+|---|---:|---:|---:|---:|---:|
+| `test_gl_make_entry_from_reversal_v580` | 7 | 7 | 0 | 0 | 0 |
+| RIV Integration (incl. previously failing fixtures) | 8 | 8 | 0 | 0 | 0 |
+| UVR Integration (incl. LCV submit) | 5 | 4 (+1 skip) | 0 | 0 | 1 |
+| RIV unit | 12 | 12 | 0 | 0 | 0 |
+| UVR unit | 10 | 10 | 0 | 0 | 0 |
+| IRR residual / Class A helpers | 27 | 27 | 0 | 0 | 0 |
+| SCR clearing v5757 | 12 | 12 | 0 | 0 | 0 |
+| PR UVR ULP / integer VR | 14 | 14 | 0 | 0 | 0 |
+| PR legacy UVR float | 11 | 11 | 0 | 0 | 0 |
+
+UVR skip: `test_non_irr_passthrough` — no non-IRR company on this site.
+
+Mandatory gates after corrective fix:
+
+1. GL reversal (`make_reverse_gl_entries`) — **pass**
+2. RIV GL preservation — **pass**
+3. LCV submission — **pass**
+4. `make_entry` compatibility guard — **pass**
+5. Relevant accounting regressions — **pass**
+
+### Remaining limitations
+
+1. Intermediate ERPNext/Frappe minors still fail-closed (unchanged).
+2. JC live canaries remain site-data dependent (unchanged; not part of this fix).
+3. Full `bench run-tests --app erpnext_extensions` still not run end-to-end.
+4. Production migrate / multi-site validation still not claimed.
