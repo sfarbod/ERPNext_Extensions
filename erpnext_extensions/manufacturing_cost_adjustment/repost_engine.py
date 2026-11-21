@@ -24,10 +24,43 @@ from erpnext_extensions.manufacturing_cost_adjustment.locks import (
 )
 
 
+def _ensure_iran_runtime() -> None:
+	"""Apply Iran monkey patches for script / console / non-request MCA runners.
+
+	Desk requests and RQ jobs already run ``before_request`` / ``before_job``
+	bootstrap. Bare ``frappe.connect()`` processors (Dev sequential MCA runs)
+	do not — without patches, RIV GL rebuild raises Core ``Debit and Credit not
+	equal … Difference is ±1`` instead of Iran's IRR residual absorption.
+	Idempotent.
+	"""
+	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran_runtime
+
+	apply_iran_runtime()
+
+
+def _raise_write_limit() -> None:
+	"""MCA allocate/rebuild/RIV prep routinely exceeds Frappe's default write cap."""
+	limit = cint(frappe.conf.get("max_writes_per_transaction") or 0) or 5_000_000
+	try:
+		frappe.db.MAX_WRITES_PER_TRANSACTION = limit
+	except Exception:
+		pass
+
+
+def _is_quarantined(mca_name: str) -> bool:
+	"""Operational exclusion — never auto-process; document left unchanged."""
+	return mca_name in C.QUARANTINED_MCA_NAMES
+
+
 @frappe.whitelist()
 def process_mca(mca_name: str) -> dict[str, Any]:
 	"""Entry point for enqueue / scheduler / Desk retry. Idempotent by checkpoint."""
 	frappe.has_permission(C.MCA_DOCTYPE, "write", throw=True)
+	if _is_quarantined(mca_name):
+		frappe.logger("mca").warning(f"MCA quarantined — skip process_mca name={mca_name}")
+		return {"ok": False, "reason": "quarantined"}
+	_ensure_iran_runtime()
+	_raise_write_limit()
 	mca = frappe.get_doc(C.MCA_DOCTYPE, mca_name)
 	mca.check_permission("write")
 	if mca.docstatus != 1:
@@ -50,7 +83,15 @@ def process_mca(mca_name: str) -> dict[str, Any]:
 		frappe.flags.in_mca_pipeline = False
 		# Keep lock while Pending RIV so concurrent MCA cannot interleave;
 		# release on Completed / Voided / Failed-after-compensate.
-		status = frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "processing_status")
+		try:
+			status = frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "processing_status")
+		except Exception:
+			try:
+				frappe.db.rollback()
+			except Exception:
+				pass
+			frappe.connect()
+			status = frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "processing_status")
 		if status in (C.PS_COMPLETED, C.PS_VOIDED, C.PS_FAILED):
 			release_se_lock(mca.stock_entry, owner)
 
@@ -333,15 +374,13 @@ def _allocate_and_persist(mca_name: str) -> None:
 		update_modified=False,
 	)
 
-	try:
-		from erpnext_extensions.iran_accounting.stock_entry import (
-			persist_irr_stock_entry_header_and_rows,
-		)
+	from erpnext_extensions.iran_accounting.stock_entry import (
+		persist_irr_stock_entry_header_and_rows,
+	)
 
-		persist_irr_stock_entry_header_and_rows(se)
-	except Exception:
-		# Non-fatal if helper unavailable; SED already db_update'd
-		pass
+	# Must persist integer basic_rate / amount composition before SLE refresh.
+	# Soft-passing here left fractional SED rates that fail ledger contract.
+	persist_irr_stock_entry_header_and_rows(se)
 
 	se.reload()
 	frappe.db.set_value(
@@ -361,7 +400,15 @@ def _allocate_and_persist(mca_name: str) -> None:
 
 
 def _refresh_sle(se_name: str) -> None:
-	"""In-place SLE valuation refresh via update_entries_after (no LCV flags)."""
+	"""In-place SLE valuation refresh via update_entries_after (no LCV flags).
+
+	Core ``update_entries_after`` walks *future* item/warehouse SLEs, including
+	dependent Manufacture outputs that share consumed materials. That walk is a
+	repost, not a live submit: Iran two-slice / HRC-00015 must use RIV semantics
+	(``through_repost_item_valuation``) so mid-chain negative or short SABE pools
+	audit+fall-through instead of fail-closing the MCA source refresh.
+	Final dependent rebuild remains the queued Transaction RIV.
+	"""
 	from erpnext.stock.stock_ledger import update_entries_after
 
 	se = frappe.get_doc("Stock Entry", se_name)
@@ -374,61 +421,114 @@ def _refresh_sle(se_name: str) -> None:
 		("Stock Entry", se_name),
 		as_dict=True,
 	)
-	for p in pairs:
-		update_entries_after(
-			{
-				"item_code": p.item_code,
-				"warehouse": p.warehouse,
-				"posting_date": se.posting_date,
-				"posting_time": se.posting_time,
-				"voucher_type": "Stock Entry",
-				"voucher_no": se_name,
-				"company": se.company,
-			},
-			allow_negative_stock=True,
-		)
+	prev_riv_flag = bool(frappe.flags.get("through_repost_item_valuation"))
+	frappe.flags.through_repost_item_valuation = True
+	try:
+		for p in pairs:
+			update_entries_after(
+				{
+					"item_code": p.item_code,
+					"warehouse": p.warehouse,
+					"posting_date": se.posting_date,
+					"posting_time": se.posting_time,
+					"voucher_type": "Stock Entry",
+					"voucher_no": se_name,
+					"company": se.company,
+				},
+				allow_negative_stock=True,
+			)
+	finally:
+		frappe.flags.through_repost_item_valuation = prev_riv_flag
 	_iran_remirror_sle_from_sed(se_name)
 
 
-def _iran_remirror_sle_from_sed(se_name: str) -> None:
-	"""Restore Manufacture SLE SVD from SED.amount (Iran amount authority).
+def _integerize_sle_irr_transaction_rates(sle) -> bool:
+	"""Integerize SLE rate fields when Core left a fractional warehouse average.
 
-	Also force integer IRR valuation_rate on SED + SLE after Core/RIV rewrites.
+	``reassert_document_amount_authority_sle`` returns early when
+	``|SVD − signed SED.amount| ≤ 0.5``, leaving Core's fractional
+	``valuation_rate`` (often ``stock_value / qty_after``) untouched. The Iran
+	ledger contract still requires integer IRR SLE rates.
+
+	Transaction rate uses existing Iran ``integer_valuation_rate_from_amount``
+	on ``|SVD| / |qty|`` — same policy as on_submit Manufacture finalize. Does
+	not rewrite SVD from ``qty × rate`` (preserves Class A residual).
 	"""
-	try:
-		from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
-			reassert_document_amount_authority_sle,
-		)
-	except ImportError:
-		reassert_document_amount_authority_sle = None  # type: ignore
+	from erpnext_extensions.iran_accounting.domain.currency import (
+		amount_is_fractional,
+		get_company_currency,
+		integer_valuation_rate_from_amount,
+		is_irr_company,
+		round_currency,
+	)
+
+	company = sle.get("company") if hasattr(sle, "get") else getattr(sle, "company", None)
+	if not company or not is_irr_company(company):
+		return False
+	ccy = get_company_currency(company)
+	changed = False
+	actual_qty = flt(sle.actual_qty)
+	svd = flt(sle.stock_value_difference)
+	qty = abs(actual_qty)
+	if qty > 1e-9:
+		tx_rate = float(integer_valuation_rate_from_amount(abs(svd), qty, ccy))
+		if amount_is_fractional(sle.valuation_rate, ccy):
+			sle.valuation_rate = tx_rate
+			changed = True
+		if actual_qty > 0 and amount_is_fractional(sle.incoming_rate, ccy):
+			sle.incoming_rate = tx_rate
+			changed = True
+		elif actual_qty < 0 and amount_is_fractional(sle.outgoing_rate, ccy):
+			sle.outgoing_rate = tx_rate
+			changed = True
+	for field in ("stock_value_difference", "stock_value"):
+		val = flt(getattr(sle, field, 0))
+		if amount_is_fractional(val, ccy):
+			setattr(sle, field, float(round_currency(val, ccy)))
+			changed = True
+	return changed
+
+
+def _iran_remirror_sle_from_sed(se_name: str) -> None:
+	"""Restore Iran SED + SLE after Core ``update_entries_after`` / RIV rewrites.
+
+	Order is load-bearing (mirrors on_submit Manufacture finalize):
+
+	1. Re-run IRR Manufacture economic finalize + persist so ``basic_rate``,
+	   ``basic_amount``, ``amount``, and ``valuation_rate`` are integer IRR and
+	   composition-consistent (Core leaves fractional ``basic_rate`` intact).
+	2. Integerize SABE rows from the refreshed SLE without abandoning document
+	   amount authority (``align_sle=False`` then remirror).
+	3. Reassert SLE ``stock_value_difference`` from signed ``SED.amount``.
+	4. Integerize any remaining fractional SLE transaction rates (Core warehouse
+	   average) without rewriting SVD from ``qty × rate``.
+
+	Never set ``stock_value_difference = qty × valuation_rate`` after remirror —
+	that fights Class A amount−rate×qty residual and fails ledger contract.
+	"""
+	from erpnext_extensions.iran_accounting.domain.currency import is_irr_company
+	from erpnext_extensions.iran_accounting.domain.stock_entry_sync import (
+		reassert_document_amount_authority_sle,
+	)
+	from erpnext_extensions.iran_accounting.stock_entry import (
+		persist_irr_stock_entry_header_and_rows,
+	)
+
+	se = frappe.get_doc("Stock Entry", se_name)
+	if not is_irr_company(se.company):
+		return
+
+	se.flags.ignore_validate_update_after_submit = True
+	se.flags.mca_engine_update = True
+	frappe.flags.in_mca_pipeline = True
+	persist_irr_stock_entry_header_and_rows(se)
 
 	try:
-		from erpnext_extensions.iran_accounting.domain.currency import (
-			get_company_currency,
-			is_irr_company,
-			round_monetary_rate,
+		from erpnext_extensions.iran_accounting.domain.sabe_integer_valuation import (
+			apply_integer_sabe_policy_to_sle,
 		)
 	except ImportError:
-		is_irr_company = None  # type: ignore
-
-	# Round SED valuation_rate first (ledger contract validates Stock Entry Detail)
-	if is_irr_company:
-		try:
-			se = frappe.get_doc("Stock Entry", se_name)
-			if is_irr_company(se.company):
-				ccy = get_company_currency(se.company)
-				for d in se.get("items") or []:
-					vr = flt(round_monetary_rate(flt(d.valuation_rate), ccy))
-					if abs(flt(d.valuation_rate) - vr) > 1e-9:
-						frappe.db.set_value(
-							"Stock Entry Detail",
-							d.name,
-							"valuation_rate",
-							vr,
-							update_modified=False,
-						)
-		except Exception:
-			frappe.log_error(title=f"MCA SED IRR round {se_name}")
+		apply_integer_sabe_policy_to_sle = None  # type: ignore
 
 	sles = frappe.get_all(
 		"Stock Ledger Entry",
@@ -442,38 +542,24 @@ def _iran_remirror_sle_from_sed(se_name: str) -> None:
 	for sle_name in sles:
 		sle = frappe.get_doc("Stock Ledger Entry", sle_name)
 		changed = False
-		if reassert_document_amount_authority_sle:
+		if apply_integer_sabe_policy_to_sle and sle.get("serial_and_batch_bundle"):
 			try:
-				changed = bool(reassert_document_amount_authority_sle(sle))
+				# Localize SABE rates/SVD; do not let SABE qty×rate own SLE movement.
+				apply_integer_sabe_policy_to_sle(sle, align_sle=False)
+				changed = True
 			except Exception:
-				changed = False
-		# IRR contract: valuation_rate must be integer when company is IRR
-		if is_irr_company:
-			try:
-				if is_irr_company(sle.company):
-					ccy = get_company_currency(sle.company)
-					vr = flt(round_monetary_rate(flt(sle.valuation_rate), ccy))
-					if abs(flt(sle.valuation_rate) - vr) > 1e-9:
-						sle.valuation_rate = vr
-						if flt(sle.actual_qty) > 0:
-							sle.incoming_rate = vr
-						elif flt(sle.actual_qty) < 0:
-							sle.outgoing_rate = vr
-						# Keep stock_value_difference aligned to qty×rate when FG receipt
-						if flt(sle.actual_qty):
-							sle.stock_value_difference = flt(sle.actual_qty) * vr
-						changed = True
-			except Exception:
-				frappe.log_error(title=f"MCA IRR remirror {sle_name}")
+				frappe.log_error(title=f"MCA SABE integerize {sle_name}")
+		try:
+			if reassert_document_amount_authority_sle(sle):
+				changed = True
+		except Exception:
+			frappe.log_error(title=f"MCA SLE amount authority {sle_name}")
+		# Always close the fractional-rate hole even when SVD already matches SED.
+		if _integerize_sle_irr_transaction_rates(sle):
+			changed = True
 		if changed:
 			sle.db_update()
-			# Prefer Core helper when available so dependent SLE fields stay consistent
-			try:
-				from erpnext.stock.stock_ledger import update_sle_valuation_fields
 
-				update_sle_valuation_fields(sle)
-			except Exception:
-				pass
 
 def _refresh_gl(se_name: str) -> None:
 	"""RIV-style GL delete+repost for THIS Stock Entry only."""
@@ -514,14 +600,14 @@ def _compensate_restore(mca_name: str) -> None:
 	init_landed_taxes_and_totals(se)
 	se.distribute_additional_costs()
 	se.update_valuation_rate(reset_outgoing_rate=False)
-	try:
-		from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
-			align_stock_entry_item_amounts,
-		)
+	from erpnext_extensions.iran_accounting.domain.qty_rate_amount import (
+		align_stock_entry_item_amounts,
+	)
+	from erpnext_extensions.iran_accounting.stock_entry import (
+		persist_irr_stock_entry_header_and_rows,
+	)
 
-		align_stock_entry_item_amounts(se)
-	except Exception:
-		pass
+	align_stock_entry_item_amounts(se)
 	for d in se.get("items") or []:
 		d.db_update()
 	for d in se.get("additional_costs") or []:
@@ -539,6 +625,7 @@ def _compensate_restore(mca_name: str) -> None:
 		},
 		update_modified=False,
 	)
+	persist_irr_stock_entry_header_and_rows(se)
 	_refresh_sle(se.name)
 	_refresh_gl(se.name)
 	# Clear MCA mappings
@@ -659,26 +746,56 @@ def _kick_riv_execution(riv_name: str) -> None:
 	status = frappe.db.get_value("Repost Item Valuation", riv_name, "status")
 	if status not in ("Queued", "In Progress"):
 		return
+	_ensure_iran_runtime()
 	try:
 		from erpnext.stock.doctype.repost_item_valuation.repost_item_valuation import (
 			execute_reposting_entry,
 		)
 
-		# Sync path for tests / when already inside a long job
+		# Sync path for unit tests and explicit inline runners
 		if getattr(frappe, "in_test", False) or getattr(frappe.flags, "in_test", False):
 			execute_reposting_entry(riv_name)
 			return
+		if getattr(frappe.flags, "mca_inline_riv", False):
+			execute_reposting_entry(riv_name)
+			return
 
-		# Prefer direct execute in current worker; fall back to enqueue
+		# When process_mca itself is an RQ job on the dedicated ``mca`` worker,
+		# do NOT run multi-hour RIV inline — that leaves Queue Type=mca "busy"
+		# for one voucher and starves other MCAs. Enqueue onto Core's ``long``
+		# queue (same as repost_item_valuation.py) so long workers consume RIV.
+		in_rq = False
+		try:
+			from rq import get_current_job
+
+			in_rq = get_current_job() is not None
+		except Exception:
+			in_rq = False
+
+		if in_rq or getattr(frappe.flags, "mca_riv_enqueue_only", False):
+			frappe.enqueue(
+				"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.execute_reposting_entry",
+				name=riv_name,
+				queue=C.MCA_RIV_RQ_QUEUE,
+				timeout=C.MCA_JOB_TIMEOUT,
+				job_id=f"mca-riv-exec:{riv_name}",
+				deduplicate=True,
+			)
+			frappe.logger("mca").info(
+				f"MCA RIV enqueued riv={riv_name} queue={C.MCA_RIV_RQ_QUEUE}"
+			)
+			return
+
+		# Console / sequential Dev processors: execute sync, enqueue-long on failure
 		try:
 			execute_reposting_entry(riv_name)
 		except Exception:
 			frappe.enqueue(
 				"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.execute_reposting_entry",
 				name=riv_name,
-				queue="long",
-				timeout=3600,
-				job_id=f"mca-riv:{riv_name}",
+				queue=C.MCA_RIV_RQ_QUEUE,
+				timeout=C.MCA_JOB_TIMEOUT,
+				job_id=f"mca-riv-exec:{riv_name}",
 				deduplicate=True,
 			)
 	except Exception as exc:
@@ -730,17 +847,35 @@ def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 		return {"ok": False, "reason": "riv_pending", "statuses": statuses}
 
 	if any(s == "Failed" for s in statuses.values()):
+		# Drop Failed RIV refs so `_queue_or_reuse_riv` can recreate. Restore
+		# source SE SED/SLE integer IRR rates — a partial RIV walk can leave
+		# Core fractional basic_rate on the Manufacture voucher.
+		mca = frappe.get_doc(C.MCA_DOCTYPE, mca_name)
+		alive = [
+			r
+			for r, st in statuses.items()
+			if st not in ("Failed", None)
+		]
 		frappe.db.set_value(
 			C.MCA_DOCTYPE,
 			mca_name,
 			{
+				"riv_voucher_nos": "\n".join(alive),
 				"repost_status": C.RS_FAILED,
 				"repost_required": 1,
 				"last_repost_error": f"RIV Failed: {statuses}",
 				"processing_status": C.PS_PENDING_RIV,
+				"checkpoint": C.CP_CONTRACT_OK,
 			},
 			update_modified=False,
 		)
+		try:
+			_iran_remirror_sle_from_sed(mca.stock_entry)
+			_refresh_gl(mca.stock_entry)
+			_enforce_contract(mca.stock_entry)
+		except Exception as exc:
+			frappe.log_error(title=f"MCA remirror after RIV fail {mca_name}", message=str(exc))
+		_queue_or_reuse_riv(mca_name)
 		_schedule_retry(mca_name, "riv_failed", delay=120)
 		return {"ok": False, "reason": "riv_failed", "statuses": statuses}
 
@@ -805,20 +940,32 @@ def _final_reconcile(se_name: str) -> None:
 
 def _fail(mca_name: str, exc: BaseException) -> None:
 	msg = f"{exc}\n{traceback.format_exc()}"
-	transient = _is_transient(str(exc))
-	frappe.db.set_value(
-		C.MCA_DOCTYPE,
-		mca_name,
-		{
-			"processing_status": C.PS_FAILED,
-			"repost_required": 1,
-			"repost_status": C.RS_FAILED,
-			"last_repost_error": str(exc)[:2000],
-			"error_log": msg[:50000],
-		},
-		update_modified=False,
-	)
-	frappe.db.commit()
+	transient = _is_transient(str(exc)) or "TooManyWrites" in type(exc).__name__
+	# Pipeline may have already exhausted MAX_WRITES — clear the aborted txn first.
+	try:
+		frappe.db.rollback()
+	except Exception:
+		pass
+	_raise_write_limit()
+	try:
+		frappe.db.set_value(
+			C.MCA_DOCTYPE,
+			mca_name,
+			{
+				"processing_status": C.PS_FAILED,
+				"repost_required": 1,
+				"repost_status": C.RS_FAILED,
+				"last_repost_error": str(exc)[:2000],
+				"error_log": msg[:50000],
+			},
+			update_modified=False,
+		)
+		frappe.db.commit()
+	except Exception as persist_exc:
+		frappe.log_error(
+			title=f"MCA fail persist {mca_name}",
+			message=f"{persist_exc}\noriginal={exc}",
+		)
 	if transient:
 		_schedule_retry(mca_name, "transient", delay=120)
 	frappe.log_error(title=f"MCA failed {mca_name}", message=msg)
@@ -855,8 +1002,20 @@ def _schedule_retry(mca_name: str, reason: str, delay: int = 60) -> None:
 	)
 
 
+def _is_permanent_business_failure(mca_name: str) -> bool:
+	"""True when last_repost_error is a non-retryable business/integrity failure."""
+	err = frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "last_repost_error") or ""
+	return any(m in err for m in C.PERMANENT_ERROR_MARKERS)
+
+
 def process_pending_mca_reposts() -> int:
-	"""Scheduler: resume MCAs with repost_required that are due."""
+	"""Scheduler: resume MCAs with repost_required that are due.
+
+	Enqueues onto the dedicated ``mca`` RQ queue (concurrency 1 worker). Skips
+	permanent business failures (e.g. negative pool_value) so they stay Failed
+	until data repair + manual retry.
+	"""
+	_ensure_iran_runtime()
 	now = now_datetime()
 	names = frappe.get_all(
 		C.MCA_DOCTYPE,
@@ -879,6 +1038,7 @@ def process_pending_mca_reposts() -> int:
 			),
 		},
 		pluck="name",
+		order_by="name",
 	)
 	processed = 0
 	# When running under tests / console, execute inline so RIV does not stall Queued
@@ -888,11 +1048,15 @@ def process_pending_mca_reposts() -> int:
 	for name in names:
 		next_at = frappe.db.get_value(C.MCA_DOCTYPE, name, "next_retry_at")
 		status = frappe.db.get_value(C.MCA_DOCTYPE, name, "processing_status")
+		if status == C.PS_VOIDED:
+			continue
+		if _is_quarantined(name):
+			continue
+		if _is_permanent_business_failure(name):
+			continue
 		# Permanent Failed (no next_retry_at) stays visible until manual retry;
 		# only transient failures schedule next_retry_at.
 		if status == C.PS_FAILED and (not next_at or next_at > now):
-			continue
-		if status == C.PS_VOIDED:
 			continue
 		# Skip if SE cancelled / missing
 		se = frappe.db.get_value(C.MCA_DOCTYPE, name, "stock_entry")
@@ -905,6 +1069,9 @@ def process_pending_mca_reposts() -> int:
 		riv_text = frappe.db.get_value(C.MCA_DOCTYPE, name, "riv_voucher_nos")
 		for riv in _parse_riv_list(riv_text):
 			_kick_riv_execution(riv)
+		frappe.logger("mca").info(
+			f"MCA schedule enqueue name={name} se={se} status={status} riv={riv_text!r}"
+		)
 		if inline:
 			try:
 				process_mca(name)
@@ -914,8 +1081,8 @@ def process_pending_mca_reposts() -> int:
 			frappe.enqueue(
 				"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.process_mca",
 				mca_name=name,
-				queue="long",
-				timeout=3600,
+				queue=C.MCA_RQ_QUEUE,
+				timeout=C.MCA_JOB_TIMEOUT,
 				job_id=f"mca-sched:{name}",
 				deduplicate=True,
 			)
@@ -938,6 +1105,8 @@ def on_riv_change(doc, method=None) -> None:
 		pluck="name",
 	)
 	for name in mcas:
+		if _is_quarantined(name):
+			continue
 		rivs = _parse_riv_list(frappe.db.get_value(C.MCA_DOCTYPE, name, "riv_voucher_nos"))
 		if doc.name not in rivs and rivs:
 			# still related by stock entry
@@ -945,8 +1114,8 @@ def on_riv_change(doc, method=None) -> None:
 		frappe.enqueue(
 			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.process_mca",
 			mca_name=name,
-			queue="long",
-			timeout=3600,
+			queue=C.MCA_RQ_QUEUE,
+			timeout=C.MCA_JOB_TIMEOUT,
 			enqueue_after_commit=True,
 			job_id=f"mca-riv:{name}:{doc.status}",
 			deduplicate=True,

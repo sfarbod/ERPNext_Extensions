@@ -47,8 +47,8 @@ class ManufacturingCostAdjustment(Document):
 		frappe.enqueue(
 			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.process_mca",
 			mca_name=self.name,
-			queue="long",
-			timeout=3600,
+			queue=C.MCA_RQ_QUEUE,
+			timeout=C.MCA_JOB_TIMEOUT,
 			enqueue_after_commit=True,
 			job_id=f"mca-process:{self.name}:{self.processing_attempt}",
 			deduplicate=True,
@@ -261,6 +261,13 @@ def make_mca_from_stock_entry(stock_entry: str):
 def retry_mca_processing(name: str):
 	"""Manual controlled retry for Failed / Pending RIV MCA."""
 	frappe.has_permission(C.MCA_DOCTYPE, "write", throw=True)
+	if name in C.QUARANTINED_MCA_NAMES:
+		frappe.throw(
+			_(
+				"MCA {0} is quarantined (accounting exception). "
+				"Do not retry until the recovery plan is authorized."
+			).format(name)
+		)
 	doc = frappe.get_doc(C.MCA_DOCTYPE, name)
 	doc.check_permission("write")
 	if doc.docstatus != 1:
@@ -283,8 +290,8 @@ def retry_mca_processing(name: str):
 	frappe.enqueue(
 		"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.process_mca",
 		mca_name=name,
-		queue="long",
-		timeout=3600,
+		queue=C.MCA_RQ_QUEUE,
+		timeout=C.MCA_JOB_TIMEOUT,
 		enqueue_after_commit=True,
 		job_id=f"mca-retry:{name}:{now_datetime()}",
 	)
