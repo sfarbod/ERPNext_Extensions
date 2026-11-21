@@ -546,6 +546,10 @@ def persist_all(
 		"breakdown_total_overhead",
 		"breakdown_total_labor",
 		"breakdown_total_amount",
+		"breakdown_total_allocated_overhead_share",
+		"breakdown_total_allocated_labor_share",
+		"breakdown_total_unallocated_overhead",
+		"breakdown_total_unallocated_labor",
 	]
 	from erpnext_extensions.iran_accounting.fg_cost_allocation.document_breakdown import (
 		build_document_breakdown,
@@ -570,6 +574,10 @@ def persist_all(
 		"quantity",
 		"overhead_amount",
 		"labor_amount",
+		"allocated_overhead_share",
+		"allocated_labor_share",
+		"unallocated_overhead",
+		"unallocated_labor",
 		"total_allocated_amount",
 		"currency",
 	]
@@ -664,6 +672,10 @@ def persist_all(
 				_f(breakdown.total_overhead),
 				_f(breakdown.total_labor),
 				_f(breakdown.total_allocated_amount),
+				0.0,
+				0.0,
+				_f(breakdown.total_overhead),
+				_f(breakdown.total_labor),
 			]
 		)
 		for j, brow in enumerate(breakdown.rows, start=1):
@@ -682,6 +694,10 @@ def persist_all(
 					brow.source_document_type,
 					brow.source_document,
 					_f(brow.quantity),
+					_f(brow.overhead_amount),
+					_f(brow.labor_amount),
+					0.0,
+					0.0,
 					_f(brow.overhead_amount),
 					_f(brow.labor_amount),
 					_f(brow.total_allocated_amount),

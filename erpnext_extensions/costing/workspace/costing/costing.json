@@ -79,6 +79,17 @@
   },
   {
    "hidden": 0,
+   "icon": "file-text",
+   "is_query_report": 0,
+   "label": "Control Credit Allocations",
+   "link_count": 0,
+   "link_to": "MFG Cost Control Credit Allocation",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
    "icon": "alert-triangle",
    "is_query_report": 0,
    "label": "Calculation Status",

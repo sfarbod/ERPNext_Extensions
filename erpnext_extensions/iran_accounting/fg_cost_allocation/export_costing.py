@@ -298,6 +298,10 @@ def export_product_document_breakdown(product_allocation: str):
 		"مقدار",
 		"کنترل سربار",
 		"کنترل دستمزد",
+		"سهم تخصیص‌یافته سربار",
+		"سهم تخصیص‌یافته دستمزد",
+		"تخصیص‌نیافته سربار",
+		"تخصیص‌نیافته دستمزد",
 		"جمع",
 	]
 	qty_format = "#,##0.###"
@@ -319,6 +323,10 @@ def export_product_document_breakdown(product_allocation: str):
 		qty = flt(row.get("quantity"))
 		overhead = flt(row.get("overhead_amount"))
 		labor = flt(row.get("labor_amount"))
+		alloc_oh = flt(row.get("allocated_overhead_share"))
+		alloc_lab = flt(row.get("allocated_labor_share"))
+		un_oh = flt(row.get("unallocated_overhead"))
+		un_lab = flt(row.get("unallocated_labor"))
 		total = flt(row.get("total_allocated_amount"))
 		ws.append(
 			[
@@ -327,6 +335,10 @@ def export_product_document_breakdown(product_allocation: str):
 				qty,
 				overhead,
 				labor,
+				alloc_oh,
+				alloc_lab,
+				un_oh,
+				un_lab,
 				total,
 			]
 		)
@@ -335,18 +347,35 @@ def export_product_document_breakdown(product_allocation: str):
 	total_qty = flt(doc.get("breakdown_total_qty"))
 	total_overhead = flt(doc.get("breakdown_total_overhead"))
 	total_labor = flt(doc.get("breakdown_total_labor"))
+	total_alloc_oh = flt(doc.get("breakdown_total_allocated_overhead_share"))
+	total_alloc_lab = flt(doc.get("breakdown_total_allocated_labor_share"))
+	total_un_oh = flt(doc.get("breakdown_total_unallocated_overhead"))
+	total_un_lab = flt(doc.get("breakdown_total_unallocated_labor"))
 	total_amount = flt(doc.get("breakdown_total_amount"))
-	ws.append(["جمع کل", "", total_qty, total_overhead, total_labor, total_amount])
+	ws.append(
+		[
+			"جمع کل",
+			"",
+			total_qty,
+			total_overhead,
+			total_labor,
+			total_alloc_oh,
+			total_alloc_lab,
+			total_un_oh,
+			total_un_lab,
+			total_amount,
+		]
+	)
 	for cell in ws[ws.max_row]:
 		cell.font = Font(bold=True)
 
 	# Apply numeric formats (skip header row)
 	for row_idx in range(2, ws.max_row + 1):
 		ws.cell(row=row_idx, column=3).number_format = qty_format
-		for col_idx in (4, 5, 6):
+		for col_idx in (4, 5, 6, 7, 8, 9, 10):
 			ws.cell(row=row_idx, column=col_idx).number_format = amount_format
 
-	widths = [18, 28, 14, 18, 18, 18]
+	widths = [18, 28, 14, 18, 18, 20, 20, 18, 18, 18]
 	for idx, width in enumerate(widths, start=1):
 		ws.column_dimensions[get_column_letter(idx)].width = width
 

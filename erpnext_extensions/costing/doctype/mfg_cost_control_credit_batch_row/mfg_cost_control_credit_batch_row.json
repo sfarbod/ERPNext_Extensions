@@ -1,0 +1,40 @@
+{
+ "actions": [],
+ "creation": "2026-11-21 15:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "batch_no",
+  "batch_allocation",
+  "applied_batch_share",
+  "calculated_batch_share",
+  "labor_allocated",
+  "overhead_allocated",
+  "total_allocated",
+  "residual_applied_labor",
+  "residual_applied_overhead"
+ ],
+ "fields": [
+  {"fieldname": "batch_no", "fieldtype": "Data", "in_list_view": 1, "label": "Batch No", "read_only": 1, "reqd": 1},
+  {"fieldname": "batch_allocation", "fieldtype": "Link", "label": "Batch Allocation", "options": "MFG Cost Batch Allocation", "read_only": 1},
+  {"default": "0", "fieldname": "applied_batch_share", "fieldtype": "Float", "in_list_view": 1, "label": "Applied Batch Share", "precision": "9", "read_only": 1},
+  {"default": "0", "fieldname": "calculated_batch_share", "fieldtype": "Float", "label": "Calculated Batch Share", "precision": "9", "read_only": 1},
+  {"default": "0", "fieldname": "labor_allocated", "fieldtype": "Currency", "in_list_view": 1, "label": "Labor Allocated", "options": "currency", "read_only": 1},
+  {"default": "0", "fieldname": "overhead_allocated", "fieldtype": "Currency", "in_list_view": 1, "label": "Overhead Allocated", "options": "currency", "read_only": 1},
+  {"default": "0", "fieldname": "total_allocated", "fieldtype": "Currency", "in_list_view": 1, "label": "Total Allocated", "options": "currency", "read_only": 1},
+  {"default": "0", "fieldname": "residual_applied_labor", "fieldtype": "Check", "label": "Residual Applied Labor", "read_only": 1},
+  {"default": "0", "fieldname": "residual_applied_overhead", "fieldtype": "Check", "label": "Residual Applied Overhead", "read_only": 1}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-21 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "MFG Cost Control Credit Batch Row",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

@@ -45,11 +45,15 @@ frappe.ui.form.on("MFG Cost Product Allocation", {
 		const grid = grid_field.grid;
 		const widths = {
 			source_document_type: 1,
-			source_document: 3,
+			source_document: 2,
 			quantity: 1,
-			overhead_amount: 2,
-			labor_amount: 2,
-			total_allocated_amount: 2,
+			overhead_amount: 1,
+			labor_amount: 1,
+			allocated_overhead_share: 1,
+			allocated_labor_share: 1,
+			unallocated_overhead: 1,
+			unallocated_labor: 1,
+			total_allocated_amount: 1,
 		};
 		Object.entries(widths).forEach(([fieldname, columns]) => {
 			if (grid.update_docfield_property) {
@@ -237,12 +241,20 @@ function _render_grid_total_row(frm, grid) {
 		quantity: _format_qty(qty),
 		overhead_amount: format_currency(overhead, currency),
 		labor_amount: format_currency(labor, currency),
+		allocated_overhead_share: format_currency(flt(frm.doc.breakdown_total_allocated_overhead_share), currency),
+		allocated_labor_share: format_currency(flt(frm.doc.breakdown_total_allocated_labor_share), currency),
+		unallocated_overhead: format_currency(flt(frm.doc.breakdown_total_unallocated_overhead), currency),
+		unallocated_labor: format_currency(flt(frm.doc.breakdown_total_unallocated_labor), currency),
 		total_allocated_amount: format_currency(total, currency),
 	};
 	const numeric_fields = new Set([
 		"quantity",
 		"overhead_amount",
 		"labor_amount",
+		"allocated_overhead_share",
+		"allocated_labor_share",
+		"unallocated_overhead",
+		"unallocated_labor",
 		"total_allocated_amount",
 	]);
 
@@ -331,6 +343,10 @@ function _ensure_breakdown_styles() {
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="quantity"],
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="overhead_amount"],
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="labor_amount"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="allocated_overhead_share"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="allocated_labor_share"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="unallocated_overhead"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="unallocated_labor"],
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="total_allocated_amount"] {
 		text-align: right !important;
 		direction: ltr;

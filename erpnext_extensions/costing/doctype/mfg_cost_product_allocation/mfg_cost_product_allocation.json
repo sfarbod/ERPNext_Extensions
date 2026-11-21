@@ -52,6 +52,10 @@
   "breakdown_total_overhead",
   "breakdown_total_labor",
   "breakdown_total_amount",
+  "breakdown_total_allocated_overhead_share",
+  "breakdown_total_allocated_labor_share",
+  "breakdown_total_unallocated_overhead",
+  "breakdown_total_unallocated_labor",
   "section_trace",
   "material_allocation_method",
   "material_source",
@@ -153,6 +157,42 @@
    "fieldtype": "Currency",
    "hidden": 1,
    "label": "جمع کل",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "breakdown_total_allocated_overhead_share",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع سهم تخصیص‌یافته سربار",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "breakdown_total_allocated_labor_share",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع سهم تخصیص‌یافته دستمزد",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "breakdown_total_unallocated_overhead",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع تخصیص‌نیافته سربار",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "breakdown_total_unallocated_labor",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "جمع تخصیص‌نیافته دستمزد",
    "options": "currency",
    "read_only": 1
   },
