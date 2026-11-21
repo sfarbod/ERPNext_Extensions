@@ -136,7 +136,8 @@ Verified in browser:
 
 - Version remains **`5.8.5`**
 - No push / tag / deploy
-- Commit: see git log after local commit in this session
+- Commit: `94fac7e9efed640dcb0f5604aeaef8bba5ee2b41` — `fix(costing): allocate full monthly control credits`
+- Working tree: clean after commit
 
 ### Completion checklist
 
