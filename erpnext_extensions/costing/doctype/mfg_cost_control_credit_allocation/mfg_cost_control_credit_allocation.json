@@ -128,8 +128,10 @@
   {"create": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "Accounts User", "share": 1, "write": 1},
   {"email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "Auditor", "share": 1}
  ],
+ "search_fields": "company,persian_period,status,monthly_calculation",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "persian_period",
  "track_changes": 1
 }

@@ -4,6 +4,7 @@
 frappe.ui.form.on("MFG Cost Control Credit Allocation", {
 	refresh(frm) {
 		frm.trigger("setup_calculate_button");
+		frm.trigger("setup_trace_buttons");
 		if (frm.doc.persian_year && frm.doc.persian_month && !frm.doc.persian_period) {
 			frm.set_value(
 				"persian_period",
@@ -30,7 +31,6 @@ frappe.ui.form.on("MFG Cost Control Credit Allocation", {
 	},
 
 	setup_calculate_button(frm) {
-		frm.clear_custom_buttons();
 		if (frm.is_new() || frm.doc.docstatus === 1 || frm.doc.status === "Cancelled") {
 			return;
 		}
@@ -58,5 +58,37 @@ frappe.ui.form.on("MFG Cost Control Credit Allocation", {
 				},
 			});
 		}).addClass("btn-primary");
+	},
+
+	setup_trace_buttons(frm) {
+		if (frm.is_new()) {
+			return;
+		}
+		const nav = __("Traceability");
+		frm.add_custom_button(__("Control Credit Pools"), () => {
+			frappe.set_route("query-report", "MFG Cost Control Credit Pool", {
+				credit_allocation: frm.doc.name,
+				persian_period: frm.doc.persian_period,
+				company: frm.doc.company,
+			});
+		}, nav);
+		frm.add_custom_button(__("Batch × Product Allocation"), () => {
+			frappe.set_route("query-report", "MFG Cost Control Credit Batch Product Allocation", {
+				credit_allocation: frm.doc.name,
+				persian_period: frm.doc.persian_period,
+				company: frm.doc.company,
+			});
+		}, nav);
+		if (frm.doc.monthly_calculation) {
+			frm.add_custom_button(__("Monthly FG Cost Calculation"), () => {
+				frappe.set_route("Form", "Monthly FG Cost Calculation", frm.doc.monthly_calculation);
+			}, nav);
+		}
+		frm.add_custom_button(__("Product Allocations"), () => {
+			frappe.route_options = {
+				monthly_calculation: frm.doc.monthly_calculation,
+			};
+			frappe.set_route("List", "MFG Cost Product Allocation");
+		}, nav);
 	},
 });

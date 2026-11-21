@@ -7,6 +7,48 @@ frappe.ui.form.on("MFG Cost Product Allocation", {
 		frm.trigger("style_document_breakdown");
 		frm.trigger("render_breakdown_grid_footer");
 		frm.trigger("setup_breakdown_excel_button");
+		frm.trigger("setup_credit_allocation_nav");
+	},
+
+	setup_credit_allocation_nav(frm) {
+		if (frm.is_new()) {
+			return;
+		}
+		const nav = __("Credit Control");
+		frm.add_custom_button(__("Control Credit Pools"), () => {
+			const args = {};
+			if (frm.doc.persian_period) {
+				args.persian_period = frm.doc.persian_period;
+			}
+			frappe.set_route("query-report", "MFG Cost Control Credit Pool", args);
+		}, nav);
+		frm.add_custom_button(__("This Product Credit Shares"), () => {
+			frappe.set_route("query-report", "MFG Cost Control Credit Batch Product Allocation", {
+				product_allocation: frm.doc.name,
+				batch_no: frm.doc.batch_no,
+				item_code: frm.doc.item_code,
+			});
+		}, nav);
+		if (!frm.doc.monthly_calculation) {
+			return;
+		}
+		frappe.db.get_value(
+			"MFG Cost Control Credit Allocation",
+			{
+				monthly_calculation: frm.doc.monthly_calculation,
+				status: ["in", ["Calculated", "Submitted"]],
+				docstatus: ["<", 2],
+			},
+			"name"
+		).then((r) => {
+			const name = r && r.message && r.message.name;
+			if (!name) {
+				return;
+			}
+			frm.add_custom_button(__("Open Credit Allocation {0}", [name]), () => {
+				frappe.set_route("Form", "MFG Cost Control Credit Allocation", name);
+			}, nav);
+		});
 	},
 
 	breakdown_total_qty(frm) {
