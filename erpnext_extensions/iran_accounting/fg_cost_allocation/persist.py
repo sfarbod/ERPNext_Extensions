@@ -71,8 +71,27 @@ def _f(value) -> float:
 	return float(value)
 
 
+_NAME_CACHE: set[str] = set()
+
+
+def reset_detail_name_cache() -> None:
+	"""Clear per-run uniqueness cache (call at start of each persist_all)."""
+	_NAME_CACHE.clear()
+
+
 def _name() -> str:
-	return frappe.generate_hash(length=10)
+	"""Allocate a unique costing detail name for bulk persist.
+
+	length=10 hashes collide across months once Batch Expense rows grow large
+	(IntegrityError on PRIMARY). Use length=16 and reject in-run duplicates.
+	"""
+	for _ in range(32):
+		candidate = frappe.generate_hash(length=16)
+		if candidate in _NAME_CACHE:
+			continue
+		_NAME_CACHE.add(candidate)
+		return candidate
+	frappe.throw("Unable to allocate unique costing detail name after retries")
 
 
 def _bulk(doctype: str, fields: list[str], rows: list[list]):
@@ -158,6 +177,7 @@ def persist_all(
 	product_rows: list[tuple[BatchAllocationState, ProductBucket, Decimal, Decimal]],
 	product_expenses: list[ProductExpenseAlloc],
 ) -> dict[str, dict]:
+	reset_detail_name_cache()
 	rev = cint(revision)
 	company = period.company
 	user = frappe.session.user

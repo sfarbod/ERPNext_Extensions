@@ -2,6 +2,9 @@
 # License: MIT
 """Allocate control-credit pools using MFG Cost Batch Expense Allocation methodology.
 
+Allocation base = Monthly Credit Amount (gross period GL credits on Labor/Overhead
+control accounts). Eligible Credit is informational only and does not reduce the pool.
+
 Reuses applied_batch_share / product_share from the existing monthly calculation
 and the same money residual-to-largest policy as allocate_pools_to_batches.
 """
@@ -161,8 +164,10 @@ def build_credit_allocation_plan(
 			)
 		)
 
-	labor_pool = _money(identification.labor_eligible, precision)
-	oh_pool = _money(identification.overhead_eligible, precision)
+	# Authoritative allocation base = gross Monthly Credit Amount (period GL credits).
+	# Eligible Credit remains informational classification only and must not reduce the pool.
+	labor_pool = _money(identification.labor_period_credit, precision)
+	oh_pool = _money(identification.overhead_period_credit, precision)
 
 	labor_dist = {b.batch_no: (amt, res) for b, amt, res in _distribute_pool(labor_pool, batches, currency=ccy)}
 	oh_dist = {b.batch_no: (amt, res) for b, amt, res in _distribute_pool(oh_pool, batches, currency=ccy)}

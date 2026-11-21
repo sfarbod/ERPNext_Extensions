@@ -129,11 +129,29 @@ def run():
 		page.wait_for_timeout(5000)
 		page.screenshot(path=str(OUT / "04_pool_report.png"), full_page=True)
 		pbody = page.inner_text("body")
+		# Allocation base is Monthly Credit Amount (351,300), Eligible (351,288) stays informational
 		results.append(
 			{
 				"check": "pool_report",
-				"ok": ("351,288" in pbody or "351288" in pbody or "Overhead" in pbody)
-				and ("Credit Pool" in pbody or "Control Credit" in pbody or "query-report" in page.url),
+				"ok": (
+					("351,300" in pbody or "351300" in pbody or "Overhead" in pbody)
+					and (
+						"Credit Pool" in pbody
+						or "Control Credit" in pbody
+						or "query-report" in page.url
+					)
+				),
+			}
+		)
+		results.append(
+			{
+				"check": "pool_report_monthly_base_label",
+				"ok": (
+					"Allocation Base" in pbody
+					or "Monthly Credit" in pbody
+					or "351,300" in pbody
+					or "351300" in pbody
+				),
 			}
 		)
 

@@ -148,10 +148,14 @@ class TestControlCreditSiteV585(unittest.TestCase):
 
 		r1 = calculate_control_credit_allocation(doc.name, commit=False)
 		r2 = calculate_control_credit_allocation(doc.name, commit=False)
-		self.assertEqual(r1["labor_eligible_credit"], r2["labor_eligible_credit"])
-		self.assertEqual(r1["overhead_eligible_credit"], r2["overhead_eligible_credit"])
-		self.assertEqual(flt(r1["labor_eligible_credit"]), 0)
-		self.assertEqual(flt(r1["overhead_eligible_credit"]), 0)
+		self.assertEqual(r1["labor_period_credit"], r2["labor_period_credit"])
+		self.assertEqual(r1["overhead_period_credit"], r2["overhead_period_credit"])
+		self.assertEqual(r1["labor_allocated"], r2["labor_allocated"])
+		self.assertEqual(r1["overhead_allocated"], r2["overhead_allocated"])
+		self.assertEqual(flt(r1["labor_period_credit"]), 0)
+		self.assertEqual(flt(r1["overhead_period_credit"]), 0)
+		self.assertEqual(flt(r1["labor_allocated"]), 0)
+		self.assertEqual(flt(r1["overhead_allocated"]), 0)
 		frappe.delete_doc(
 			"MFG Cost Control Credit Allocation", doc.name, force=1, ignore_permissions=True
 		)

@@ -33,12 +33,15 @@ class TestControlCreditReportingSite(unittest.TestCase):
 		types = {r["control_type"] for r in rows}
 		self.assertEqual(types, {"Labor", "Overhead"})
 		oh = next(r for r in rows if r["control_type"] == "Overhead")
+		# Eligible remains informational; allocation base / allocated = Monthly Credit
+		self.assertEqual(flt(oh["monthly_credit_amount"]), 351300)
 		self.assertEqual(flt(oh["eligible_credit"]), 351288)
-		self.assertEqual(flt(oh["allocated_amount"]), 351288)
+		self.assertEqual(flt(oh["allocated_amount"]), 351300)
 		self.assertEqual(flt(oh["remaining_amount"]), 0)
 		self.assertEqual(oh["pool_status"], "Fully Allocated")
 		lab = next(r for r in rows if r["control_type"] == "Labor")
 		self.assertEqual(flt(lab["eligible_credit"]), 0)
+		self.assertEqual(flt(lab["monthly_credit_amount"]), 0)
 
 	def test_pool_filter_control_type(self):
 		rows = fetch_control_credit_pools({"persian_period": "1405-03", "control_type": "Overhead"})
@@ -59,7 +62,7 @@ class TestControlCreditReportingSite(unittest.TestCase):
 		)
 		self.assertTrue(rows)
 		total = sum(flt(r["allocated_amount"]) for r in rows)
-		self.assertEqual(total, 351288)
+		self.assertEqual(total, 351300)
 		self.assertTrue(all(r["credit_allocation"] for r in rows))
 		self.assertTrue(all(r["product_allocation"] for r in rows))
 		self.assertTrue(all(r.get("applied_batch_share") is not None for r in rows))

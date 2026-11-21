@@ -78,11 +78,12 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 	doc.overhead_unresolved_amount = _money(identification.overhead_unresolved, ccy)
 	doc.labor_allocated = _money(plan.labor_allocated_total, ccy)
 	doc.overhead_allocated = _money(plan.overhead_allocated_total, ccy)
+	# Remaining vs Monthly Credit Amount (allocation base), not Eligible Credit
 	doc.labor_remaining = _money(
-		Decimal(str(doc.labor_eligible_credit)) - Decimal(str(doc.labor_allocated)), ccy
+		Decimal(str(doc.labor_period_credit)) - Decimal(str(doc.labor_allocated)), ccy
 	)
 	doc.overhead_remaining = _money(
-		Decimal(str(doc.overhead_eligible_credit)) - Decimal(str(doc.overhead_allocated)), ccy
+		Decimal(str(doc.overhead_period_credit)) - Decimal(str(doc.overhead_allocated)), ccy
 	)
 	doc.source_gl_count = identification.gl_entry_count
 	doc.source_voucher_count = identification.voucher_count
@@ -95,10 +96,12 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 	doc.status = "Calculated"
 	doc.has_unresolved_sources = 1 if identification.unresolved_count else 0
 
-	# Sources
+	# Sources — keep classification visible; pool allocation is Monthly Credit (not line-gated).
+	# current_allocated_amount records each line's contribution to the gross monthly base.
+	# Classification (eligible / unresolved / PA-consumed / excluded) stays informational.
 	doc.set("sources", [])
 	for idx, s in enumerate(identification.sources, start=1):
-		current = s.remaining_amount if s.eligibility_status == "eligible" else Decimal("0")
+		contrib = s.landed_cost_amount if (s.landed_cost_row or s.landed_cost_amount) else s.credit
 		doc.append(
 			"sources",
 			{
@@ -116,12 +119,8 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 				"landed_cost_amount": float(s.landed_cost_amount),
 				"eligible_amount": float(s.eligible_amount),
 				"previously_allocated_amount": float(s.previously_allocated_amount),
-				"current_allocated_amount": float(current),
-				"remaining_amount": float(
-					_money(s.eligible_amount - s.previously_allocated_amount - current, ccy)
-					if s.eligibility_status == "eligible"
-					else 0
-				),
+				"current_allocated_amount": float(contrib),
+				"remaining_amount": 0,
 				"eligibility_status": s.eligibility_status,
 				"exclusion_reason": s.exclusion_reason,
 				"product_allocation": s.product_allocation,
@@ -129,15 +128,6 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 				"idx": idx,
 			},
 		)
-
-	# Mark current_allocated on eligible sources: consume remaining fully in this calc
-	# (single monthly document allocates the full eligible remaining pool)
-	eligible_labor = Decimal(str(doc.labor_eligible_credit))
-	eligible_oh = Decimal(str(doc.overhead_eligible_credit))
-	# Source current_allocated already set to remaining; remaining after this doc = 0
-	for row in doc.sources:
-		if row.eligibility_status == "eligible":
-			row.remaining_amount = 0
 
 	doc.set("batch_rows", [])
 	for idx, b in enumerate(plan.batch_rows, start=1):
@@ -176,9 +166,9 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 			},
 		)
 
-	# Reconcile: allocated totals must equal eligible remaining pools
-	lab_diff = abs(flt(doc.labor_allocated) - flt(doc.labor_eligible_credit))
-	oh_diff = abs(flt(doc.overhead_allocated) - flt(doc.overhead_eligible_credit))
+	# Reconcile: allocated totals must equal Monthly Credit Amount (allocation base)
+	lab_diff = abs(flt(doc.labor_allocated) - flt(doc.labor_period_credit))
+	oh_diff = abs(flt(doc.overhead_allocated) - flt(doc.overhead_period_credit))
 	tol = 0 if precision <= 0 else 10 ** (-precision)
 	doc.reconciliation_difference_labor = lab_diff
 	doc.reconciliation_difference_overhead = oh_diff
@@ -188,7 +178,11 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 	doc.save(ignore_permissions=True)
 
 	# Push shares into Product Allocation Document Breakdown (draft/calculated also refresh display)
-	apply_credit_shares_to_product_allocations(doc)
+	# Clears prior credit shares for the monthly calc first — prevents duplicate stacking on recalc.
+	pa_result = apply_credit_shares_to_product_allocations(doc)
+	over_alloc = _detect_control_over_allocation(doc)
+	if over_alloc:
+		_emit_over_allocation_warnings(doc, over_alloc)
 
 	if commit:
 		frappe.db.commit()
@@ -196,16 +190,119 @@ def calculate_control_credit_allocation(name: str, *, commit: bool = True) -> di
 	return {
 		"name": doc.name,
 		"status": doc.status,
+		"labor_period_credit": doc.labor_period_credit,
+		"overhead_period_credit": doc.overhead_period_credit,
 		"labor_eligible_credit": doc.labor_eligible_credit,
 		"overhead_eligible_credit": doc.overhead_eligible_credit,
 		"labor_allocated": doc.labor_allocated,
 		"overhead_allocated": doc.overhead_allocated,
+		"labor_remaining": doc.labor_remaining,
+		"overhead_remaining": doc.overhead_remaining,
 		"unresolved_source_count": doc.unresolved_source_count,
 		"is_consistent": doc.is_consistent,
 		"source_gl_count": doc.source_gl_count,
 		"batch_row_count": doc.batch_row_count,
 		"product_row_count": doc.product_row_count,
+		"over_allocation_count": len(over_alloc),
+		"product_allocations_updated": (pa_result or {}).get("product_allocations"),
 	}
+
+
+def _detect_control_over_allocation(doc) -> list[dict]:
+	"""Find Document Breakdown rows where allocated share exceeds calculated control amount.
+
+	Does not clamp negatives — returns evidence for user-visible warnings.
+	"""
+	currency = doc.currency or "IRR"
+	issues: list[dict] = []
+	for row in doc.get("product_rows") or []:
+		pa = (row.product_allocation or "").strip()
+		src = (row.source_document or "").strip()
+		if not pa:
+			continue
+		children = frappe.get_all(
+			"MFG Cost Product Allocation Document Breakdown",
+			filters={"parent": pa, "source_document": src} if src else {"parent": pa},
+			fields=[
+				"name",
+				"source_document",
+				"labor_amount",
+				"overhead_amount",
+				"allocated_labor_share",
+				"allocated_overhead_share",
+				"unallocated_labor",
+				"unallocated_overhead",
+			],
+		)
+		for ch in children:
+			lab_ctrl = flt(ch.labor_amount)
+			oh_ctrl = flt(ch.overhead_amount)
+			lab_alloc = flt(ch.allocated_labor_share)
+			oh_alloc = flt(ch.allocated_overhead_share)
+			if lab_alloc > lab_ctrl:
+				issues.append(
+					{
+						"control_type": "Labor",
+						"month": doc.persian_period,
+						"account": doc.labor_account,
+						"product_allocation": pa,
+						"source_document": ch.source_document,
+						"calculated_control": lab_ctrl,
+						"monthly_credit_allocated_share": lab_alloc,
+						"excess": _money(lab_alloc - lab_ctrl, currency),
+						"unallocated": flt(ch.unallocated_labor),
+					}
+				)
+			if oh_alloc > oh_ctrl:
+				issues.append(
+					{
+						"control_type": "Overhead",
+						"month": doc.persian_period,
+						"account": doc.overhead_account,
+						"product_allocation": pa,
+						"source_document": ch.source_document,
+						"calculated_control": oh_ctrl,
+						"monthly_credit_allocated_share": oh_alloc,
+						"excess": _money(oh_alloc - oh_ctrl, currency),
+						"unallocated": flt(ch.unallocated_overhead),
+					}
+				)
+	return issues
+
+
+def _emit_over_allocation_warnings(doc, issues: list[dict]):
+	"""Surface over-allocation without clamping unallocated to zero."""
+	sample = issues[:8]
+	lines = [
+		_(
+			"Control credit share exceeds calculated control amount on {0} Document Breakdown row(s)."
+		).format(len(issues))
+	]
+	for i in sample:
+		lines.append(
+			_(
+				"{control_type} | {month} | {account} | PA {pa} | doc {src}: "
+				"control={ctrl} allocated_share={alloc} excess={excess} unallocated={unal}"
+			).format(
+				control_type=i["control_type"],
+				month=i["month"],
+				account=i["account"],
+				pa=i["product_allocation"],
+				src=i["source_document"] or "—",
+				ctrl=i["calculated_control"],
+				alloc=i["monthly_credit_allocated_share"],
+				excess=i["excess"],
+				unal=i["unallocated"],
+			)
+		)
+	if len(issues) > len(sample):
+		lines.append(_("…and {0} more.").format(len(issues) - len(sample)))
+	frappe.msgprint(
+		"<br>".join(lines),
+		title=_("Control Over-Allocation"),
+		indicator="orange",
+		alert=True,
+	)
 
 
 def on_submit_control_credit(doc):

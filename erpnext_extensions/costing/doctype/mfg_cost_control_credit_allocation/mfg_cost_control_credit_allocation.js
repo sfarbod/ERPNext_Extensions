@@ -40,16 +40,18 @@ frappe.ui.form.on("MFG Cost Control Credit Allocation", {
 					"erpnext_extensions.costing.doctype.mfg_cost_control_credit_allocation.mfg_cost_control_credit_allocation.calculate",
 				args: { name: frm.doc.name },
 				freeze: true,
-				freeze_message: __("Identifying credits and allocating with Batch Expense shares…"),
+				freeze_message: __(
+					"Allocating full Monthly Credit Amount with Batch Expense shares…"
+				),
 				callback(r) {
 					frm.reload_doc();
 					if (r.message) {
 						frappe.show_alert({
 							message: __(
-								"Labor eligible {0} / Overhead eligible {1}",
+								"Allocated Labor {0} / Overhead {1} from Monthly Credit base",
 								[
-									format_currency(r.message.labor_eligible_credit || 0, frm.doc.currency),
-									format_currency(r.message.overhead_eligible_credit || 0, frm.doc.currency),
+									format_currency(r.message.labor_allocated || 0, frm.doc.currency),
+									format_currency(r.message.overhead_allocated || 0, frm.doc.currency),
 								]
 							),
 							indicator: r.message.is_consistent ? "green" : "orange",

@@ -11,15 +11,15 @@ from __future__ import annotations
 from frappe.utils import cint, flt
 
 
-def _pool_status(doc_status: str, eligible: float, allocated: float, remaining: float) -> str:
-	"""Derive pool allocation status from persisted document + amounts."""
+def _pool_status(doc_status: str, monthly_credit: float, allocated: float, remaining: float) -> str:
+	"""Derive pool allocation status from Monthly Credit Amount (allocation base)."""
 	if doc_status == "Cancelled":
 		return "Cancelled"
 	if doc_status == "Draft":
 		return "Draft"
-	# Calculated or Submitted
-	if flt(eligible) <= 0 and flt(allocated) <= 0:
-		return "No Eligible Credit"
+	# Calculated or Submitted — status keyed off Monthly Credit Amount, not Eligible
+	if flt(monthly_credit) <= 0 and flt(allocated) <= 0:
+		return "No Monthly Credit"
 	if flt(remaining) <= 0 and flt(allocated) > 0:
 		return "Fully Allocated"
 	if flt(allocated) > 0 and flt(remaining) > 0:
@@ -124,7 +124,7 @@ def fetch_control_credit_pools(filters: dict | None = None) -> list[dict]:
 			if control_account and c["control_account"] != control_account:
 				continue
 			pool_status = _pool_status(
-				d.status, c["eligible_credit"], c["allocated_amount"], c["remaining_amount"]
+				d.status, c["period_credit"], c["allocated_amount"], c["remaining_amount"]
 			)
 			if derived_status_filter and pool_status != derived_status_filter:
 				continue

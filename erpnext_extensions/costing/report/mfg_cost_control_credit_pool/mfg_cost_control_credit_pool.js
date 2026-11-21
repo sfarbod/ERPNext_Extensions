@@ -49,7 +49,7 @@ frappe.query_reports["MFG Cost Control Credit Pool"] = {
 			label: __("Pool Status"),
 			fieldtype: "Select",
 			options:
-				"\nDraft\nCalculated\nSubmitted\nCancelled\nNo Eligible Credit\nPartially Allocated\nFully Allocated",
+				"\nDraft\nCalculated\nSubmitted\nCancelled\nNo Monthly Credit\nPartially Allocated\nFully Allocated",
 		},
 		{
 			fieldname: "credit_allocation",
