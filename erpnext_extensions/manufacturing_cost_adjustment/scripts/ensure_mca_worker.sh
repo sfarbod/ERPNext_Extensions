@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
-# Dedicated MCA RQ workers on queue `mca` — configurable concurrency.
+# MCA processing uses the standard Frappe ``long`` queue (see MCA_RQ_QUEUE).
+# This script stops legacy dedicated ``mca`` workers and validates health on
+# ``long``. Prefer ``scripts/ensure_rq_workers.sh`` for short/default/long replicas.
 #
-# Independent Stock Entries may process in parallel. Same-SE exclusivity is
-# enforced in-app via redis locks (locks.acquire_se_lock). RIV stays on ``long``.
-#
-# Concurrency (first match wins):
-#   1. MCA_WORKER_CONCURRENCY env
-#   2. common_site_config workers.mca.concurrency
-#   3. default 3
+# Independent Stock Entries may process in parallel on long workers.
+# Same-SE exclusivity is enforced in-app via redis locks (locks.acquire_se_lock).
+# RIV also uses ``long``; per-SE locks keep same-SE MCA/RIV serial.
 #
 # Usage:
-#   ./scripts/ensure_mca_worker.sh          # start missing workers up to concurrency
+#   ./scripts/ensure_mca_worker.sh          # stop legacy mca workers; status
 #   ./scripts/ensure_mca_worker.sh status
 #   ./scripts/ensure_mca_worker.sh stop
-#   ./scripts/ensure_mca_worker.sh restart
+#   ./scripts/ensure_mca_worker.sh restart  # stop legacy only (use ensure_rq_workers)
 #   ./scripts/ensure_mca_worker.sh validate
 
 set -euo pipefail
@@ -29,7 +27,7 @@ SITES="$ROOT/sites"
 LOGDIR="$ROOT/logs/ae_workers"
 PIDDIR="$ROOT/config/pids/rq_workers"
 NAME_PREFIX="worker-mca"
-QUEUES="mca"
+QUEUES="long"
 mkdir -p "$LOGDIR" "$PIDDIR"
 
 resolve_concurrency() {

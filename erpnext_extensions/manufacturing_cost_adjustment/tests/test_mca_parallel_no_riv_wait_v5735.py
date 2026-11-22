@@ -101,8 +101,10 @@ def run_parallel_no_riv_wait_suite() -> dict:
 
 	def t_concurrency_constant():
 		assert C.MCA_DEFAULT_CONCURRENCY >= 2
-		assert C.MCA_RQ_QUEUE == "mca"
+		assert C.MCA_RQ_QUEUE in C.VALID_FRAPPE_QUEUES
+		assert C.MCA_RQ_QUEUE == "long"
 		assert C.MCA_RIV_RQ_QUEUE == "long"
+		assert C.MCA_RQ_QUEUE != "mca"
 
 	results.append(check("pipeline_returns_before_riv_wait", t_pipeline_returns_before_riv_wait))
 	results.append(check("monitor_no_schedule_retry_on_pending", t_monitor_no_schedule_retry_on_pending))

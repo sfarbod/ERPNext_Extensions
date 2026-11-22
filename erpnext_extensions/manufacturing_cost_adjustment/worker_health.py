@@ -7,12 +7,14 @@ import frappe
 
 
 def mca_queue_health() -> dict:
-	"""Executed inside the ``mca`` worker — proves Iran bootstrap + queue wiring."""
-	return queue_health_probe(queue_name="mca")
+	"""Executed inside an MCA-capable worker — proves Iran bootstrap + queue wiring."""
+	from erpnext_extensions.manufacturing_cost_adjustment import constants as C
+
+	return queue_health_probe(queue_name=C.MCA_RQ_QUEUE)
 
 
-def queue_health_probe(queue_name: str = "mca") -> dict:
-	"""Generic RQ probe — works on short/default/long/mca workers."""
+def queue_health_probe(queue_name: str | None = None) -> dict:
+	"""Generic RQ probe — works on short/default/long workers."""
 	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran
 	from erpnext_extensions.manufacturing_cost_adjustment import constants as C
 

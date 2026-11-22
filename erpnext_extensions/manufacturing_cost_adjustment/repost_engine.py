@@ -833,7 +833,7 @@ def _kick_riv_execution(riv_name: str) -> None:
 			execute_reposting_entry(riv_name)
 			return
 
-		# When process_mca itself is an RQ job on the dedicated ``mca`` worker,
+		# When process_mca itself is an RQ job on the ``long`` MCA queue,
 		# do NOT run multi-hour RIV inline — that leaves Queue Type=mca "busy"
 		# for one voucher and starves other MCAs. Enqueue onto Core's ``long``
 		# queue (same as repost_item_valuation.py) so long workers consume RIV.
@@ -1185,7 +1185,7 @@ def _is_permanent_business_failure(mca_name: str) -> bool:
 def process_pending_mca_reposts() -> int:
 	"""Scheduler: resume MCAs with repost_required that are due.
 
-	Enqueues onto the dedicated ``mca`` RQ queue (concurrency 1 worker). Skips
+	Enqueues onto ``MCA_RQ_QUEUE`` (standard Frappe ``long``). Skips
 	permanent business failures (e.g. negative pool_value) so they stay Failed
 	until data repair + manual retry.
 	"""
