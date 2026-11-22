@@ -882,17 +882,21 @@ def _parse_riv_list(text: str | None) -> list[str]:
 
 
 def _heal_orphaned_riv_in_progress(riv_name: str) -> None:
-	"""Mark Completed when RIV is stuck In Progress with no live RQ job.
+	"""Re-kick stuck In Progress RIVs that have no live RQ job.
 
-	Typical race: ``execute_reposting_entry`` finishes (RQ Job OK) but the RIV
-	status write hits MySQL 1020 and leaves the document In Progress forever,
-	blocking MCA finalize.
+	**Never** marks RIV ``Completed``.
 
-	Heal only when:
-	- status is In Progress, and
-	- no queued/started long-queue job references this RIV, and
-	- either the row has been idle ≥ 90s, or error_log shows a 1020/deadlock
-	  status-write race *and* a finished RQ job exists for this RIV.
+	ERPNext Core ``repost()`` catches recoverable deadlock / MySQL 1020, leaves
+	status as ``In Progress``, and returns normally — so the RQ job finishes
+	with Job OK even though valuation propagation did **not** finish. Treating
+	Job OK (or Job OK + 1020/deadlock in ``error_log``) as success falsely
+	Completed RIVs (see forensic MCA-2026-00025) and allowed MCA to finalize
+	while subsequent SLEs kept pre-MCA rates.
+
+	Only Core may set RIV ``Completed`` after a successful ``repost()``.
+	This helper only re-enqueues execution when the RIV is orphaned (In Progress,
+	no live long-queue job). MCA finalize remains blocked while status is
+	Queued / In Progress / Failed.
 	"""
 	if not riv_name or not frappe.db.exists("Repost Item Valuation", riv_name):
 		return
@@ -920,57 +924,38 @@ def _heal_orphaned_riv_in_progress(riv_name: str) -> None:
 		err = (row.get("error_log") if isinstance(row, dict) else getattr(row, "error_log", None)) or ""
 	except Exception:
 		err = ""
-	has_1020_race = "1020" in err
+	err_l = err.lower()
+	has_recoverable = ("1020" in err) or ("deadlock" in err_l) or ("timeout" in err_l)
 	live = False
-	finished_ok = False
 	try:
 		from frappe.utils.background_jobs import get_queue
-		from rq.job import Job
 
 		q = get_queue(C.MCA_RIV_RQ_QUEUE)
 		for jid in list(q.get_job_ids()) + list(q.started_job_registry.get_job_ids()):
 			if riv_name in str(jid):
 				live = True
 				break
-		if not live and has_1020_race:
-			# Prefer evidence the execute job already finished successfully
-			for jid in (
-				f"mca-riv-exec:{riv_name}",
-				f"development.localhost||mca-riv-exec|{riv_name}",
-			):
-				try:
-					job = Job.fetch(jid, connection=q.connection)
-					if job.is_finished:
-						finished_ok = True
-						break
-				except Exception:
-					continue
-			if not finished_ok:
-				try:
-					for jid in list(q.finished_job_registry.get_job_ids())[:200]:
-						if riv_name in str(jid):
-							finished_ok = True
-							break
-				except Exception:
-					pass
 	except Exception:
 		live = False
 	if live:
 		return
-	# Idle orphan (≥90s, no live job) OR proven finished job + 1020 status race
-	if age < 90 and not (has_1020_race and finished_ok):
+	# Young In Progress without a recoverable error marker may still be starting.
+	# Recoverable leftovers (deadlock/1020/timeout) or idle ≥90s → re-kick only.
+	if age < 90 and not has_recoverable:
 		return
-	frappe.db.set_value(
-		"Repost Item Valuation",
-		riv_name,
-		{
-			"status": "Completed",
-			"error_log": err
-			+ "\n[mca] healed orphan In Progress (no live RQ job; status-write race)",
-		},
-		update_modified=True,
+	frappe.logger("mca").warning(
+		f"MCA nudging orphan RIV {riv_name} for retry "
+		f"(age={int(age)}s recoverable={has_recoverable}; never false-Complete)"
 	)
-	frappe.logger("mca").warning(f"MCA healed orphan RIV {riv_name} -> Completed")
+	_kick_riv_execution(riv_name)
+
+
+def _riv_statuses_allow_mca_finalize(statuses: dict[str, str | None]) -> bool:
+	"""MCA may finalize only when every linked RIV is Core-Completed or Skipped."""
+	if not statuses:
+		return False
+	terminal_ok = {"Completed", "Skipped"}
+	return all(st in terminal_ok for st in statuses.values())
 
 
 def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
@@ -981,13 +966,13 @@ def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 		mca.reload()
 		rivs = _parse_riv_list(mca.riv_voucher_nos)
 
-	# Kick any still-queued RIVs before deciding pending
+	# Kick any still-queued / orphaned In Progress RIVs before deciding pending.
+	# Never promote In Progress → Completed here.
 	for riv in rivs:
 		st = frappe.db.get_value("Repost Item Valuation", riv, "status")
 		if st == "Queued":
 			_kick_riv_execution(riv)
 		elif st == "In Progress":
-			# Heal orphan: RQ Job OK but RIV status write hit 1020 / worker died.
 			_heal_orphaned_riv_in_progress(riv)
 
 	statuses = {
@@ -1014,7 +999,7 @@ def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 		# Kick RIV onto ``long`` then return — do not occupy the MCA worker
 		# with scheduled retries while RIV runs. ``on_riv_change`` re-enters.
 		for riv, st in statuses.items():
-			if st == "Queued":
+			if st in ("Queued", "In Progress"):
 				_kick_riv_execution(riv)
 		frappe.db.commit()
 		_progress(mca_name, "riv_pending_no_wait", statuses=statuses)
@@ -1052,6 +1037,17 @@ def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 		_queue_or_reuse_riv(mca_name)
 		_schedule_retry(mca_name, "riv_failed", delay=120)
 		return {"ok": False, "reason": "riv_failed", "statuses": statuses}
+
+	# Hard gate: only Core Completed/Skipped may finalize MCA.
+	if not _riv_statuses_allow_mca_finalize(statuses):
+		_set_status(mca_name, C.PS_PENDING_RIV)
+		frappe.db.set_value(
+			C.MCA_DOCTYPE,
+			mca_name,
+			{"repost_status": C.RS_IN_PROGRESS, "repost_required": 1},
+			update_modified=False,
+		)
+		return {"ok": True, "reason": "riv_pending", "statuses": statuses}
 
 	# All Completed / Skipped
 	_set_status(mca_name, C.PS_RECONCILING)
