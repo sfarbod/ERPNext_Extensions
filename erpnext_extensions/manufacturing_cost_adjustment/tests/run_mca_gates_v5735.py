@@ -79,12 +79,132 @@ def _run_unit():
 		assert "landed_cost_voucher.py" not in src
 		assert '"via_landed_cost_voucher": 0' in src
 
+	def t_refresh_sle_uses_riv_semantics():
+		"""MCA SLE refresh uses RIV two-slice flag; full future walk is optional.
+
+		Default path remirrors the source voucher only; Transaction RIV owns the
+		future chain. ``mca_full_sle_refresh`` retains update_entries_after.
+		"""
+		import inspect
+		from erpnext_extensions.manufacturing_cost_adjustment import repost_engine as re
+
+		src = inspect.getsource(re._refresh_sle)
+		assert "through_repost_item_valuation" in src
+		assert "mca_full_sle_refresh" in src
+		assert "update_entries_after" in src
+		assert "_iran_remirror_sle_from_sed" in src
+		assert "mca_stage_done_riv_queued" in inspect.getsource(re._run_pipeline)
+		assert "persist_irr_stock_entry_header_and_rows" in inspect.getsource(
+			re._iran_remirror_sle_from_sed
+		)
+		assert "stock_value_difference = flt(sle.actual_qty) * vr" not in inspect.getsource(
+			re._iran_remirror_sle_from_sed
+		)
+		assert "_integerize_sle_irr_transaction_rates" in inspect.getsource(
+			re._iran_remirror_sle_from_sed
+		)
+		assert "_ensure_iran_runtime" in inspect.getsource(re.process_mca)
+		assert "bootstrap" in inspect.getsource(re._ensure_iran_runtime)
+
+	def t_mca_queue_and_permanent_skip():
+		from erpnext_extensions.manufacturing_cost_adjustment import constants as C
+		from erpnext_extensions.manufacturing_cost_adjustment import repost_engine as re
+		import inspect
+
+		assert C.MCA_RQ_QUEUE == "mca"
+		assert C.MCA_RIV_RQ_QUEUE == "long"
+		assert "negative pool_value" in C.PERMANENT_ERROR_MARKERS
+		src = inspect.getsource(re.process_pending_mca_reposts)
+		assert "MCA_RQ_QUEUE" in src
+		assert "_is_permanent_business_failure" in src
+		assert "_ensure_iran_runtime" in src
+		assert "_is_quarantined" in src
+		kick = inspect.getsource(re._kick_riv_execution)
+		assert "MCA_RIV_RQ_QUEUE" in kick
+		assert "get_current_job" in kick
+
+	def t_quarantine_00004():
+		from erpnext_extensions.manufacturing_cost_adjustment import constants as C
+		from erpnext_extensions.manufacturing_cost_adjustment import repost_engine as re
+
+		assert "MCA-2026-00004" in C.QUARANTINED_MCA_NAMES
+		assert re._is_quarantined("MCA-2026-00004")
+		assert not re._is_quarantined("MCA-2026-00153")
+		out = re.process_mca("MCA-2026-00004")
+		assert out.get("ok") is False
+		assert out.get("reason") == "quarantined"
+
+	def t_riv_kick_enqueues_long_when_in_rq():
+		"""RQ path must enqueue execute_reposting_entry on long — no business docs."""
+		from unittest.mock import patch, MagicMock
+		from erpnext_extensions.manufacturing_cost_adjustment import constants as C
+		from erpnext_extensions.manufacturing_cost_adjustment import repost_engine as re
+
+		fake_job = MagicMock()
+		enqueued = {}
+
+		def capture_enqueue(method=None, **kwargs):
+			enqueued["method"] = method
+			enqueued["kwargs"] = kwargs
+			return MagicMock()
+
+		prev_flags = {
+			"in_test": getattr(frappe.flags, "in_test", None),
+			"mca_inline_riv": getattr(frappe.flags, "mca_inline_riv", None),
+		}
+		frappe.flags.in_test = False
+		frappe.flags.mca_inline_riv = False
+		try:
+			with (
+				patch.object(frappe.db, "get_value", return_value="Queued"),
+				patch.object(re, "_ensure_iran_runtime"),
+				patch("rq.get_current_job", return_value=fake_job),
+				patch.object(frappe, "enqueue", side_effect=capture_enqueue),
+				patch.object(frappe, "in_test", False, create=True),
+			):
+				re._kick_riv_execution("TEST-RIV-ROUTE-ONLY")
+		finally:
+			for k, v in prev_flags.items():
+				if v is None and hasattr(frappe.flags, k):
+					try:
+						delattr(frappe.flags, k)
+					except Exception:
+						setattr(frappe.flags, k, False)
+				elif v is not None:
+					setattr(frappe.flags, k, v)
+
+		assert enqueued.get("kwargs") is not None, "expected frappe.enqueue call"
+		kw = enqueued["kwargs"]
+		assert kw.get("queue") == C.MCA_RIV_RQ_QUEUE == "long"
+		method = enqueued.get("method") or kw.get("method")
+		assert method and "execute_reposting_entry" in method
+		assert kw.get("name") == "TEST-RIV-ROUTE-ONLY"
+		assert str(kw.get("job_id", "")).startswith("mca-riv-exec:")
+
+	def t_submit_retry_use_mca_queue():
+		import inspect
+		from erpnext_extensions.manufacturing_cost_adjustment.doctype.manufacturing_cost_adjustment import (
+			manufacturing_cost_adjustment as mca_mod,
+		)
+
+		src = inspect.getsource(mca_mod.ManufacturingCostAdjustment.on_submit)
+		assert "MCA_RQ_QUEUE" in src
+		assert 'queue="long"' not in src
+		retry_src = inspect.getsource(mca_mod.retry_mca_processing)
+		assert "MCA_RQ_QUEUE" in retry_src
+		assert "QUARANTINED_MCA_NAMES" in retry_src
+
 	check("checkpoint_order", t_checkpoint)
 	check("transient_classification", t_transient)
 	check("parse_riv_list", t_parse)
 	check("lock_acquire_release", t_lock)
 	check("mca_cancel_blocked", t_cancel)
 	check("no_lcv_in_engine", t_no_lcv)
+	check("refresh_sle_uses_riv_semantics", t_refresh_sle_uses_riv_semantics)
+	check("mca_queue_and_permanent_skip", t_mca_queue_and_permanent_skip)
+	check("quarantine_00004", t_quarantine_00004)
+	check("riv_kick_enqueues_long_when_in_rq", t_riv_kick_enqueues_long_when_in_rq)
+	check("submit_retry_use_mca_queue", t_submit_retry_use_mca_queue)
 	print("UNIT_RESULTS", results)
 	return results
 
@@ -151,19 +271,33 @@ def _run_riv_retry():
 		) as sched, patch(
 			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine._set_status"
 		), patch(
+			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine._kick_riv_execution"
+		), patch(
 			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.frappe.get_doc",
 			return_value=doc,
 		):
 
+			from frappe.utils import now_datetime as _now_dt
+
 			def _gv(doctype, name, field=None, **kwargs):
 				if doctype == "Repost Item Valuation":
+					as_dict = kwargs.get("as_dict")
+					fields = field
+					if as_dict or isinstance(fields, (list, tuple)):
+						return frappe._dict(
+							status="In Progress",
+							modified=_now_dt(),
+							error_log="",
+						)
 					return "In Progress"
 				return None
 
 			gv.side_effect = _gv
 			result = _monitor_riv_and_finalize(mca)
 			assert result.get("reason") == "riv_pending"
-			sched.assert_called()
+			# MCA must not occupy the worker with delayed retries while RIV runs
+			sched.assert_not_called()
+			assert result.get("ok") is True
 
 	def t_completed_clears_flag():
 		riv = "RIV-TEST-DONE-" + frappe.generate_hash(length=4)

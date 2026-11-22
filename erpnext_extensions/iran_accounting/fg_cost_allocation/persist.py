@@ -71,8 +71,27 @@ def _f(value) -> float:
 	return float(value)
 
 
+_NAME_CACHE: set[str] = set()
+
+
+def reset_detail_name_cache() -> None:
+	"""Clear per-run uniqueness cache (call at start of each persist_all)."""
+	_NAME_CACHE.clear()
+
+
 def _name() -> str:
-	return frappe.generate_hash(length=10)
+	"""Allocate a unique costing detail name for bulk persist.
+
+	length=10 hashes collide across months once Batch Expense rows grow large
+	(IntegrityError on PRIMARY). Use length=16 and reject in-run duplicates.
+	"""
+	for _ in range(32):
+		candidate = frappe.generate_hash(length=16)
+		if candidate in _NAME_CACHE:
+			continue
+		_NAME_CACHE.add(candidate)
+		return candidate
+	frappe.throw("Unable to allocate unique costing detail name after retries")
 
 
 def _bulk(doctype: str, fields: list[str], rows: list[list]):
@@ -158,6 +177,7 @@ def persist_all(
 	product_rows: list[tuple[BatchAllocationState, ProductBucket, Decimal, Decimal]],
 	product_expenses: list[ProductExpenseAlloc],
 ) -> dict[str, dict]:
+	reset_detail_name_cache()
 	rev = cint(revision)
 	company = period.company
 	user = frappe.session.user
@@ -546,6 +566,10 @@ def persist_all(
 		"breakdown_total_overhead",
 		"breakdown_total_labor",
 		"breakdown_total_amount",
+		"breakdown_total_allocated_overhead_share",
+		"breakdown_total_allocated_labor_share",
+		"breakdown_total_unallocated_overhead",
+		"breakdown_total_unallocated_labor",
 	]
 	from erpnext_extensions.iran_accounting.fg_cost_allocation.document_breakdown import (
 		build_document_breakdown,
@@ -570,6 +594,10 @@ def persist_all(
 		"quantity",
 		"overhead_amount",
 		"labor_amount",
+		"allocated_overhead_share",
+		"allocated_labor_share",
+		"unallocated_overhead",
+		"unallocated_labor",
 		"total_allocated_amount",
 		"currency",
 	]
@@ -664,6 +692,10 @@ def persist_all(
 				_f(breakdown.total_overhead),
 				_f(breakdown.total_labor),
 				_f(breakdown.total_allocated_amount),
+				0.0,
+				0.0,
+				_f(breakdown.total_overhead),
+				_f(breakdown.total_labor),
 			]
 		)
 		for j, brow in enumerate(breakdown.rows, start=1):
@@ -682,6 +714,10 @@ def persist_all(
 					brow.source_document_type,
 					brow.source_document,
 					_f(brow.quantity),
+					_f(brow.overhead_amount),
+					_f(brow.labor_amount),
+					0.0,
+					0.0,
 					_f(brow.overhead_amount),
 					_f(brow.labor_amount),
 					_f(brow.total_allocated_amount),

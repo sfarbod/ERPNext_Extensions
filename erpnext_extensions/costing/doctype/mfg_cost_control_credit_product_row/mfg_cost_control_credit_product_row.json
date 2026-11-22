@@ -1,0 +1,42 @@
+{
+ "actions": [],
+ "creation": "2026-11-21 15:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "batch_no",
+  "item_code",
+  "product_allocation",
+  "product_share",
+  "source_document_type",
+  "source_document",
+  "quantity",
+  "labor_allocated",
+  "overhead_allocated",
+  "total_allocated"
+ ],
+ "fields": [
+  {"fieldname": "batch_no", "fieldtype": "Data", "in_list_view": 1, "label": "Batch No", "read_only": 1},
+  {"fieldname": "item_code", "fieldtype": "Link", "in_list_view": 1, "label": "Item", "options": "Item", "read_only": 1},
+  {"fieldname": "product_allocation", "fieldtype": "Link", "in_list_view": 1, "label": "Product Allocation", "options": "MFG Cost Product Allocation", "read_only": 1},
+  {"default": "0", "fieldname": "product_share", "fieldtype": "Float", "label": "Product Share", "precision": "9", "read_only": 1},
+  {"fieldname": "source_document_type", "fieldtype": "Link", "label": "Source Document Type", "options": "DocType", "read_only": 1},
+  {"fieldname": "source_document", "fieldtype": "Dynamic Link", "in_list_view": 1, "label": "Source Document", "options": "source_document_type", "read_only": 1},
+  {"default": "0", "fieldname": "quantity", "fieldtype": "Float", "label": "Quantity", "precision": "9", "read_only": 1},
+  {"default": "0", "fieldname": "labor_allocated", "fieldtype": "Currency", "in_list_view": 1, "label": "Labor Allocated", "options": "currency", "read_only": 1},
+  {"default": "0", "fieldname": "overhead_allocated", "fieldtype": "Currency", "in_list_view": 1, "label": "Overhead Allocated", "options": "currency", "read_only": 1},
+  {"default": "0", "fieldname": "total_allocated", "fieldtype": "Currency", "label": "Total Allocated", "options": "currency", "read_only": 1}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-21 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Costing",
+ "name": "MFG Cost Control Credit Product Row",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

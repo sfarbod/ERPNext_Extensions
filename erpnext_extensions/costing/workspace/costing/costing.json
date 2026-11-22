@@ -61,7 +61,7 @@
    "icon": "calculator",
    "is_query_report": 0,
    "label": "Monthly Calculations",
-   "link_count": 2,
+   "link_count": 3,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -73,6 +73,17 @@
    "label": "Monthly FG Cost Calculations",
    "link_count": 0,
    "link_to": "Monthly FG Cost Calculation",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "file-text",
+   "is_query_report": 0,
+   "label": "MFG Cost Control Credit Allocation",
+   "link_count": 0,
+   "link_to": "MFG Cost Control Credit Allocation",
    "link_type": "DocType",
    "onboard": 1,
    "type": "Link"
@@ -93,7 +104,7 @@
    "icon": "bar-chart-2",
    "is_query_report": 0,
    "label": "Reports & Details",
-   "link_count": 9,
+   "link_count": 11,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -106,6 +117,28 @@
    "link_count": 0,
    "link_to": "MFG Cost Expense Pool",
    "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "credit-card",
+   "is_query_report": 1,
+   "label": "Control Credit Pools",
+   "link_count": 0,
+   "link_to": "MFG Cost Control Credit Pool",
+   "link_type": "Report",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "icon": "git-merge",
+   "is_query_report": 1,
+   "label": "Control Credit Batch × Product",
+   "link_count": 0,
+   "link_to": "MFG Cost Control Credit Batch Product Allocation",
+   "link_type": "Report",
    "onboard": 0,
    "type": "Link"
   },
@@ -246,6 +279,13 @@
    "doc_view": "List",
    "label": "Monthly Calculations",
    "link_to": "Monthly FG Cost Calculation",
+   "type": "DocType"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "List",
+   "label": "Control Credit Allocations",
+   "link_to": "MFG Cost Control Credit Allocation",
    "type": "DocType"
   },
   {

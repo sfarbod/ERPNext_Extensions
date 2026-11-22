@@ -7,6 +7,48 @@ frappe.ui.form.on("MFG Cost Product Allocation", {
 		frm.trigger("style_document_breakdown");
 		frm.trigger("render_breakdown_grid_footer");
 		frm.trigger("setup_breakdown_excel_button");
+		frm.trigger("setup_credit_allocation_nav");
+	},
+
+	setup_credit_allocation_nav(frm) {
+		if (frm.is_new()) {
+			return;
+		}
+		const nav = __("Credit Control");
+		frm.add_custom_button(__("Control Credit Pools"), () => {
+			const args = {};
+			if (frm.doc.persian_period) {
+				args.persian_period = frm.doc.persian_period;
+			}
+			frappe.set_route("query-report", "MFG Cost Control Credit Pool", args);
+		}, nav);
+		frm.add_custom_button(__("This Product Credit Shares"), () => {
+			frappe.set_route("query-report", "MFG Cost Control Credit Batch Product Allocation", {
+				product_allocation: frm.doc.name,
+				batch_no: frm.doc.batch_no,
+				item_code: frm.doc.item_code,
+			});
+		}, nav);
+		if (!frm.doc.monthly_calculation) {
+			return;
+		}
+		frappe.db.get_value(
+			"MFG Cost Control Credit Allocation",
+			{
+				monthly_calculation: frm.doc.monthly_calculation,
+				status: ["in", ["Calculated", "Submitted"]],
+				docstatus: ["<", 2],
+			},
+			"name"
+		).then((r) => {
+			const name = r && r.message && r.message.name;
+			if (!name) {
+				return;
+			}
+			frm.add_custom_button(__("Open Credit Allocation {0}", [name]), () => {
+				frappe.set_route("Form", "MFG Cost Control Credit Allocation", name);
+			}, nav);
+		});
 	},
 
 	breakdown_total_qty(frm) {
@@ -45,11 +87,15 @@ frappe.ui.form.on("MFG Cost Product Allocation", {
 		const grid = grid_field.grid;
 		const widths = {
 			source_document_type: 1,
-			source_document: 3,
+			source_document: 2,
 			quantity: 1,
-			overhead_amount: 2,
-			labor_amount: 2,
-			total_allocated_amount: 2,
+			overhead_amount: 1,
+			labor_amount: 1,
+			allocated_overhead_share: 1,
+			allocated_labor_share: 1,
+			unallocated_overhead: 1,
+			unallocated_labor: 1,
+			total_allocated_amount: 1,
 		};
 		Object.entries(widths).forEach(([fieldname, columns]) => {
 			if (grid.update_docfield_property) {
@@ -237,12 +283,20 @@ function _render_grid_total_row(frm, grid) {
 		quantity: _format_qty(qty),
 		overhead_amount: format_currency(overhead, currency),
 		labor_amount: format_currency(labor, currency),
+		allocated_overhead_share: format_currency(flt(frm.doc.breakdown_total_allocated_overhead_share), currency),
+		allocated_labor_share: format_currency(flt(frm.doc.breakdown_total_allocated_labor_share), currency),
+		unallocated_overhead: format_currency(flt(frm.doc.breakdown_total_unallocated_overhead), currency),
+		unallocated_labor: format_currency(flt(frm.doc.breakdown_total_unallocated_labor), currency),
 		total_allocated_amount: format_currency(total, currency),
 	};
 	const numeric_fields = new Set([
 		"quantity",
 		"overhead_amount",
 		"labor_amount",
+		"allocated_overhead_share",
+		"allocated_labor_share",
+		"unallocated_overhead",
+		"unallocated_labor",
 		"total_allocated_amount",
 	]);
 
@@ -331,6 +385,10 @@ function _ensure_breakdown_styles() {
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="quantity"],
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="overhead_amount"],
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="labor_amount"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="allocated_overhead_share"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="allocated_labor_share"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="unallocated_overhead"],
+	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="unallocated_labor"],
 	.form-section.mfg-pa-doc-breakdown-section .grid-static-col[data-fieldname="total_allocated_amount"] {
 		text-align: right !important;
 		direction: ltr;

@@ -86,6 +86,10 @@ def refresh_product_document_breakdown(product_allocation: str) -> dict:
 				"quantity": float(row.quantity),
 				"overhead_amount": float(row.overhead_amount),
 				"labor_amount": float(row.labor_amount),
+				"allocated_overhead_share": 0,
+				"allocated_labor_share": 0,
+				"unallocated_overhead": float(row.overhead_amount),
+				"unallocated_labor": float(row.labor_amount),
 				"total_allocated_amount": float(row.total_allocated_amount),
 				"currency": pa.currency,
 			},
@@ -94,6 +98,10 @@ def refresh_product_document_breakdown(product_allocation: str) -> dict:
 	pa.breakdown_total_overhead = float(breakdown.total_overhead)
 	pa.breakdown_total_labor = float(breakdown.total_labor)
 	pa.breakdown_total_amount = float(breakdown.total_allocated_amount)
+	pa.breakdown_total_allocated_overhead_share = 0
+	pa.breakdown_total_allocated_labor_share = 0
+	pa.breakdown_total_unallocated_overhead = float(breakdown.total_overhead)
+	pa.breakdown_total_unallocated_labor = float(breakdown.total_labor)
 	pa.flags.ignore_validate_update_after_submit = True
 	pa.save(ignore_permissions=True)
 	frappe.db.commit()

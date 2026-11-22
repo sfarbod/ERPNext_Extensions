@@ -18,11 +18,18 @@ def acquire_se_lock(stock_entry: str, owner: str, *, timeout: int = 2) -> bool:
 	key = lock_key(stock_entry)
 	# frappe.cache().setnx style via redis
 	cache = frappe.cache()
-	ok = cache.set(key, owner, ex=3600, nx=True)
+	# TTL must cover long Pending-RIV windows; same owner may re-enter on finalize.
+	ttl = 7200
+	ok = cache.set(key, owner, ex=ttl, nx=True)
 	if ok:
 		return True
 	current = cache.get(key)
-	if current and (current == owner or current.decode() == owner if isinstance(current, bytes) else current == owner):
+	if current is None:
+		return False
+	cur = current.decode() if isinstance(current, bytes) else current
+	if cur == owner:
+		# Refresh TTL on re-entrant acquire (monitor / on_riv_change finalize)
+		cache.set(key, owner, ex=ttl)
 		return True
 	return False
 
