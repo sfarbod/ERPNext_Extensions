@@ -93,6 +93,38 @@ post-SLE STAGE_CO restore was the source of the SED/SLE divergence.
 
 ---
 
+## End-to-end verification (TEST site)
+
+### Issue 1 — `PO-JOB10628`
+
+| Step | Result |
+|------|--------|
+| Record Output path | `JobCard.make_stock_entry_for_semi_fg_item(auto_submit=False)` |
+| Generated SE | `MAT-STE-2026-45148` (Manufacture, fg_completed_qty=2838) |
+| ZeroDivisionError | None |
+| Corrective Operation Cost | Not appended (semi-FG); operating cost 507,415 only |
+| Submit | Success (docstatus=1); JC `manufactured_qty=2838`, status Completed |
+| SLE | 4 entries; contract **PASS** |
+| GL | Debit=Credit=`6305921413`; balanced |
+
+Note: before submit, site Server Script required expense account
+`621301 - تعدیلات موجودی کالا - E` on incoming rows 3–4 (unrelated to this fix).
+
+### Issue 2 — `MAT-STE-2026-44477`
+
+| Step | Result |
+|------|--------|
+| Pre-status | Draft |
+| Submit | Success (docstatus=1) |
+| FG SED/SLE | **1095565104** / rate **1116784** (remirror preserved; not 1095564123) |
+| Consume SED (ABSORB) | 1106952098 |
+| Signed Σ SLE / Σ row | **454 / 454** |
+| Ledger contract | **PASS** |
+| GL | Debit=Credit=`1106952552`; balanced |
+| Integer rates | All SLE valuation rates integer |
+
+---
+
 ## Modified files
 
 - `erpnext_extensions/__init__.py` — version `5.8.6`
@@ -111,6 +143,15 @@ bench --site <site> run-tests --module \
 bench --site <site> run-tests --module \
   erpnext_extensions.iran_accounting.tests.test_ste_post_sle_set_total_v586
 ```
+
+Broader regression (see final QA report): manufacture output contract, ABSORB R2,
+amount authority, integer-rate hardening, RIV valuation integrity, scrap/reject-only,
+transfer inward conservation — all OK for suites exercised.
+
+Unrelated pre-existing/site failures observed (not introduced by 5.8.6):
+
+- `test_sabe_integer_valuation_v570` — 3 errors (`Company` import in under-mocked refresh/reconcile path)
+- `test_job_card_alternative_transfer_v5752` canary `PO-JOB11513` — 2 failures (site transfer attribution empty / shortfalls on 13100058 & 13100057)
 
 ## Compatibility
 

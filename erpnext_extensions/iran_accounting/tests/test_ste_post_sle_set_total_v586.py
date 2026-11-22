@@ -209,11 +209,22 @@ class TestMatSte44477SubmitContractV586(unittest.TestCase):
 		from erpnext_extensions.iran_accounting.domain.stock_entry_ledger_contract import (
 			collect_ledger_contract_failures,
 		)
+		from erpnext_extensions.iran_accounting.domain.stock_entry_sync import stock_entry_row_amount
 
 		apply_iran()
 		se = frappe.get_doc("Stock Entry", self.SITE_SE)
+
+		# Already submitted by E2E QA: verify durable ledger contract + remirror FG.
+		if se.docstatus == 1:
+			failures = collect_ledger_contract_failures(se.name, se.company)
+			self.assertEqual(failures, [], failures)
+			fg = next(r for r in se.items if r.item_code == "30200047")
+			self.assertEqual(flt(fg.amount), 1095565104.0)
+			self.assertEqual(flt(fg.basic_rate), 1116784.0)
+			return
+
 		if se.docstatus != 0:
-			self.skipTest(f"{self.SITE_SE} is not draft")
+			self.skipTest(f"{self.SITE_SE} docstatus={se.docstatus}")
 
 		for row in se.items:
 			has_batch = frappe.db.get_value("Item", row.item_code, "has_batch_no")
@@ -229,6 +240,8 @@ class TestMatSte44477SubmitContractV586(unittest.TestCase):
 			se.submit()
 			failures = collect_ledger_contract_failures(se.name, se.company)
 			self.assertEqual(failures, [], failures)
+			fg = next(r for r in se.items if r.item_code == "30200047")
+			self.assertEqual(flt(stock_entry_row_amount(fg, se.company)), 1095565104.0)
 		finally:
 			frappe.db.rollback(save_point="v586_se_contract")
 
