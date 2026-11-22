@@ -1,177 +1,214 @@
 #!/usr/bin/env bash
-# Dedicated MCA RQ worker — concurrency 1 on queue `mca`.
+# Dedicated MCA RQ workers on queue `mca` — configurable concurrency.
 #
-# Why dedicated:
-#   - Iran bootstrap runs via before_job on every RQ execution.
-#   - Parallel process_mca on shared SE/Batch graphs causes deadlocks.
-#   - Scheduler enqueues MCA jobs onto queue `mca` (see constants.MCA_RQ_QUEUE).
+# Independent Stock Entries may process in parallel. Same-SE exclusivity is
+# enforced in-app via redis locks (locks.acquire_se_lock). RIV stays on ``long``.
+#
+# Concurrency (first match wins):
+#   1. MCA_WORKER_CONCURRENCY env
+#   2. common_site_config workers.mca.concurrency
+#   3. default 3
 #
 # Usage:
-#   ./scripts/ensure_mca_worker.sh          # start if missing
+#   ./scripts/ensure_mca_worker.sh          # start missing workers up to concurrency
 #   ./scripts/ensure_mca_worker.sh status
 #   ./scripts/ensure_mca_worker.sh stop
-#   ./scripts/ensure_mca_worker.sh validate  # enqueue a no-op health job + check bootstrap
+#   ./scripts/ensure_mca_worker.sh restart
+#   ./scripts/ensure_mca_worker.sh validate
 
 set -euo pipefail
 # scripts -> mca package -> erpnext_extensions pkg -> app root -> apps -> bench
 ROOT="$(cd "$(dirname "$0")/../../../../../" && pwd)"
+# Prefer bench-root script when present (same behavior, clearer path)
+BENCH_SCRIPT="$ROOT/scripts/ensure_mca_worker.sh"
+if [[ -x "$BENCH_SCRIPT" ]] && [[ "$(cd "$(dirname "$0")" && pwd)" != "$(cd "$(dirname "$BENCH_SCRIPT")" && pwd)" ]]; then
+	exec "$BENCH_SCRIPT" "$@"
+fi
+
 SITES="$ROOT/sites"
 LOGDIR="$ROOT/logs/ae_workers"
 PIDDIR="$ROOT/config/pids/rq_workers"
-NAME="worker-mca"
+NAME_PREFIX="worker-mca"
 QUEUES="mca"
 mkdir -p "$LOGDIR" "$PIDDIR"
 
-start_one() {
-	local logfile="$LOGDIR/${NAME}.log"
-	local pidfile="$PIDDIR/${NAME}.pid"
-	if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-		echo "already running: $NAME pid=$(cat "$pidfile")"
-		return 0
+resolve_concurrency() {
+	if [[ -n "${MCA_WORKER_CONCURRENCY:-}" ]]; then
+		echo "$MCA_WORKER_CONCURRENCY"
+		return
 	fi
-	(
-		cd "$SITES"
-		nohup bench worker --queue "$QUEUES" >>"$logfile" 2>&1 &
-		echo $! >"$pidfile"
-	)
-	echo "started $NAME pid=$(cat "$pidfile") queues=$QUEUES log=$logfile concurrency=1"
+	local from_conf
+	from_conf="$(
+		cd "$SITES" && "$ROOT/env/bin/python" - <<'PY' 2>/dev/null || true
+import json
+p = "common_site_config.json"
+try:
+    c = json.load(open(p))
+    w = (c.get("workers") or {}).get("mca") or {}
+    print(int(w.get("concurrency") or 0) or "")
+except Exception:
+    print("")
+PY
+	)"
+	if [[ -n "$from_conf" ]]; then
+		echo "$from_conf"
+		return
+	fi
+	echo 3
 }
 
-stop_one() {
-	local pidfile="$PIDDIR/${NAME}.pid"
+is_live_pid() {
+	local pid="$1"
+	[[ -n "$pid" ]] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	local stat
+	stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ' || true)"
+	[[ "$stat" == Z* ]] && return 1
+	local cmd
+	cmd="$(ps -p "$pid" -o cmd= 2>/dev/null || true)"
+	[[ "$cmd" == *"<defunct>"* ]] && return 1
+	[[ "$cmd" == *"worker"* || "$cmd" == *"start_rq_worker"* ]] || return 1
+	return 0
+}
+
+start_one() {
+	local idx="$1"
+	local name="${NAME_PREFIX}-${idx}"
+	local logfile="$LOGDIR/${name}.log"
+	local pidfile="$PIDDIR/${name}.pid"
+	local starter="$ROOT/scripts/start_rq_worker.py"
+	local ttl="${RQ_WORKER_TTL:-7200}"
 	if [[ -f "$pidfile" ]]; then
 		local pid
 		pid="$(cat "$pidfile")"
+		if is_live_pid "$pid"; then
+			echo "already running: $name pid=$pid"
+			return 0
+		fi
+		kill -9 "$pid" 2>/dev/null || true
+		rm -f "$pidfile"
+	fi
+	(
+		cd "$SITES"
+		nohup "$ROOT/env/bin/python" "$starter" --queue "$QUEUES" --worker-ttl "$ttl" \
+			>>"$logfile" 2>&1 &
+		echo $! >"$pidfile"
+	)
+	sleep 1
+	if is_live_pid "$(cat "$pidfile")"; then
+		echo "started $name pid=$(cat "$pidfile") queues=$QUEUES ttl=$ttl"
+	else
+		echo "FAILED to start $name — see $logfile" >&2
+		return 1
+	fi
+}
+
+stop_all() {
+	shopt -s nullglob
+	for f in "$PIDDIR"/${NAME_PREFIX}.pid "$PIDDIR"/${NAME_PREFIX}-*.pid; do
+		[[ -f "$f" ]] || continue
+		local pid
+		pid="$(cat "$f")"
 		if kill -0 "$pid" 2>/dev/null; then
 			kill "$pid" || true
 			sleep 1
 			kill -9 "$pid" 2>/dev/null || true
-			echo "stopped $NAME pid=$pid"
+			echo "stopped $(basename "$f" .pid) pid=$pid"
 		fi
-		rm -f "$pidfile"
-	fi
+		rm -f "$f"
+	done
+	pkill -f "start_rq_worker.py --queue mca" 2>/dev/null || true
 }
 
-status_one() {
-	echo "=== MCA worker ==="
-	local pidfile="$PIDDIR/${NAME}.pid"
-	if [[ -f "$pidfile" ]]; then
-		local pid
-		pid="$(cat "$pidfile")"
-		if kill -0 "$pid" 2>/dev/null; then
-			echo "OK  $NAME pid=$pid queues=$QUEUES"
+status_all() {
+	local n
+	n="$(resolve_concurrency)"
+	echo "=== MCA workers (target concurrency=$n) ==="
+	shopt -s nullglob
+	local any=0
+	for f in "$PIDDIR"/${NAME_PREFIX}.pid "$PIDDIR"/${NAME_PREFIX}-*.pid; do
+		[[ -f "$f" ]] || continue
+		any=1
+		local name pid
+		name="$(basename "$f" .pid)"
+		pid="$(cat "$f")"
+		if is_live_pid "$pid"; then
+			echo "OK  $name pid=$pid"
 		else
-			echo "DEAD $NAME pid=$pid"
+			echo "DEAD $name pid=$pid"
 		fi
-	else
-		echo "(no pidfile)"
-	fi
-	ps -eo pid,etime,cmd | awk '/bench worker --queue mca|frappe worker --queue mca/ && !/awk/ {print}' || true
+	done
+	(( any )) || echo "(no pidfiles)"
+	ps -eo pid,etime,cmd | awk '/start_rq_worker.py --queue mca|frappe worker --queue mca/ && !/awk/ {print}' || true
 	(
 		cd "$SITES"
 		"$ROOT/env/bin/python" - <<'PY'
-import frappe, redis
+import frappe
 frappe.init(site="development.localhost")
 frappe.connect()
-r = redis.from_url(frappe.conf.redis_queue)
-print("rq:queue:mca length", r.llen("rq:queue:mca"))
 from frappe.utils.background_jobs import get_workers
+n = 0
 for w in get_workers() or []:
     qs = [getattr(q, "name", str(q)) for q in (w.queues or [])]
-    if "mca" in qs or any("mca" in str(q) for q in qs):
-        print("registered", w.name, "state", w.get_state(), "queues", qs)
+    if any("mca" in str(q) for q in qs):
+        n += 1
+        print("registered", w.name, "pid", w.pid, "state", w.get_state(), "queues", qs)
+print("mca_registered_workers", n)
 frappe.destroy()
 PY
 	)
 }
 
-validate_one() {
-	status_one
-	(
-		cd "$SITES"
-		"$ROOT/env/bin/python" - <<'PY'
-"""Enqueue a health job on `mca` and verify Iran bootstrap inside the worker."""
-import time
-import frappe
-
-frappe.init(site="development.localhost")
-frappe.connect()
-frappe.set_user("Administrator")
-
-from erpnext_extensions.manufacturing_cost_adjustment import constants as C
-
-
-def _health():
-	from erpnext_extensions.iran_accounting.integration.bootstrap import apply as apply_iran
-
-	apply_iran()
-	from erpnext.accounts import general_ledger as gl
-
-	fn = gl.process_debit_credit_difference
-	patched = "process_debit_credit_difference" in getattr(fn, "__qualname__", "") or "iran" in str(fn)
-	# Iran install wraps the function in a nested def — detect via closure/module
-	mod = getattr(fn, "__module__", "")
-	ok = "monkey_patches" in mod or "iran" in mod or "absorb" in (fn.__doc__ or "")
-	# Stronger: call bootstrap and compare identity after apply
-	apply_iran()
-	from erpnext_extensions.iran_accounting.integration import monkey_patches as mp
-
-	# After apply, process_debit_credit_difference should be the Iran wrapper
-	from erpnext.accounts import general_ledger as gl2
-
-	name = gl2.process_debit_credit_difference.__qualname__
-	return {
-		"ok": "process_debit_credit_difference" in name or "monkey" in (gl2.process_debit_credit_difference.__module__ or ""),
-		"qualname": name,
-		"module": gl2.process_debit_credit_difference.__module__,
-		"queue": C.MCA_RQ_QUEUE,
-	}
-
-
-# Prefer sync validation in this process (worker may be down in CI); also enqueue
-# for live worker smoke when available.
-sync = _health()
-print("SYNC_BOOTSTRAP", sync)
-
-frappe.enqueue(
-	"erpnext_extensions.manufacturing_cost_adjustment.worker_health.mca_queue_health",
-	queue=C.MCA_RQ_QUEUE,
-	timeout=120,
-	job_id="mca-queue-health",
-	deduplicate=True,
-)
-print("ENQUEUED mca-queue-health on", C.MCA_RQ_QUEUE)
-# Wait briefly for worker pickup
-for i in range(15):
-	time.sleep(1)
-	val = frappe.cache().get_value("mca:queue_health:last")
-	if val:
-		print("WORKER_HEALTH", val)
-		break
-else:
-	print("WORKER_HEALTH_PENDING (start worker-mca to consume)")
-frappe.destroy()
-PY
-	)
+ensure_all() {
+	local n i
+	n="$(resolve_concurrency)"
+	echo "ensuring MCA concurrency=$n"
+	for ((i = 1; i <= n; i++)); do
+		start_one "$i"
+	done
+	if [[ -f "$PIDDIR/${NAME_PREFIX}.pid" ]]; then
+		local pid
+		pid="$(cat "$PIDDIR/${NAME_PREFIX}.pid")"
+		if is_live_pid "$pid"; then
+			echo "note: legacy ${NAME_PREFIX}.pid still live pid=$pid"
+		else
+			rm -f "$PIDDIR/${NAME_PREFIX}.pid"
+		fi
+	fi
+	status_all
 }
 
 case "${1:-ensure}" in
-	ensure|start)
-		start_one
-		sleep 1
-		status_one
-		;;
-	stop)
-		stop_one
-		;;
-	status)
-		status_one
-		;;
+	ensure|start) ensure_all ;;
+	restart) stop_all; sleep 1; ensure_all ;;
+	stop) stop_all ;;
+	status) status_all ;;
 	validate)
-		validate_one
+		status_all
+		(
+			cd "$SITES"
+			"$ROOT/env/bin/python" - <<'PY'
+import frappe, time
+frappe.init(site="development.localhost"); frappe.connect(); frappe.set_user("Administrator")
+from erpnext_extensions.manufacturing_cost_adjustment import constants as C
+frappe.enqueue(
+    "erpnext_extensions.manufacturing_cost_adjustment.worker_health.mca_queue_health",
+    queue=C.MCA_RQ_QUEUE, timeout=120, job_id="mca-queue-health", deduplicate=True,
+)
+frappe.db.commit()
+for _ in range(20):
+    time.sleep(0.5)
+    val = frappe.cache().get_value("mca:queue_health:last")
+    if val:
+        print("WORKER_HEALTH", val); break
+else:
+    print("WORKER_HEALTH_PENDING")
+frappe.destroy()
+PY
+		)
 		;;
 	*)
-		echo "usage: $0 {ensure|start|stop|status|validate}"
+		echo "usage: $0 {ensure|start|restart|stop|status|validate}"
 		exit 1
 		;;
 esac

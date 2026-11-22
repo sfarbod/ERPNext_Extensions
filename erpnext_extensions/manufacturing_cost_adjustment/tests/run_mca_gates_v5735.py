@@ -80,12 +80,20 @@ def _run_unit():
 		assert '"via_landed_cost_voucher": 0' in src
 
 	def t_refresh_sle_uses_riv_semantics():
-		"""MCA SLE refresh walks future dependents — must use RIV two-slice policy."""
+		"""MCA SLE refresh uses RIV two-slice flag; full future walk is optional.
+
+		Default path remirrors the source voucher only; Transaction RIV owns the
+		future chain. ``mca_full_sle_refresh`` retains update_entries_after.
+		"""
 		import inspect
 		from erpnext_extensions.manufacturing_cost_adjustment import repost_engine as re
 
 		src = inspect.getsource(re._refresh_sle)
 		assert "through_repost_item_valuation" in src
+		assert "mca_full_sle_refresh" in src
+		assert "update_entries_after" in src
+		assert "_iran_remirror_sle_from_sed" in src
+		assert "mca_stage_done_riv_queued" in inspect.getsource(re._run_pipeline)
 		assert "persist_irr_stock_entry_header_and_rows" in inspect.getsource(
 			re._iran_remirror_sle_from_sed
 		)
@@ -263,19 +271,33 @@ def _run_riv_retry():
 		) as sched, patch(
 			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine._set_status"
 		), patch(
+			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine._kick_riv_execution"
+		), patch(
 			"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.frappe.get_doc",
 			return_value=doc,
 		):
 
+			from frappe.utils import now_datetime as _now_dt
+
 			def _gv(doctype, name, field=None, **kwargs):
 				if doctype == "Repost Item Valuation":
+					as_dict = kwargs.get("as_dict")
+					fields = field
+					if as_dict or isinstance(fields, (list, tuple)):
+						return frappe._dict(
+							status="In Progress",
+							modified=_now_dt(),
+							error_log="",
+						)
 					return "In Progress"
 				return None
 
 			gv.side_effect = _gv
 			result = _monitor_riv_and_finalize(mca)
 			assert result.get("reason") == "riv_pending"
-			sched.assert_called()
+			# MCA must not occupy the worker with delayed retries while RIV runs
+			sched.assert_not_called()
+			assert result.get("ok") is True
 
 	def t_completed_clears_flag():
 		riv = "RIV-TEST-DONE-" + frappe.generate_hash(length=4)

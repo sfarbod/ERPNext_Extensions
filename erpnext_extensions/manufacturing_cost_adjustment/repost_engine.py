@@ -3,8 +3,13 @@
 
 Sequence (TDS Rev.2):
   validate → lock → append SE.additional_costs → Core distribute → Iran
-  → persist → update_entries_after (in-place SLE) → repost_gle_for_stock_vouchers
-  → ledger contract → queue RIV (no via_landed_cost_voucher) → monitor → Complete
+  → persist → source SLE remirror → GL refresh → ledger contract
+  → queue RIV (no via_landed_cost_voucher) → return (no sync RIV wait)
+  → finalize via on_riv_change / monitor when RIV completes
+
+Default SLE path remirrors the source voucher only; Transaction RIV owns the
+future item/warehouse chain. Set ``frappe.flags.mca_full_sle_refresh`` for the
+legacy full ``update_entries_after`` walk.
 """
 
 from __future__ import annotations
@@ -81,8 +86,10 @@ def process_mca(mca_name: str) -> dict[str, Any]:
 		return {"ok": False, "reason": "failed", "error": str(exc)}
 	finally:
 		frappe.flags.in_mca_pipeline = False
-		# Keep lock while Pending RIV so concurrent MCA cannot interleave;
-		# release on Completed / Voided / Failed-after-compensate.
+		# Release only on terminal statuses. Keep the per-SE lock while Pending
+		# RIV so a sibling MCA cannot mutate the same Stock Entry during RIV.
+		# Independent SEs use different lock keys — they never contended here.
+		# The MCA *worker* is freed by returning after queueing RIV (no sync wait).
 		try:
 			status = frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "processing_status")
 		except Exception:
@@ -96,16 +103,52 @@ def process_mca(mca_name: str) -> dict[str, Any]:
 			release_se_lock(mca.stock_entry, owner)
 
 
+def _progress(mca_name: str, stage: str, **extra: Any) -> None:
+	"""Publish stage progress for ops/Desk (cache + logger). Non-fatal."""
+	import os as _os
+
+	payload = {
+		"mca": mca_name,
+		"stage": stage,
+		"at": str(now_datetime()),
+		"worker_pid": _os.getpid(),
+		**extra,
+	}
+	try:
+		frappe.cache().set_value(f"mca:progress:{mca_name}", payload, expires_in_sec=7200)
+		frappe.cache().set_value("mca:progress:last", payload, expires_in_sec=7200)
+	except Exception:
+		pass
+	frappe.logger("mca").info(f"MCA progress {payload}")
+
+
+def _set_status_committed(mca_name: str, status: str, stage: str | None = None) -> None:
+	"""Persist processing_status before expensive work so Desk is not stale."""
+	_set_status(mca_name, status)
+	frappe.db.commit()
+	_progress(mca_name, stage or status)
+
+
 def _run_pipeline(mca_name: str) -> dict[str, Any]:
+	import time as _time
+
 	mca = frappe.get_doc(C.MCA_DOCTYPE, mca_name)
 	se_name = mca.stock_entry
 	_assert_se_still_submitted(se_name)
+	_progress(mca_name, "pipeline_start", stock_entry=se_name, checkpoint=mca.checkpoint)
+	t_pipe0 = _time.perf_counter()
+	stage_ms: dict[str, float] = {}
+
+	def _timed(stage: str, fn) -> None:
+		t0 = _time.perf_counter()
+		fn()
+		stage_ms[stage] = round((_time.perf_counter() - t0) * 1000, 2)
 
 	cp = mca.checkpoint or C.CP_NONE
 
 	if _cp_before(cp, C.CP_COSTS_APPENDED):
-		_set_status(mca_name, C.PS_APPENDING)
-		_append_costs(mca_name)
+		_set_status_committed(mca_name, C.PS_APPENDING, "appending_costs")
+		_timed("append_costs", lambda: _append_costs(mca_name))
 		_set_checkpoint(mca_name, C.CP_COSTS_APPENDED)
 		frappe.db.commit()
 
@@ -113,36 +156,40 @@ def _run_pipeline(mca_name: str) -> dict[str, Any]:
 		# reload checkpoint
 		cp = frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "checkpoint") or C.CP_NONE
 	if _cp_before(frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "checkpoint") or "", C.CP_ALLOCATED):
-		_set_status(mca_name, C.PS_ALLOCATING)
-		_allocate_and_persist(mca_name)
+		_set_status_committed(mca_name, C.PS_ALLOCATING, "allocating")
+		_timed("allocate", lambda: _allocate_and_persist(mca_name))
 		_set_checkpoint(mca_name, C.CP_ALLOCATED)
 		frappe.db.commit()
 
 	if _cp_before(frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "checkpoint") or "", C.CP_SLE_REFRESHED):
-		_set_status(mca_name, C.PS_REBUILDING_SLE)
-		_refresh_sle(se_name)
+		_set_status_committed(mca_name, C.PS_REBUILDING_SLE, "refreshing_sle")
+		_timed("refresh_sle", lambda: _refresh_sle(se_name))
 		_set_checkpoint(mca_name, C.CP_SLE_REFRESHED)
 		frappe.db.commit()
 
 	if _cp_before(frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "checkpoint") or "", C.CP_GL_REFRESHED):
-		_set_status(mca_name, C.PS_REBUILDING_GL)
-		_refresh_gl(se_name)
+		_set_status_committed(mca_name, C.PS_REBUILDING_GL, "refreshing_gl")
+		_timed("refresh_gl", lambda: _refresh_gl(se_name))
 		_set_checkpoint(mca_name, C.CP_GL_REFRESHED)
 		frappe.db.commit()
 
 	if _cp_before(frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "checkpoint") or "", C.CP_CONTRACT_OK):
-		_set_status(mca_name, C.PS_VALIDATING)
-		try:
-			_enforce_contract(se_name)
-		except Exception:
-			_compensate_restore(mca_name)
-			raise
+		_set_status_committed(mca_name, C.PS_VALIDATING, "enforcing_contract")
+
+		def _contract() -> None:
+			try:
+				_enforce_contract(se_name)
+			except Exception:
+				_compensate_restore(mca_name)
+				raise
+
+		_timed("contract", _contract)
 		_set_checkpoint(mca_name, C.CP_CONTRACT_OK)
 		frappe.db.commit()
 
 	if _cp_before(frappe.db.get_value(C.MCA_DOCTYPE, mca_name, "checkpoint") or "", C.CP_RIV_QUEUED):
-		_set_status(mca_name, C.PS_PENDING_RIV)
-		_queue_or_reuse_riv(mca_name)
+		_set_status_committed(mca_name, C.PS_PENDING_RIV, "queueing_riv")
+		_timed("queue_riv", lambda: _queue_or_reuse_riv(mca_name))
 		_set_checkpoint(mca_name, C.CP_RIV_QUEUED)
 		frappe.db.set_value(
 			C.MCA_DOCTYPE,
@@ -155,8 +202,24 @@ def _run_pipeline(mca_name: str) -> dict[str, Any]:
 			update_modified=False,
 		)
 		frappe.db.commit()
+		mca_stage_ms = round((_time.perf_counter() - t_pipe0) * 1000, 2)
+		_progress(
+			mca_name,
+			"mca_stage_complete",
+			riv_pending=True,
+			mca_stage_ms=mca_stage_ms,
+			stages_ms=stage_ms,
+		)
+		# MCA stage done — do NOT wait for RIV. Finalize via on_riv_change.
+		return {
+			"ok": True,
+			"reason": "mca_stage_done_riv_queued",
+			"mca_stage_ms": mca_stage_ms,
+			"stages_ms": stage_ms,
+		}
 
-	# Monitor RIV
+	# Resume path: RIV already queued / completed — finalize without blocking
+	# the MCA worker on in-flight RIV (no synchronous wait / poll loop).
 	return _monitor_riv_and_finalize(mca_name)
 
 
@@ -400,42 +463,52 @@ def _allocate_and_persist(mca_name: str) -> None:
 
 
 def _refresh_sle(se_name: str) -> None:
-	"""In-place SLE valuation refresh via update_entries_after (no LCV flags).
+	"""Refresh source Stock Entry SLE to match post-allocation SED.
 
-	Core ``update_entries_after`` walks *future* item/warehouse SLEs, including
-	dependent Manufacture outputs that share consumed materials. That walk is a
-	repost, not a live submit: Iran two-slice / HRC-00015 must use RIV semantics
-	(``through_repost_item_valuation``) so mid-chain negative or short SABE pools
-	audit+fall-through instead of fail-closing the MCA source refresh.
-	Final dependent rebuild remains the queued Transaction RIV.
+	Default (fast) path: remirror this voucher's SLE from SED only. The next
+	pipeline stage queues Transaction RIV, which owns the future item/warehouse
+	chain. Walking tens of thousands of future SLEs here duplicated RIV work and
+	was the dominant Farvardin MCA bottleneck (15–40+ minutes per document).
+
+	Legacy / diagnostic full walk: set ``frappe.flags.mca_full_sle_refresh``.
+	Both paths set ``through_repost_item_valuation`` so Iran two-slice /
+	HRC-00015 mid-chain negative or short SABE pools audit+fall-through.
 	"""
-	from erpnext.stock.stock_ledger import update_entries_after
-
-	se = frappe.get_doc("Stock Entry", se_name)
-	pairs = frappe.db.sql(
-		"""
-		SELECT DISTINCT item_code, warehouse
-		FROM `tabStock Ledger Entry`
-		WHERE voucher_type=%s AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
-		""",
-		("Stock Entry", se_name),
-		as_dict=True,
-	)
 	prev_riv_flag = bool(frappe.flags.get("through_repost_item_valuation"))
 	frappe.flags.through_repost_item_valuation = True
 	try:
-		for p in pairs:
-			update_entries_after(
-				{
-					"item_code": p.item_code,
-					"warehouse": p.warehouse,
-					"posting_date": se.posting_date,
-					"posting_time": se.posting_time,
-					"voucher_type": "Stock Entry",
-					"voucher_no": se_name,
-					"company": se.company,
-				},
-				allow_negative_stock=True,
+		if getattr(frappe.flags, "mca_full_sle_refresh", False):
+			from erpnext.stock.stock_ledger import update_entries_after
+
+			se = frappe.get_doc("Stock Entry", se_name)
+			pairs = frappe.db.sql(
+				"""
+				SELECT DISTINCT item_code, warehouse
+				FROM `tabStock Ledger Entry`
+				WHERE voucher_type=%s AND voucher_no=%s AND IFNULL(is_cancelled,0)=0
+				""",
+				("Stock Entry", se_name),
+				as_dict=True,
+			)
+			frappe.logger("mca").info(
+				f"MCA SLE full walk se={se_name} pairs={len(pairs)} (mca_full_sle_refresh)"
+			)
+			for p in pairs:
+				update_entries_after(
+					{
+						"item_code": p.item_code,
+						"warehouse": p.warehouse,
+						"posting_date": se.posting_date,
+						"posting_time": se.posting_time,
+						"voucher_type": "Stock Entry",
+						"voucher_no": se_name,
+						"company": se.company,
+					},
+					allow_negative_stock=True,
+				)
+		else:
+			frappe.logger("mca").info(
+				f"MCA SLE source remirror se={se_name} (RIV owns future chain)"
 			)
 	finally:
 		frappe.flags.through_repost_item_valuation = prev_riv_flag
@@ -808,6 +881,98 @@ def _parse_riv_list(text: str | None) -> list[str]:
 	return [x.strip() for x in str(text).splitlines() if x.strip()]
 
 
+def _heal_orphaned_riv_in_progress(riv_name: str) -> None:
+	"""Mark Completed when RIV is stuck In Progress with no live RQ job.
+
+	Typical race: ``execute_reposting_entry`` finishes (RQ Job OK) but the RIV
+	status write hits MySQL 1020 and leaves the document In Progress forever,
+	blocking MCA finalize.
+
+	Heal only when:
+	- status is In Progress, and
+	- no queued/started long-queue job references this RIV, and
+	- either the row has been idle ≥ 90s, or error_log shows a 1020/deadlock
+	  status-write race *and* a finished RQ job exists for this RIV.
+	"""
+	if not riv_name or not frappe.db.exists("Repost Item Valuation", riv_name):
+		return
+	row = frappe.db.get_value(
+		"Repost Item Valuation",
+		riv_name,
+		["status", "modified", "error_log"],
+		as_dict=True,
+	)
+	# Defensive: mocks / partial get_value may return a bare status string
+	if isinstance(row, str):
+		return  # cannot age-check without modified; leave live RIV alone
+	if not row:
+		return
+	status = row.get("status") if isinstance(row, dict) else getattr(row, "status", None)
+	if status != "In Progress":
+		return
+	try:
+		modified = row.get("modified") if isinstance(row, dict) else getattr(row, "modified", None)
+		age = (now_datetime() - modified).total_seconds() if modified else 999
+	except Exception:
+		age = 999
+	err = ""
+	try:
+		err = (row.get("error_log") if isinstance(row, dict) else getattr(row, "error_log", None)) or ""
+	except Exception:
+		err = ""
+	has_1020_race = "1020" in err
+	live = False
+	finished_ok = False
+	try:
+		from frappe.utils.background_jobs import get_queue
+		from rq.job import Job
+
+		q = get_queue(C.MCA_RIV_RQ_QUEUE)
+		for jid in list(q.get_job_ids()) + list(q.started_job_registry.get_job_ids()):
+			if riv_name in str(jid):
+				live = True
+				break
+		if not live and has_1020_race:
+			# Prefer evidence the execute job already finished successfully
+			for jid in (
+				f"mca-riv-exec:{riv_name}",
+				f"development.localhost||mca-riv-exec|{riv_name}",
+			):
+				try:
+					job = Job.fetch(jid, connection=q.connection)
+					if job.is_finished:
+						finished_ok = True
+						break
+				except Exception:
+					continue
+			if not finished_ok:
+				try:
+					for jid in list(q.finished_job_registry.get_job_ids())[:200]:
+						if riv_name in str(jid):
+							finished_ok = True
+							break
+				except Exception:
+					pass
+	except Exception:
+		live = False
+	if live:
+		return
+	# Idle orphan (≥90s, no live job) OR proven finished job + 1020 status race
+	if age < 90 and not (has_1020_race and finished_ok):
+		return
+	frappe.db.set_value(
+		"Repost Item Valuation",
+		riv_name,
+		{
+			"status": "Completed",
+			"error_log": err
+			+ "\n[mca] healed orphan In Progress (no live RQ job; status-write race)",
+		},
+		update_modified=True,
+	)
+	frappe.logger("mca").warning(f"MCA healed orphan RIV {riv_name} -> Completed")
+
+
 def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 	mca = frappe.get_doc(C.MCA_DOCTYPE, mca_name)
 	rivs = _parse_riv_list(mca.riv_voucher_nos)
@@ -821,6 +986,9 @@ def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 		st = frappe.db.get_value("Repost Item Valuation", riv, "status")
 		if st == "Queued":
 			_kick_riv_execution(riv)
+		elif st == "In Progress":
+			# Heal orphan: RQ Job OK but RIV status write hit 1020 / worker died.
+			_heal_orphaned_riv_in_progress(riv)
 
 	statuses = {
 		r: frappe.db.get_value("Repost Item Valuation", r, "status") for r in rivs if frappe.db.exists("Repost Item Valuation", r)
@@ -843,8 +1011,14 @@ def _monitor_riv_and_finalize(mca_name: str) -> dict[str, Any]:
 			{"repost_status": C.RS_IN_PROGRESS, "repost_required": 1},
 			update_modified=False,
 		)
-		_schedule_retry(mca_name, "riv_in_progress", delay=60)
-		return {"ok": False, "reason": "riv_pending", "statuses": statuses}
+		# Kick RIV onto ``long`` then return — do not occupy the MCA worker
+		# with scheduled retries while RIV runs. ``on_riv_change`` re-enters.
+		for riv, st in statuses.items():
+			if st == "Queued":
+				_kick_riv_execution(riv)
+		frappe.db.commit()
+		_progress(mca_name, "riv_pending_no_wait", statuses=statuses)
+		return {"ok": True, "reason": "riv_pending", "statuses": statuses}
 
 	if any(s == "Failed" for s in statuses.values()):
 		# Drop Failed RIV refs so `_queue_or_reuse_riv` can recreate. Restore

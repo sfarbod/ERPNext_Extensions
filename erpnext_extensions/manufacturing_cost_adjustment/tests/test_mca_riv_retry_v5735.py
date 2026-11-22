@@ -134,10 +134,14 @@ class TestMCARIVRetryV5735(FrappeTestCase):
 			with patch(
 				"erpnext_extensions.manufacturing_cost_adjustment.repost_engine.frappe.get_doc",
 				return_value=doc,
+			), patch(
+				"erpnext_extensions.manufacturing_cost_adjustment.repost_engine._kick_riv_execution"
 			):
 				result = _monitor_riv_and_finalize(mca)
 			self.assertEqual(result.get("reason"), "riv_pending")
-			sched.assert_called()
+			# No delayed MCA retries while RIV is in flight — on_riv_change finalizes
+			sched.assert_not_called()
+			self.assertTrue(result.get("ok"))
 
 	def test_completed_clears_repost_required(self):
 		if not frappe.db.exists("DocType", C.MCA_DOCTYPE):

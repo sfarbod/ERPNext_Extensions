@@ -78,13 +78,17 @@ LOCK_PREFIX = "mca:se:"
 MAX_RETRY_ATTEMPTS = 50
 RETRY_BACKOFF_SECONDS = (60, 120, 300, 600, 900)
 
-# Dedicated RQ queue for MCA orchestration (process_mca). Concurrency 1 —
-# shared Stock Entry / Batch graphs deadlock under parallel process_mca.
+# Dedicated RQ queue for MCA orchestration (process_mca).
+# Independent Stock Entries may run concurrently (configurable workers).
+# Same-SE exclusivity is enforced by ``locks.acquire_se_lock`` (per document).
 # Heavy Repost Item Valuation execution uses Core's ``long`` queue (see
 # ``_kick_riv_execution``), which must have active long workers.
 MCA_RQ_QUEUE = "mca"
 MCA_RIV_RQ_QUEUE = "long"
 MCA_JOB_TIMEOUT = 3600
+# Default parallel MCA workers. Override via common_site_config
+# ``workers.mca.concurrency`` or env ``MCA_WORKER_CONCURRENCY``.
+MCA_DEFAULT_CONCURRENCY = 3
 
 # Permanent business failures — scheduler must not auto-retry these.
 PERMANENT_ERROR_MARKERS = (
