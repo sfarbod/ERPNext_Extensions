@@ -362,16 +362,38 @@ def _restore_closed_manufacture_contract_after_core_rates(doc) -> None:
 	apply_iran_manufacture_output_contract(doc)
 
 
+def _stock_entry_sle_already_posted(doc) -> bool:
+	"""True once Stock Ledger Entries exist for this voucher (post update_stock_ledger)."""
+	if not doc or not doc.get("name"):
+		return False
+	return bool(
+		frappe.db.exists(
+			"Stock Ledger Entry",
+			{
+				"voucher_type": "Stock Entry",
+				"voucher_no": doc.name,
+				"is_cancelled": 0,
+			},
+		)
+	)
+
+
 def patched_set_total_incoming_outgoing_value(self):
-	"""IRR-aware totals; bound to Stock Entry when monkey patches apply."""
+	"""IRR-aware totals; bound to Stock Entry when monkey patches apply.
+
+	After SLE is posted, only refresh header sums from current row amounts.
+	Re-running STAGE_CO restore / FG residual here rewrites SED away from the
+	SLE↔SED mirror (MAT-STE-2026-44477: FG amount −981 after ABSORB remirror).
+	"""
 	if not is_irr_company(self.company):
 		if _original_set_total_incoming_outgoing_value:
 			return _original_set_total_incoming_outgoing_value(self)
 		return
 
-	_restore_closed_manufacture_contract_after_core_rates(self)
+	sle_posted = _stock_entry_sle_already_posted(self)
+	if not sle_posted:
+		_restore_closed_manufacture_contract_after_core_rates(self)
 
-	company_currency = get_company_currency(self.company)
 	self.total_incoming_value = self.total_outgoing_value = 0.0
 	for d in self.get("items"):
 		if d.t_warehouse:
@@ -381,8 +403,9 @@ def patched_set_total_incoming_outgoing_value(self):
 
 	# Do not round summed totals — rows are already IRR integers.
 	self.value_difference = flt(self.total_incoming_value) - flt(self.total_outgoing_value)
-	align_manufacture_finished_good_residual(self)
-	align_zero_value_transfer_totals(self)
+	if not sle_posted:
+		align_manufacture_finished_good_residual(self)
+		align_zero_value_transfer_totals(self)
 
 
 _original_set_total_incoming_outgoing_value = None
