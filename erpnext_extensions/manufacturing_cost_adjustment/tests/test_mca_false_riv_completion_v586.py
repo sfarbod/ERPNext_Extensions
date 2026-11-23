@@ -55,14 +55,9 @@ class TestFalseRIVCompletion(unittest.TestCase):
 			patch.object(frappe.db, "get_value", return_value=row),
 			patch.object(frappe.db, "set_value") as sv,
 			patch.object(re, "_kick_riv_execution") as kick,
-			patch.object(re, "_riv_has_live_long_job", create=True),
+			patch.object(re, "_riv_exec_job_is_live", return_value=False),
 		):
-			# Force no-live via patching get_queue path inside heal
-			with patch(
-				"frappe.utils.background_jobs.get_queue",
-				side_effect=Exception("no queue in unit test"),
-			):
-				re._heal_orphaned_riv_in_progress("RIV-DEADLOCK-TEST")
+			re._heal_orphaned_riv_in_progress("RIV-DEADLOCK-TEST")
 			# Must not write Completed
 			for c in sv.call_args_list:
 				payload = c.args[2] if len(c.args) >= 3 else c.kwargs.get("value")
@@ -70,30 +65,59 @@ class TestFalseRIVCompletion(unittest.TestCase):
 					self.assertNotEqual(payload.get("status"), "Completed")
 			kick.assert_called_once_with("RIV-DEADLOCK-TEST")
 
-	def test_error_1020_job_ok_does_not_complete_riv(self):
+	def test_error_1020_young_progress_does_not_kick(self):
+		"""Fresh modified during SLE walk must not be re-kicked even with stale 1020 log."""
 		from frappe.utils import now_datetime, add_to_date
 
 		row = frappe._dict(
 			status="In Progress",
-			modified=add_to_date(now_datetime(), seconds=-5),  # young but recoverable
-			error_log='(1020, "Record has changed since last read in table \'tabStock Ledger Entry\'")',
+			modified=add_to_date(now_datetime(), seconds=-5),
+			error_log='(1020, "Record has changed since last read in table \'tabRepost Item Valuation\'")',
 		)
 		with (
 			patch.object(frappe.db, "exists", return_value=True),
 			patch.object(frappe.db, "get_value", return_value=row),
 			patch.object(frappe.db, "set_value") as sv,
 			patch.object(re, "_kick_riv_execution") as kick,
-			patch(
-				"frappe.utils.background_jobs.get_queue",
-				side_effect=Exception("no queue"),
-			),
+			patch.object(re, "_riv_exec_job_is_live", return_value=False),
 		):
 			re._heal_orphaned_riv_in_progress("RIV-1020-TEST")
 			for c in sv.call_args_list:
 				payload = c.args[2] if len(c.args) >= 3 else None
 				if isinstance(payload, dict):
 					self.assertNotEqual(payload.get("status"), "Completed")
-			kick.assert_called_once_with("RIV-1020-TEST")
+			kick.assert_not_called()
+
+	def test_error_1020_idle_orphan_nudges_only(self):
+		from frappe.utils import now_datetime, add_to_date
+
+		row = frappe._dict(
+			status="In Progress",
+			modified=add_to_date(now_datetime(), seconds=-180),
+			error_log='(1020, "Record has changed since last read in table \'tabRepost Item Valuation\'")',
+		)
+		with (
+			patch.object(frappe.db, "exists", return_value=True),
+			patch.object(frappe.db, "get_value", return_value=row),
+			patch.object(frappe.db, "set_value") as sv,
+			patch.object(re, "_kick_riv_execution") as kick,
+			patch.object(re, "_riv_exec_job_is_live", return_value=False),
+		):
+			re._heal_orphaned_riv_in_progress("RIV-1020-IDLE")
+			for c in sv.call_args_list:
+				payload = c.args[2] if len(c.args) >= 3 else None
+				if isinstance(payload, dict):
+					self.assertNotEqual(payload.get("status"), "Completed")
+			kick.assert_called_once_with("RIV-1020-IDLE")
+
+	def test_on_riv_change_only_terminal_statuses(self):
+		src = inspect.getsource(re.on_riv_change)
+		self.assertIn('doc.status not in ("Completed", "Failed", "Skipped", "Cancelled")', src)
+
+	def test_kick_defaults_to_enqueue_not_sync(self):
+		src = inspect.getsource(re._kick_riv_execution)
+		self.assertIn("_enqueue_riv_execution", src)
+		self.assertIn("mca_inline_riv", src)
 
 	def test_core_completed_allows_finalize_gate(self):
 		self.assertTrue(re._riv_statuses_allow_mca_finalize({"r1": "Completed"}))
@@ -203,8 +227,12 @@ class TestFalseRIVCompletion(unittest.TestCase):
 	def test_forensic_case_readonly_invariant(self):
 		"""Documented case: manufacture SLE has MCA rate; transfer still at basic.
 
-		Read-only — does not repair historical records. Asserts the bug evidence
-		still present so recovery can be authorized separately.
+		Read-only. Pre-fix world left manufacture remirrored at MCA rate while
+		transfer ``MAT-STE-2026-25934`` qty -102 stayed near basic ~3.7M.
+		After Option A serialized Transaction RIV, both sides must track MCA rate
+		(not the stale 3.7M chain).
+
+		Skipped on a clean draft-only restore where MCA has not yet been submitted.
 		"""
 		se = "MAT-STE-2026-25933-2"
 		tr = "MAT-STE-2026-25934"
@@ -212,9 +240,17 @@ class TestFalseRIVCompletion(unittest.TestCase):
 		wh = "انبار Quarantine محصول نهایی اسپاد"
 		if not frappe.db.exists("Stock Entry", se):
 			self.skipTest("forensic SE not on site")
+		mca = frappe.db.get_value(
+			"Manufacturing Cost Adjustment",
+			{"stock_entry": se, "docstatus": 1},
+			["name", "processing_status"],
+			as_dict=True,
+		)
+		if not mca:
+			self.skipTest("MCA not submitted yet — clean draft baseline")
 		mfg = frappe.db.sql(
 			"""
-			SELECT incoming_rate, stock_value_difference, actual_qty
+			SELECT incoming_rate, valuation_rate, stock_value_difference, actual_qty
 			FROM `tabStock Ledger Entry`
 			WHERE voucher_no=%s AND item_code=%s AND warehouse=%s
 			  AND actual_qty>0 AND is_cancelled=0 LIMIT 1
@@ -224,7 +260,7 @@ class TestFalseRIVCompletion(unittest.TestCase):
 		)
 		xfer = frappe.db.sql(
 			"""
-			SELECT outgoing_rate, actual_qty
+			SELECT outgoing_rate, valuation_rate, actual_qty
 			FROM `tabStock Ledger Entry`
 			WHERE voucher_no=%s AND item_code=%s AND warehouse=%s
 			  AND actual_qty=-102 AND is_cancelled=0 LIMIT 1
@@ -234,13 +270,14 @@ class TestFalseRIVCompletion(unittest.TestCase):
 		)
 		self.assertTrue(mfg)
 		self.assertTrue(xfer)
-		self.assertGreater(float(mfg[0].incoming_rate), 30_000_000)
-		self.assertLess(float(xfer[0].outgoing_rate), 5_000_000)
-		# Propagation still broken until authorized historical RIV recovery
-		self.assertGreater(
-			float(mfg[0].incoming_rate) / max(float(xfer[0].outgoing_rate), 1),
-			5,
-		)
+		mrate = float(mfg[0].valuation_rate or mfg[0].incoming_rate)
+		orate = float(xfer[0].outgoing_rate or xfer[0].valuation_rate)
+		self.assertGreater(mrate, 30_000_000)
+		self.assertGreater(orate, 30_000_000)
+		# Must not remain on the pre-MCA basic chain (~3.7M)
+		self.assertGreater(orate, 5_000_000)
+		if mca.processing_status == "Completed":
+			self.assertAlmostEqual(orate, mrate, delta=2.0)
 
 	def test_propagation_invariant_documented(self):
 		"""Contract: after successful RIV, outbound rate must track manufacture in-rate."""
@@ -258,7 +295,10 @@ def run_false_riv_completion_suite() -> dict:
 	checks = [
 		("heal_source_never_sets_completed", t.test_heal_source_never_sets_completed),
 		("deadlock_job_ok_does_not_complete_riv", t.test_deadlock_job_ok_does_not_complete_riv),
-		("error_1020_job_ok_does_not_complete_riv", t.test_error_1020_job_ok_does_not_complete_riv),
+		("error_1020_young_progress_does_not_kick", t.test_error_1020_young_progress_does_not_kick),
+		("error_1020_idle_orphan_nudges_only", t.test_error_1020_idle_orphan_nudges_only),
+		("on_riv_change_only_terminal_statuses", t.test_on_riv_change_only_terminal_statuses),
+		("kick_defaults_to_enqueue_not_sync", t.test_kick_defaults_to_enqueue_not_sync),
 		("core_completed_allows_finalize_gate", t.test_core_completed_allows_finalize_gate),
 		("monitor_does_not_finalize_while_in_progress", t.test_monitor_does_not_finalize_while_in_progress),
 		("monitor_accepts_genuine_core_completed", t.test_monitor_accepts_genuine_core_completed),

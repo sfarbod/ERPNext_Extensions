@@ -718,15 +718,34 @@ def _queue_or_reuse_riv(mca_name: str) -> None:
 
 	existing = _parse_riv_list(mca.riv_voucher_nos)
 	alive = []
+	failed = []
 	for riv in existing:
 		st = frappe.db.get_value("Repost Item Valuation", riv, "status")
 		if st in ("Queued", "In Progress"):
 			alive.append(riv)
 		elif st == "Failed":
-			# allow recreate
-			pass
+			# Reuse via Core restart_reposting — never create a duplicate RIV.
+			failed.append(riv)
 		elif st in ("Completed", "Skipped"):
 			alive.append(riv)
+
+	if failed and not alive:
+		for riv in failed:
+			doc = frappe.get_doc("Repost Item Valuation", riv)
+			if doc.status == "Failed":
+				doc.restart_reposting()
+			alive.append(riv)
+		frappe.db.set_value(
+			C.MCA_DOCTYPE,
+			mca_name,
+			"riv_voucher_nos",
+			"\n".join(sorted(set(alive))),
+			update_modified=False,
+		)
+		frappe.db.commit()
+		for riv in alive:
+			_kick_riv_execution(riv)
+		return
 
 	if any(
 		frappe.db.get_value("Repost Item Valuation", r, "status") in ("Queued", "In Progress")
@@ -808,11 +827,172 @@ def _queue_or_reuse_riv(mca_name: str) -> None:
 		_kick_riv_execution(riv)
 
 
+def _riv_exec_job_id(riv_name: str) -> str:
+	return f"mca-riv-exec:{riv_name}"
+
+
+def _clear_stale_riv_exec_job(riv_name: str) -> bool:
+	"""Remove a stuck RQ ``started`` job whose worker PID is dead.
+
+	RQ ``deduplicate=True`` refuses re-enqueue while the job hash exists, even
+	when the claiming worker process is gone. Clearing the orphaned job (+ WIP
+	registry membership) is required so a live ``long`` worker can resume.
+	Never changes Repost Item Valuation status.
+	"""
+	if not riv_name:
+		return False
+	try:
+		from frappe.utils.background_jobs import get_queue, get_redis_conn
+		from rq.job import Job
+
+		conn = get_redis_conn()
+		q = get_queue(C.MCA_RIV_RQ_QUEUE)
+		site = getattr(frappe.local, "site", None) or ""
+		short_id = _riv_exec_job_id(riv_name)
+		full_id = f"{site}||{short_id}" if site and not short_id.startswith(site) else short_id
+		candidates = {short_id, full_id, f"development.localhost||{short_id}"}
+		# Also match any started id containing the riv name
+		try:
+			for jid in list(q.started_job_registry.get_job_ids()):
+				if riv_name in str(jid):
+					candidates.add(str(jid))
+		except Exception:
+			pass
+
+		cleared = False
+		# RQ 2.x WIP members are often ``job_id:execution_id`` composites.
+		try:
+			for member in conn.zrange(q.started_job_registry.key, 0, -1):
+				ms = member.decode() if isinstance(member, bytes) else str(member)
+				if riv_name in ms:
+					conn.zrem(q.started_job_registry.key, member)
+					cleared = True
+					# Also track bare job id portion
+					bare = ms.split(":", 1)[0] if ms.count(":") >= 1 else ms
+					# Prefer full site||job form before first execution uuid
+					if "||" in ms:
+						bare = ms.rsplit(":", 1)[0] if len(ms.split(":")) > 3 else ms
+						# development.localhost||mca-riv-exec|NAME:EXECUUID
+						parts = ms.split(":")
+						if len(parts) >= 2 and len(parts[-1]) >= 32:
+							bare = ":".join(parts[:-1]) if "||" not in parts[-1] else ms.rsplit(":", 1)[0]
+					candidates.add(bare)
+		except Exception:
+			pass
+		for jid in list(candidates):
+			try:
+				job = Job.fetch(jid, connection=conn)
+			except Exception:
+				job = None
+			try:
+				conn.zrem(q.started_job_registry.key, jid)
+			except Exception:
+				pass
+			# Delete job + execution artefacts
+			for pattern in (
+				f"rq:job:{jid}",
+				f"rq:executions:{jid}",
+			):
+				try:
+					if conn.delete(pattern):
+						cleared = True
+				except Exception:
+					pass
+			try:
+				for key in conn.scan_iter(match=f"rq:execution:{jid}:*"):
+					conn.delete(key)
+					cleared = True
+			except Exception:
+				pass
+			# Drop ghost worker hash if present and pid-less / dead
+			if job is not None:
+				wname = getattr(job, "worker_name", None)
+				if wname:
+					try:
+						wkey = wname if str(wname).startswith("rq:worker:") else f"rq:worker:{wname}"
+						pid_raw = conn.hget(wkey, "pid")
+						pid = int(pid_raw) if pid_raw else 0
+						alive = False
+						if pid:
+							import os
+
+							alive = os.path.exists(f"/proc/{pid}")
+						if not alive:
+							conn.delete(wkey)
+							cleared = True
+					except Exception:
+						pass
+		return cleared
+	except Exception as exc:
+		frappe.logger("mca").warning(f"clear stale riv exec failed riv={riv_name}: {exc}")
+		return False
+
+
+def _riv_exec_job_is_live(riv_name: str) -> bool:
+	"""True only when a Queued job exists or a Started job has a live worker PID.
+
+	A Started registry entry alone is insufficient — dead workers leave orphaned
+	``started`` jobs that block ``deduplicate`` re-enqueue forever.
+	"""
+	if not riv_name:
+		return False
+	try:
+		import os
+
+		from frappe.utils.background_jobs import get_queue, get_redis_conn
+		from rq.job import Job
+
+		q = get_queue(C.MCA_RIV_RQ_QUEUE)
+		conn = get_redis_conn()
+		for jid in list(q.get_job_ids()):
+			if riv_name in str(jid):
+				return True
+		for jid in list(q.started_job_registry.get_job_ids()):
+			if riv_name not in str(jid):
+				continue
+			try:
+				job = Job.fetch(jid, connection=conn)
+			except Exception:
+				continue
+			wname = getattr(job, "worker_name", None)
+			if not wname:
+				continue
+			wkey = wname if str(wname).startswith("rq:worker:") else f"rq:worker:{wname}"
+			pid_raw = conn.hget(wkey, "pid")
+			try:
+				pid = int(pid_raw) if pid_raw else 0
+			except Exception:
+				pid = 0
+			if pid and os.path.exists(f"/proc/{pid}"):
+				return True
+		return False
+	except Exception:
+		return False
+
+
+def _enqueue_riv_execution(riv_name: str) -> None:
+	"""Enqueue Core ``execute_reposting_entry`` on the standard ``long`` queue."""
+	# If a dead-worker started job is blocking deduplicate, clear it first.
+	if not _riv_exec_job_is_live(riv_name):
+		_clear_stale_riv_exec_job(riv_name)
+	frappe.enqueue(
+		"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.execute_reposting_entry",
+		name=riv_name,
+		queue=C.MCA_RIV_RQ_QUEUE,
+		timeout=C.MCA_JOB_TIMEOUT,
+		job_id=_riv_exec_job_id(riv_name),
+		deduplicate=True,
+	)
+	frappe.logger("mca").info(f"MCA RIV enqueued riv={riv_name} queue={C.MCA_RIV_RQ_QUEUE}")
+
+
 def _kick_riv_execution(riv_name: str) -> None:
 	"""Ensure a Queued/In-Progress RIV actually runs (worker-independent nudge).
 
 	Outside tests, ERPNext leaves RIV Queued until scheduler timeslot. MCA must
-	not abandon pending capitalization — actively execute or enqueue the RIV.
+	not abandon pending capitalization — enqueue onto Core's ``long`` queue.
+	Never run multi-hour RIV inline on web/API requests (blocks gunicorn and
+	creates false ``started`` orphans when the request ends).
 	"""
 	if not riv_name or not frappe.db.exists("Repost Item Valuation", riv_name):
 		return
@@ -825,7 +1005,7 @@ def _kick_riv_execution(riv_name: str) -> None:
 			execute_reposting_entry,
 		)
 
-		# Sync path for unit tests and explicit inline runners
+		# Sync path for unit tests and explicit inline runners only
 		if getattr(frappe, "in_test", False) or getattr(frappe.flags, "in_test", False):
 			execute_reposting_entry(riv_name)
 			return
@@ -833,44 +1013,11 @@ def _kick_riv_execution(riv_name: str) -> None:
 			execute_reposting_entry(riv_name)
 			return
 
-		# When process_mca itself is an RQ job on the ``long`` MCA queue,
-		# do NOT run multi-hour RIV inline — that leaves Queue Type=mca "busy"
-		# for one voucher and starves other MCAs. Enqueue onto Core's ``long``
-		# queue (same as repost_item_valuation.py) so long workers consume RIV.
-		in_rq = False
-		try:
-			from rq import get_current_job
-
-			in_rq = get_current_job() is not None
-		except Exception:
-			in_rq = False
-
-		if in_rq or getattr(frappe.flags, "mca_riv_enqueue_only", False):
-			frappe.enqueue(
-				"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.execute_reposting_entry",
-				name=riv_name,
-				queue=C.MCA_RIV_RQ_QUEUE,
-				timeout=C.MCA_JOB_TIMEOUT,
-				job_id=f"mca-riv-exec:{riv_name}",
-				deduplicate=True,
-			)
-			frappe.logger("mca").info(
-				f"MCA RIV enqueued riv={riv_name} queue={C.MCA_RIV_RQ_QUEUE}"
-			)
+		# Default: always enqueue on ``long``. Live job → no-op (deduplicate).
+		# Dead-worker orphan → cleared inside ``_enqueue_riv_execution``.
+		if _riv_exec_job_is_live(riv_name):
 			return
-
-		# Console / sequential Dev processors: execute sync, enqueue-long on failure
-		try:
-			execute_reposting_entry(riv_name)
-		except Exception:
-			frappe.enqueue(
-				"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.execute_reposting_entry",
-				name=riv_name,
-				queue=C.MCA_RIV_RQ_QUEUE,
-				timeout=C.MCA_JOB_TIMEOUT,
-				job_id=f"mca-riv-exec:{riv_name}",
-				deduplicate=True,
-			)
+		_enqueue_riv_execution(riv_name)
 	except Exception as exc:
 		frappe.log_error(title=f"MCA RIV kick failed {riv_name}", message=str(exc))
 
@@ -895,8 +1042,8 @@ def _heal_orphaned_riv_in_progress(riv_name: str) -> None:
 
 	Only Core may set RIV ``Completed`` after a successful ``repost()``.
 	This helper only re-enqueues execution when the RIV is orphaned (In Progress,
-	no live long-queue job). MCA finalize remains blocked while status is
-	Queued / In Progress / Failed.
+	no live long-queue job / dead worker). MCA finalize remains blocked while
+	status is Queued / In Progress / Failed.
 	"""
 	if not riv_name or not frappe.db.exists("Repost Item Valuation", riv_name):
 		return
@@ -926,22 +1073,14 @@ def _heal_orphaned_riv_in_progress(riv_name: str) -> None:
 		err = ""
 	err_l = err.lower()
 	has_recoverable = ("1020" in err) or ("deadlock" in err_l) or ("timeout" in err_l)
-	live = False
-	try:
-		from frappe.utils.background_jobs import get_queue
-
-		q = get_queue(C.MCA_RIV_RQ_QUEUE)
-		for jid in list(q.get_job_ids()) + list(q.started_job_registry.get_job_ids()):
-			if riv_name in str(jid):
-				live = True
-				break
-	except Exception:
-		live = False
-	if live:
+	if _riv_exec_job_is_live(riv_name):
 		return
-	# Young In Progress without a recoverable error marker may still be starting.
-	# Recoverable leftovers (deadlock/1020/timeout) or idle ≥90s → re-kick only.
-	if age < 90 and not has_recoverable:
+	# Progress heartbeats (current_index / vouchers_posted) refresh ``modified``.
+	# A recent modified means Core is actively walking SLEs — never re-kick, even
+	# when error_log still contains an older recoverable 1020/deadlock marker.
+	# Only nudge when the RIV has gone idle with no live RQ worker.
+	idle_seconds = 120
+	if age < idle_seconds:
 		return
 	frappe.logger("mca").warning(
 		f"MCA nudging orphan RIV {riv_name} for retry "
@@ -1261,8 +1400,18 @@ def process_pending_mca_reposts() -> int:
 
 
 def on_riv_change(doc, method=None) -> None:
-	"""Hook: when RIV status changes, nudge linked MCA monitors."""
+	"""Hook: when RIV reaches a terminal status, nudge linked MCA monitors.
+
+	Do **not** enqueue on every In Progress heartbeat. Core ``repost()``
+	``db_set``s ``current_index`` frequently; reacting to those writes races the
+	live RIV transaction (MySQL 1020 on ``tabRepost Item Valuation``) and floods
+	the ``long`` queue with ``process_mca`` jobs. Pending-RIV progress is already
+	observed by API polling and the serialization gate; finalize only needs a
+	nudge on Completed / Failed / Skipped / Cancelled.
+	"""
 	if doc.voucher_type != "Stock Entry" or not doc.voucher_no:
+		return
+	if doc.status not in ("Completed", "Failed", "Skipped", "Cancelled"):
 		return
 	mcas = frappe.get_all(
 		C.MCA_DOCTYPE,

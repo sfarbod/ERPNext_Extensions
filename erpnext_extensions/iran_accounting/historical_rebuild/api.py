@@ -44,6 +44,31 @@ def discover_dependencies(
 
 
 @frappe.whitelist(methods=["POST"])
+def create_scoped_campaign(
+	company=None,
+	seed_vouchers=None,
+	seed_identities=None,
+	posting_boundary_from=None,
+	scope_label="rest-scoped-campaign",
+	remarks=None,
+	confirm=None,
+):
+	"""Create a scoped campaign with identity-closure expansion + built manifest.
+
+	confirm must equal ``CREATE_SCOPED_CAMPAIGN``.
+	"""
+	return svc.create_scoped_campaign(
+		company=company,
+		seed_vouchers=seed_vouchers,
+		seed_identities=seed_identities,
+		posting_boundary_from=posting_boundary_from,
+		scope_label=scope_label or "rest-scoped-campaign",
+		remarks=remarks,
+		confirm=confirm,
+	)
+
+
+@frappe.whitelist(methods=["POST"])
 def create_exact_campaign(
 	company=None,
 	vouchers=None,

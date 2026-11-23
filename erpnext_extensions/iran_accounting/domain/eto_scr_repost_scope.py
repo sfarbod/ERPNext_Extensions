@@ -174,19 +174,21 @@ def should_align_empty_warehouse_sle_from_batch_sabe(sle: Any, engine: Any = Non
 def select_sabe_raw_rate(row: Any, *, prefer_core_outward_rate: bool = False) -> float:
 	"""Raw rate the integer SABE policy localizes for one Serial and Batch Entry.
 
-	Default (unchanged): outward rows prefer a stamped ``outgoing_rate``;
-	otherwise ``incoming_rate`` then ``outgoing_rate``.
+	Core ``update_serial_batch_no_valuation`` writes the fresh batch-wise outward
+	rate into ``incoming_rate`` and never clears a prior ``outgoing_rate`` stamp.
+	When the two disagree on an outward row, ``outgoing_rate`` is stale history —
+	always prefer Core's ``incoming_rate`` (MCA/RIV transfer recovery depends on
+	this; previously only ETO set ``prefer_core_outward_rate`` and Farvardin
+	Material Transfers kept pre-MCA basic rates after a "Completed" RIV).
 
-	ETO repost scope: Core ``update_serial_batch_no_valuation`` writes the fresh
-	batch-wise outward rate into ``incoming_rate`` and never touches
-	``outgoing_rate``. When the two disagree, ``outgoing_rate`` is stale history
-	and Core's ``incoming_rate`` is used.
+	``prefer_core_outward_rate`` is retained for call-site compatibility; the
+	disagree→incoming rule applies regardless.
 	"""
 	qty = flt(_get(row, "qty"))
 	incoming = flt(_get(row, "incoming_rate"))
 	outgoing = flt(_get(row, "outgoing_rate"))
 	if qty < 0 and outgoing:
-		if prefer_core_outward_rate and incoming and abs(incoming - outgoing) >= _RATE_EPS:
+		if incoming and abs(incoming - outgoing) >= _RATE_EPS:
 			return incoming
 		return outgoing
 	return incoming or outgoing or 0.0

@@ -28,6 +28,12 @@ class ManufacturingCostAdjustment(Document):
 	def before_submit(self):
 		self._validate_stock_entry()
 		self._validate_no_concurrent()
+		# Company-wide serialization: only one unresolved MCA valuation chain at a time.
+		from erpnext_extensions.manufacturing_cost_adjustment.serialization import (
+			assert_mca_serialization_gate,
+		)
+
+		assert_mca_serialization_gate(self.company, exclude_name=self.name)
 		self.processing_status = C.PS_QUEUED
 		self.repost_required = 1
 		self.repost_status = C.RS_REQUIRED

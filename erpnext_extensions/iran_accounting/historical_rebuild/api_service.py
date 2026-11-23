@@ -227,6 +227,7 @@ def get_rebuild_api_status(*, company: str | None = None) -> dict[str, Any]:
 			"inspect_vouchers": True,
 			"discover_dependencies": True,
 			"create_exact_campaign": True,
+			"create_scoped_campaign": True,
 			"preflight_campaign": True,
 			"start_sequential_campaign": True,
 			"get_campaign_status": True,
@@ -241,6 +242,7 @@ def get_rebuild_api_status(*, company: str | None = None) -> dict[str, Any]:
 		},
 		"notes": [
 			"Campaign create/start require System Manager (repair) role.",
+			"create_scoped_campaign expands identity closure and builds the manifest in one call.",
 			"prepare_sequential_rebuild / prepare_clean_start are intentionally not exposed.",
 			"execute_repost_item_valuation is intentionally not exposed.",
 		],
@@ -522,6 +524,60 @@ def discover_dependencies(
 			"uses exact seeds only. Use create_scoped (Bench) for expanded manifests."
 		),
 	}
+
+
+def create_scoped_campaign(
+	*,
+	company: str,
+	seed_vouchers=None,
+	seed_identities=None,
+	posting_boundary_from=None,
+	scope_label: str = "rest-scoped-campaign",
+	remarks: str | None = None,
+	confirm: str | None = None,
+) -> dict[str, Any]:
+	"""Create a scoped HRC campaign with identity-closure expansion + built manifest.
+
+	confirm must equal ``CREATE_SCOPED_CAMPAIGN``.
+	Uses the existing ``create_scoped_campaign`` service — no parallel engine.
+	"""
+	require_repair()
+	company = require_company(company)
+	if str(confirm or "").strip() != "CREATE_SCOPED_CAMPAIGN":
+		frappe.throw(
+			"confirm must equal CREATE_SCOPED_CAMPAIGN",
+			frappe.ValidationError,
+		)
+	vouchers = parse_voucher_list(seed_vouchers) if seed_vouchers else []
+	identities = parse_identity_list(seed_identities) if seed_identities else []
+	if not vouchers and not identities:
+		frappe.throw(
+			"seed_vouchers or seed_identities is required",
+			frappe.ValidationError,
+		)
+
+	from erpnext_extensions.iran_accounting.historical_rebuild.scoped_campaign import (
+		create_scoped_campaign as _create_scoped,
+	)
+
+	result = _create_scoped(
+		company=company,
+		seed_vouchers=[{"voucher_type": a, "voucher_no": b} for a, b in vouchers] or None,
+		seed_identities=[{"item_code": i, "warehouse": w} for i, w in identities] or None,
+		posting_boundary_from=posting_boundary_from or None,
+		scope_label=scope_label or "rest-scoped-campaign",
+		remarks=remarks,
+	)
+	append_api_audit(
+		result["campaign"],
+		f"created scoped campaign checksum={str(result.get('checksum') or '')[:12]}… "
+		f"vouchers={result.get('total')} identities={result.get('identity_count')}",
+	)
+	result["ok"] = True
+	result["created_by"] = frappe.session.user
+	result["created_at"] = str(now_datetime())
+	result["api_version"] = API_VERSION
+	return result
 
 
 def create_exact_campaign(

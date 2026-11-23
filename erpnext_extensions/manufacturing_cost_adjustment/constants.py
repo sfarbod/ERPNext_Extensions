@@ -100,11 +100,9 @@ PERMANENT_ERROR_MARKERS = (
 
 # Operational quarantine — never auto-enqueue / process_mca / mass-run.
 # Documents stay as-is (no delete/cancel). See QUARANTINE_MCA_00004.md.
-QUARANTINED_MCA_NAMES = frozenset(
-	{
-		"MCA-2026-00004",  # split-brain Allocating/allocated after interrupted SLE rebuild
-	}
-)
+# Cleared after 20261123_131558 Production restore: MCA-2026-00004 is a clean
+# Farvardin draft for MAT-STE-2026-25911-2 (not the prior Dev split-brain doc).
+QUARANTINED_MCA_NAMES = frozenset()
 
 TRANSIENT_ERROR_MARKERS = (
 	"Deadlock",
