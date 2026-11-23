@@ -24,6 +24,9 @@ erpnext_extensions/cheque_management/release_reports/PDC_PARTY_POLLUTION_RECOVER
 .local-backups/
 .pilot_artifacts_5526/
 
+# Experimental MCA recovery / HRC bootstrap scripts (never publish)
+erpnext_extensions/manufacturing_cost_adjustment/recovery/
+
 # Local one-off Iran Accounting #59476 Dev harness scripts (never publish)
 erpnext_extensions/iran_accounting/tests/_tmp/
 

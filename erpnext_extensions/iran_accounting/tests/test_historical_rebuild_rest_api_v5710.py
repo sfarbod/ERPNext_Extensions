@@ -147,6 +147,7 @@ class TestApiSurfaceV5710(unittest.TestCase):
 		self.assertEqual(out.get("api_version"), "1.0.0")
 		caps = out.get("capabilities") or {}
 		self.assertTrue(caps.get("create_exact_campaign"))
+		self.assertTrue(caps.get("create_scoped_campaign"))
 		self.assertFalse(caps.get("prepare_clean_start_exposed"))
 		self.assertFalse(caps.get("site_wide_riv_exposed"))
 
@@ -156,6 +157,7 @@ class TestApiSurfaceV5710(unittest.TestCase):
 			"inspect_vouchers",
 			"discover_dependencies",
 			"create_exact_campaign",
+			"create_scoped_campaign",
 			"preflight_campaign",
 			"start_sequential_campaign",
 			"get_campaign_status",

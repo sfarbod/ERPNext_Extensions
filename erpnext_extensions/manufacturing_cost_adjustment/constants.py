@@ -78,13 +78,16 @@ LOCK_PREFIX = "mca:se:"
 MAX_RETRY_ATTEMPTS = 50
 RETRY_BACKOFF_SECONDS = (60, 120, 300, 600, 900)
 
-# Dedicated RQ queue for MCA orchestration (process_mca).
-# Independent Stock Entries may run concurrently (configurable workers).
+# RQ queue for MCA orchestration (process_mca).
+# Must be a standard Frappe queue: short | default | long (custom names
+# raise ``Queue should be one of short, default, long`` on enqueue).
+# Independent Stock Entries may run concurrently (configurable long workers).
 # Same-SE exclusivity is enforced by ``locks.acquire_se_lock`` (per document).
-# Heavy Repost Item Valuation execution uses Core's ``long`` queue (see
-# ``_kick_riv_execution``), which must have active long workers.
-MCA_RQ_QUEUE = "mca"
+# Heavy Repost Item Valuation execution also uses ``long`` (see
+# ``_kick_riv_execution``); per-SE locks keep MCA/RIV for the same SE serial.
+MCA_RQ_QUEUE = "long"
 MCA_RIV_RQ_QUEUE = "long"
+VALID_FRAPPE_QUEUES = frozenset({"short", "default", "long"})
 MCA_JOB_TIMEOUT = 3600
 # Default parallel MCA workers. Override via common_site_config
 # ``workers.mca.concurrency`` or env ``MCA_WORKER_CONCURRENCY``.
@@ -97,11 +100,9 @@ PERMANENT_ERROR_MARKERS = (
 
 # Operational quarantine — never auto-enqueue / process_mca / mass-run.
 # Documents stay as-is (no delete/cancel). See QUARANTINE_MCA_00004.md.
-QUARANTINED_MCA_NAMES = frozenset(
-	{
-		"MCA-2026-00004",  # split-brain Allocating/allocated after interrupted SLE rebuild
-	}
-)
+# Cleared after 20261123_131558 Production restore: MCA-2026-00004 is a clean
+# Farvardin draft for MAT-STE-2026-25911-2 (not the prior Dev split-brain doc).
+QUARANTINED_MCA_NAMES = frozenset()
 
 TRANSIENT_ERROR_MARKERS = (
 	"Deadlock",

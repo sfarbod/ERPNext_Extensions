@@ -59,9 +59,11 @@ class TestSelectSabeRawRate(unittest.TestCase):
 		row = _row(-61, NEW_RATE, OLD_RATE)
 		self.assertEqual(scope.select_sabe_raw_rate(row, prefer_core_outward_rate=True), NEW_RATE)
 
-	def test_non_eto_outward_keeps_stamped_outgoing_rate(self):
+	def test_non_eto_outward_also_prefers_core_fresh_incoming_over_stale_outgoing(self):
+		# Farvardin MCA/RIV: Core writes fresh batch rate to incoming_rate; stale
+		# outgoing_rate must not win (otherwise Material Transfer keeps basic rates).
 		row = _row(-61, NEW_RATE, OLD_RATE)
-		self.assertEqual(scope.select_sabe_raw_rate(row, prefer_core_outward_rate=False), OLD_RATE)
+		self.assertEqual(scope.select_sabe_raw_rate(row, prefer_core_outward_rate=False), NEW_RATE)
 
 	def test_eto_repost_sub_rial_difference_keeps_outgoing_rate(self):
 		row = _row(-61, OLD_RATE + 0.3, OLD_RATE)

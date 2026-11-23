@@ -111,8 +111,10 @@ def _run_unit():
 		from erpnext_extensions.manufacturing_cost_adjustment import repost_engine as re
 		import inspect
 
-		assert C.MCA_RQ_QUEUE == "mca"
+		assert C.MCA_RQ_QUEUE in C.VALID_FRAPPE_QUEUES
+		assert C.MCA_RQ_QUEUE == "long"
 		assert C.MCA_RIV_RQ_QUEUE == "long"
+		assert C.MCA_RQ_QUEUE != "mca", "custom queue 'mca' is invalid in Frappe enqueue"
 		assert "negative pool_value" in C.PERMANENT_ERROR_MARKERS
 		src = inspect.getsource(re.process_pending_mca_reposts)
 		assert "MCA_RQ_QUEUE" in src
