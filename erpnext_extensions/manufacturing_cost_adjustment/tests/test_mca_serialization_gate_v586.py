@@ -96,3 +96,65 @@ class TestMCASerializationGateV586(unittest.TestCase):
 
 		src = inspect.getsource(mca_mod.ManufacturingCostAdjustment.before_submit)
 		self.assertIn("assert_mca_serialization_gate", src)
+
+	def test_submit_mca_api_uses_document_before_submit_gate(self):
+		"""API submit goes through doc.submit() → before_submit (no docstatus bypass)."""
+		import inspect
+
+		from erpnext_extensions.manufacturing_cost_adjustment import api as mca_api
+
+		src = inspect.getsource(mca_api.submit_mca)
+		self.assertIn("doc.submit()", src)
+		self.assertIn("Does not set docstatus manually", src)
+		self.assertNotIn("frappe.db.set_value", src)
+
+	def test_company_named_lock_exclusive_across_db_connections(self):
+		"""Essential concurrency: second independent DB connection cannot take mca_serial lock."""
+		import pymysql
+		from frappe.utils import cint
+
+		company = "MCA-SERIAL-LOCK-AUDIT-CO"
+		lock = ser._company_lock_name(company)
+		self.assertEqual(lock, f"mca_serial:{company}")
+
+		frappe.db.sql("SELECT RELEASE_LOCK(%s)", lock)
+		self.assertEqual(cint(frappe.db.sql("SELECT GET_LOCK(%s, 0)", lock)[0][0]), 1)
+
+		db_host = frappe.conf.db_host or "127.0.0.1"
+		db_port = int(frappe.conf.db_port or 3306)
+		db_name = frappe.conf.db_name
+		db_user = frappe.conf.get("db_user") or db_name
+		db_password = frappe.conf.get("db_password")
+		conn2 = pymysql.connect(
+			host=db_host,
+			user=db_user,
+			password=db_password,
+			database=db_name,
+			port=db_port,
+		)
+		try:
+			cur = conn2.cursor()
+			cur.execute("SELECT GET_LOCK(%s, 0)", (lock,))
+			got2 = cint(cur.fetchone()[0])
+			self.assertEqual(
+				got2,
+				0,
+				"second connection must not acquire company serialization lock held by first",
+			)
+		finally:
+			conn2.close()
+
+		frappe.db.sql("SELECT RELEASE_LOCK(%s)", lock)
+
+	def test_lock_released_after_commit_hook_registration(self):
+		"""Gate registers RELEASE_LOCK on after_commit/after_rollback (no permanent deadlock)."""
+		import inspect
+
+		src = inspect.getsource(ser._acquire_db_lock)
+		self.assertIn("RELEASE_LOCK", src)
+		self.assertIn("after_commit", src)
+		self.assertIn("after_rollback", src)
+
+	def test_completed_not_in_blocking_set(self):
+		self.assertNotIn(C.PS_COMPLETED, ser.BLOCKING_PROCESSING_STATUSES)
+		self.assertNotIn(C.PS_VOIDED, ser.BLOCKING_PROCESSING_STATUSES)
